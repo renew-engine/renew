@@ -65,6 +65,24 @@ cargo run --bin hello-engine
 `hello-engine` is the current proof of life: a deterministic fixed-timestep loop that
 produces bit-identical output on every run, on every platform.
 
+## The `renew` tool
+
+One binary drives the workspace's development tasks the same way for people, scripts,
+and CI alike:
+
+```sh
+cargo run --bin renew -- help
+```
+
+| Command | What it does |
+|---|---|
+| `renew build` / `test` / `bench` / `lint` | the workspace tasks, exactly as CI runs them |
+| `renew check` | verifies crate manifests and the dependency graph (also a CI gate) |
+| `renew doctor` | checks your toolchain against the repository's pins |
+
+Every command takes `--json` and emits a single schema-versioned document, so tooling
+can build on stable output while the human output stays readable.
+
 ## Planned
 
 Rendering (Vulkan-first), ECS, asset pipeline, audio, input mapping, and 2D samples —
