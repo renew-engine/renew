@@ -15,5 +15,10 @@ core = true
 extension_points = ["sink"]
 simulation = false
 
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
 [lints]
 workspace = true
