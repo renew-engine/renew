@@ -1,0 +1,16 @@
+# Crate-local lint configuration: this crate manages memory — it never
+# reads a clock and never touches the filesystem. (A crate-local file
+# fully replaces the workspace one, so the test allowances are repeated.)
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
