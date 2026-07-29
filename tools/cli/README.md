@@ -13,6 +13,7 @@ commands:
   test       run the workspace test suite
   bench      run the workspace benchmarks
   lint       check formatting, then run clippy with warnings denied
+  check      verify workspace crate manifests and dependencies
   doctor     check the development environment
 ```
 
@@ -21,9 +22,11 @@ commands:
 Early-stage (`bootstrap` maturity — see the `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml), which is authoritative for maturity and
 manifest metadata): the flag surface and JSON schema may still change
-without a deprecation cycle. The small config parsers here (toolchain pin,
-manifest fields) are covered by unit tests today; fuzz coverage is planned
-as the tool matures toward a stable interface.
+without a deprecation cycle. The parsers here — the toolchain-pin and
+manifest-field readers and the JSON parser behind `check` — are covered by
+unit tests today (the JSON parser also bounds nesting depth so hostile
+input errors instead of exhausting the stack); fuzz coverage is planned as
+the tool matures toward a stable interface.
 
 ## Machine-readable output
 
@@ -41,14 +44,15 @@ on stdout:
   `renew` process itself always exits `0` (ok), `1` (failed/error), or `2`
   (usage error).
 - `doctor --json` adds a `checks` array of `{name, ok, detail}` objects to
-  the same envelope.
+  the same envelope; `check --json` adds a `findings` array of
+  `{rule, message}` objects (empty when the workspace is healthy).
 - `schema_version` increments on breaking changes to this shape.
 
 ## Key decisions
 
-- **Zero dependencies.** Six fixed subcommands need a `match`, not an
-  argument-parsing library, and the flat JSON above needs a small tested
-  writer, not a serialization framework.
+- **Zero dependencies.** A fixed handful of subcommands needs a `match`,
+  not an argument-parsing library, and the JSON in and out of this tool
+  needs a small tested writer and parser, not a serialization framework.
 - **Thin shell over a testable core.** The binary (`main.rs`) only does
   process I/O; parsing, the command table, JSON emission, and the doctor
   rules live in library modules with unit tests.

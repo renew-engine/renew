@@ -16,6 +16,7 @@ use renew_cli::cli::{self, Command, Invocation, Parsed};
 use renew_cli::doctor::{self, Facts};
 use renew_cli::json::{self, Value};
 use renew_cli::plan;
+use renew_cli::structure;
 use renew_cli::workspace;
 
 fn main() -> ExitCode {
@@ -41,8 +42,112 @@ fn main() -> ExitCode {
 fn run(invocation: Invocation) -> ExitCode {
     match invocation.command {
         Command::Doctor => run_doctor(invocation.json),
+        Command::Check => run_check(invocation.json),
         _ => run_steps(invocation),
     }
+}
+
+fn run_check(json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    let outcome = gather_findings();
+    match outcome {
+        Ok(findings) => {
+            let ok = findings.is_empty();
+            if json_mode {
+                let items: Vec<Value> = findings
+                    .iter()
+                    .map(|finding| {
+                        Value::Object(vec![
+                            ("rule".to_string(), Value::String(finding.rule.to_string())),
+                            (
+                                "message".to_string(),
+                                Value::String(finding.message.clone()),
+                            ),
+                        ])
+                    })
+                    .collect();
+                let document = Value::Object(vec![
+                    ("schema_version".to_string(), Value::Number(1)),
+                    ("command".to_string(), Value::String("check".to_string())),
+                    (
+                        "status".to_string(),
+                        Value::String(if ok { "ok" } else { "failed" }.to_string()),
+                    ),
+                    ("exit_code".to_string(), Value::Number(i64::from(!ok))),
+                    (
+                        "duration_ms".to_string(),
+                        Value::Number(duration_ms(started)),
+                    ),
+                    ("stdout".to_string(), Value::String(String::new())),
+                    ("stderr".to_string(), Value::String(String::new())),
+                    ("findings".to_string(), Value::Array(items)),
+                ]);
+                emit_stdout_line(&document.render());
+            } else {
+                let mut report = String::new();
+                for finding in &findings {
+                    let _ = writeln!(report, "FAIL {:<17} {}", finding.rule, finding.message);
+                }
+                let summary = if ok {
+                    "workspace structure looks healthy".to_string()
+                } else {
+                    format!("{} structure finding(s)", findings.len())
+                };
+                let _ = writeln!(report, "{summary}");
+                emit_stdout(&report);
+            }
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(message) => {
+            // A check that cannot run has failed — never pass vacuously.
+            if json_mode {
+                // Same shape as the success path: `findings` is always
+                // present, so consumers never see conditional keys.
+                let document = Value::Object(vec![
+                    ("schema_version".to_string(), Value::Number(1)),
+                    ("command".to_string(), Value::String("check".to_string())),
+                    ("status".to_string(), Value::String("error".to_string())),
+                    ("exit_code".to_string(), Value::Number(1)),
+                    (
+                        "duration_ms".to_string(),
+                        Value::Number(duration_ms(started)),
+                    ),
+                    ("stdout".to_string(), Value::String(String::new())),
+                    ("stderr".to_string(), Value::String(message)),
+                    ("findings".to_string(), Value::Array(Vec::new())),
+                ]);
+                emit_stdout_line(&document.render());
+                return ExitCode::FAILURE;
+            }
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn gather_findings() -> Result<Vec<structure::Finding>, String> {
+    let root = workspace_root()
+        .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
+    let output = Process::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(&root)
+        .output()
+        .map_err(|error| format!("failed to run cargo metadata: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let document =
+        json::parse(&text).map_err(|error| format!("unreadable cargo metadata output: {error}"))?;
+    let shapes = structure::shapes_from_metadata(&document)?;
+    Ok(structure::evaluate(&shapes))
 }
 
 fn run_steps(invocation: Invocation) -> ExitCode {

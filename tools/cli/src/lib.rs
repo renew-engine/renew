@@ -8,4 +8,5 @@ pub mod cli;
 pub mod doctor;
 pub mod json;
 pub mod plan;
+pub mod structure;
 pub mod workspace;

@@ -71,6 +71,15 @@ jobs:
       - name: Build benchmarks
         run: cargo bench --workspace --no-run
 
+  structure:
+    name: Structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check workspace structure
+        run: cargo run --package renew-cli --bin renew -- check
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
