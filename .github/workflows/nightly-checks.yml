@@ -45,4 +45,7 @@ jobs:
           RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
         # Doctests are compiled without sanitizer instrumentation and fail the
         # ABI-mismatch check; they run in the regular CI workflow instead.
-        run: cargo +nightly test --workspace --lib --bins --tests -Zbuild-std --target ${{ matrix.target }}
+        # The sanitized feature marks allocation-counting tests ignored:
+        # instrumented runtimes allocate on their own, so those counts are
+        # meaningless here (the regular CI workflow measures them).
+        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized -Zbuild-std --target ${{ matrix.target }}

@@ -87,6 +87,10 @@ impl Sink for FixedSink {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "allocation counting is invalid under instrumented allocators"
+)]
 fn installation_and_the_emit_path_allocate_nothing() {
     // A static sink, and the counted window opens before `install`: the
     // crate's whole surface — installation included — allocates nothing.
