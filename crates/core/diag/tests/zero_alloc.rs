@@ -96,6 +96,12 @@ fn installation_and_the_emit_path_allocate_nothing() {
             length: 0,
         }),
     };
+    // Warm the fixture's mutex once before the window opens: on some
+    // platforms the standard library lazily initializes lock internals
+    // with a one-time allocation at first use (observed on macOS). That
+    // allocation belongs to the platform's lock, not to the emit path
+    // under test.
+    drop(SINK.state.lock());
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     renew_diag::install(&SINK);
     renew_diag::info!("frame {} took {}ns", 41, 16_600_000);
