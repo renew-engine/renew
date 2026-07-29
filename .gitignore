@@ -1,0 +1,10 @@
+# Build artifacts
+/target
+
+# rustfmt backups
+**/*.rs.bk
+
+# OS noise
+.DS_Store
+
+# Cargo.lock is committed: this workspace builds binaries.

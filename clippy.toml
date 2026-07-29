@@ -1,0 +1,3 @@
+# Scope the unwrap/expect deny lints (workspace Cargo.toml) to non-test code.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
