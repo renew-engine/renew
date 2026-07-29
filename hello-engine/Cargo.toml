@@ -8,6 +8,13 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[package.metadata.renew]
+purpose = "Minimal fixed-timestep simulation loop example."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
 [lints]
 workspace = true
 

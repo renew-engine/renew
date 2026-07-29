@@ -1,3 +1,4 @@
-# Scope the unwrap/expect deny lints (workspace Cargo.toml) to non-test code.
+# Scope the unwrap/expect/panic deny lints (workspace Cargo.toml) to non-test code.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+allow-panic-in-tests = true
