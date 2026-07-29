@@ -1,0 +1,27 @@
+[package]
+name = "renew-memory"
+description = "Engine allocator interfaces: linear arena, fixed pool, and an instrumented global allocator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The engine's allocation seam: explicit arena and pool allocators plus an instrumented global allocator for counting."
+maturity = "bootstrap"
+core = true
+extension_points = []
+simulation = false
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1.11"
