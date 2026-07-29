@@ -1,0 +1,19 @@
+[package]
+name = "renew-diag"
+description = "Diagnostics core: log records, severity levels, and the sink interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Log records, severity levels, and the sink interface the rest of the engine reports through."
+maturity = "bootstrap"
+core = true
+extension_points = ["sink"]
+simulation = false
+
+[lints]
+workspace = true

@@ -10,17 +10,19 @@ pub enum Command {
     Test,
     Bench,
     Lint,
+    Check,
     Doctor,
 }
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Configure,
         Self::Build,
         Self::Test,
         Self::Bench,
         Self::Lint,
+        Self::Check,
         Self::Doctor,
     ];
 
@@ -33,6 +35,7 @@ impl Command {
             Self::Test => "test",
             Self::Bench => "bench",
             Self::Lint => "lint",
+            Self::Check => "check",
             Self::Doctor => "doctor",
         }
     }
@@ -46,6 +49,7 @@ impl Command {
             Self::Test => "run the workspace test suite",
             Self::Bench => "run the workspace benchmarks",
             Self::Lint => "check formatting, then run clippy with warnings denied",
+            Self::Check => "verify workspace crate manifests and dependencies",
             Self::Doctor => "check the development environment",
         }
     }

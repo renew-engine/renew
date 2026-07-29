@@ -299,6 +299,68 @@ fn doctor_json_reports_named_checks_with_uniform_envelope() {
 }
 
 #[test]
+fn check_passes_against_this_workspace() {
+    let output = run(&["check"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout was: {stdout}");
+    assert!(stdout.contains("healthy"), "stdout was: {stdout}");
+}
+
+#[test]
+fn check_json_reports_an_empty_findings_array_here() {
+    let output = run(&["check", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document = stdout.trim();
+    validate_json(document).expect("check --json must be valid JSON");
+    assert!(
+        document.starts_with("{\"schema_version\":1,\"command\":\"check\""),
+        "stdout was: {stdout}"
+    );
+    assert!(document.contains("\"findings\":[]"), "stdout was: {stdout}");
+}
+
+#[test]
+fn check_flags_a_workspace_with_broken_metadata() {
+    let directory = std::env::temp_dir().join(format!("renew-cli-check-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    let member = directory.join("bad");
+    fs::create_dir_all(member.join("src")).expect("scratch dirs");
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[workspace]\nresolver = \"3\"\nmembers = [\"bad\"]\n",
+    )
+    .expect("scratch root manifest");
+    fs::write(
+        member.join("Cargo.toml"),
+        concat!(
+            "[package]\nname = \"bad\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n",
+            "[package.metadata.renew]\npurpose = \"x\"\nmaturity = \"wrong\"\n",
+            "core = false\nextension_points = []\nsimulation = false\n",
+        ),
+    )
+    .expect("scratch member manifest");
+    fs::write(member.join("src").join("lib.rs"), "").expect("scratch lib");
+
+    let output = run_in(&directory, &["check"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("maturity"), "stdout was: {stdout}");
+
+    // The machine mode carries the same findings in the envelope.
+    let output = run_in(&directory, &["check", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document = stdout.trim();
+    validate_json(document).expect("failing check --json must be valid JSON");
+    assert!(
+        document.contains("\"rule\":\"schema\""),
+        "stdout was: {stdout}"
+    );
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn failed_child_maps_to_exit_one_in_plain_mode() {
     let directory = broken_workspace("plain").expect("scratch workspace should be creatable");
     let output = run_in(&directory, &["build"]).expect("binary should spawn");
