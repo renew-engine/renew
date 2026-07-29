@@ -65,3 +65,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build benchmarks
         run: cargo bench --workspace --no-run
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Collect coverage
+        run: |
+          cargo llvm-cov --no-report test --workspace
+          cargo llvm-cov --no-report run --bin hello-engine
+          cargo llvm-cov report --fail-under-lines 95
