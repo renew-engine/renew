@@ -1,0 +1,22 @@
+[package]
+name = "renew-math"
+description = "Linear algebra value types with documented layout and branchless kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Vector, matrix, quaternion, and bounding-box value types with documented memory layout."
+maturity = "bootstrap"
+core = true
+extension_points = []
+simulation = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1.11"
