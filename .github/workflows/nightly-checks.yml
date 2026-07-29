@@ -1,0 +1,44 @@
+name: Nightly checks
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sanitizers:
+    name: Sanitizer (${{ matrix.sanitizer }}, ${{ matrix.os }})
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            sanitizer: address
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            sanitizer: thread
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            sanitizer: address
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            sanitizer: thread
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            sanitizer: address
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          targets: ${{ matrix.target }}
+      - name: Run tests under ${{ matrix.sanitizer }} sanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+        run: cargo +nightly test --workspace -Zbuild-std --target ${{ matrix.target }}

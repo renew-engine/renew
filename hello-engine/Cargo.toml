@@ -1,0 +1,19 @@
+[package]
+name = "hello-engine"
+description = "Minimal fixed-timestep simulation loop example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "accumulator"
+harness = false
