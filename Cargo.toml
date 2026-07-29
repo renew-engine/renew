@@ -15,9 +15,13 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 # Deny set: these never belong in committed non-test code.
-# Test code is exempted from unwrap/expect via clippy.toml.
+# Test code is exempted from unwrap/expect/panic via clippy.toml.
 unwrap_used = "deny"
 expect_used = "deny"
+panic = "deny"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+[profile.release]
+panic = "abort"
