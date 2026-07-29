@@ -1,0 +1,23 @@
+[package]
+name = "renew-cli"
+description = "Command-line entry point for the workspace's canonical commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Command-line entry point wrapping the canonical build, test, bench, and lint commands plus an environment check."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "renew"
+path = "src/main.rs"
