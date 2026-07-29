@@ -27,9 +27,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+          components: rustfmt, clippy
+      - name: Run lint checks
+        run: cargo run --package renew-cli --bin renew -- lint
 
   test:
     name: Test (${{ matrix.os }})
@@ -42,20 +42,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo run --package renew-cli --bin renew -- test
 
   build:
-    name: Build (${{ matrix.profile }})
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [dev, release]
+    name: Build (dev)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build workspace
-        run: cargo build --workspace --profile ${{ matrix.profile }}
+        run: cargo run --package renew-cli --bin renew -- build
+
+  build-release:
+    name: Build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build workspace (release)
+        run: cargo build --workspace --profile release
 
   bench-build:
     name: Benchmark build
