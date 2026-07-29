@@ -38,7 +38,11 @@ jobs:
         with:
           components: rust-src
           targets: ${{ matrix.target }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - name: Run tests under ${{ matrix.sanitizer }} sanitizer
         env:
           RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
-        run: cargo +nightly test --workspace -Zbuild-std --target ${{ matrix.target }}
+        # Doctests are compiled without sanitizer instrumentation and fail the
+        # ABI-mismatch check; they run in the regular CI workflow instead.
+        run: cargo +nightly test --workspace --lib --bins --tests -Zbuild-std --target ${{ matrix.target }}
