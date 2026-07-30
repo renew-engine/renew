@@ -1,0 +1,19 @@
+[package]
+name = "renew-platform"
+description = "Operating-system seams: monotonic time, whole-file I/O, and named threads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The engine's only doorway to the operating system: clock, filesystem, and thread seams."
+maturity = "bootstrap"
+core = true
+extension_points = []
+simulation = false
+
+[lints]
+workspace = true
