@@ -1,0 +1,32 @@
+name: Benchmark baselines
+
+# Manually dispatched and never gating: runs the full benchmark suite on
+# all three platforms and uploads criterion's estimates as artifacts.
+# Hosted-runner numbers are indicative only; authoritative budgets are
+# measured on the recorded reference machine.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baselines:
+    name: Baselines (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run benchmarks
+        run: cargo bench --workspace
+      - name: Upload criterion estimates
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ matrix.os }}
+          path: target/criterion/**/new/estimates.json
+          if-no-files-found: error

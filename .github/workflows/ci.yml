@@ -68,8 +68,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build benchmarks
-        run: cargo bench --workspace --no-run
+      # Each bench runs once (no statistics): proves every benchmark
+      # compiles and executes. Timings are never gated here — hosted
+      # runner variance would make that gate meaningless; regression
+      # gating lives in the allocation-count assertions in the test
+      # suite, and timing baselines are recorded out of band.
+      - name: Run benchmark smoke (each bench once)
+        run: cargo bench --workspace -- --test
 
   structure:
     name: Structure
