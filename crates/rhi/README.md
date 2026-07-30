@@ -71,8 +71,8 @@ only when a consumer demands it. The `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
 metadata. Contract lints live in [clippy.toml](clippy.toml): thread
 spawning, clock reads, and filesystem access are rejected at lint time.
-`unsafe` is confined to `src/vk/` under a six-category grant (see the
-workspace language standard); the safe modules deny it.
+`unsafe` is confined to `src/vk/`; the safe modules deny it, and every
+site carries a `// SAFETY:` comment (lint-enforced).
 
 ## Key decisions
 

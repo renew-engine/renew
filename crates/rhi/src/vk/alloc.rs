@@ -65,16 +65,16 @@ fn allocate(ledger: &AllocLedger, size: usize, align: usize) -> *mut u8 {
     if base.is_null() {
         return core::ptr::null_mut();
     }
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "offset is a multiple of an alignment >= align_of::<Header>()"
+    )]
     // SAFETY: `offset < layout.size()`, so `user` is in-bounds of the
     // allocation; `user - size_of::<Header>()` is also in-bounds
     // because `offset >= size_of::<Header>()`, and it is sufficiently
     // aligned for `Header` because `offset` is a multiple of an
     // alignment >= align_of::<Header>() and the base is at least that
     // aligned.
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "offset is a multiple of an alignment >= align_of::<Header>()"
-    )]
     let user = unsafe {
         let user = base.add(offset);
         user.cast::<Header>().sub(1).write(Header {
@@ -227,7 +227,7 @@ mod tests {
         let ptr = allocate(&ledger, 100, 32);
         assert!(!ptr.is_null());
         assert_eq!(ptr as usize % 32, 0, "returned pointer respects align");
-        // SAFETY (test): writing within the 100 bytes just allocated.
+        // SAFETY: (test) writing within the 100 bytes just allocated.
         unsafe {
             core::ptr::write_bytes(ptr, 0xAB, 100);
             assert_eq!(*ptr, 0xAB);
@@ -246,11 +246,11 @@ mod tests {
         let user_data = core::ptr::from_ref(&ledger).cast_mut().cast::<c_void>();
         let first = cb_alloc(user_data, 8, 8, vk::SystemAllocationScope::OBJECT);
         assert!(!first.is_null());
-        // SAFETY (test): writing within the 8 bytes just allocated.
+        // SAFETY: (test) writing within the 8 bytes just allocated.
         unsafe { core::ptr::write_bytes(first.cast::<u8>(), 0x5A, 8) };
         let grown = cb_realloc(user_data, first, 64, 8, vk::SystemAllocationScope::OBJECT);
         assert!(!grown.is_null());
-        // SAFETY (test): the first 8 bytes were copied by realloc.
+        // SAFETY: (test) the first 8 bytes were copied by realloc.
         unsafe {
             for index in 0..8 {
                 assert_eq!(*grown.cast::<u8>().add(index), 0x5A);
@@ -279,7 +279,7 @@ mod tests {
             let ptr = allocate(&ledger, size, align);
             prop_assert!(!ptr.is_null());
             prop_assert_eq!(ptr as usize % align, 0);
-            // SAFETY (test): first and last byte of the allocation.
+            // SAFETY: (test) first and last byte of the allocation.
             unsafe {
                 *ptr = 1;
                 *ptr.add(size - 1) = 2;

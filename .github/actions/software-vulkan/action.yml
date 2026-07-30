@@ -24,15 +24,19 @@ runs:
         cd ~/software-vulkan/downloads
         curl -sSfL -o mesa.tar.xz \
           https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
-        echo "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  mesa.tar.xz" | sha256sum -c -
         curl -sSfL -o vulkan-sdk.tar.xz \
           https://sdk.lunarg.com/sdk/download/1.4.328.1/linux/vulkansdk-linux-x86_64-1.4.328.1.tar.xz
-        echo "241e75b56c91c0d210ed07a7c638ec05a3e5b0e4c66ba9f0ba0f102d823ad6bf  vulkan-sdk.tar.xz" | sha256sum -c -
 
     - name: Extract, patch the ICD path, and export the environment
       shell: bash
       run: |
         cd ~/software-vulkan
+        # Verify UNCONDITIONALLY — a poisoned or corrupted cache entry
+        # must fail here, not silently become the rendering stack.
+        printf '%s\n' \
+          "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  downloads/mesa.tar.xz" \
+          "241e75b56c91c0d210ed07a7c638ec05a3e5b0e4c66ba9f0ba0f102d823ad6bf  downloads/vulkan-sdk.tar.xz" \
+          | sha256sum -c -
         mkdir -p mesa sdk
         tar -xJf downloads/mesa.tar.xz -C mesa
         tar -xJf downloads/vulkan-sdk.tar.xz -C sdk

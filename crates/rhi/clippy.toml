@@ -14,3 +14,8 @@ disallowed-methods = [
     { path = "std::fs::read", reason = "this crate never touches the filesystem; shader bytes arrive embedded or from callers" },
     { path = "std::fs::write", reason = "this crate never touches the filesystem" },
 ]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

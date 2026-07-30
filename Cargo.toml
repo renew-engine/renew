@@ -22,6 +22,9 @@ panic = "deny"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+# Every unsafe block states the invariant that makes it sound; the
+# reviewer checks the argument, the lint checks the presence.
+undocumented_unsafe_blocks = "deny"
 
 [profile.release]
 panic = "abort"

@@ -73,7 +73,9 @@ fn validation_off_bring_up_works() {
         validation: Validation::Off,
     }) {
         Ok(device) => device.wait_idle().expect("wait_idle"),
-        Err(DeviceError::LoaderUnavailable { message }) => {
+        Err(DeviceError::LoaderUnavailable { message })
+            if std::env::var_os("RENEW_GOLDEN").is_none_or(|v| v != "1") =>
+        {
             eprintln!("SKIP: no Vulkan runtime: {message}");
         }
         Err(error) => panic!("bring-up without validation failed: {error}"),
@@ -120,6 +122,10 @@ fn full_frame_cycle_clear_then_triangle() {
         &[0, 0, 0, 255],
         "triangle draw left the center pixel at the clear color"
     );
+    // Resources torn down BEFORE the oracle reads: destruction-time
+    // validation findings count.
+    drop(target);
+    drop(pipeline);
     assert_no_validation_errors(&device);
 }
 
@@ -138,8 +144,10 @@ fn device_churn_three_rounds() {
         target
             .render(Color::new(0.5, 0.5, 0.5, 1.0), None)
             .expect("render");
-        assert_no_validation_errors(&device);
+        // Teardown first, oracle second: destruction-time findings
+        // count in every round.
         drop(target);
+        assert_no_validation_errors(&device);
         drop(device);
         let _ = round;
     }
@@ -197,6 +205,36 @@ fn invalid_spirv_is_rejected_per_stage() {
         Ok(_) => panic!("expected fragment rejection, got a pipeline"),
     }
     assert_no_validation_errors(&device);
+}
+
+#[test]
+fn cross_device_pipeline_is_a_dev_build_contract_violation() {
+    let Some(device_a) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let Some(device_b) = required_device().expect("second device bring-up") else {
+        return;
+    };
+    let mut target = device_a
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let foreign = device_b
+        .create_pipeline(&PipelineDesc {
+            vertex_spirv: builtin::TRIANGLE_VS_SPV,
+            fragment_spirv: builtin::TRIANGLE_FS_SPV,
+            target_format: TargetFormat::Rgba8Unorm,
+        })
+        .expect("pipeline on the other device");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = target.render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&foreign));
+    }));
+    assert!(
+        outcome.is_err(),
+        "mixing objects across devices must trip the dev-build contract check"
+    );
 }
 
 #[test]

@@ -3,7 +3,13 @@
 //!
 //! The target owns a keep-alive handle to the native window (boxed,
 //! opaque) — the platform window cannot be torn down under a live
-//! surface, by construction rather than by discipline.
+//! surface, by ownership rather than by discipline.
+//!
+//! Error discipline: a mid-frame driver failure quiesces the GPU and
+//! tears the swapchain down (the target goes dormant, exactly like a
+//! minimized window), so no semaphore or fence is ever left carrying a
+//! stale pending operation into the next frame. A later
+//! [`WindowTarget::resize`] rebuilds everything fresh.
 
 use std::rc::Rc;
 
@@ -30,19 +36,24 @@ fn creation(call: &'static str, code: vk::Result) -> TargetError {
 pub enum PresentOutcome {
     /// The frame is on its way to the screen.
     Presented,
-    /// The swapchain no longer matches the surface (resize, minimize);
-    /// call [`WindowTarget::resize`] with the current size. Nothing was
-    /// presented.
+    /// The swapchain no longer matches the surface (resize, minimize),
+    /// or the target is dormant; call [`WindowTarget::resize`] with the
+    /// current size. Nothing was presented.
     NeedsResize,
 }
 
-/// The live swapchain and everything sized to it; absent while the
-/// window is zero-sized (minimized).
+/// The live swapchain and everything sized or bound to it; absent
+/// while the target is dormant (zero-sized window, or a mid-frame
+/// failure that forced a teardown).
 struct Chain {
     swapchain: vk::SwapchainKHR,
     extent: Extent,
     views: Vec<vk::ImageView>,
     images: Vec<vk::Image>,
+    /// The acquire semaphore. Chain-owned so a teardown after a
+    /// mid-frame failure also retires any pending signal operation with
+    /// it — the next chain starts with a fresh, unsignaled semaphore.
+    image_available: vk::Semaphore,
     /// One per swapchain image: the present engine may still wait on
     /// the semaphore for image N after our fence signals, so per-image
     /// signaling is the simplest correct scheme.
@@ -64,8 +75,12 @@ pub struct WindowTarget {
     chain: Option<Chain>,
     pool: vk::CommandPool,
     cmd: vk::CommandBuffer,
+    /// Created unsignaled; `fence_pending` tracks whether a submit is
+    /// outstanding on it. The invariant at every public-call boundary:
+    /// `fence_pending == false` implies the fence is unsignaled with
+    /// nothing outstanding.
     fence: vk::Fence,
-    image_available: vk::Semaphore,
+    fence_pending: bool,
 }
 
 impl Device {
@@ -93,7 +108,7 @@ impl Device {
         W: HasDisplayHandle + HasWindowHandle + 'static,
     {
         let shared = &self.shared;
-        if shared.lost.get() {
+        if shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
 
@@ -124,9 +139,15 @@ impl Device {
             .map_err(|_| TargetError::SurfaceCreation { code: 0 })?
             .as_raw();
         // SAFETY: category 3 (the one surface-creation site): entry and
-        // instance live via the spine; the raw handles were produced
-        // moments ago from a window the target takes ownership of below
-        // — the platform window outlives the surface by construction.
+        // instance live via the spine. Handle validity: the raw handles
+        // were just produced through raw-window-handle's borrow-scoped
+        // accessors on `window`, which the target takes ownership of
+        // below and keeps for the surface's whole life — and no safe
+        // implementation of the handle traits can produce a handle that
+        // outlives the window it borrows from without itself using
+        // `unsafe` incorrectly. (For the intended argument — the
+        // platform's `NativeWindow`, an owning keep-alive — validity is
+        // direct.)
         let surface = unsafe {
             ash_window::create_surface(
                 &shared.entry,
@@ -229,34 +250,16 @@ impl Device {
             }
         };
 
-        // Signaled: the first frame's wait must pass immediately.
-        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        // SAFETY: category 2: device live; info local.
+        // Unsignaled: `fence_pending` starts false, and the protocol
+        // only waits when a submit is actually outstanding.
+        // SAFETY: category 2: device live; default info local.
         let fence = match unsafe {
             shared
                 .device
-                .create_fence(&fence_info, Some(&shared.alloc_cbs()))
+                .create_fence(&vk::FenceCreateInfo::default(), Some(&shared.alloc_cbs()))
         } {
             Ok(fence) => fence,
             Err(code) => return Err(fail_pool(self, creation("vkCreateFence", code))),
-        };
-        // SAFETY: category 2: device live; default info local.
-        let image_available = match unsafe {
-            shared.device.create_semaphore(
-                &vk::SemaphoreCreateInfo::default(),
-                Some(&shared.alloc_cbs()),
-            )
-        } {
-            Ok(semaphore) => semaphore,
-            Err(code) => {
-                // SAFETY: fence live and unshared.
-                unsafe {
-                    shared
-                        .device
-                        .destroy_fence(fence, Some(&shared.alloc_cbs()));
-                }
-                return Err(fail_pool(self, creation("vkCreateSemaphore", code)));
-            }
         };
 
         let mut target = WindowTarget {
@@ -272,7 +275,7 @@ impl Device {
             pool,
             cmd,
             fence,
-            image_available,
+            fence_pending: false,
         };
         // Build the initial chain; zero extents stay dormant. From here
         // the target's Drop owns cleanup on failure.
@@ -291,7 +294,7 @@ impl WindowTarget {
         self.format
     }
 
-    /// The current drawable size; zero while minimized/dormant.
+    /// The current drawable size; zero while dormant.
     #[must_use]
     pub fn extent(&self) -> Extent {
         self.chain.as_ref().map_or(
@@ -313,7 +316,7 @@ impl WindowTarget {
     /// Creation errors from the driver; [`TargetError::DeviceLost`] on
     /// a poisoned device.
     pub fn resize(&mut self, extent: Extent) -> Result<(), TargetError> {
-        if self.shared.lost.get() {
+        if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
         // Quiesce before touching anything the GPU might still read.
@@ -327,6 +330,7 @@ impl WindowTarget {
                 creation("vkDeviceWaitIdle", code)
             });
         }
+        self.retire_fence_after_idle();
         self.destroy_chain();
         if extent.width == 0 || extent.height == 0 {
             return Ok(());
@@ -344,8 +348,9 @@ impl WindowTarget {
     ///
     /// [`TargetError::Timeout`] when the GPU exceeds the watchdog;
     /// [`TargetError::DeviceLost`] on device loss; submission errors
-    /// otherwise. A stale swapchain is not an error — it is
-    /// [`PresentOutcome::NeedsResize`].
+    /// otherwise — any such mid-frame failure also tears the swapchain
+    /// down (the target goes dormant until resized). A stale swapchain
+    /// is not an error — it is [`PresentOutcome::NeedsResize`].
     #[expect(
         clippy::too_many_lines,
         reason = "one recorded frame; wait, acquire, record, submit, present read top to bottom"
@@ -355,7 +360,7 @@ impl WindowTarget {
         clear: Color,
         pipeline: Option<&RenderPipeline>,
     ) -> Result<PresentOutcome, TargetError> {
-        if self.shared.lost.get() {
+        if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
         if let Some(pipeline) = pipeline {
@@ -370,44 +375,54 @@ impl WindowTarget {
                 self.format
             );
         }
-        let Some(chain) = &self.chain else {
-            return Ok(PresentOutcome::NeedsResize);
-        };
-        let device = &self.shared.device;
-
-        // Wait for the previous frame; the fence starts signaled, so
-        // the order wait → acquire → reset → submit never deadlocks on
-        // an early NeedsResize return.
+        // Wait for the previous frame if one is outstanding; after
+        // this, the fence is unsignaled with nothing pending, so every
+        // early return below leaves the protocol consistent.
         // SAFETY: category 2 (ash dispatch) for every call below: all
         // handles live and owned by this target or its chain;
         // single-threaded by the crate contract; every info struct is a
         // local outliving its call.
         unsafe {
-            match device.wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS) {
-                Ok(()) => {}
-                Err(vk::Result::TIMEOUT) => {
-                    return Err(TargetError::Timeout {
-                        call: "vkWaitForFences",
-                    });
+            if self.fence_pending {
+                match self
+                    .shared
+                    .device
+                    .wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS)
+                {
+                    Ok(()) => {}
+                    Err(vk::Result::TIMEOUT) => {
+                        return Err(TargetError::Timeout {
+                            call: "vkWaitForFences",
+                        });
+                    }
+                    Err(code) => {
+                        self.shared.note_result(code);
+                        return Err(if code == vk::Result::ERROR_DEVICE_LOST {
+                            TargetError::DeviceLost
+                        } else {
+                            creation("vkWaitForFences", code)
+                        });
+                    }
                 }
-                Err(code) => {
-                    self.shared.note_result(code);
-                    return Err(if code == vk::Result::ERROR_DEVICE_LOST {
-                        TargetError::DeviceLost
-                    } else {
-                        creation("vkWaitForFences", code)
-                    });
+                if let Err(code) = self.shared.device.reset_fences(&[self.fence]) {
+                    return Err(creation("vkResetFences", code));
                 }
+                self.fence_pending = false;
             }
 
+            let Some(chain) = self.chain.as_ref() else {
+                return Ok(PresentOutcome::NeedsResize);
+            };
             let acquired = self.swapchain_loader.acquire_next_image(
                 chain.swapchain,
                 FENCE_TIMEOUT_NS,
-                self.image_available,
+                chain.image_available,
                 vk::Fence::null(),
             );
             let (index, suboptimal) = match acquired {
                 Ok(pair) => pair,
+                // No semaphore signal is queued on any of these
+                // returns, so the chain stays consistent.
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     return Ok(PresentOutcome::NeedsResize);
                 }
@@ -425,31 +440,47 @@ impl WindowTarget {
                     });
                 }
             };
+            // From here to the submit, `image_available` carries a
+            // pending signal that only the submit will retire: any
+            // failure must tear the chain down (which quiesces first),
+            // never merely return.
             let slot = index as usize;
             let (Some(&image), Some(&view), Some(&finished)) = (
                 chain.images.get(slot),
                 chain.views.get(slot),
                 chain.render_finished.get(slot),
             ) else {
-                return Err(TargetError::Creation {
+                return Err(self.abort_frame(TargetError::Creation {
                     call: "vkAcquireNextImageKHR(index)",
                     code: 0,
-                });
+                }));
             };
+            let image_available = chain.image_available;
+            let swapchain = chain.swapchain;
+            let chain_extent = chain.extent;
+            let device = &self.shared.device;
 
-            device
-                .reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty())
-                .map_err(|code| creation("vkResetCommandBuffer", code))?;
-            device
-                .begin_command_buffer(
-                    self.cmd,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .map_err(|code| creation("vkBeginCommandBuffer", code))?;
+            if let Err(code) =
+                device.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty())
+            {
+                return Err(self.abort_frame(creation("vkResetCommandBuffer", code)));
+            }
+            if let Err(code) = device.begin_command_buffer(
+                self.cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            ) {
+                return Err(self.abort_frame(creation("vkBeginCommandBuffer", code)));
+            }
 
+            // UNDEFINED → COLOR_ATTACHMENT_OPTIMAL. The source stage is
+            // COLOR_ATTACHMENT_OUTPUT — the same stage the acquire
+            // semaphore wait is scoped to — which chains this barrier
+            // after the semaphore and orders the layout transition
+            // against the presentation engine's outstanding reads of
+            // this image (the classic write-after-present hazard).
             let to_color = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                 .src_access_mask(vk::AccessFlags2::NONE)
                 .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                 .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -478,8 +509,8 @@ impl WindowTarget {
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: vk::Extent2D {
-                    width: chain.extent.width,
-                    height: chain.extent.height,
+                    width: chain_extent.width,
+                    height: chain_extent.height,
                 },
             };
             device.cmd_begin_rendering(
@@ -501,8 +532,8 @@ impl WindowTarget {
                 let viewport = vk::Viewport {
                     x: 0.0,
                     y: 0.0,
-                    width: chain.extent.width as f32,
-                    height: chain.extent.height as f32,
+                    width: chain_extent.width as f32,
+                    height: chain_extent.height as f32,
                     min_depth: 0.0,
                     max_depth: 1.0,
                 };
@@ -529,15 +560,12 @@ impl WindowTarget {
                 &vk::DependencyInfo::default().image_memory_barriers(&barriers),
             );
 
-            device
-                .end_command_buffer(self.cmd)
-                .map_err(|code| creation("vkEndCommandBuffer", code))?;
+            if let Err(code) = device.end_command_buffer(self.cmd) {
+                return Err(self.abort_frame(creation("vkEndCommandBuffer", code)));
+            }
 
-            device
-                .reset_fences(&[self.fence])
-                .map_err(|code| creation("vkResetFences", code))?;
             let wait_infos = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(self.image_available)
+                .semaphore(image_available)
                 .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)];
             let cmd_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(self.cmd)];
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
@@ -547,18 +575,18 @@ impl WindowTarget {
                 .wait_semaphore_infos(&wait_infos)
                 .command_buffer_infos(&cmd_infos)
                 .signal_semaphore_infos(&signal_infos);
-            device
-                .queue_submit2(self.shared.queue, &[submit], self.fence)
-                .map_err(|code| {
-                    self.shared.note_result(code);
-                    if code == vk::Result::ERROR_DEVICE_LOST {
-                        TargetError::DeviceLost
-                    } else {
-                        creation("vkQueueSubmit2", code)
-                    }
-                })?;
+            if let Err(code) = device.queue_submit2(self.shared.queue, &[submit], self.fence) {
+                self.shared.note_result(code);
+                let error = if code == vk::Result::ERROR_DEVICE_LOST {
+                    TargetError::DeviceLost
+                } else {
+                    creation("vkQueueSubmit2", code)
+                };
+                return Err(self.abort_frame(error));
+            }
+            self.fence_pending = true;
 
-            let swapchains = [chain.swapchain];
+            let swapchains = [swapchain];
             let indices = [index];
             let wait = [finished];
             let present_info = vk::PresentInfoKHR::default()
@@ -573,13 +601,43 @@ impl WindowTarget {
                 Ok(_) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Ok(PresentOutcome::NeedsResize),
                 Err(code) => {
                     self.shared.note_result(code);
-                    Err(if code == vk::Result::ERROR_DEVICE_LOST {
+                    let error = if code == vk::Result::ERROR_DEVICE_LOST {
                         TargetError::DeviceLost
                     } else {
                         creation("vkQueuePresentKHR", code)
-                    })
+                    };
+                    Err(self.abort_frame(error))
                 }
             }
+        }
+    }
+
+    /// Mid-frame failure path: quiesce the GPU, retire the fence, and
+    /// tear the chain down so no pending semaphore or fence operation
+    /// survives into the next frame. Returns the error it was handed,
+    /// for `return Err(self.abort_frame(error))` call sites.
+    fn abort_frame(&mut self, error: TargetError) -> TargetError {
+        // SAFETY: category 2: device live; best-effort — the target is
+        // going dormant regardless.
+        unsafe {
+            let _ = self.shared.device.device_wait_idle();
+        }
+        self.retire_fence_after_idle();
+        self.destroy_chain();
+        error
+    }
+
+    /// After a successful (or best-effort) wait-idle, a pending fence
+    /// is signaled: reset it so the unsignaled-when-not-pending
+    /// invariant holds.
+    fn retire_fence_after_idle(&mut self) {
+        if self.fence_pending {
+            // SAFETY: category 2: fence live; nothing outstanding after
+            // the caller's quiesce.
+            unsafe {
+                let _ = self.shared.device.reset_fences(&[self.fence]);
+            }
+            self.fence_pending = false;
         }
     }
 
@@ -660,6 +718,7 @@ impl WindowTarget {
             extent: chosen,
             views: Vec::new(),
             images: Vec::new(),
+            image_available: vk::Semaphore::null(),
             render_finished: Vec::new(),
         };
         let built = self.populate_chain(&mut chain);
@@ -672,9 +731,18 @@ impl WindowTarget {
         Ok(())
     }
 
-    /// Fill in per-image views and semaphores for a fresh swapchain.
+    /// Fill in the acquire semaphore and per-image views and semaphores
+    /// for a fresh swapchain.
     fn populate_chain(&self, chain: &mut Chain) -> Result<(), TargetError> {
         let shared = &self.shared;
+        // SAFETY: category 2: device live; default info local.
+        chain.image_available = unsafe {
+            shared.device.create_semaphore(
+                &vk::SemaphoreCreateInfo::default(),
+                Some(&shared.alloc_cbs()),
+            )
+        }
+        .map_err(|code| creation("vkCreateSemaphore", code))?;
         // SAFETY: category 2: swapchain live.
         chain.images = unsafe { self.swapchain_loader.get_swapchain_images(chain.swapchain) }
             .map_err(|code| creation("vkGetSwapchainImagesKHR", code))?;
@@ -705,14 +773,17 @@ impl WindowTarget {
         Ok(())
     }
 
-    /// Destroy the chain's per-image resources and the swapchain. The
-    /// caller quiesces the GPU first (resize and Drop both wait-idle).
+    /// Destroy the chain's semaphores, views, and swapchain. The caller
+    /// quiesces the GPU first (resize, `abort_frame`, and Drop all
+    /// wait-idle).
     fn destroy_chain(&mut self) {
         let Some(chain) = self.chain.take() else {
             return;
         };
         // SAFETY: category 2: every handle live and created with these
-        // callbacks; the GPU is idle per the caller contract.
+        // callbacks; the GPU is idle per the caller contract; a null
+        // acquire semaphore (populate failed before creating it) is a
+        // legal no-op destroy.
         unsafe {
             for view in chain.views {
                 self.shared
@@ -724,6 +795,9 @@ impl WindowTarget {
                     .device
                     .destroy_semaphore(semaphore, Some(&self.shared.alloc_cbs()));
             }
+            self.shared
+                .device
+                .destroy_semaphore(chain.image_available, Some(&self.shared.alloc_cbs()));
             self.swapchain_loader
                 .destroy_swapchain(chain.swapchain, Some(&self.shared.alloc_cbs()));
         }
@@ -749,12 +823,10 @@ impl Drop for WindowTarget {
         unsafe {
             let _ = self.shared.device.device_wait_idle();
         }
+        self.retire_fence_after_idle();
         self.destroy_chain();
         // SAFETY: as above.
         unsafe {
-            self.shared
-                .device
-                .destroy_semaphore(self.image_available, Some(&self.shared.alloc_cbs()));
             self.shared
                 .device
                 .destroy_fence(self.fence, Some(&self.shared.alloc_cbs()));

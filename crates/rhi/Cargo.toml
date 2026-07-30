@@ -37,7 +37,6 @@ raw-window-handle = { version = "=0.6.2", optional = true }
 renew-diag = { path = "../core/diag" }
 
 [dev-dependencies]
-renew-memory = { path = "../core/memory" }
 renew-platform = { path = "../core/platform" }
 proptest = "1.11"
 

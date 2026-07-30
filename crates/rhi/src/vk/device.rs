@@ -42,6 +42,30 @@ pub struct ValidationReport {
     pub first_messages: Vec<String>,
 }
 
+/// The device-lost poison: once set, it never clears, and every later
+/// operation on the device fails fast. Extracted as its own type so the
+/// poison protocol has direct unit coverage — a real device loss is not
+/// reliably inducible on any test adapter.
+#[derive(Debug, Default)]
+pub(crate) struct PoisonFlag(Cell<bool>);
+
+impl PoisonFlag {
+    pub(crate) fn poisoned(&self) -> bool {
+        self.0.get()
+    }
+
+    /// Record a raw result; poisons on device loss and reports whether
+    /// this result was one.
+    pub(crate) fn note(&self, result: vk::Result) -> bool {
+        if result == vk::Result::ERROR_DEVICE_LOST {
+            self.0.set(true);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Everything the GPU context owns, destroyed in reverse creation
 /// order. Fields ordered so anything still alive at field-drop time is
 /// safe to drop in declaration order (the handles are destroyed
@@ -53,9 +77,13 @@ pub(crate) struct DeviceShared {
     pub(crate) physical: vk::PhysicalDevice,
     debug: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     pub(crate) instance: ash::Instance,
+    /// Owns the loaded Vulkan library: must outlive every dispatch,
+    /// including `vkDestroyInstance` in Drop. Only the presentation
+    /// path reads it after bring-up, hence the headless allow.
+    #[cfg_attr(not(feature = "present"), allow(dead_code))]
     pub(crate) entry: ash::Entry,
     pub(crate) adapter: AdapterInfo,
-    pub(crate) lost: Cell<bool>,
+    pub(crate) lost: PoisonFlag,
     /// Boxed for address stability: the driver holds this pointer for
     /// the instance's whole life.
     validation: Box<ValidationCounters>,
@@ -71,7 +99,7 @@ impl DeviceShared {
 
     /// Fail fast once the device is lost.
     pub(crate) fn check_lost(&self) -> Result<(), DeviceError> {
-        if self.lost.get() {
+        if self.lost.poisoned() {
             Err(DeviceError::DeviceLost)
         } else {
             Ok(())
@@ -80,9 +108,7 @@ impl DeviceShared {
 
     /// Record a raw result, poisoning the device on loss.
     pub(crate) fn note_result(&self, result: vk::Result) {
-        if result == vk::Result::ERROR_DEVICE_LOST {
-            self.lost.set(true);
-        }
+        self.lost.note(result);
     }
 }
 
@@ -105,6 +131,21 @@ impl Drop for DeviceShared {
                 utils.destroy_debug_utils_messenger(messenger, Some(&self.alloc_cbs()));
             }
             self.instance.destroy_instance(Some(&self.alloc_cbs()));
+        }
+        // Destruction-time validation messages (the layer's leak check
+        // at vkDestroyInstance) arrive through the create-info-chained
+        // callback and land in these counters, which are still alive
+        // here. No caller exists any more, so the finding is surfaced
+        // the only way left: the diag error channel.
+        let errors = self
+            .validation
+            .errors
+            .load(core::sync::atomic::Ordering::Relaxed);
+        if errors > 0 {
+            renew_diag::error!(
+                target: "renew-rhi",
+                "validation reported {errors} error(s) by instance destruction"
+            );
         }
     }
 }
@@ -205,7 +246,9 @@ impl Device {
             }
         }
 
-        let app_name = std::ffi::CString::new(desc.app_name).unwrap_or_default();
+        // Interior NULs cannot cross the C boundary; strip them rather
+        // than silently reporting an empty name.
+        let app_name = std::ffi::CString::new(desc.app_name.replace('\0', "")).unwrap_or_default();
         let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .api_version(vk::API_VERSION_1_3);
@@ -223,10 +266,12 @@ impl Device {
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions)
             .flags(flags);
-        if validation_on && desc.validation == Validation::Required {
-            create_info = create_info.push_next(&mut validation_features);
-        }
         if validation_on {
+            // Synchronization validation rides along whenever the layer
+            // is active at all: hazard coverage must not depend on
+            // which policy found the layer, or the presentation path
+            // only ever sees it on machines that demanded it.
+            create_info = create_info.push_next(&mut validation_features);
             // Chaining the messenger info covers create/destroy-time
             // messages too.
             create_info = create_info.push_next(&mut messenger_info);
@@ -349,7 +394,7 @@ impl Device {
                 instance,
                 entry,
                 adapter,
-                lost: Cell::new(false),
+                lost: PoisonFlag::default(),
                 validation: validation_counters,
                 ledger,
             }),
@@ -360,6 +405,14 @@ impl Device {
     #[must_use]
     pub fn adapter(&self) -> &AdapterInfo {
         &self.shared.adapter
+    }
+
+    /// Whether the validation layer is actually active on this device
+    /// — the strict test lanes assert this so their validation oracle
+    /// can never go silently vacuous.
+    #[must_use]
+    pub fn validation_active(&self) -> bool {
+        self.shared.debug.is_some()
     }
 
     /// Validation-layer activity so far.
@@ -453,6 +506,7 @@ fn select_adapter(instance: &ash::Instance) -> Result<Selected, DeviceError> {
     for physical in physical_devices {
         // SAFETY: category 2: instance and each enumerated device live.
         let properties = unsafe { instance.get_physical_device_properties(physical) };
+        // SAFETY: category 2: instance and enumerated device live.
         let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
         let Some(queue_family) = families
             .iter()
@@ -514,4 +568,25 @@ fn select_adapter(instance: &ash::Instance) -> Result<Selected, DeviceError> {
         .ok_or(DeviceError::NoSuitableAdapter {
             requirement: "a graphics queue plus dynamic rendering and synchronization2",
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The poison protocol, unit-covered: real device loss is not
+    // reliably inducible on any test adapter, so the flag's laws are
+    // proven here and the call sites route through it exclusively.
+    #[test]
+    fn poison_sets_only_on_device_loss_and_sticks() {
+        let flag = PoisonFlag::default();
+        assert!(!flag.poisoned(), "fresh flag is clean");
+        assert!(!flag.note(vk::Result::ERROR_OUT_OF_HOST_MEMORY));
+        assert!(!flag.poisoned(), "non-loss errors never poison");
+        assert!(!flag.note(vk::Result::SUCCESS));
+        assert!(flag.note(vk::Result::ERROR_DEVICE_LOST));
+        assert!(flag.poisoned(), "device loss poisons");
+        assert!(!flag.note(vk::Result::SUCCESS));
+        assert!(flag.poisoned(), "poison is sticky");
+    }
 }

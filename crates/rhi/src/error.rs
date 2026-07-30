@@ -22,10 +22,6 @@ pub enum DeviceError {
     NoSuitableAdapter {
         requirement: &'static str,
     },
-    /// The selected adapter lacks a feature the RHI requires.
-    MissingDeviceFeature {
-        feature: &'static str,
-    },
     /// A creation call failed; `call` names it, `code` is the raw
     /// driver result for diagnostics.
     Creation {
@@ -52,9 +48,6 @@ impl fmt::Display for DeviceError {
             Self::NoSuitableAdapter { requirement } => {
                 write!(f, "no adapter satisfies: {requirement}")
             }
-            Self::MissingDeviceFeature { feature } => {
-                write!(f, "adapter lacks required feature: {feature}")
-            }
             Self::Creation { call, code } => write!(f, "{call} failed (code {code})"),
             Self::OutOfHostMemory { call } => write!(f, "{call}: out of host memory"),
             Self::DeviceLost => write!(f, "device lost"),
@@ -79,10 +72,6 @@ pub enum TargetError {
         call: &'static str,
         code: i32,
     },
-    Readback {
-        call: &'static str,
-        code: i32,
-    },
     /// A fence wait exceeded the watchdog — a hang made diagnosable.
     Timeout {
         call: &'static str,
@@ -101,7 +90,6 @@ impl fmt::Display for TargetError {
                 write!(f, "the graphics queue cannot present to this surface")
             }
             Self::Creation { call, code } => write!(f, "{call} failed (code {code})"),
-            Self::Readback { call, code } => write!(f, "readback {call} failed (code {code})"),
             Self::Timeout { call } => write!(f, "{call} timed out"),
             Self::OutOfDeviceMemory { call } => write!(f, "{call}: out of device memory"),
             Self::DeviceLost => write!(f, "device lost"),
@@ -161,13 +149,6 @@ mod tests {
                 }
                 .to_string(),
                 "graphics queue",
-            ),
-            (
-                DeviceError::MissingDeviceFeature {
-                    feature: "dynamicRendering",
-                }
-                .to_string(),
-                "dynamicRendering",
             ),
             (
                 DeviceError::Creation {

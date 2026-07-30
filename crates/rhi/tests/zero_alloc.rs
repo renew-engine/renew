@@ -115,6 +115,10 @@ fn steady_state_frames_allocate_nothing() {
             break;
         }
     }
+    // The driver-side ledger is printed for the record, never gated:
+    // driver host-allocation behavior is the driver's, not ours.
+    let stats = device.host_allocation_stats();
+    eprintln!("driver host-allocation ledger after steady state: {stats:?}");
     assert!(
         observed_zero,
         "the render path heap-allocated in every window (last delta: {last_delta})"

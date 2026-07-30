@@ -28,10 +28,10 @@
 //!   window: the offscreen target exists precisely so correctness is
 //!   provable headless.
 //!
-//! `unsafe` is confined to the `vk` backend module tree — the only
-//! territory where it compiles (every safe module denies it) — under
-//! the six-category discipline recorded with the crate's exception
-//! grant.
+//! `unsafe` is confined to the `vk` backend module tree (every safe
+//! module denies it) under a six-category discipline: loader entry,
+//! dispatch calls, surface creation, the allocation callbacks, the
+//! debug-messenger callback, and the mapped-memory read.
 
 // Diagnostics go through sinks; the standard output macros are banned in
 // this crate by construction, not convention.

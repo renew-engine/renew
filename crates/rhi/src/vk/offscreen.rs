@@ -118,6 +118,12 @@ pub struct OffscreenTarget {
     pool: vk::CommandPool,
     cmd: vk::CommandBuffer,
     fence: vk::Fence,
+    /// Set when a submitted frame never provably completed (a fence
+    /// wait timed out or failed): GPU work may still be writing the
+    /// readback buffer, so reading it would be a data race, and the
+    /// command buffer and fence carry unknown pending state. A wedged
+    /// target refuses further work; drop it (Drop quiesces).
+    wedged: bool,
 }
 
 impl Device {
@@ -140,7 +146,7 @@ impl Device {
                 code: 0,
             });
         }
-        if self.shared.lost.get() {
+        if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
         let shared = &self.shared;
@@ -340,6 +346,7 @@ fn build(
         pool,
         cmd,
         fence,
+        wedged: false,
     })
 }
 
@@ -376,7 +383,9 @@ impl OffscreenTarget {
     ///
     /// # Errors
     ///
-    /// [`TargetError::Timeout`] when the GPU exceeds the watchdog;
+    /// [`TargetError::Timeout`] when the GPU exceeds the watchdog —
+    /// the target is then wedged (submitted work never provably
+    /// finished) and refuses further use; drop and recreate it.
     /// [`TargetError::DeviceLost`] on device loss (the device is then
     /// poisoned); command/submission failures otherwise.
     #[expect(
@@ -388,7 +397,12 @@ impl OffscreenTarget {
         clear: Color,
         pipeline: Option<&RenderPipeline>,
     ) -> Result<(), TargetError> {
-        if self.shared.lost.get() {
+        if self.wedged {
+            return Err(TargetError::Timeout {
+                call: "target wedged by an earlier incomplete frame",
+            });
+        }
+        if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
         if let Some(pipeline) = pipeline {
@@ -563,12 +577,18 @@ impl OffscreenTarget {
             match device.wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS) {
                 Ok(()) => {}
                 Err(vk::Result::TIMEOUT) => {
+                    // The submit is still in flight: the readback
+                    // buffer may yet be written and the fence/command
+                    // buffer carry pending state. Wedge the target so
+                    // no safe call can touch either.
+                    self.wedged = true;
                     return Err(TargetError::Timeout {
                         call: "vkWaitForFences",
                     });
                 }
                 Err(code) => {
                     self.shared.note_result(code);
+                    self.wedged = true;
                     return Err(if code == vk::Result::ERROR_DEVICE_LOST {
                         TargetError::DeviceLost
                     } else {
@@ -576,22 +596,31 @@ impl OffscreenTarget {
                     });
                 }
             }
-            device
-                .reset_fences(&[self.fence])
-                .map_err(|code| creation("vkResetFences", code))?;
+            if let Err(code) = device.reset_fences(&[self.fence]) {
+                // The frame completed but the fence state is now
+                // unknown; a next submit would be invalid usage.
+                self.wedged = true;
+                return Err(creation("vkResetFences", code));
+            }
         }
         Ok(())
     }
 
     /// Copy the last rendered pixels into `out`, whose length must be
-    /// exactly [`byte_len`](Self::byte_len). The length check is
-    /// retained in release builds — a mismatch here is a memory-safety
-    /// boundary, not merely a logic bug.
+    /// exactly [`byte_len`](Self::byte_len). Both checks below are
+    /// retained in release builds — each is a memory-safety boundary,
+    /// not merely a logic bug.
     ///
     /// # Panics
     ///
-    /// When `out.len() != self.byte_len()` — a contract violation.
+    /// When `out.len() != self.byte_len()`, or when the target is
+    /// wedged (an earlier frame never provably completed, so the GPU
+    /// may still be writing the readback buffer) — contract violations.
     pub fn read_back_into(&self, out: &mut [u8]) {
+        assert!(
+            !self.wedged,
+            "readback from a wedged target would race in-flight GPU work"
+        );
         assert_eq!(
             out.len(),
             self.byte_len(),
@@ -599,10 +628,12 @@ impl OffscreenTarget {
         );
         // SAFETY: category 6 (the one mapped-memory read site): the
         // mapping is live for the target's whole life (mapped at
-        // creation, unmapped in Drop); HOST_COHERENT plus the host
-        // barrier in `render` makes the bytes visible; the copy length
-        // equals the buffer's created size and `out`'s asserted length;
-        // the regions cannot overlap (device mapping vs caller slice).
+        // creation, unmapped in Drop); the wedge assert above proves the
+        // last submit's fence completed, so no GPU write is in flight;
+        // HOST_COHERENT plus the host barrier in `render` makes the
+        // bytes visible; the copy length equals the buffer's created
+        // size and `out`'s asserted length; the regions cannot overlap
+        // (device mapping vs caller slice).
         unsafe {
             core::ptr::copy_nonoverlapping(self.mapped, out.as_mut_ptr(), out.len());
         }

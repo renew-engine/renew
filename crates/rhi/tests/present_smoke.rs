@@ -153,11 +153,11 @@ fn main() {
         resizable: true,
     };
     let run = run_window_app(&config, &mut app);
-    // Tear down GPU objects before verdicts so validation teardown
-    // messages are counted.
-    let report = app.device.as_ref().map(Device::validation_report);
+    // Tear down GPU objects BEFORE reading the report so validation
+    // findings from destruction are counted in the verdict.
     drop(app.target.take());
     drop(app.pipeline.take());
+    let report = app.device.as_ref().map(Device::validation_report);
 
     match run {
         Ok(()) => {}
@@ -188,5 +188,16 @@ fn main() {
         std::process::exit(1);
     }
     assert!(app.frames >= FRAMES_WANTED);
-    println!("OK: presented {} frames", app.frames);
+    // State the oracle in the output: "validation on" means the frames
+    // above ran under the layer (with synchronization checking) and the
+    // zero-error verdict is meaningful, not vacuous.
+    let validation = app.device.as_ref().map(Device::validation_active);
+    println!(
+        "OK: presented {} frames (validation {})",
+        app.frames,
+        match validation {
+            Some(true) => "on",
+            _ => "OFF — zero-error verdict vacuous",
+        }
+    );
 }
