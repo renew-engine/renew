@@ -5,8 +5,11 @@
 //! main thread, which the default test harness cannot provide. Where no
 //! display server exists (headless CI), loop creation fails recoverably
 //! and this test SKIPS with a printed reason — honest about what a
-//! windowing layer can prove headless. Real windowed CI coverage
-//! arrives with the rendering test infrastructure.
+//! windowing layer can prove headless. Known bound: an INCOHERENT
+//! display stack (display present but X11 runtime libraries missing)
+//! panics below the windowing seam's error path instead — a virtual
+//! display needs its keyboard runtime installed too. Real windowed CI
+//! coverage arrives with the rendering test infrastructure.
 
 use std::process::ExitCode;
 

@@ -1,7 +1,8 @@
 # renew-platform
 
 The engine's only doorway to the operating system: a monotonic clock,
-whole-file I/O, and named threads — each a thin, explicit seam.
+whole-file I/O, named threads, and the window — each a thin, explicit
+seam.
 
 - `Clock` — a value the caller owns, anchored at `start()`, reporting
   integer nanoseconds (`elapsed_nanos`, saturating at ~584 years). No
@@ -15,7 +16,8 @@ whole-file I/O, and named threads — each a thin, explicit seam.
 - `window` (default-on feature) — one OS window, its event loop, and
   keyboard/mouse input behind an engine-only vocabulary: the OS owns
   the loop, a `WindowApp` receives translated events and drives exit
-  and redraws, and no windowing-library type crosses the boundary.
+  and redraws (`WindowApp` is the manifest's `window-app` extension
+  point), and no windowing-library type crosses the boundary.
   Headless builds disable default features and compile the entire
   windowing stack out; headless environments at runtime get a
   recoverable `LoopUnavailable`. The loop runs on the main thread only
