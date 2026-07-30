@@ -10,7 +10,7 @@ publish = false
 
 [package.metadata.renew]
 purpose = "Vector, matrix, quaternion, and bounding-box value types with documented memory layout."
-maturity = "bootstrap"
+maturity = "internal"
 core = true
 extension_points = []
 simulation = false

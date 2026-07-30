@@ -26,13 +26,40 @@ whole-file I/O, and named threads — each a thin, explicit seam.
 - **Nothing here is simulation state.** The clock serves frame pacing and
   diagnostics; simulation time is fixed-step by construction.
 
+## Thread safety and ownership
+
+`Clock` is `Copy + Send + Sync`; copies share the anchor, monotonicity
+holds per program-ordered call sequence, and no cross-thread ordering
+is claimed beyond the caller's own synchronization. `ThreadHandle<T>`
+is `Send` and structurally `Sync` — ownership of the join may move
+threads, and shared references are harmless because `&self` offers
+only the name while `join` consumes the handle, so exactly one owner
+observes the result. Dropping a handle detaches the
+thread: deliberate, documented at the type, and `#[must_use]` so it is
+always a visible choice; a detached thread's panic never reaches the
+engine's error model. The `fs` functions are stateless; concurrent
+callers get whatever ordering the operating system gives them.
+
+## Testing note
+
+This crate is a set of thin, safe OS wrappers — not a job system, so
+the stress-test regime for threaded systems belongs to the future jobs
+crate, not here; not a parser of external data, so fuzzing does not
+apply. Its obligations are the unit and integration suites (error
+classification injected per kind, real-filesystem round trips with
+drop-guarded scratch files, spawn/join/panic surfacing) plus the
+scheduled sanitizer workflow, all present.
+
 ## Status
 
-Early-stage: surfaces grow when a consumer needs them (streaming I/O
-arrives with the asset pipeline; dynamic-library loading is deliberately
-deferred until something loads one). The `[package.metadata.renew]` table
-in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
-metadata. This crate contains no `unsafe` code.
+Settled enough to depend on: these seams are what other crates in this
+workspace build against, and breaking them is avoided; surfaces still
+grow when a consumer needs them (streaming I/O arrives with the asset
+pipeline; dynamic-library loading stays deferred until something loads
+one) — examples and a performance narrative are still to come. The
+`[package.metadata.renew]` table in [Cargo.toml](Cargo.toml) is
+authoritative for maturity and manifest metadata. This crate contains
+no `unsafe` code.
 
 ## Key decisions
 

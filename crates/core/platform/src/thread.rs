@@ -46,8 +46,10 @@ impl std::error::Error for ThreadError {}
 /// the result. Detach-on-drop is the deliberate v0 contract; the job
 /// system owns richer thread lifecycles when it arrives.
 ///
-/// The handle may cross threads (`Send`) so ownership of the join can
-/// move; there is no shared-access story (`&self` offers only the name).
+/// The handle is `Send` and (structurally) `Sync`: ownership of the
+/// join can move across threads, and shared references are harmless
+/// because `&self` offers only the name — `join` consumes the handle,
+/// so only one owner can ever observe the result.
 #[must_use = "dropping a ThreadHandle detaches the thread; join it to observe its result"]
 pub struct ThreadHandle<T> {
     name: String,

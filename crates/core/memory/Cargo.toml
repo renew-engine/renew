@@ -10,7 +10,7 @@ publish = false
 
 [package.metadata.renew]
 purpose = "The engine's allocation seam: explicit arena and pool allocators plus an instrumented global allocator for counting."
-maturity = "bootstrap"
+maturity = "internal"
 core = true
 extension_points = []
 simulation = false

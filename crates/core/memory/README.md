@@ -24,13 +24,51 @@ an instrumented global allocator for counting.
 - **No clock, no filesystem** (rejected at lint time), and `LinearArena`
   is deliberately not `Sync`.
 
+## Ownership and lifetime
+
+The lease model, spelled out: `LinearArena::alloc` returns `&mut T`
+borrowing from the arena — a *lease*, alive until the arena is reset
+or dropped. `reset(&mut self)` demands exclusivity, so the borrow
+checker proves every lease has ended before memory is reused; there
+is no runtime tracking because none is needed. `Pool::insert` moves
+the value in and returns a generation-stamped `Handle` (plain data,
+freely copyable); `remove` moves the value back out. A stale handle —
+its slot since recycled — misses by generation instead of aliasing
+the new occupant. A full pool returns `Err(value)`: ownership always
+lands somewhere visible.
+
+## Thread safety
+
+`LinearArena` is deliberately `!Sync` (interior bump pointer; sharing
+an arena across threads is a design error here — give each thread its
+own), and `!Send` follows from its raw-pointer storage. `Pool<T>`
+follows `T` like any container. `CountingAllocator` and the counter
+snapshot are fully thread-safe: monotonic event counters on relaxed
+atomics, read independently — coherent enough for diagnostics,
+deliberately nothing more.
+
+## Testing note
+
+The allocator regime applies and is in place: property-based tests
+over alignment and exact-exhaustion axes, plus the installed-for-real
+counting test in its own process. Because this crate carries `unsafe`,
+the scheduled checks workflow runs its unit and property suites under
+Miri; the counting integration test stays outside the interpreter
+(global-allocator installation trips a known std/Miri interaction —
+the exclusion and its reason are recorded in that workflow); the
+workspace benchmark suite times the arena and pool round trips and
+asserts they never touch the heap after construction.
+
 ## Status
 
-Early-stage: surfaces grow when a consumer needs them. The
-`[package.metadata.renew]` table in [Cargo.toml](Cargo.toml) is
-authoritative for maturity and manifest metadata. `unsafe` is confined to
-the allocator internals with the invariant stated at every block; the
-arena is `Copy`-only until a consumer needs drop-aware allocation.
+Settled enough to depend on: these surfaces are what other crates in
+this workspace build against, and breaking them is avoided; they still
+grow when a consumer needs them — examples and a performance narrative
+are still to come. The `[package.metadata.renew]` table in
+[Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
+metadata. `unsafe` is confined to the allocator internals with the
+invariant stated at every block; the arena is `Copy`-only until a
+consumer needs drop-aware allocation.
 
 ## Key decisions
 

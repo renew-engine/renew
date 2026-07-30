@@ -10,7 +10,7 @@ publish = false
 
 [package.metadata.renew]
 purpose = "Log records, severity levels, and the sink interface the rest of the engine reports through."
-maturity = "bootstrap"
+maturity = "internal"
 core = true
 extension_points = ["sink"]
 simulation = false

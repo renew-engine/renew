@@ -13,6 +13,7 @@
 //! in the crate, not by these laws.
 
 use proptest::prelude::*;
+use proptest::test_runner::RngSeed;
 use renew_math::{Aabb3, Mat4, Quat, Vec3};
 
 /// Finite, moderately sized components: large enough to explore, small
@@ -35,6 +36,15 @@ fn bits(v: Vec3) -> [u32; 3] {
 }
 
 proptest! {
+    // Fixed RNG seed: the suite explores the same inputs on every run
+    // and every machine, so a property failure anywhere reproduces
+    // everywhere. Fresh exploration is a deliberate act (change the
+    // seed), never an ambient one.
+    #![proptest_config(ProptestConfig {
+        rng_seed: RngSeed::Fixed(0x00D1_A600),
+        ..ProptestConfig::default()
+    })]
+
     // ---- bit-exact tier ----------------------------------------------
 
     #[test]
