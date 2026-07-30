@@ -164,9 +164,16 @@ pub fn relative_to(root: &str, path: &str) -> String {
     // absolute one no manifest entry could ever name. A path from
     // somewhere else entirely contains no such component and comes back
     // whole, which is what the caller reports.
-    let Some(root_tail) = prefix.trim_end_matches('/').rsplit('/').next() else {
-        return path;
-    };
+    // `rsplit` always yields at least one piece, so the component is
+    // read directly rather than through a branch no input can take. It
+    // is empty only for a root that is nothing but separators, and a
+    // root like that names every path — so such a path is returned
+    // whole instead.
+    let root_tail = prefix
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
     if root_tail.is_empty() {
         return path;
     }
@@ -799,6 +806,12 @@ mod tests {
             relative_to("/var/folders/T/scratch-1", "/elsewhere/crates/a.rs"),
             "/elsewhere/crates/a.rs"
         );
+        // A root that is nothing but separators has no final component
+        // to search for. A path under it is still made relative by the
+        // prefix itself; one that is not stays whole, rather than being
+        // cut at an arbitrary point by a fallback with nothing to match.
+        assert_eq!(relative_to("/", "/crates/a.rs"), "crates/a.rs");
+        assert_eq!(relative_to("/", "crates/a.rs"), "crates/a.rs");
     }
 
     /// An export of one file whose regions are given as

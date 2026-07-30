@@ -210,10 +210,17 @@ const QUIRK_SURFACE_FORMATS_RGBA_ONLY: u32 = 1 << 9;
 /// extent: a minimized window, whose surface can back no swapchain at
 /// all until it is restored.
 const QUIRK_ZERO_SURFACE_EXTENT: u32 = 1 << 10;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` caps the swapchain at the
+/// surface's own minimum, so the engine's min-plus-one choice has to
+/// clamp — unlike capping it at one, which asks for fewer images than
+/// the surface allows and builds an invalid swapchain. A surface whose
+/// maximum equals its minimum is ordinary; a surface that permits fewer
+/// than its own minimum is not.
+const QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM: u32 = 1 << 11;
 
 /// Every `RENEW_QUIRK` name paired with its bit. The only place a quirk
 /// name is spelled, so parsing and documentation cannot drift.
-const QUIRK_NAMES: [(&str, u32); 11] = [
+const QUIRK_NAMES: [(&str, u32); 12] = [
     ("no-adapters", QUIRK_NO_ADAPTERS),
     ("no-swapchain-extension", QUIRK_NO_SWAPCHAIN_EXTENSION),
     ("no-surface-formats", QUIRK_NO_SURFACE_FORMATS),
@@ -231,6 +238,10 @@ const QUIRK_NAMES: [(&str, u32); 11] = [
     ("present-unsupported", QUIRK_PRESENT_UNSUPPORTED),
     ("surface-formats-rgba-only", QUIRK_SURFACE_FORMATS_RGBA_ONLY),
     ("zero-surface-extent", QUIRK_ZERO_SURFACE_EXTENT),
+    (
+        "max-image-count-at-minimum",
+        QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM,
+    ),
 ];
 
 /// The armed response mutations: a set, because quirks compose and each
@@ -1444,6 +1455,7 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     let rewrites_caps = quirks.has(QUIRK_UNDEFINED_SURFACE_EXTENT)
         || quirks.has(QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY)
         || quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE)
+        || quirks.has(QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM)
         || quirks.has(QUIRK_ZERO_SURFACE_EXTENT);
     if !rewrites_caps || result != vk::Result::SUCCESS || p_surface_capabilities.is_null() {
         return result;
@@ -1474,6 +1486,9 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     }
     if quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE) {
         caps.max_image_count = 1;
+    }
+    if quirks.has(QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM) {
+        caps.max_image_count = caps.min_image_count;
     }
     if quirks.has(QUIRK_ZERO_SURFACE_EXTENT) {
         // A minimized window: the surface dictates an extent, and the

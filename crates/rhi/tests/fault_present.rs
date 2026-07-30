@@ -378,13 +378,15 @@ enum QuirkShape {
     /// size the caller asked for is the size it gets — across a
     /// rebuild too — and frames present at it.
     ApplicationChoosesExtent,
-    /// The surface offers exactly one format the engine can use, and it
-    /// is the second of its two preferences: the target must come up on
-    /// that format and present at it, across a rebuild too.
     /// The surface has no drawable area at all — a minimized window —
     /// so the target is born dormant and a resize leaves it dormant
     /// rather than failing.
     AlwaysDormant,
+    /// The surface allows no more images than its own minimum, so the
+    /// engine's min-plus-one choice has to clamp. Nothing about that is
+    /// exceptional to a caller: the target must build and present
+    /// exactly as it always does, which is the whole assertion.
+    ClampsImageCount,
 }
 
 /// Every quirk scenario: the name printed, the `RENEW_QUIRK` list
@@ -435,6 +437,11 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
         "D8 zero-surface-extent",
         "zero-surface-extent",
         QuirkShape::AlwaysDormant,
+    ),
+    (
+        "D9 max-image-count-at-minimum",
+        "max-image-count-at-minimum",
+        QuirkShape::ClampsImageCount,
     ),
 ];
 
@@ -586,6 +593,7 @@ fn walk_quirk(
         QuirkShape::EveryFrameAborts(expect) => every_frame_aborts(expect, target, size),
         QuirkShape::ApplicationChoosesExtent => application_chooses_extent(target, size),
         QuirkShape::AlwaysDormant => always_dormant(target, size),
+        QuirkShape::ClampsImageCount => clamps_image_count(target, size),
     }
 }
 
@@ -652,6 +660,21 @@ fn every_frame_aborts(
 }
 
 /// The target must be sized exactly `size` and present a frame at it.
+/// A surface that allows exactly its own minimum number of images. The
+/// engine asks for one more than the minimum and must clamp to what the
+/// surface permits; a swapchain built from an unclamped count would be
+/// rejected outright, so a target that builds and presents is the proof
+/// that the clamp ran. The rebuild repeats it, because the count is
+/// chosen afresh every time a chain is built.
+fn clamps_image_count(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
+    let mut target = built(target)?;
+    presents_at(&mut target, size, "on the first build")?;
+    target
+        .resize(size)
+        .map_err(|error| format!("resize failed: {error}"))?;
+    presents_at(&mut target, size, "after a rebuild")
+}
+
 fn presents_at(target: &mut WindowTarget, size: Extent, stage: &str) -> Verdict {
     let extent = target.extent();
     if extent != size {
