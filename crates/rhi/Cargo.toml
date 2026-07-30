@@ -49,3 +49,8 @@ workspace = true
 name = "present_smoke"
 harness = false
 required-features = ["present"]
+
+[[test]]
+name = "fault_present"
+harness = false
+required-features = ["present"]

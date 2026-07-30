@@ -133,6 +133,20 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-rhi --test golden --test device --test zero_alloc
+      # The fault-injection layer makes driver-failure paths executable;
+      # RENEW_FAULT_STRICT turns its absence into a failure here.
+      - name: Build and stage the fault-injection layer
+        run: |
+          cargo build -p vk-fault-layer
+          mkdir -p target/fault-layer
+          printf '{\n  "file_format_version": "1.2.0",\n  "layer": {\n    "name": "VK_LAYER_RENEW_fault",\n    "type": "GLOBAL",\n    "library_path": "%s/target/debug/libvk_fault_layer.so",\n    "api_version": "1.3.281",\n    "implementation_version": "1",\n    "description": "renew fault-injection layer",\n    "functions": {\n      "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"\n    }\n  }\n}\n' "$PWD" > target/fault-layer/VK_LAYER_RENEW_fault.json
+      - name: Fault-injection scenarios on the pinned software rasterizer
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
+        run: |
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
+          cargo test --package renew-rhi --test fault
       # The golden bootstrap/refresh ritual writes its candidate and
       # fails; surface the candidate for human inspection.
       - name: Upload golden candidates
@@ -151,7 +165,10 @@ jobs:
       # above kept the pinned driver. The manifest is copied with its
       # library path pinned absolute so the loader can never resolve the
       # driver library out of another stack on LD_LIBRARY_PATH.
-      - name: Present smoke under the virtual display
+      - name: Present smoke and presentation fault scenarios under the virtual display
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
         run: |
           icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
           test -n "$icd"
@@ -162,7 +179,9 @@ jobs:
             "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
           xvfb-run -a cargo test --package renew-rhi --test present_smoke
+          xvfb-run -a cargo test --package renew-rhi --test fault_present
 
   deny:
     name: Licenses and advisories
@@ -209,7 +228,18 @@ jobs:
       # are not the golden's provenance, so exact comparison correctly
       # stays off.
       - uses: ./.github/actions/software-vulkan
+      # The fault layer runs under the whole collection so the
+      # driver-failure ladders execute and count. Built with plain
+      # cargo: the tool itself is not a coverage subject.
+      - name: Build and stage the fault-injection layer
+        run: |
+          cargo build -p vk-fault-layer
+          mkdir -p target/fault-layer
+          printf '{\n  "file_format_version": "1.2.0",\n  "layer": {\n    "name": "VK_LAYER_RENEW_fault",\n    "type": "GLOBAL",\n    "library_path": "%s/target/debug/libvk_fault_layer.so",\n    "api_version": "1.3.281",\n    "implementation_version": "1",\n    "description": "renew fault-injection layer",\n    "functions": {\n      "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"\n    }\n  }\n}\n' "$PWD" > target/fault-layer/VK_LAYER_RENEW_fault.json
       - name: Collect coverage
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
         run: |
           icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
           test -n "$icd"
@@ -220,6 +250,7 @@ jobs:
             "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
           cargo llvm-cov report --fail-under-lines 95
