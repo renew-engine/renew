@@ -11,12 +11,13 @@
 //! A second family arms `RENEW_QUIRK` rather than `RENEW_FAULT`:
 //! *response mutations*, where the driver succeeds while reporting
 //! something this machine's hardware never reports — no swapchain
-//! extension, no usable surface format, no swapchain images, an
-//! "application chooses" extent, an acquired index past the end of the
-//! swapchain. They reach the driver-diversity branches that otherwise
-//! only run on other hardware. A quirk is a standing property of the
-//! mutated device rather than a one-shot, so those scenarios assert
-//! *repeatability* where the fault scenarios assert recovery.
+//! extension, a queue that cannot present, no usable surface format or
+//! only an RGBA one, no swapchain images, an "application chooses" or
+//! zero extent, an acquired index past the end of the swapchain. They
+//! reach the driver-diversity branches that otherwise only run on other
+//! hardware. A quirk is a standing property of the mutated device
+//! rather than a one-shot, so those scenarios assert *repeatability*
+//! where the fault scenarios assert recovery.
 //!
 //! Two scenarios arm nothing at all: their trigger is an argument (a
 //! zero extent, a window the WSI cannot make a surface from), not a
@@ -41,8 +42,8 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PresentOutcome, TargetError, Validation,
-    WindowTarget,
+    Color, Device, DeviceDesc, DeviceError, Extent, PresentOutcome, TargetError, TargetFormat,
+    Validation, WindowTarget,
 };
 
 const CLEAR: Color = Color::new(0.1, 0.2, 0.3, 1.0);
@@ -377,6 +378,14 @@ enum QuirkShape {
     /// size the caller asked for is the size it gets — across a
     /// rebuild too — and frames present at it.
     ApplicationChoosesExtent,
+    /// The surface offers exactly one format the engine can use, and it
+    /// is the second of its two preferences: the target must come up on
+    /// that format and present at it, across a rebuild too.
+    SurfaceFormat(TargetFormat),
+    /// The surface has no drawable area at all — a minimized window —
+    /// so the target is born dormant and a resize leaves it dormant
+    /// rather than failing.
+    AlwaysDormant,
 }
 
 /// Every quirk scenario: the name printed, the `RENEW_QUIRK` list
@@ -408,6 +417,21 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
         "D5 undefined-surface-extent",
         "undefined-surface-extent",
         QuirkShape::ApplicationChoosesExtent,
+    ),
+    (
+        "D6 present-unsupported",
+        "present-unsupported",
+        QuirkShape::NeverPresentable("the graphics queue cannot present to this surface"),
+    ),
+    (
+        "D7 surface-formats-rgba-only",
+        "surface-formats-rgba-only",
+        QuirkShape::SurfaceFormat(TargetFormat::Rgba8Unorm),
+    ),
+    (
+        "D8 zero-surface-extent",
+        "zero-surface-extent",
+        QuirkShape::AlwaysDormant,
     ),
 ];
 
@@ -558,6 +582,8 @@ fn walk_quirk(
         }
         QuirkShape::EveryFrameAborts(expect) => every_frame_aborts(expect, target, size),
         QuirkShape::ApplicationChoosesExtent => application_chooses_extent(target, size),
+        QuirkShape::SurfaceFormat(format) => surface_format(format, target, size),
+        QuirkShape::AlwaysDormant => always_dormant(target, size),
     }
 }
 
@@ -648,6 +674,51 @@ fn application_chooses_extent(target: Result<WindowTarget, TargetError>, size: E
         .resize(size)
         .map_err(|error| format!("resize failed: {error}"))?;
     presents_at(&mut target, size, "after a resize")
+}
+
+/// The target must report exactly `want` as its color format.
+fn formatted(target: &WindowTarget, want: TargetFormat, stage: &str) -> Verdict {
+    let got = target.format();
+    if got == want {
+        Ok(())
+    } else {
+        Err(wrong(&format!("{want:?} {stage}"), &got))
+    }
+}
+
+/// A surface offering only the engine's *second* choice of format: the
+/// preference list is a preference, not a requirement, so the target
+/// must come up on that format — and draw and present at it, because a
+/// format the swapchain merely records is a format nothing proves. The
+/// rebuild repeats it: the format is chosen once, at bring-up, and must
+/// survive a chain that is torn down and built again under it.
+fn surface_format(
+    want: TargetFormat,
+    target: Result<WindowTarget, TargetError>,
+    size: Extent,
+) -> Verdict {
+    let mut target = built(target)?;
+    formatted(&target, want, "on the first build")?;
+    presents_at(&mut target, size, "on the first build")?;
+    target
+        .resize(size)
+        .map_err(|error| format!("resize failed: {error}"))?;
+    formatted(&target, want, "after a resize")?;
+    presents_at(&mut target, size, "after a resize")
+}
+
+/// A surface with no drawable area at all — a minimized window. Nothing
+/// here is an error: the target must be *born* dormant instead of
+/// failing to build, and because the quirk is still armed the resize
+/// that would normally wake it finds the same zero extent and must
+/// leave it dormant, again without failing.
+fn always_dormant(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
+    let mut target = built(target)?;
+    assert_dormant(&mut target)?;
+    target
+        .resize(size)
+        .map_err(|error| format!("resize of a zero-extent surface failed: {error}"))?;
+    assert_dormant(&mut target)
 }
 
 fn build_fails(

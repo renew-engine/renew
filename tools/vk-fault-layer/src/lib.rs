@@ -25,8 +25,9 @@
 //! success out of an error. Its purpose is the mirror image of a
 //! fault's: a driver that *succeeds* while reporting something this
 //! machine's driver never reports (no adapters, no swapchain
-//! extension, an "application chooses" surface extent, an image index
-//! past the end of its own swapchain) exercises engine paths that
+//! extension, a queue that cannot present, an RGBA-only surface, an
+//! "application chooses" or zero surface extent, an image index past
+//! the end of its own swapchain) exercises engine paths that
 //! otherwise only run on other hardware. The names are listed in
 //! [`QUIRK_NAMES`]; unknown ones are ignored silently, and the variable
 //! is re-read at `vkCreateInstance` exactly like `RENEW_FAULT`.
@@ -196,10 +197,23 @@ const QUIRK_ACQUIRE_OUT_OF_RANGE_INDEX: u32 = 1 << 6;
 /// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` caps the swapchain at one
 /// image, so the engine's min-plus-one image count must clamp.
 const QUIRK_MAX_IMAGE_COUNT_ONE: u32 = 1 << 7;
+/// `vkGetPhysicalDeviceSurfaceSupportKHR` answers no: the query
+/// succeeds, and its answer is that this queue family cannot present to
+/// this surface.
+const QUIRK_PRESENT_UNSUPPORTED: u32 = 1 << 8;
+/// `vkGetPhysicalDeviceSurfaceFormatsKHR` reports only the surface's own
+/// `R8G8B8A8_UNORM` / `SRGB_NONLINEAR` entry — the second of the
+/// engine's two preferences, and the one a BGRA-first desktop surface
+/// never lets it reach.
+const QUIRK_SURFACE_FORMATS_RGBA_ONLY: u32 = 1 << 9;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` reports a zero current
+/// extent: a minimized window, whose surface can back no swapchain at
+/// all until it is restored.
+const QUIRK_ZERO_SURFACE_EXTENT: u32 = 1 << 10;
 
 /// Every `RENEW_QUIRK` name paired with its bit. The only place a quirk
 /// name is spelled, so parsing and documentation cannot drift.
-const QUIRK_NAMES: [(&str, u32); 8] = [
+const QUIRK_NAMES: [(&str, u32); 11] = [
     ("no-adapters", QUIRK_NO_ADAPTERS),
     ("no-swapchain-extension", QUIRK_NO_SWAPCHAIN_EXTENSION),
     ("no-surface-formats", QUIRK_NO_SURFACE_FORMATS),
@@ -214,6 +228,9 @@ const QUIRK_NAMES: [(&str, u32); 8] = [
         QUIRK_ACQUIRE_OUT_OF_RANGE_INDEX,
     ),
     ("max-image-count-one", QUIRK_MAX_IMAGE_COUNT_ONE),
+    ("present-unsupported", QUIRK_PRESENT_UNSUPPORTED),
+    ("surface-formats-rgba-only", QUIRK_SURFACE_FORMATS_RGBA_ONLY),
+    ("zero-surface-extent", QUIRK_ZERO_SURFACE_EXTENT),
 ];
 
 /// The armed response mutations: a set, because quirks compose and each
@@ -289,6 +306,65 @@ unsafe fn zero_count(result: vk::Result, p_count: *mut u32) -> vk::Result {
         // SAFETY: per this function's contract `p_count` is writable.
         unsafe { *p_count = 0 };
     }
+    vk::Result::SUCCESS
+}
+
+/// Reduce a surface-format list to the one `R8G8B8A8_UNORM` /
+/// `SRGB_NONLINEAR` entry the driver itself reported.
+///
+/// Both halves of the two-call idiom pass through here, and they are
+/// handled differently: the count query (null data pointer) is left
+/// alone, so the caller still sizes its buffer for the *whole* list and
+/// the data call has every entry to choose from; the data call then
+/// moves the wanted entry to the front and reports a count of one.
+/// `INCOMPLETE` folds into `SUCCESS` for the same reason it does in
+/// [`zero_count`] — the count this mutation reports is final, and a
+/// caller that loops on `INCOMPLETE` (ash among them) would otherwise
+/// never stop.
+///
+/// A surface that does not offer the entry is left untouched, because
+/// the mutation's whole point is to hand back something the surface
+/// really supports: the swapchain built from the survivor is valid, so
+/// only the *choice* is diverted, never the driver's own truth.
+///
+/// # Safety
+///
+/// `p_count` must be null or point to a writable `u32`; when
+/// `p_formats` is non-null it must address at least `*p_count`
+/// initialized, writable, aligned entries.
+unsafe fn rgba_only(
+    result: vk::Result,
+    p_count: *mut u32,
+    p_formats: *mut vk::SurfaceFormatKHR,
+) -> vk::Result {
+    if (result != vk::Result::SUCCESS && result != vk::Result::INCOMPLETE)
+        || p_count.is_null()
+        || p_formats.is_null()
+    {
+        return result;
+    }
+    // SAFETY: per this function's contract `p_count` is readable.
+    let written = unsafe { *p_count } as usize;
+    let wanted = {
+        // SAFETY: per the contract the data pointer addresses `written`
+        // initialized, aligned entries, which the driver has just
+        // written; the borrow ends with this block, before anything
+        // writes through `p_formats` again.
+        let entries = unsafe { std::slice::from_raw_parts(p_formats, written) };
+        entries.iter().copied().find(|entry| {
+            entry.format == vk::Format::R8G8B8A8_UNORM
+                && entry.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        })
+    };
+    let Some(wanted) = wanted else {
+        return result;
+    };
+    // SAFETY: the entry was found among `written` entries, so there is
+    // at least one, and per the contract they are writable.
+    unsafe { *p_formats = wanted };
+    // SAFETY: per the contract `p_count` is writable; one entry is
+    // exactly what was just written.
+    unsafe { *p_count = 1 };
     vk::Result::SUCCESS
 }
 
@@ -1274,7 +1350,20 @@ unsafe extern "system" fn fault_get_physical_device_surface_support_khr(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe { next(physical_device, queue_family_index, surface, p_supported) }
+    let result = unsafe { next(physical_device, queue_family_index, surface, p_supported) };
+    // The query succeeded and its answer is no: a queue family that
+    // cannot present to this surface, which on a desktop with one
+    // graphics-and-present family never happens. Only a successful
+    // query is rewritten; an error stays an error.
+    if quirks().has(QUIRK_PRESENT_UNSUPPORTED)
+        && result == vk::Result::SUCCESS
+        && !p_supported.is_null()
+    {
+        // SAFETY: on SUCCESS the driver has just written the answer
+        // through this pointer, so it is live and writable.
+        unsafe { *p_supported = vk::FALSE };
+    }
+    result
 }
 
 /// # Safety
@@ -1317,6 +1406,12 @@ unsafe extern "system" fn fault_get_physical_device_surface_formats_khr(
         // writable for this call.
         return unsafe { zero_count(result, p_surface_format_count) };
     }
+    if quirks().has(QUIRK_SURFACE_FORMATS_RGBA_ONLY) {
+        // SAFETY: the Vulkan contract makes the caller's count pointer
+        // writable, and on the data call the caller's array holds at
+        // least the number of entries that count named.
+        return unsafe { rgba_only(result, p_surface_format_count, p_surface_formats) };
+    }
     result
 }
 
@@ -1348,7 +1443,8 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     let quirks = quirks();
     let rewrites_caps = quirks.has(QUIRK_UNDEFINED_SURFACE_EXTENT)
         || quirks.has(QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY)
-        || quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE);
+        || quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE)
+        || quirks.has(QUIRK_ZERO_SURFACE_EXTENT);
     if !rewrites_caps || result != vk::Result::SUCCESS || p_surface_capabilities.is_null() {
         return result;
     }
@@ -1378,6 +1474,20 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     }
     if quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE) {
         caps.max_image_count = 1;
+    }
+    if quirks.has(QUIRK_ZERO_SURFACE_EXTENT) {
+        // A minimized window: the surface dictates an extent, and the
+        // extent it dictates is nothing. Windows zeroes the whole
+        // triple in that state, so mirror it rather than leave bounds
+        // that contradict the current extent. Applied last, so it wins
+        // over the "application chooses" sentinel if both are armed.
+        let none = vk::Extent2D {
+            width: 0,
+            height: 0,
+        };
+        caps.current_extent = none;
+        caps.min_image_extent = none;
+        caps.max_image_extent = none;
     }
     result
 }

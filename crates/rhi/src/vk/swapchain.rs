@@ -244,19 +244,16 @@ impl Device {
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
         // SAFETY: category 2: pool live; info local.
-        let cmd = match unsafe { shared.device.allocate_command_buffers(&cmd_info) } {
-            Ok(buffers) => match buffers.into_iter().next() {
-                Some(cmd) => cmd,
-                None => {
-                    return Err(fail_pool(
-                        self,
-                        TargetError::Creation {
-                            call: "vkAllocateCommandBuffers",
-                            code: 0,
-                        },
-                    ));
-                }
-            },
+        // ash sizes the vector it returns from the create info's own
+        // `command_buffer_count`, so a success always carries exactly
+        // the one buffer asked for; an empty success would be a broken
+        // ash rather than a broken driver, and it reports through the
+        // same return as a driver failure rather than costing a branch
+        // of its own.
+        let allocated = unsafe { shared.device.allocate_command_buffers(&cmd_info) }
+            .and_then(|buffers| buffers.into_iter().next().ok_or(vk::Result::ERROR_UNKNOWN));
+        let cmd = match allocated {
+            Ok(cmd) => cmd,
             Err(code) => {
                 return Err(fail_pool(self, creation("vkAllocateCommandBuffers", code)));
             }
