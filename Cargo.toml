@@ -11,6 +11,10 @@ rust-version = "1.97"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+# The coverage cfg is set by the coverage tooling; declaring it here keeps
+# cfg_attr(coverage, ...) gates from tripping the unknown-cfg lint in
+# ordinary builds.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

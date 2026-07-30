@@ -15,6 +15,10 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
     feature = "sanitized",
     ignore = "allocation counting is invalid under instrumented allocators"
 )]
+#[cfg_attr(
+    coverage,
+    ignore = "allocation counting is invalid under coverage instrumentation"
+)]
 fn kernels_allocate_exactly_nothing() {
     // Everything that allocates happens before the windows open.
     let pairs = renew_bench::vec3_pairs(1024, 0x5EED_0001);
