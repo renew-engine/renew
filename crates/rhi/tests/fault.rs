@@ -19,6 +19,7 @@
 #![allow(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Mutex;
 
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, TargetError,
@@ -30,6 +31,58 @@ const SIZE: Extent = Extent {
     height: 64,
 };
 const CLEAR: Color = Color::new(0.0, 0.0, 0.0, 1.0);
+
+/// Bytes that pass this crate's structural SPIR-V gate — magic word,
+/// word-aligned, non-empty — and nothing beyond it: version word zero,
+/// no instructions. The validation layer rejects them itself, so
+/// nothing invalid ever reaches the driver.
+const IMPLAUSIBLE_SPIRV: [u8; 20] = {
+    let mut bytes = [0u8; 20];
+    let magic = 0x0723_0203u32.to_le_bytes();
+    bytes[0] = magic[0];
+    bytes[1] = magic[1];
+    bytes[2] = magic[2];
+    bytes[3] = magic[3];
+    bytes
+};
+
+/// Records the diag channel, because two failure paths report nowhere
+/// else: a teardown wait-idle that fails and validation findings at
+/// instance destruction both happen after the last caller is gone, so
+/// the diag record *is* the observable. Reading it here beats asserting
+/// that the branch "must have" run.
+struct Capture;
+
+static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static CAPTURE: Capture = Capture;
+
+impl renew_diag::Sink for Capture {
+    fn write(&self, record: &renew_diag::Record<'_>) {
+        if let Ok(mut captured) = CAPTURED.lock() {
+            captured.push(format!("{} {}", record.level(), record.message()));
+        }
+    }
+}
+
+/// Forget everything recorded so far, so the next scenario reads only
+/// what it caused.
+fn clear_records() {
+    if let Ok(mut captured) = CAPTURED.lock() {
+        captured.clear();
+    }
+}
+
+/// Assert some record since the last [`clear_records`] contains
+/// `needle`.
+fn recorded(needle: &str) -> Verdict {
+    match CAPTURED.lock() {
+        Ok(captured) if captured.iter().any(|line| line.contains(needle)) => Ok(()),
+        Ok(captured) => Err(format!(
+            "no diagnostic contains {needle:?}; the channel carried {captured:?}"
+        )),
+        Err(_) => Err("the capture sink is poisoned".to_string()),
+    }
+}
 
 /// The CI lane sets this: a skip becomes a failure.
 fn strict() -> bool {
@@ -56,6 +109,24 @@ fn with_fault<T>(spec: &str, run: impl FnOnce() -> T) -> T {
 fn silence_implicit_layers() {
     // SAFETY: single-threaded; see the module note.
     unsafe { std::env::set_var("VK_LOADER_LAYERS_DISABLE", "~implicit~") };
+}
+
+/// Run `body` with the validation layer struck from the loader's list,
+/// then restore the suite's baseline. The loader reads this when an
+/// instance is created, and drops a disabled layer from enumeration
+/// too — which is exactly the "layer is not installed" condition
+/// `Validation::Required` exists to report.
+fn without_the_validation_layer<T>(run: impl FnOnce() -> T) -> T {
+    // SAFETY: single-threaded by this suite's construction (one test).
+    unsafe {
+        std::env::set_var(
+            "VK_LOADER_LAYERS_DISABLE",
+            "~implicit~,VK_LAYER_KHRONOS_validation",
+        );
+    }
+    let outcome = run();
+    silence_implicit_layers();
+    outcome
 }
 
 fn new_device() -> Result<Device, DeviceError> {
@@ -135,6 +206,14 @@ fn device_case(name: &str, fault: &str, body: impl FnOnce(&Device) -> Verdict) -
     })
 }
 
+/// Teardown scenario: the body owns the device, because the path under
+/// test is the spine's own `Drop` — it runs only when the last handle
+/// goes, and validation cannot be consulted afterwards.
+fn teardown_case(name: &str, body: impl FnOnce(Device) -> Verdict) -> Verdict {
+    let device = new_device().map_err(|error| format!("{name}: device bring-up: {error}"))?;
+    body(device).map_err(|error| format!("{name}: {error}"))
+}
+
 /// The whole suite, serial by construction: arming a fault is process
 /// state, so exactly one test owns it.
 #[test]
@@ -144,6 +223,7 @@ fn device_case(name: &str, fault: &str, body: impl FnOnce(&Device) -> Verdict) -
 )]
 fn every_driver_failure_ladder_behaves() {
     silence_implicit_layers();
+    renew_diag::install(&CAPTURE);
 
     // ---- canary: is the layer actually in the chain? ---------------
     let armed = with_fault("vkCreateFence=ERROR_OUT_OF_HOST_MEMORY", || {
@@ -182,6 +262,21 @@ fn every_driver_failure_ladder_behaves() {
             eprintln!("SKIP: fault injection not active (canary: {other:?})");
             return;
         }
+    }
+
+    // Whether the validation layer is installed at all: the scenarios
+    // that walk the debug-messenger path or read validation's verdict
+    // have nothing to observe without it, and say so rather than
+    // passing vacuously.
+    let validation_available = match new_device() {
+        Ok(device) => device.validation_active(),
+        Err(error) => {
+            eprintln!("probe: device bring-up failed: {error}");
+            false
+        }
+    };
+    if !validation_available {
+        eprintln!("note: no validation layer; the E4/E7 scenarios are skipped");
     }
 
     let mut verdicts: Vec<Verdict> = Vec::with_capacity(32);
@@ -337,6 +432,13 @@ fn every_driver_failure_ladder_behaves() {
             let mut recovered = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("{name}: recovery build failed: {error}"))?;
+            if recovered.extent() != SIZE {
+                return Err(wrong(
+                    name,
+                    "a recovery target of the requested size",
+                    &recovered.extent(),
+                ));
+            }
             recovered
                 .render(CLEAR, None)
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
@@ -553,6 +655,183 @@ fn every_driver_failure_ladder_behaves() {
                 Err(TargetError::DeviceLost) => Ok(()),
                 Ok(_) => Err("D9: a poisoned device still built a target".to_string()),
                 Err(other) => Err(wrong("D9", "DeviceLost from create", &other)),
+            }
+        },
+    ));
+
+    // ---- E · the rest of the bring-up ladder ------------------------
+    // A1/A2 and A4 pin the two codes bring-up translates specially;
+    // E1/E2 pin the fall-through that carries every other code
+    // through with the call that produced it.
+    verdicts.push(bringup_case(
+        "E1 instance/initialization-failed",
+        "vkCreateInstance=ERROR_INITIALIZATION_FAILED",
+        |got| match got {
+            Err(DeviceError::Creation {
+                call: "vkCreateInstance",
+                ..
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "Creation(vkCreateInstance)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    verdicts.push(bringup_case(
+        "E2 create-device/initialization-failed",
+        "vkCreateDevice=ERROR_INITIALIZATION_FAILED",
+        |got| match got {
+            Err(DeviceError::Creation {
+                call: "vkCreateDevice",
+                ..
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "Creation(vkCreateDevice)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    // E3 fails between the instance and the device: the unwinder has an
+    // instance (and possibly a messenger) to take back down.
+    verdicts.push(bringup_case(
+        "E3 enumerate-device-extensions",
+        "vkEnumerateDeviceExtensionProperties=ERROR_OUT_OF_HOST_MEMORY",
+        |got| match got {
+            Err(DeviceError::Creation {
+                call: "vkEnumerateDeviceExtensionProperties",
+                ..
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "Creation(vkEnumerateDeviceExtensionProperties)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    if validation_available {
+        // E4: the instance is up but its messenger is not, so the
+        // instance must come back down before the error is returned.
+        verdicts.push(bringup_case(
+            "E4 debug-messenger",
+            "vkCreateDebugUtilsMessengerEXT=ERROR_OUT_OF_HOST_MEMORY",
+            |got| match got {
+                Err(DeviceError::Creation {
+                    call: "vkCreateDebugUtilsMessengerEXT",
+                    ..
+                }) => Ok(()),
+                other => Err(wrong(
+                    "",
+                    "Creation(vkCreateDebugUtilsMessengerEXT)",
+                    &other.map(|_| "a device"),
+                )),
+            },
+        ));
+    }
+
+    // E5: a wait-idle that fails without losing the device — reported
+    // with its call, and the device keeps working (D9 covers the loss).
+    verdicts.push(device_case(
+        "E5 wait-idle/out-of-host-memory",
+        "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+        |device| {
+            match device.wait_idle() {
+                Err(DeviceError::Creation {
+                    call: "vkDeviceWaitIdle",
+                    ..
+                }) => {}
+                other => return Err(wrong("E5", "Creation(vkDeviceWaitIdle)", &other)),
+            }
+            device.wait_idle().map_err(|error| {
+                format!("E5: a device that was never lost stopped working: {error}")
+            })?;
+            let mut target = device
+                .create_offscreen_target(SIZE)
+                .map_err(|error| format!("E5: target: {error}"))?;
+            target
+                .render(CLEAR, None)
+                .map_err(|error| format!("E5: frame after a failed wait-idle: {error}"))
+        },
+    ));
+
+    // E6: the teardown wait-idle fails. There is no caller left to
+    // return to, so the diag channel is the whole contract.
+    verdicts.push(with_fault(
+        "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+        || {
+            teardown_case("E6 teardown/wait-idle-failure", |device| {
+                // Nothing has quiesced this device yet, so the spine's own
+                // teardown owns the first (and only) wait-idle.
+                clear_records();
+                drop(device);
+                recorded("wait-idle at teardown failed")
+            })
+        },
+    ));
+
+    if validation_available {
+        // E7: validation findings must still be reported when the last
+        // caller is gone — the layer's own leak check at instance
+        // destruction lands in exactly that window.
+        verdicts.push(teardown_case("E7 teardown/validation-report", |device| {
+            match device.create_pipeline(&PipelineDesc {
+                vertex_spirv: &IMPLAUSIBLE_SPIRV,
+                fragment_spirv: builtin::TRIANGLE_FS_SPV,
+                target_format: TargetFormat::Rgba8Unorm,
+            }) {
+                Err(PipelineError::Creation { .. }) => {}
+                Err(other) => return Err(wrong("", "Creation(vkCreateShaderModule)", &other)),
+                Ok(_) => return Err("the layer accepted implausible SPIR-V".to_string()),
+            }
+            let report = device.validation_report();
+            if report.errors == 0 {
+                return Err("implausible SPIR-V drew no validation error".to_string());
+            }
+            clear_records();
+            drop(device);
+            recorded("validation reported")
+        }));
+    }
+
+    // E8: `Validation::Required` with the layer struck from the
+    // loader's list — the one policy that refuses to build a device it
+    // cannot police.
+    verdicts.push(without_the_validation_layer(|| {
+        match Device::new(&DeviceDesc {
+            app_name: "renew-rhi-fault-tests",
+            validation: Validation::Required,
+        }) {
+            Err(DeviceError::ValidationUnavailable) => Ok(()),
+            other => Err(wrong(
+                "E8 validation/required-but-absent",
+                "ValidationUnavailable",
+                &other.map(|_| "a device"),
+            )),
+        }
+    }));
+
+    // ---- F · the rest of the frame ladder ---------------------------
+    // D6 and D7 cover the fence wait timing out and losing the device;
+    // F1 is every other way it can fail: reported with its call, and
+    // still a wedge, because the submit is no less in flight for the
+    // wait having failed differently.
+    verdicts.push(device_case(
+        "F1 fence-wait/out-of-host-memory",
+        "vkWaitForFences=ERROR_OUT_OF_HOST_MEMORY",
+        |device| {
+            let mut target = device
+                .create_offscreen_target(SIZE)
+                .map_err(|error| format!("F1: target: {error}"))?;
+            match target.render(CLEAR, None) {
+                Err(error) => creation_named("F1", "vkWaitForFences", &error)?,
+                Ok(()) => return Err("F1: the frame succeeded despite the fault".to_string()),
+            }
+            match target.render(CLEAR, None) {
+                Err(error) => {
+                    timeout_named("F1", "target wedged by an earlier incomplete frame", &error)
+                }
+                Ok(()) => Err("F1: a wedged target rendered".to_string()),
             }
         },
     ));

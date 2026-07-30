@@ -60,21 +60,25 @@ mod tests {
 
     #[test]
     fn each_structural_check_rejects_with_its_own_reason() {
-        match words_from_bytes("vertex", &[]) {
-            Err(PipelineError::InvalidSpirv { reason, .. }) => assert_eq!(reason, "empty"),
-            other => panic!("expected empty rejection, got {other:?}"),
-        }
-        match words_from_bytes("fragment", &[1, 2, 3]) {
-            Err(PipelineError::InvalidSpirv { reason, .. }) => {
-                assert_eq!(reason, "length not a multiple of four");
-            }
-            other => panic!("expected length rejection, got {other:?}"),
-        }
-        match words_from_bytes("vertex", &[0xEF, 0xBE, 0xAD, 0xDE]) {
-            Err(PipelineError::InvalidSpirv { reason, .. }) => {
-                assert_eq!(reason, "bad magic number");
-            }
-            other => panic!("expected magic rejection, got {other:?}"),
+        // One table asserted through `matches!` rather than three
+        // `match`es with a `panic!` fallback: a fallback arm is dead on
+        // every passing run, and the pattern still pins the variant —
+        // the stage now too, which the fallback form dropped.
+        let cases: [(&'static str, &[u8], &'static str); 3] = [
+            ("vertex", &[], "empty"),
+            ("fragment", &[1, 2, 3], "length not a multiple of four"),
+            ("vertex", &[0xEF, 0xBE, 0xAD, 0xDE], "bad magic number"),
+        ];
+        for (stage, bytes, expected) in cases {
+            let rejection = words_from_bytes(stage, bytes).expect_err("must be rejected");
+            assert!(
+                matches!(
+                    &rejection,
+                    PipelineError::InvalidSpirv { stage: got, reason }
+                        if *got == stage && *reason == expected
+                ),
+                "expected `{expected}` rejection of {stage} bytes, got {rejection:?}"
+            );
         }
     }
 }

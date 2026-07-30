@@ -607,26 +607,26 @@ fn worker_main(shared: &Arc<Shared>) {
     let mut last_epoch = 0u64;
     loop {
         let mut state = shared.locked();
-        loop {
+        // The wait loop is left WITH the batch in hand, so the two words
+        // are copied and the bracket is opened in the SAME critical
+        // section that observed the fresh task — there is no window in
+        // which the batch could be retired in between, and no reachable
+        // state in which a woken worker has no task to run.
+        let task = loop {
             if state.shutdown {
                 return;
             }
-            if state.task.is_some() && state.epoch != last_epoch {
-                break;
+            if state.epoch != last_epoch
+                && let Some(fresh) = state.task
+            {
+                break fresh;
             }
             state = match shared.work_ready.wait(state) {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
-        }
-        last_epoch = state.epoch;
-        // Copy the two words and open the bracket in the SAME critical
-        // section that observed `task.is_some()` — the defensive arm is
-        // unreachable by that observation, and it re-parks rather than
-        // inventing a fallback task.
-        let Some(task) = state.task else {
-            continue;
         };
+        last_epoch = state.epoch;
         state.active += 1;
         drop(state);
         let guard = WorkerGuard { shared };
@@ -664,10 +664,43 @@ impl Drop for WorkerGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::AtomicU8;
+    use core::sync::atomic::{AtomicBool, AtomicU8};
+
+    /// Long enough that a worker released from a gate is still inside
+    /// its chunk when the dispatcher reaches the barrier a few dozen
+    /// instructions later; short under Miri, whose interpreter is slow.
+    const SLOW_ITERATIONS: usize = if cfg!(miri) { 50 } else { 200_000 };
 
     fn grain(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).expect("test grains are nonzero")
+    }
+
+    /// Yield-based gate: bounded, so a broken build fails instead of
+    /// hanging the suite.
+    fn wait_for(flag: &AtomicBool) {
+        let mut yields = 0u32;
+        while !flag.load(Ordering::Acquire) {
+            yields += 1;
+            assert!(yields < 10_000_000, "gated event never happened");
+            std::thread::yield_now();
+        }
+    }
+
+    /// A pool's shared state, standing alone — for the protocol pieces
+    /// that are exercised without workers.
+    fn fresh_shared() -> Shared {
+        Shared {
+            state: Mutex::new(State {
+                epoch: 0,
+                task: None,
+                active: 0,
+                panicked: false,
+                poisoned: false,
+                shutdown: false,
+            }),
+            work_ready: Condvar::new(),
+            work_done: Condvar::new(),
+        }
     }
 
     #[test]
@@ -755,46 +788,49 @@ mod tests {
     fn empty_ranges_and_empty_slices_are_no_ops() {
         let mut pool = JobPool::new(&PoolConfig::new(2)).expect("pool");
         let ran = AtomicUsize::new(0);
-        pool.parallel_for(10..10, grain(4), |_| {
+        let count = |_: Range<usize>| {
             ran.fetch_add(1, Ordering::Relaxed);
-        });
+        };
+        let count_slice = |_: usize, _: &mut [u8]| {
+            ran.fetch_add(1, Ordering::Relaxed);
+        };
+
+        // The same probes run over real work first: a probe that cannot
+        // fire would make "nothing ran" prove nothing.
+        pool.parallel_for(0..1, grain(4), count);
+        let mut one = [0u8; 1];
+        pool.parallel_for_slice_mut(&mut one, grain(4), count_slice);
+        assert_eq!(ran.load(Ordering::Relaxed), 2, "the probes do fire");
+
+        pool.parallel_for(10..10, grain(4), count);
         let (reversed_low, reversed_high) = (10, 5);
-        pool.parallel_for(reversed_low..reversed_high, grain(4), |_| {
-            ran.fetch_add(1, Ordering::Relaxed);
-        });
+        pool.parallel_for(reversed_low..reversed_high, grain(4), count);
         let mut nothing: Vec<u8> = Vec::new();
-        pool.parallel_for_slice_mut(&mut nothing, grain(4), |_, _| {
-            ran.fetch_add(1, Ordering::Relaxed);
-        });
-        assert_eq!(ran.load(Ordering::Relaxed), 0);
+        pool.parallel_for_slice_mut(&mut nothing, grain(4), count_slice);
+        assert_eq!(ran.load(Ordering::Relaxed), 2, "no empty shape ran a chunk");
     }
 
     #[test]
     fn workers_carry_their_configured_names() {
-        use core::sync::atomic::AtomicBool;
         let mut pool =
             JobPool::new(&PoolConfig::new(1).thread_name_prefix("renew-jobs-test")).expect("pool");
         // Deterministic participation: the caller parks inside its first
         // chunk until the worker has observed (and recorded) its own
         // name from inside a job — with two chunks and a gated caller,
-        // the worker must claim the other one.
+        // the worker must claim the other one. Caller and worker are
+        // told apart by thread id, so a MISnamed worker records a false
+        // and fails the assertion instead of being mistaken for the
+        // caller and hanging the gate.
+        let caller = std::thread::current().id();
         let worker_named_ok = AtomicBool::new(false);
         let worker_seen = AtomicBool::new(false);
         pool.parallel_for(0..2, grain(1), |_| {
-            let name = std::thread::current().name().map(ToString::to_string);
-            if name.as_deref() == Some("renew-jobs-test-0") {
-                worker_named_ok.store(true, Ordering::Release);
-                worker_seen.store(true, Ordering::Release);
-            } else if name.is_none() || !name.as_deref().is_some_and(|n| n.starts_with("renew-")) {
+            if std::thread::current().id() == caller {
                 // The caller's chunk: wait for the worker, bounded.
-                let mut yields = 0u32;
-                while !worker_seen.load(Ordering::Acquire) {
-                    yields += 1;
-                    assert!(yields < 10_000_000, "worker never claimed a chunk");
-                    std::thread::yield_now();
-                }
+                wait_for(&worker_seen);
             } else {
-                // A worker with an unexpected name: record the failure.
+                let named_ok = std::thread::current().name() == Some("renew-jobs-test-0");
+                worker_named_ok.store(named_ok, Ordering::Release);
                 worker_seen.store(true, Ordering::Release);
             }
         });
@@ -806,11 +842,11 @@ mod tests {
 
     #[test]
     fn nul_prefix_fails_before_spawning_anything() {
-        let result = JobPool::new(&PoolConfig::new(3).thread_name_prefix("bad\0prefix"));
-        match result {
-            Err(PoolError::Spawn { worker_index, .. }) => assert_eq!(worker_index, 0),
-            Ok(_) => panic!("NUL prefix must fail"),
-        }
+        let error = JobPool::new(&PoolConfig::new(3).thread_name_prefix("bad\0prefix"))
+            .err()
+            .expect("a NUL prefix must fail");
+        let PoolError::Spawn { worker_index, .. } = error;
+        assert_eq!(worker_index, 0, "the very first spawn must be refused");
     }
 
     #[test]
@@ -828,13 +864,11 @@ mod tests {
     #[test]
     fn construction_failure_joins_the_already_spawned_workers() {
         for fail_at in [0usize, 1, 3] {
-            let result = JobPool::new_failing_at(&PoolConfig::new(4), fail_at);
-            match result {
-                Err(PoolError::Spawn { worker_index, .. }) => {
-                    assert_eq!(worker_index, fail_at);
-                }
-                Ok(_) => panic!("injected failure must surface"),
-            }
+            let error = JobPool::new_failing_at(&PoolConfig::new(4), fail_at)
+                .err()
+                .expect("injected failure must surface");
+            let PoolError::Spawn { worker_index, .. } = error;
+            assert_eq!(worker_index, fail_at);
             // Reaching here without hanging IS the joined-workers proof:
             // shutdown_and_join blocks until every pre-failure worker
             // exits.
@@ -843,15 +877,13 @@ mod tests {
 
     #[test]
     fn pool_error_displays_index_and_source() {
-        match JobPool::new_failing_at(&PoolConfig::new(2), 1) {
-            Err(error) => {
-                let text = error.to_string();
-                assert!(text.contains("worker 1"), "got: {text}");
-                let source = std::error::Error::source(&error);
-                assert!(source.is_some(), "the platform error is the source");
-            }
-            Ok(_) => panic!("injected failure must surface"),
-        }
+        let error = JobPool::new_failing_at(&PoolConfig::new(2), 1)
+            .err()
+            .expect("injected failure must surface");
+        let text = error.to_string();
+        assert!(text.contains("worker 1"), "got: {text}");
+        let source = std::error::Error::source(&error);
+        assert!(source.is_some(), "the platform error is the source");
     }
 
     #[test]
@@ -865,6 +897,78 @@ mod tests {
         let pool = JobPool::new(&PoolConfig::new(4)).expect("pool");
         drop(pool);
         // Returning at all is the assertion: Drop joined every worker.
+    }
+
+    #[test]
+    fn locking_recovers_a_poisoned_mutex_with_its_state_intact() {
+        // Poison recovery is sound because no user code runs under this
+        // mutex: whatever poisoned it left the fields consistent, and
+        // refusing to lock would strand workers mid-protocol instead.
+        let shared = fresh_shared();
+        let poisoning = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut state = shared.locked();
+            state.epoch = 42;
+            panic!("poison the pool mutex");
+        }));
+        assert!(poisoning.is_err(), "the poisoning panic must unwind");
+        assert!(shared.state.is_poisoned(), "the mutex is poisoned now");
+        // The recovery arm hands back exactly the state the panic left.
+        assert_eq!(shared.locked().epoch, 42);
+    }
+
+    #[test]
+    fn a_poisoned_mutex_does_not_break_a_live_dispatch() {
+        // A mutex poisoned by something outside the protocol must not
+        // strand a dispatch: the barrier, the worker bracket and the
+        // park loop all recover it. Constructed, not raced — the caller
+        // poisons the mutex from inside its own chunk while the worker
+        // is demonstrably gated inside the bracket, and the released
+        // worker burns a slow loop so the dispatcher reaches its barrier
+        // (and blocks there, with `active` still 1) first.
+        let mut pool = JobPool::new(&PoolConfig::new(1)).expect("pool");
+        let shared = Arc::clone(&pool.shared);
+        let caller = std::thread::current().id();
+        let worker_in = AtomicBool::new(false);
+        let released = AtomicBool::new(false);
+        let ran = AtomicUsize::new(0);
+
+        pool.parallel_for(0..2, grain(1), |_| {
+            if std::thread::current().id() == caller {
+                wait_for(&worker_in);
+                let poisoning = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _state = shared.locked();
+                    panic!("poison the pool mutex");
+                }));
+                assert!(poisoning.is_err(), "the poisoning panic must unwind");
+                released.store(true, Ordering::Release);
+            } else {
+                worker_in.store(true, Ordering::Release);
+                wait_for(&released);
+                for _ in 0..SLOW_ITERATIONS {
+                    std::hint::spin_loop();
+                }
+            }
+            ran.fetch_add(1, Ordering::Relaxed);
+        });
+        assert!(pool.shared.state.is_poisoned(), "the mutex stayed poisoned");
+        assert_eq!(ran.load(Ordering::Relaxed), 2, "both chunks ran");
+
+        // A parked worker must ignore a wakeup that brings no new epoch,
+        // poisoned mutex included. Notified repeatedly rather than once
+        // so a wakeup lands after the worker has re-parked.
+        for _ in 0..64 {
+            pool.shared.work_ready.notify_all();
+            std::thread::yield_now();
+        }
+
+        // None of this is a job defect: the pool is not poisoned in the
+        // engine sense, and the next dispatch runs normally.
+        assert!(!pool.shared.locked().poisoned, "no job panicked");
+        let again = AtomicUsize::new(0);
+        pool.parallel_for(0..1024, grain(16), |chunk| {
+            again.fetch_add(chunk.len(), Ordering::Relaxed);
+        });
+        assert_eq!(again.load(Ordering::Relaxed), 1024);
     }
 
     mod plan {

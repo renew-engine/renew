@@ -157,12 +157,26 @@ fn should_fail(call: &str) -> Option<vk::Result> {
     (fault.seen == fault.ordinal).then_some(fault.result)
 }
 
+/// The next layer's entry points for every intercepted instance-level
+/// call, resolved eagerly at instance creation. `None` means the next
+/// layer does not have the function (absent extension) — the wrapper
+/// for such a name is never advertised.
+struct InstanceNext {
+    enumerate_physical_devices: Option<vk::PFN_vkEnumeratePhysicalDevices>,
+    enumerate_device_extension_properties: Option<vk::PFN_vkEnumerateDeviceExtensionProperties>,
+    create_debug_utils_messenger_ext: Option<vk::PFN_vkCreateDebugUtilsMessengerEXT>,
+    get_physical_device_surface_support_khr: Option<vk::PFN_vkGetPhysicalDeviceSurfaceSupportKHR>,
+    get_physical_device_surface_formats_khr: Option<vk::PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>,
+    get_physical_device_surface_capabilities_khr:
+        Option<vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>,
+}
+
 /// Per-instance state: the next layer's instance entry point plus the
 /// pointers this layer resolves through it.
 struct InstanceState {
     next_gipa: vk::PFN_vkGetInstanceProcAddr,
     destroy_instance: vk::PFN_vkDestroyInstance,
-    enumerate_physical_devices: Option<vk::PFN_vkEnumeratePhysicalDevices>,
+    next: InstanceNext,
 }
 
 /// The next layer's entry points for every intercepted device-level
@@ -194,6 +208,7 @@ struct DeviceNext {
     device_wait_idle: Option<vk::PFN_vkDeviceWaitIdle>,
     acquire_next_image_khr: Option<vk::PFN_vkAcquireNextImageKHR>,
     queue_present_khr: Option<vk::PFN_vkQueuePresentKHR>,
+    get_swapchain_images_khr: Option<vk::PFN_vkGetSwapchainImagesKHR>,
 }
 
 /// Per-device state: the next layer's device entry point plus the
@@ -320,8 +335,78 @@ unsafe fn resolve_device_next(gdpa: vk::PFN_vkGetDeviceProcAddr, device: vk::Dev
             device_wait_idle: resolve_device_pfn(gdpa, device, c"vkDeviceWaitIdle"),
             acquire_next_image_khr: resolve_device_pfn(gdpa, device, c"vkAcquireNextImageKHR"),
             queue_present_khr: resolve_device_pfn(gdpa, device, c"vkQueuePresentKHR"),
+            get_swapchain_images_khr: resolve_device_pfn(gdpa, device, c"vkGetSwapchainImagesKHR"),
         }
     }
+}
+
+/// Eagerly resolve every intercepted instance-level entry point through
+/// the next layer's GIPA.
+///
+/// # Safety
+///
+/// `instance` must be the live instance just created through the chain.
+unsafe fn resolve_instance_next(
+    gipa: vk::PFN_vkGetInstanceProcAddr,
+    instance: vk::Instance,
+) -> InstanceNext {
+    // SAFETY: each field's PFN type pins the exact signature for the
+    // name resolved into it; the instance is live per the contract.
+    unsafe {
+        InstanceNext {
+            enumerate_physical_devices: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkEnumeratePhysicalDevices",
+            ),
+            enumerate_device_extension_properties: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkEnumerateDeviceExtensionProperties",
+            ),
+            create_debug_utils_messenger_ext: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkCreateDebugUtilsMessengerEXT",
+            ),
+            get_physical_device_surface_support_khr: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkGetPhysicalDeviceSurfaceSupportKHR",
+            ),
+            get_physical_device_surface_formats_khr: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkGetPhysicalDeviceSurfaceFormatsKHR",
+            ),
+            get_physical_device_surface_capabilities_khr: resolve_instance_pfn(
+                gipa,
+                instance,
+                c"vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+            ),
+        }
+    }
+}
+
+/// Copy the next-layer pfn selected by `pick` for the instance owning
+/// `handle`. Physical devices share their instance's dispatch key, so
+/// one lookup serves both handle kinds.
+///
+/// # Safety
+///
+/// `handle` must be the raw value of a live dispatchable handle (or
+/// zero, which resolves to `None`).
+unsafe fn instance_next<F: Copy>(
+    handle: u64,
+    pick: impl FnOnce(&InstanceNext) -> Option<F>,
+) -> Option<F> {
+    if handle == 0 {
+        return None;
+    }
+    let map = instances().lock().ok()?;
+    // SAFETY: per the caller's contract, `handle` is live.
+    let state = map.get(&unsafe { dispatch_key(handle as *const c_void) })?;
+    pick(&state.next)
 }
 
 /// Copy the next-layer pfn selected by `pick` for the device owning
@@ -410,6 +495,81 @@ fn device_level_wrapper(name: &[u8]) -> vk::PFN_vkVoidFunction {
             b"vkQueuePresentKHR" => {
                 Some(erase::<vk::PFN_vkQueuePresentKHR>(fault_queue_present_khr))
             }
+            b"vkGetSwapchainImagesKHR" => Some(erase::<vk::PFN_vkGetSwapchainImagesKHR>(
+                fault_get_swapchain_images_khr,
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Advertise an instance-level wrapper only when the next layer
+/// actually has the entry point: `vkCreateDebugUtilsMessengerEXT` and
+/// the surface queries belong to extensions that may be absent, and a
+/// wrapper over nothing must not exist either. Callers guarantee a
+/// non-null instance.
+fn advertise_instance(
+    instance: vk::Instance,
+    has_next: impl FnOnce(&InstanceNext) -> bool,
+    wrapper: unsafe extern "system" fn(),
+) -> vk::PFN_vkVoidFunction {
+    let map = instances().lock().ok()?;
+    // SAFETY: a non-null instance reaching a layer is live.
+    let state = map.get(&unsafe { dispatch_key(instance.as_raw() as *const c_void) })?;
+    if has_next(&state.next) {
+        Some(wrapper)
+    } else {
+        None
+    }
+}
+
+/// The erased wrapper for an intercepted instance-level name, `None`
+/// for names this layer leaves alone or whose entry point the next
+/// layer does not have. Kept beside the proc-addr entry point rather
+/// than inside it so that match stays readable.
+///
+/// `instance` must be non-null; the one caller checks that first.
+fn instance_level_wrapper(instance: vk::Instance, name: &[u8]) -> vk::PFN_vkVoidFunction {
+    // SAFETY: every arm pairs a wrapper with the PFN type of exactly
+    // the call it implements (signature-checked at the coercion), then
+    // erases it to the dispatch contract's currency.
+    unsafe {
+        match name {
+            b"vkEnumerateDeviceExtensionProperties" => advertise_instance(
+                instance,
+                |next| next.enumerate_device_extension_properties.is_some(),
+                erase::<vk::PFN_vkEnumerateDeviceExtensionProperties>(
+                    fault_enumerate_device_extension_properties,
+                ),
+            ),
+            b"vkCreateDebugUtilsMessengerEXT" => advertise_instance(
+                instance,
+                |next| next.create_debug_utils_messenger_ext.is_some(),
+                erase::<vk::PFN_vkCreateDebugUtilsMessengerEXT>(
+                    fault_create_debug_utils_messenger_ext,
+                ),
+            ),
+            b"vkGetPhysicalDeviceSurfaceSupportKHR" => advertise_instance(
+                instance,
+                |next| next.get_physical_device_surface_support_khr.is_some(),
+                erase::<vk::PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
+                    fault_get_physical_device_surface_support_khr,
+                ),
+            ),
+            b"vkGetPhysicalDeviceSurfaceFormatsKHR" => advertise_instance(
+                instance,
+                |next| next.get_physical_device_surface_formats_khr.is_some(),
+                erase::<vk::PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(
+                    fault_get_physical_device_surface_formats_khr,
+                ),
+            ),
+            b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => advertise_instance(
+                instance,
+                |next| next.get_physical_device_surface_capabilities_khr.is_some(),
+                erase::<vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(
+                    fault_get_physical_device_surface_capabilities_khr,
+                ),
+            ),
             _ => None,
         }
     }
@@ -532,6 +692,11 @@ unsafe extern "system" fn fault_get_instance_proc_addr(
             if let Some(wrapper) = device_level_wrapper(other) {
                 return Some(wrapper);
             }
+            // Instance- and physical-device-level interceptions, each
+            // advertised only when the next layer really has it.
+            if let Some(wrapper) = instance_level_wrapper(instance, other) {
+                return Some(wrapper);
+            }
             let map = instances().lock().ok()?;
             // SAFETY: a non-null instance reaching a layer is live.
             let state = map.get(&unsafe { dispatch_key(instance.as_raw() as *const c_void) })?;
@@ -592,6 +757,12 @@ unsafe extern "system" fn fault_get_device_proc_addr(
             |next| next.queue_present_khr.is_some(),
             // SAFETY: as above.
             unsafe { erase::<vk::PFN_vkQueuePresentKHR>(fault_queue_present_khr) },
+        ),
+        b"vkGetSwapchainImagesKHR" => advertise_khr(
+            device,
+            |next| next.get_swapchain_images_khr.is_some(),
+            // SAFETY: as above.
+            unsafe { erase::<vk::PFN_vkGetSwapchainImagesKHR>(fault_get_swapchain_images_khr) },
         ),
         other => {
             if let Some(wrapper) = device_level_wrapper(other) {
@@ -693,11 +864,9 @@ unsafe extern "system" fn fault_create_instance(
             InstanceState {
                 next_gipa,
                 destroy_instance: destroy,
-                // SAFETY: resolving on the live instance; the field
-                // type pins the exact PFN signature for the name.
-                enumerate_physical_devices: unsafe {
-                    resolve_instance_pfn(next_gipa, instance, c"vkEnumeratePhysicalDevices")
-                },
+                // SAFETY: the instance is live; every name is paired
+                // with its exact PFN type by the field it fills.
+                next: unsafe { resolve_instance_next(next_gipa, instance) },
             },
         );
     }
@@ -857,20 +1026,170 @@ unsafe extern "system" fn fault_enumerate_physical_devices(
     if let Some(result) = should_fail("vkEnumeratePhysicalDevices") {
         return result;
     }
-    if instance == vk::Instance::null() {
-        return vk::Result::ERROR_UNKNOWN;
-    }
-    let next = instances().lock().ok().and_then(|map| {
-        // SAFETY: a non-null instance reaching a layer wrapper is live.
-        map.get(&unsafe { dispatch_key(instance.as_raw() as *const c_void) })
-            .and_then(|state| state.enumerate_physical_devices)
-    });
+    // SAFETY: a non-null instance reaching a layer wrapper is live.
+    let next = unsafe { instance_next(instance.as_raw(), |next| next.enumerate_physical_devices) };
     let Some(next) = next else {
         return vk::Result::ERROR_UNKNOWN;
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
     unsafe { next(instance, p_physical_device_count, p_physical_devices) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_enumerate_device_extension_properties(
+    physical_device: vk::PhysicalDevice,
+    p_layer_name: *const c_char,
+    p_property_count: *mut u32,
+    p_properties: *mut vk::ExtensionProperties,
+) -> vk::Result {
+    // Both halves of the two-call idiom go through this check, so an
+    // ordinal picks out one invocation, not one logical query.
+    if let Some(result) = should_fail("vkEnumerateDeviceExtensionProperties") {
+        return result;
+    }
+    // SAFETY: physical devices carry their instance's dispatch key; a
+    // non-null handle reaching a layer wrapper is live.
+    let next = unsafe {
+        instance_next(physical_device.as_raw(), |next| {
+            next.enumerate_device_extension_properties
+        })
+    };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe {
+        next(
+            physical_device,
+            p_layer_name,
+            p_property_count,
+            p_properties,
+        )
+    }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_create_debug_utils_messenger_ext(
+    instance: vk::Instance,
+    p_create_info: *const vk::DebugUtilsMessengerCreateInfoEXT<'_>,
+    p_allocator: *const vk::AllocationCallbacks<'_>,
+    p_messenger: *mut vk::DebugUtilsMessengerEXT,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkCreateDebugUtilsMessengerEXT") {
+        return result;
+    }
+    // SAFETY: a non-null instance reaching a layer wrapper is live.
+    let next = unsafe {
+        instance_next(instance.as_raw(), |next| {
+            next.create_debug_utils_messenger_ext
+        })
+    };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(instance, p_create_info, p_allocator, p_messenger) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_get_physical_device_surface_support_khr(
+    physical_device: vk::PhysicalDevice,
+    queue_family_index: u32,
+    surface: vk::SurfaceKHR,
+    p_supported: *mut vk::Bool32,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkGetPhysicalDeviceSurfaceSupportKHR") {
+        return result;
+    }
+    // SAFETY: physical devices carry their instance's dispatch key; a
+    // non-null handle reaching a layer wrapper is live.
+    let next = unsafe {
+        instance_next(physical_device.as_raw(), |next| {
+            next.get_physical_device_surface_support_khr
+        })
+    };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(physical_device, queue_family_index, surface, p_supported) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_get_physical_device_surface_formats_khr(
+    physical_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    p_surface_format_count: *mut u32,
+    p_surface_formats: *mut vk::SurfaceFormatKHR,
+) -> vk::Result {
+    // Both halves of the two-call idiom go through this check, so an
+    // ordinal picks out one invocation, not one logical query.
+    if let Some(result) = should_fail("vkGetPhysicalDeviceSurfaceFormatsKHR") {
+        return result;
+    }
+    // SAFETY: physical devices carry their instance's dispatch key; a
+    // non-null handle reaching a layer wrapper is live.
+    let next = unsafe {
+        instance_next(physical_device.as_raw(), |next| {
+            next.get_physical_device_surface_formats_khr
+        })
+    };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe {
+        next(
+            physical_device,
+            surface,
+            p_surface_format_count,
+            p_surface_formats,
+        )
+    }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
+    physical_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    p_surface_capabilities: *mut vk::SurfaceCapabilitiesKHR,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkGetPhysicalDeviceSurfaceCapabilitiesKHR") {
+        return result;
+    }
+    // SAFETY: physical devices carry their instance's dispatch key; a
+    // non-null handle reaching a layer wrapper is live.
+    let next = unsafe {
+        instance_next(physical_device.as_raw(), |next| {
+            next.get_physical_device_surface_capabilities_khr
+        })
+    };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(physical_device, surface, p_surface_capabilities) }
 }
 
 /// # Safety
@@ -1112,6 +1431,38 @@ unsafe extern "system" fn fault_create_swapchain_khr(
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
     unsafe { next(device, p_create_info, p_allocator, p_swapchain) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_get_swapchain_images_khr(
+    device: vk::Device,
+    swapchain: vk::SwapchainKHR,
+    p_swapchain_image_count: *mut u32,
+    p_swapchain_images: *mut vk::Image,
+) -> vk::Result {
+    // Both halves of the two-call idiom go through this check, so an
+    // ordinal picks out one invocation, not one logical query.
+    if let Some(result) = should_fail("vkGetSwapchainImagesKHR") {
+        return result;
+    }
+    // SAFETY: a non-null device reaching a layer wrapper is live.
+    let next = unsafe { device_next(device.as_raw(), |next| next.get_swapchain_images_khr) };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe {
+        next(
+            device,
+            swapchain,
+            p_swapchain_image_count,
+            p_swapchain_images,
+        )
+    }
 }
 
 /// # Safety

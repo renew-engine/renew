@@ -76,6 +76,16 @@ mod tests {
     const DT: u64 = 16_666_667;
 
     #[test]
+    fn the_timestep_is_reported_and_never_changes() {
+        let mut acc = Accumulator::new(DT);
+        assert_eq!(acc.timestep_ns(), DT);
+        // Advancing consumes banked time; the timestep itself is fixed.
+        acc.advance(3 * DT + 7);
+        assert_eq!(acc.timestep_ns(), DT);
+        assert_eq!(acc.pending_ns(), 7);
+    }
+
+    #[test]
     fn zero_frame_time_yields_no_ticks() {
         let mut acc = Accumulator::new(DT);
         assert_eq!(acc.advance(0), 0);

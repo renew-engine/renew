@@ -143,9 +143,15 @@ fn gather_findings() -> Result<Vec<structure::Finding>, String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    findings_from_metadata(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Run the structure rules over `cargo metadata` output. Split out from the
+/// spawning half so the rejection of output that is not metadata at all is
+/// exercisable without a child process.
+fn findings_from_metadata(text: &str) -> Result<Vec<structure::Finding>, String> {
     let document =
-        json::parse(&text).map_err(|error| format!("unreadable cargo metadata output: {error}"))?;
+        json::parse(text).map_err(|error| format!("unreadable cargo metadata output: {error}"))?;
     let shapes = structure::shapes_from_metadata(&document)?;
     Ok(structure::evaluate(&shapes))
 }
@@ -368,4 +374,43 @@ fn emit_stdout_line(text: &str) {
 
 fn duration_ms(started: Instant) -> i64 {
     i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One healthy engine crate, in the shape `cargo metadata
+    /// --format-version 1 --no-deps` emits.
+    const METADATA: &str = concat!(
+        r#"{"workspace_root":"/w","packages":[{"name":"renew-diag","#,
+        r#""manifest_path":"/w/crates/core/diag/Cargo.toml","dependencies":[],"#,
+        r#""metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"#,
+        r#""extension_points":[],"simulation":false}}}]}"#,
+    );
+
+    #[test]
+    fn output_that_is_not_json_is_named_as_unreadable() {
+        // A `cargo` that answers successfully with something else must not
+        // be read as an empty, therefore passing, workspace.
+        let error = findings_from_metadata("cargo said something else")
+            .expect_err("non-JSON output must be rejected");
+        assert!(
+            error.starts_with("unreadable cargo metadata output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn json_that_is_not_metadata_is_rejected_too() {
+        let error = findings_from_metadata(r#"{"packages":[]}"#)
+            .expect_err("JSON without a workspace root is not metadata");
+        assert!(error.contains("workspace_root"), "{error}");
+    }
+
+    #[test]
+    fn well_shaped_metadata_runs_the_structure_rules() {
+        let findings = findings_from_metadata(METADATA).expect("metadata is readable");
+        assert_eq!(findings, Vec::new());
+    }
 }

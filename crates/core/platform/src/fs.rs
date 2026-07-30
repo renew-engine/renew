@@ -111,19 +111,41 @@ pub fn exists(path: &Path) -> Result<bool, FsError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_error_variant_displays_its_path() {
-        let path = PathBuf::from("some/asset.bin");
-        let variants = [
-            FsError::NotFound { path: path.clone() },
-            FsError::PermissionDenied { path: path.clone() },
-            FsError::InvalidUtf8 { path: path.clone() },
+    /// One error of every variant, all naming the same path.
+    fn all_variants(path: &Path) -> [FsError; 4] {
+        [
+            FsError::NotFound {
+                path: path.to_path_buf(),
+            },
+            FsError::PermissionDenied {
+                path: path.to_path_buf(),
+            },
+            FsError::InvalidUtf8 {
+                path: path.to_path_buf(),
+            },
             FsError::Io {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 kind: ErrorKind::TimedOut,
             },
-        ];
-        for variant in &variants {
+        ]
+    }
+
+    /// The path an error carries, whichever variant it is. The
+    /// or-pattern is exhaustive by construction: a future variant that
+    /// forgot its path would not compile here.
+    fn reported_path(error: &FsError) -> &Path {
+        let (FsError::NotFound { path }
+        | FsError::PermissionDenied { path }
+        | FsError::InvalidUtf8 { path }
+        | FsError::Io { path, .. }) = error;
+        path
+    }
+
+    #[test]
+    fn every_error_variant_carries_its_path_in_the_field_and_the_message() {
+        let path = PathBuf::from("some/asset.bin");
+        for variant in &all_variants(&path) {
+            assert_eq!(reported_path(variant), path, "wrong path in {variant:?}");
             let text = variant.to_string();
             assert!(
                 text.contains("some/asset.bin") || text.contains("some\\asset.bin"),
@@ -179,10 +201,26 @@ mod tests {
         // SOME classified error comes back carrying exactly this path.
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
         let error = read(directory).expect_err("directories are not files");
-        let (FsError::NotFound { path }
-        | FsError::PermissionDenied { path }
-        | FsError::InvalidUtf8 { path }
-        | FsError::Io { path, .. }) = &error;
-        assert_eq!(path, directory);
+        assert_eq!(reported_path(&error), directory, "wrong path in {error:?}");
+    }
+
+    #[test]
+    fn writing_and_probing_report_their_failures_against_the_same_path() {
+        // A NUL byte never reaches an OS filesystem call: every platform
+        // rejects the name itself, so both seams fail without depending
+        // on any filesystem state.
+        let path = Path::new("renew\0invalid");
+        let write_error = write(path, b"never lands").expect_err("a NUL path cannot be written");
+        assert_eq!(
+            reported_path(&write_error),
+            path,
+            "wrong path in {write_error:?}"
+        );
+        let exists_error = exists(path).expect_err("a NUL path's existence is undeterminable");
+        assert_eq!(
+            reported_path(&exists_error),
+            path,
+            "wrong path in {exists_error:?}"
+        );
     }
 }

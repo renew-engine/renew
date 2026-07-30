@@ -257,4 +257,4 @@ jobs:
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate
           # belongs on the same side of that line.
-          cargo llvm-cov report --ignore-filename-regex 'tools/vk-fault-layer' --fail-under-lines 95
+          cargo llvm-cov report --ignore-filename-regex 'tools[\/]vk-fault-layer' --fail-under-lines 95

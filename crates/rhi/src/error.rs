@@ -178,12 +178,28 @@ mod tests {
                 "no swapchain extension",
             ),
             (
+                TargetError::Creation {
+                    call: "vkCreateSwapchainKHR",
+                    code: -3,
+                }
+                .to_string(),
+                "vkCreateSwapchainKHR",
+            ),
+            (
                 TargetError::Timeout {
                     call: "vkWaitForFences",
                 }
                 .to_string(),
                 "timed out",
             ),
+            (
+                TargetError::OutOfDeviceMemory {
+                    call: "vkAllocateMemory",
+                }
+                .to_string(),
+                "out of device memory",
+            ),
+            (TargetError::DeviceLost.to_string(), "device lost"),
             (
                 PipelineError::InvalidSpirv {
                     stage: "vertex",

@@ -80,3 +80,32 @@ impl Color {
         Self { r, g, b, a }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_device_is_named_and_unvalidated() {
+        let desc = DeviceDesc::default();
+        assert_eq!(desc.app_name, "renew");
+        // Validation costs frame time, so it is opt-in: a caller that
+        // says nothing gets the shipping configuration, not the test one.
+        assert_eq!(desc.validation, Validation::Off);
+    }
+
+    #[test]
+    fn color_channels_keep_their_rgba_order() {
+        // Struct equality, not four float comparisons: the derived impl
+        // is what every caller's assertion goes through anyway.
+        assert_eq!(
+            Color::new(0.25, 0.5, 0.75, 1.0),
+            Color {
+                r: 0.25,
+                g: 0.5,
+                b: 0.75,
+                a: 1.0,
+            }
+        );
+    }
+}

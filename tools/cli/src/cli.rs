@@ -179,7 +179,8 @@ mod tests {
     #[test]
     fn every_command_parses_by_name() {
         for command in Command::ALL {
-            let parsed = parse(&arguments(&[command.name()]));
+            let name = command.name();
+            let parsed = parse(&arguments(&[name]));
             assert_eq!(
                 parsed,
                 Ok(Parsed::Run(Invocation {
@@ -187,8 +188,7 @@ mod tests {
                     json: false,
                     smoke: false,
                 })),
-                "command `{}` did not round-trip",
-                command.name()
+                "command `{name}` did not round-trip"
             );
         }
     }
@@ -298,11 +298,8 @@ mod tests {
     fn usage_lists_every_command() {
         let text = usage();
         for command in Command::ALL {
-            assert!(
-                text.contains(command.name()),
-                "usage text is missing `{}`",
-                command.name()
-            );
+            let name = command.name();
+            assert!(text.contains(name), "usage text is missing `{name}`");
         }
     }
 }

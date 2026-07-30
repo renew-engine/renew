@@ -214,11 +214,61 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
+    /// The ledger pointer the callbacks are always handed in production.
+    fn user_data_of(ledger: &AllocLedger) -> *mut c_void {
+        core::ptr::from_ref(ledger).cast_mut().cast()
+    }
+
     #[test]
     fn plan_rejects_the_unplannable() {
         assert!(plan(0, 8).is_none(), "zero size");
         assert!(plan(16, 3).is_none(), "non-power-of-two align");
         assert!(plan(usize::MAX, 8).is_none(), "overflow");
+        // Adding the header does not overflow here, but the total is
+        // still past what `Layout` will represent — a separate refusal.
+        assert!(
+            plan(usize::MAX - 1024, 8).is_none(),
+            "unrepresentable layout"
+        );
+    }
+
+    #[test]
+    fn an_unplannable_request_is_a_null_return_not_a_panic() {
+        let ledger = AllocLedger::default();
+        assert!(allocate(&ledger, 0, 8).is_null(), "zero size");
+        assert!(allocate(&ledger, 16, 3).is_null(), "non-power-of-two align");
+        assert!(allocate(&ledger, usize::MAX, 8).is_null(), "overflow");
+        assert_eq!(
+            ledger.allocations.load(Ordering::Relaxed),
+            0,
+            "a refusal is not an allocation"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the interpreter makes an unservable request a fatal resource error, not the null under test"
+    )]
+    #[cfg_attr(
+        feature = "sanitized",
+        ignore = "instrumented allocators abort on an oversized request instead of returning null"
+    )]
+    fn a_system_allocation_the_host_refuses_is_a_null_return() {
+        let ledger = AllocLedger::default();
+        // Plannable — `Layout` accepts it — but unservable by any host,
+        // so the refusal comes from the allocator rather than `plan`.
+        let size = usize::MAX / 2 - 4096;
+        assert!(
+            plan(size, 8).is_some(),
+            "the request must reach the allocator"
+        );
+        assert!(allocate(&ledger, size, 8).is_null());
+        assert_eq!(
+            ledger.allocations.load(Ordering::Relaxed),
+            0,
+            "a refusal is not an allocation"
+        );
     }
 
     #[test]
@@ -243,7 +293,7 @@ mod tests {
     #[test]
     fn realloc_preserves_content_through_the_callback_path() {
         let ledger = AllocLedger::default();
-        let user_data = core::ptr::from_ref(&ledger).cast_mut().cast::<c_void>();
+        let user_data = user_data_of(&ledger);
         let first = cb_alloc(user_data, 8, 8, vk::SystemAllocationScope::OBJECT);
         assert!(!first.is_null());
         // SAFETY: (test) writing within the 8 bytes just allocated.
@@ -259,6 +309,114 @@ mod tests {
         cb_free(user_data, grown);
         assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
         assert_eq!(ledger.reallocations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn realloc_of_a_null_original_is_an_allocation() {
+        let ledger = AllocLedger::default();
+        let user_data = user_data_of(&ledger);
+        let fresh = cb_realloc(
+            user_data,
+            core::ptr::null_mut(),
+            32,
+            8,
+            vk::SystemAllocationScope::OBJECT,
+        );
+        assert!(!fresh.is_null());
+        assert_eq!(ledger.allocations.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            ledger.reallocations.load(Ordering::Relaxed),
+            0,
+            "nothing was moved, so nothing was reallocated"
+        );
+        cb_free(user_data, fresh);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn realloc_to_zero_frees_and_reports_null() {
+        let ledger = AllocLedger::default();
+        let user_data = user_data_of(&ledger);
+        let live = cb_alloc(user_data, 32, 8, vk::SystemAllocationScope::OBJECT);
+        assert!(!live.is_null());
+        let gone = cb_realloc(user_data, live, 0, 8, vk::SystemAllocationScope::OBJECT);
+        assert!(gone.is_null(), "a zero-size reallocation owns nothing");
+        assert_eq!(ledger.deallocations.load(Ordering::Relaxed), 1);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_refused_realloc_leaves_the_original_alive() {
+        let ledger = AllocLedger::default();
+        let user_data = user_data_of(&ledger);
+        let live = cb_alloc(user_data, 32, 8, vk::SystemAllocationScope::OBJECT);
+        assert!(!live.is_null());
+        // Vulkan's contract: when reallocation fails the caller still
+        // owns the original, so the ledger must show it untouched.
+        let refused = cb_realloc(user_data, live, 64, 3, vk::SystemAllocationScope::OBJECT);
+        assert!(
+            refused.is_null(),
+            "a non-power-of-two align cannot be served"
+        );
+        assert_eq!(ledger.deallocations.load(Ordering::Relaxed), 0);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 32);
+        cb_free(user_data, live);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_callbacks_refuse_rather_than_dereference_a_null_ledger() {
+        let scope = vk::SystemAllocationScope::OBJECT;
+        let nothing = core::ptr::null_mut();
+        assert!(cb_alloc(nothing, 16, 8, scope).is_null());
+        assert!(cb_realloc(nothing, nothing, 16, 8, scope).is_null());
+
+        let ledger = AllocLedger::default();
+        let user_data = user_data_of(&ledger);
+        let live = cb_alloc(user_data, 16, 8, scope);
+        assert!(!live.is_null());
+        cb_free(nothing, live);
+        assert_eq!(
+            ledger.deallocations.load(Ordering::Relaxed),
+            0,
+            "a free with no ledger cannot account for anything"
+        );
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 16);
+        // Freeing null is legal by the Vulkan contract, and a no-op.
+        cb_free(user_data, core::ptr::null_mut());
+        assert_eq!(ledger.deallocations.load(Ordering::Relaxed), 0);
+        cb_free(user_data, live);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_installed_struct_carries_the_ledger_and_three_working_shims() {
+        let ledger = AllocLedger::default();
+        let installed = callbacks(&ledger);
+        assert!(
+            core::ptr::eq(
+                installed.p_user_data.cast_const().cast::<AllocLedger>(),
+                core::ptr::from_ref(&ledger)
+            ),
+            "the driver must be handed this ledger, not a copy"
+        );
+        let alloc = installed.pfn_allocation.expect("allocation shim");
+        let realloc = installed.pfn_reallocation.expect("reallocation shim");
+        let free = installed.pfn_free.expect("free shim");
+        let scope = vk::SystemAllocationScope::OBJECT;
+        // SAFETY: (test) the arguments are this struct's own user_data
+        // and pointers these very shims returned, which is exactly the
+        // contract the driver honors.
+        unsafe {
+            let ptr = alloc(installed.p_user_data, 24, 16, scope);
+            assert!(!ptr.is_null());
+            let grown = realloc(installed.p_user_data, ptr, 48, 16, scope);
+            assert!(!grown.is_null());
+            free(installed.p_user_data, grown);
+        }
+        assert_eq!(ledger.allocations.load(Ordering::Relaxed), 2);
+        assert_eq!(ledger.reallocations.load(Ordering::Relaxed), 1);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
     }
 
     proptest! {

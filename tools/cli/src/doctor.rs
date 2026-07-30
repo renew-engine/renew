@@ -187,6 +187,35 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_environment_fails_every_check_with_a_stated_reason() {
+        let checks = evaluate(&Facts::default());
+        assert!(!all_ok(&checks));
+        let reported: Vec<(&str, bool, &str)> = checks
+            .iter()
+            .map(|check| (check.name, check.ok, check.detail.as_str()))
+            .collect();
+        assert_eq!(
+            reported,
+            [
+                ("rustup", false, "not found on PATH"),
+                ("toolchain", false, "not detected"),
+                (
+                    "toolchain-pin",
+                    false,
+                    "rust-toolchain.toml missing or unreadable"
+                ),
+                ("cargo", false, "not detected"),
+                (
+                    "workspace",
+                    false,
+                    "no workspace root above the current directory"
+                ),
+                ("git", false, "not found on PATH"),
+            ]
+        );
+    }
+
+    #[test]
     fn missing_rustup_fails_only_its_check() {
         let facts = Facts {
             rustup_found: false,

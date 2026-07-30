@@ -205,31 +205,25 @@ impl Device {
             )
         };
         destroy_modules();
-        let pipelines = match created {
-            Ok(pipelines) => pipelines,
-            Err((_partial, code)) => {
-                // SAFETY: layout live, no pipeline retained it.
-                unsafe {
-                    shared
-                        .device
-                        .destroy_pipeline_layout(layout, Some(&shared.alloc_cbs()));
-                }
-                return Err(creation("vkCreateGraphicsPipelines", code));
-            }
+        // A rejected create info and an empty result set are the same
+        // outcome here: no pipeline, and a layout nobody owns. One info
+        // in, one pipeline out is the driver contract — and ash sizes
+        // the result vector from the create-info count, so the empty
+        // case is unreachable rather than merely unlikely; folding it
+        // into the failure path keeps it diagnosable instead of
+        // asserted, at no cost.
+        let (built, code) = match created {
+            Ok(pipelines) => (pipelines.into_iter().next(), vk::Result::ERROR_UNKNOWN),
+            Err((_partial, code)) => (None, code),
         };
-        let Some(pipeline) = pipelines.into_iter().next() else {
-            // One info in, one pipeline out — the driver contract; keep
-            // the failure diagnosable rather than asserted.
-            // SAFETY: as above.
+        let Some(pipeline) = built else {
+            // SAFETY: layout live, no pipeline retained it.
             unsafe {
                 shared
                     .device
                     .destroy_pipeline_layout(layout, Some(&shared.alloc_cbs()));
             }
-            return Err(creation(
-                "vkCreateGraphicsPipelines",
-                vk::Result::ERROR_UNKNOWN,
-            ));
+            return Err(creation("vkCreateGraphicsPipelines", code));
         };
 
         Ok(RenderPipeline {

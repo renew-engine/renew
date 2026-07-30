@@ -175,10 +175,7 @@ impl Device {
         // SAFETY: category 1 (the one loader-entry site). Loading the
         // Vulkan runtime library; no aliasing or lifetime obligations —
         // the Entry owns the loaded library for the spine's lifetime.
-        let entry =
-            unsafe { ash::Entry::load() }.map_err(|error| DeviceError::LoaderUnavailable {
-                message: error.to_string(),
-            })?;
+        let entry = unsafe { ash::Entry::load() }.map_err(loader_unavailable)?;
 
         // Ledger + counters first: their addresses go into driver
         // structures and must outlive everything created below.
@@ -326,28 +323,17 @@ impl Device {
             .inspect_err(|_| teardown_early(&instance, debug.as_ref(), &ledger))?;
         let (physical, adapter, queue_family) = selected;
 
-        // Device extensions: portability subset must be enabled when
-        // present (MoltenVK contract); the swapchain extension powers
-        // the present path when this build carries it.
         // SAFETY: category 2: instance and physical device live.
         let device_extensions = unsafe { instance.enumerate_device_extension_properties(physical) }
             .map_err(|code| {
                 teardown_early(&instance, debug.as_ref(), &ledger);
                 creation("vkEnumerateDeviceExtensionProperties", code)
             })?;
-        let device_has = |name: &core::ffi::CStr| {
-            device_extensions
+        let device_extension_names: Vec<*const core::ffi::c_char> =
+            wanted_device_extensions(&device_extensions)
                 .iter()
-                .any(|ext| ext.extension_name_as_c_str().is_ok_and(|n| n == name))
-        };
-        let mut device_extension_names: Vec<*const core::ffi::c_char> = Vec::new();
-        if device_has(ash::khr::portability_subset::NAME) {
-            device_extension_names.push(ash::khr::portability_subset::NAME.as_ptr());
-        }
-        #[cfg(feature = "present")]
-        if device_has(ash::khr::swapchain::NAME) {
-            device_extension_names.push(ash::khr::swapchain::NAME.as_ptr());
-        }
+                .map(|name| name.as_ptr())
+                .collect();
 
         let priorities = [1.0f32];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
@@ -481,6 +467,47 @@ fn creation(call: &'static str, code: vk::Result) -> DeviceError {
     }
 }
 
+/// The no-Vulkan-runtime seam: the one bring-up failure that is about
+/// the machine rather than the request, so the loader's own words are
+/// carried through verbatim instead of replaced by ours.
+///
+/// Takes any message source rather than `ash::LoadingError`, which
+/// cannot be constructed outside ash — this way the mapping is provable
+/// even though the loading failure itself is reachable only on a
+/// machine with no Vulkan runtime installed.
+fn loader_unavailable(error: impl core::fmt::Display) -> DeviceError {
+    DeviceError::LoaderUnavailable {
+        message: error.to_string(),
+    }
+}
+
+/// The device extensions v0 asks the driver to enable, from what the
+/// adapter reports.
+///
+/// Pure so the portability arm is provable: it exists for the
+/// `MoltenVK` contract — the portability subset must be enabled
+/// wherever it is exposed — and no Windows or Linux adapter exposes it.
+fn wanted_device_extensions(
+    available: &[vk::ExtensionProperties],
+) -> Vec<&'static core::ffi::CStr> {
+    let offers = |name: &core::ffi::CStr| {
+        available
+            .iter()
+            .any(|ext| ext.extension_name_as_c_str().is_ok_and(|n| n == name))
+    };
+    let mut wanted = Vec::new();
+    if offers(ash::khr::portability_subset::NAME) {
+        wanted.push(ash::khr::portability_subset::NAME);
+    }
+    // The swapchain extension powers the present path when this build
+    // carries it.
+    #[cfg(feature = "present")]
+    if offers(ash::khr::swapchain::NAME) {
+        wanted.push(ash::khr::swapchain::NAME);
+    }
+    wanted
+}
+
 /// Instance-level cleanup for the failure paths before the spine
 /// exists.
 fn teardown_early(
@@ -503,73 +530,88 @@ fn teardown_early(
 
 type Selected = (vk::PhysicalDevice, AdapterInfo, u32);
 
+/// The v0 adapter requirement, as a pure predicate over what the driver
+/// reported: a graphics queue family, plus the two Vulkan 1.3 features
+/// every recorded frame uses. `None` means "not usable here".
+///
+/// Pure on purpose. A test machine offers the adapters it happens to
+/// have — never one missing dynamic rendering, never a compute-only
+/// one — so the rejection arms are provable only away from the driver.
+fn graphics_family(
+    families: &[vk::QueueFamilyProperties],
+    features: &vk::PhysicalDeviceVulkan13Features<'_>,
+) -> Option<u32> {
+    if features.dynamic_rendering != vk::TRUE || features.synchronization2 != vk::TRUE {
+        return None;
+    }
+    let index = families
+        .iter()
+        .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))?;
+    u32::try_from(index).ok()
+}
+
+/// Classify one adapter and produce its selection key: rank by kind
+/// first, then by lowest device ID, so selection is deterministic on
+/// any machine. Pure for the same reason as [`graphics_family`] — the
+/// kind table has five arms and a test machine exhibits one.
+fn describe_adapter(properties: &vk::PhysicalDeviceProperties) -> (AdapterInfo, (u8, u32)) {
+    let kind = match properties.device_type {
+        vk::PhysicalDeviceType::DISCRETE_GPU => AdapterKind::DiscreteGpu,
+        vk::PhysicalDeviceType::INTEGRATED_GPU => AdapterKind::IntegratedGpu,
+        vk::PhysicalDeviceType::VIRTUAL_GPU => AdapterKind::VirtualGpu,
+        vk::PhysicalDeviceType::CPU => AdapterKind::SoftwareRasterizer,
+        _ => AdapterKind::Other,
+    };
+    let rank = match kind {
+        AdapterKind::DiscreteGpu => 0u8,
+        AdapterKind::IntegratedGpu => 1,
+        AdapterKind::VirtualGpu => 2,
+        AdapterKind::SoftwareRasterizer => 3,
+        AdapterKind::Other => 4,
+    };
+    let name = properties.device_name_as_c_str().map_or_else(
+        |_| String::from("(unnamed adapter)"),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let info = AdapterInfo {
+        name,
+        kind,
+        driver_version: properties.driver_version,
+        vendor_id: properties.vendor_id,
+        device_id: properties.device_id,
+    };
+    (info, (rank, properties.device_id))
+}
+
 fn select_adapter(instance: &ash::Instance) -> Result<Selected, DeviceError> {
     // SAFETY: category 2: instance live.
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|code| creation("vkEnumeratePhysicalDevices", code))?;
-    let mut best: Option<(Selected, (u8, u32))> = None;
-    for physical in physical_devices {
-        // SAFETY: category 2: instance and each enumerated device live.
-        let properties = unsafe { instance.get_physical_device_properties(physical) };
-        // SAFETY: category 2: instance and enumerated device live.
-        let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
-        let Some(queue_family) = families
-            .iter()
-            .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-        else {
-            continue;
-        };
-        let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default();
-        let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan13);
-        // SAFETY: category 2: as above; the chained struct outlives the
-        // call.
-        unsafe { instance.get_physical_device_features2(physical, &mut features2) };
-        if vulkan13.dynamic_rendering != vk::TRUE {
-            continue;
-        }
-        if vulkan13.synchronization2 != vk::TRUE {
-            continue;
-        }
-        let kind = match properties.device_type {
-            vk::PhysicalDeviceType::DISCRETE_GPU => AdapterKind::DiscreteGpu,
-            vk::PhysicalDeviceType::INTEGRATED_GPU => AdapterKind::IntegratedGpu,
-            vk::PhysicalDeviceType::VIRTUAL_GPU => AdapterKind::VirtualGpu,
-            vk::PhysicalDeviceType::CPU => AdapterKind::SoftwareRasterizer,
-            _ => AdapterKind::Other,
-        };
-        let rank = match kind {
-            AdapterKind::DiscreteGpu => 0u8,
-            AdapterKind::IntegratedGpu => 1,
-            AdapterKind::VirtualGpu => 2,
-            AdapterKind::SoftwareRasterizer => 3,
-            AdapterKind::Other => 4,
-        };
-        let name = properties.device_name_as_c_str().map_or_else(
-            |_| String::from("(unnamed adapter)"),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let info = AdapterInfo {
-            name,
-            kind,
-            driver_version: properties.driver_version,
-            vendor_id: properties.vendor_id,
-            device_id: properties.device_id,
-        };
-        let key = (rank, properties.device_id);
-        let candidate = (
-            (
-                physical,
-                info,
-                u32::try_from(queue_family).unwrap_or(u32::MAX),
-            ),
-            key,
-        );
-        match &best {
-            Some((_, best_key)) if *best_key <= key => {}
-            _ => best = Some(candidate),
-        }
-    }
-    best.map(|(selected, _)| selected)
+    // `min_by_key` keeps the first of equal keys. Two identical cards in
+    // one machine report the same kind and device ID, so ties DO happen
+    // there and fall to enumeration order, which the spec does not
+    // promise to keep stable — picking between twins needs a key this
+    // API does not expose (PCI location), so v0 states the bound rather
+    // than pretending to a determinism it cannot deliver.
+    physical_devices
+        .into_iter()
+        .filter_map(|physical| {
+            // SAFETY: category 2: instance and each enumerated device live.
+            let properties = unsafe { instance.get_physical_device_properties(physical) };
+            // SAFETY: category 2: instance and enumerated device live.
+            let families =
+                unsafe { instance.get_physical_device_queue_family_properties(physical) };
+            let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default();
+            let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan13);
+            // SAFETY: category 2: as above; the chained struct outlives
+            // the call.
+            unsafe { instance.get_physical_device_features2(physical, &mut features2) };
+            let queue_family = graphics_family(&families, &vulkan13)?;
+            let (info, key) = describe_adapter(&properties);
+            Some(((physical, info, queue_family), key))
+        })
+        .min_by_key(|(_, key)| *key)
+        .map(|(selected, _)| selected)
         .ok_or(DeviceError::NoSuitableAdapter {
             requirement: "a graphics queue plus dynamic rendering and synchronization2",
         })
@@ -593,5 +635,198 @@ mod tests {
         assert!(flag.poisoned(), "device loss poisons");
         assert!(!flag.note(vk::Result::SUCCESS));
         assert!(flag.poisoned(), "poison is sticky");
+    }
+
+    fn family(flags: vk::QueueFlags) -> vk::QueueFamilyProperties {
+        vk::QueueFamilyProperties {
+            queue_flags: flags,
+            queue_count: 1,
+            ..Default::default()
+        }
+    }
+
+    fn properties(
+        device_type: vk::PhysicalDeviceType,
+        device_id: u32,
+        name: &[u8],
+    ) -> vk::PhysicalDeviceProperties {
+        let mut properties = vk::PhysicalDeviceProperties {
+            device_type,
+            device_id,
+            vendor_id: 0x1002,
+            driver_version: 42,
+            ..Default::default()
+        };
+        // `c_char` is signed on some targets and unsigned on others;
+        // `try_from` is the one conversion that compiles on both.
+        for (cell, byte) in properties.device_name.iter_mut().zip(name) {
+            *cell = core::ffi::c_char::try_from(*byte).unwrap_or(0);
+        }
+        properties
+    }
+
+    // The requirement gate, unit-covered: the machine running this test
+    // supplies whichever adapters it has, so every rejection arm would
+    // otherwise be untested until it silently stopped working.
+    #[test]
+    fn the_adapter_gate_rejects_what_v0_cannot_render_with() {
+        let full = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .synchronization2(true);
+        let families = [
+            family(vk::QueueFlags::COMPUTE),
+            family(vk::QueueFlags::GRAPHICS | vk::QueueFlags::TRANSFER),
+        ];
+        assert_eq!(
+            graphics_family(&families, &full),
+            Some(1),
+            "the first graphics-capable family is the chosen one"
+        );
+        assert_eq!(
+            graphics_family(&families[..1], &full),
+            None,
+            "a compute-only adapter cannot render"
+        );
+        assert_eq!(graphics_family(&[], &full), None, "no queues, no adapter");
+        assert_eq!(
+            graphics_family(
+                &families,
+                &vk::PhysicalDeviceVulkan13Features::default().synchronization2(true)
+            ),
+            None,
+            "dynamic rendering is not optional: every frame uses it"
+        );
+        assert_eq!(
+            graphics_family(
+                &families,
+                &vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true)
+            ),
+            None,
+            "synchronization2 is not optional: every barrier uses it"
+        );
+    }
+
+    #[test]
+    fn every_adapter_kind_maps_to_its_own_rank() {
+        let table = [
+            (
+                vk::PhysicalDeviceType::DISCRETE_GPU,
+                AdapterKind::DiscreteGpu,
+                0u8,
+            ),
+            (
+                vk::PhysicalDeviceType::INTEGRATED_GPU,
+                AdapterKind::IntegratedGpu,
+                1,
+            ),
+            (
+                vk::PhysicalDeviceType::VIRTUAL_GPU,
+                AdapterKind::VirtualGpu,
+                2,
+            ),
+            (
+                vk::PhysicalDeviceType::CPU,
+                AdapterKind::SoftwareRasterizer,
+                3,
+            ),
+            (vk::PhysicalDeviceType::OTHER, AdapterKind::Other, 4),
+        ];
+        let mut keys = Vec::with_capacity(table.len());
+        for (device_type, kind, rank) in table {
+            let (info, key) = describe_adapter(&properties(device_type, 9, b"renew adapter"));
+            assert_eq!(info.kind, kind, "{device_type:?} classified wrongly");
+            assert_eq!(key, (rank, 9), "{device_type:?} ranked wrongly");
+            keys.push(key);
+        }
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            keys, sorted,
+            "the table must already be in preference order"
+        );
+        // Same kind, different adapters: the lower device ID wins, which
+        // is what makes selection reproducible across runs.
+        let (_, low) = describe_adapter(&properties(vk::PhysicalDeviceType::DISCRETE_GPU, 1, b"a"));
+        let (_, high) =
+            describe_adapter(&properties(vk::PhysicalDeviceType::DISCRETE_GPU, 2, b"b"));
+        assert!(low < high);
+    }
+
+    #[test]
+    fn adapter_identity_survives_the_description() {
+        let (info, _) = describe_adapter(&properties(
+            vk::PhysicalDeviceType::DISCRETE_GPU,
+            7,
+            b"renew reference adapter",
+        ));
+        assert_eq!(info.name, "renew reference adapter");
+        assert_eq!(info.device_id, 7);
+        assert_eq!(info.vendor_id, 0x1002);
+        assert_eq!(info.driver_version, 42);
+    }
+
+    fn extension(name: &core::ffi::CStr) -> vk::ExtensionProperties {
+        let mut properties = vk::ExtensionProperties::default();
+        for (cell, byte) in properties
+            .extension_name
+            .iter_mut()
+            .zip(name.to_bytes_with_nul())
+        {
+            *cell = core::ffi::c_char::try_from(*byte).unwrap_or(0);
+        }
+        properties
+    }
+
+    // The MoltenVK rule, unit-covered: an adapter that exposes the
+    // portability subset requires it enabled, and no adapter this suite
+    // can run against exposes it.
+    #[test]
+    fn the_portability_subset_is_requested_wherever_it_is_offered() {
+        assert_eq!(
+            wanted_device_extensions(&[extension(ash::khr::portability_subset::NAME)]),
+            [ash::khr::portability_subset::NAME]
+        );
+        assert!(
+            wanted_device_extensions(&[extension(c"VK_KHR_maintenance5")]).is_empty(),
+            "nothing v0 needs on offer, nothing requested"
+        );
+        assert!(wanted_device_extensions(&[]).is_empty());
+    }
+
+    #[cfg(feature = "present")]
+    #[test]
+    fn the_swapchain_extension_is_requested_when_the_adapter_has_it() {
+        assert_eq!(
+            wanted_device_extensions(&[
+                extension(c"VK_KHR_maintenance5"),
+                extension(ash::khr::swapchain::NAME),
+            ]),
+            [ash::khr::swapchain::NAME]
+        );
+    }
+
+    // The load itself needs a machine with no Vulkan runtime; what the
+    // failure turns into does not, and that is the part with a rule:
+    // the loader's own explanation reaches the caller intact, because
+    // nothing this crate could write in its place would be as useful.
+    #[test]
+    fn a_loader_failure_carries_the_loaders_own_words() {
+        let words = "Cannot load `vkGetInstanceProcAddr` symbol from library";
+        // `matches!` rather than a `let … else`: a fallback arm is dead
+        // on every passing run, and this form pins the variant too.
+        let mapped = loader_unavailable(words);
+        assert!(
+            matches!(&mapped, DeviceError::LoaderUnavailable { message } if message == words),
+            "expected the loader's own words back, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn a_name_with_no_terminator_becomes_a_placeholder() {
+        let mut unnamed = properties(vk::PhysicalDeviceType::CPU, 0, b"");
+        // No NUL anywhere in the array: the driver's name is unreadable
+        // as a C string, and a report still needs something to print.
+        unnamed.device_name.fill(core::ffi::c_char::MAX);
+        assert_eq!(describe_adapter(&unnamed).0.name, "(unnamed adapter)");
     }
 }

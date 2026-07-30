@@ -50,3 +50,11 @@ workspace = true
 name = "window_smoke"
 harness = false
 required-features = ["window"]
+
+# Provoking an OS thread refusal needs a process whose RUST_MIN_STACK is
+# unsatisfiable, so this binary re-runs itself as a child; the default
+# harness spawns a thread per test and would be refused before reaching
+# the code under test.
+[[test]]
+name = "thread_spawn_refusal"
+harness = false

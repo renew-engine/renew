@@ -11,9 +11,12 @@ pub struct Handle {
     generation: u32,
 }
 
-enum Slot<T> {
-    Vacant { generation: u32 },
-    Occupied { generation: u32, value: T },
+/// One storage slot. `value` is `Some` exactly while the slot is
+/// occupied; `generation` counts releases, so a handle issued for an
+/// earlier occupant of the same slot misses.
+struct Slot<T> {
+    generation: u32,
+    value: Option<T>,
 }
 
 /// A fixed-capacity pool: all storage acquired at construction, no
@@ -41,7 +44,10 @@ impl<T> Pool<T> {
         let clamped = u32::try_from(capacity).unwrap_or(u32::MAX);
         let mut slots = Vec::with_capacity(clamped as usize);
         for _ in 0..clamped {
-            slots.push(Slot::Vacant { generation: 0 });
+            slots.push(Slot {
+                generation: 0,
+                value: None,
+            });
         }
         // Reverse order so `pop` hands out index 0 first.
         let free: Vec<u32> = (0..clamped).rev().collect();
@@ -59,24 +65,35 @@ impl<T> Pool<T> {
     /// `Err(value)` when the pool is at capacity — the value comes back
     /// untouched so the caller keeps ownership.
     pub fn insert(&mut self, value: T) -> Result<Handle, T> {
-        let Some(index) = self.free.pop() else {
+        let claimed = self.free.pop();
+        // A free-list entry always indexes an existing, vacant slot:
+        // entries come from `0..capacity` at construction and from an
+        // index that already passed a bounds check in `remove`. The
+        // lookup below therefore misses only when the list was empty —
+        // the pool is full — and the value goes back to the caller.
+        debug_assert!(
+            claimed.is_none_or(|index| (index as usize) < self.slots.len()),
+            "the free list must only hold indices of existing slots"
+        );
+        let slots = &mut self.slots;
+        let Some((index, slot)) =
+            claimed.and_then(|index| slots.get_mut(index as usize).map(|slot| (index, slot)))
+        else {
             return Err(value);
         };
-        // Free-list entries always point at existing, vacant slots; both
-        // fallback arms below are defensive (and asserted) rather than
-        // reachable, and neither can panic in release.
-        let Some(slot) = self.slots.get_mut(index as usize) else {
-            debug_assert!(false, "free list pointed outside the slot array");
+        // Occupying a slot that already holds a value would drop the
+        // previous occupant silently and hand out a second handle with
+        // its exact identity — two live handles onto one slot. The
+        // free-list discipline makes that unreachable, so this refuses
+        // rather than defends: a graceful full-pool answer costs one
+        // cold branch and cannot become aliasing if the discipline ever
+        // breaks.
+        debug_assert!(slot.value.is_none(), "the free list held an occupied slot");
+        if slot.value.is_some() {
             return Err(value);
-        };
-        let generation = match slot {
-            Slot::Vacant { generation } => *generation,
-            Slot::Occupied { .. } => {
-                debug_assert!(false, "free list pointed at an occupied slot");
-                return Err(value);
-            }
-        };
-        *slot = Slot::Occupied { generation, value };
+        }
+        let generation = slot.generation;
+        slot.value = Some(value);
         self.live += 1;
         Ok(Handle { index, generation })
     }
@@ -84,42 +101,37 @@ impl<T> Pool<T> {
     /// Remove and return the value, or `None` for stale/invalid handles.
     pub fn remove(&mut self, handle: Handle) -> Option<T> {
         let slot = self.slots.get_mut(handle.index as usize)?;
-        match slot {
-            Slot::Occupied { generation, .. } if *generation == handle.generation => {
-                let next_generation = generation.wrapping_add(1);
-                let previous = core::mem::replace(
-                    slot,
-                    Slot::Vacant {
-                        generation: next_generation,
-                    },
-                );
-                self.free.push(handle.index);
-                self.live -= 1;
-                match previous {
-                    Slot::Occupied { value, .. } => Some(value),
-                    Slot::Vacant { .. } => None,
-                }
-            }
-            _ => None,
+        if slot.generation != handle.generation {
+            return None;
         }
+        // A live handle's generation always names an *occupied* slot:
+        // releasing bumps the generation past it. A vacant slot here is
+        // therefore a miss, not a removal.
+        let value = slot.value.take()?;
+        slot.generation = slot.generation.wrapping_add(1);
+        self.free.push(handle.index);
+        self.live -= 1;
+        Some(value)
     }
 
     /// Borrow the value, or `None` for stale/invalid handles.
     #[must_use]
     pub fn get(&self, handle: Handle) -> Option<&T> {
-        match self.slots.get(handle.index as usize)? {
-            Slot::Occupied { generation, value } if *generation == handle.generation => Some(value),
-            _ => None,
+        let slot = self.slots.get(handle.index as usize)?;
+        if slot.generation != handle.generation {
+            return None;
         }
+        slot.value.as_ref()
     }
 
     /// Mutably borrow the value, or `None` for stale/invalid handles.
     #[must_use]
     pub fn get_mut(&mut self, handle: Handle) -> Option<&mut T> {
-        match self.slots.get_mut(handle.index as usize)? {
-            Slot::Occupied { generation, value } if *generation == handle.generation => Some(value),
-            _ => None,
+        let slot = self.slots.get_mut(handle.index as usize)?;
+        if slot.generation != handle.generation {
+            return None;
         }
+        slot.value.as_mut()
     }
 
     /// Live value count.
@@ -170,6 +182,37 @@ mod tests {
     }
 
     #[test]
+    fn stale_handles_miss_through_get_mut_too() {
+        // The mutable accessor is a separate path and must reject the
+        // same handles the shared one does — a stale `get_mut` would
+        // hand out a live reference to another occupant's value.
+        let mut pool: Pool<u32> = Pool::with_capacity(1);
+        let first = pool.insert(1).expect("has room");
+        assert_eq!(pool.remove(first), Some(1));
+        assert!(pool.get_mut(first).is_none(), "freed slot");
+
+        let second = pool.insert(2).expect("slot recycled");
+        assert!(
+            pool.get_mut(first).is_none(),
+            "reused slot, bumped generation"
+        );
+        assert_eq!(pool.get_mut(second).copied(), Some(2));
+    }
+
+    #[test]
+    fn handles_from_a_bigger_pool_miss_instead_of_indexing_out_of_bounds() {
+        let mut big: Pool<u8> = Pool::with_capacity(4);
+        let _first = big.insert(1).expect("has room");
+        let far = big.insert(2).expect("has room");
+
+        let mut small: Pool<u8> = Pool::with_capacity(1);
+        assert!(small.get(far).is_none());
+        assert!(small.get_mut(far).is_none());
+        assert_eq!(small.remove(far), None);
+        assert!(small.is_empty(), "a foreign handle changes nothing");
+    }
+
+    #[test]
     fn a_full_pool_returns_the_value() {
         let mut pool: Pool<u8> = Pool::with_capacity(1);
         let _keep = pool.insert(1).expect("has room");
@@ -194,6 +237,34 @@ mod tests {
         let c = pool.insert(3).expect("slot recycled");
         assert_eq!(pool.get(c), Some(&3));
         assert_eq!(pool.get(b), Some(&2));
+        assert_eq!(pool.len(), 2);
+    }
+
+    /// Removal must consult the *value* before touching the generation
+    /// or the free list: a handle whose generation happens to match a
+    /// VACANT slot is a miss, not a removal. Get that order wrong and
+    /// the slot is pushed onto the free list twice, which later hands
+    /// out two live handles with the same identity. A foreign handle
+    /// from another pool is the cheapest way to present a matching
+    /// generation over an empty slot.
+    #[test]
+    fn a_handle_matching_a_vacant_slots_generation_removes_nothing() {
+        let mut donor: Pool<u8> = Pool::with_capacity(2);
+        let foreign = donor.insert(1).expect("room");
+
+        let mut pool: Pool<u8> = Pool::with_capacity(2);
+        assert_eq!(
+            pool.remove(foreign),
+            None,
+            "vacant slot, matching generation"
+        );
+
+        // The free list must still hold exactly two entries.
+        let a = pool.insert(10).expect("room");
+        let b = pool.insert(20).expect("room");
+        assert_eq!(pool.insert(30), Err(30), "capacity is still two");
+        assert_eq!(pool.get(a), Some(&10));
+        assert_eq!(pool.get(b), Some(&20));
         assert_eq!(pool.len(), 2);
     }
 }

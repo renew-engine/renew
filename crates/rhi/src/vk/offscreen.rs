@@ -25,27 +25,59 @@ fn creation(call: &'static str, code: vk::Result) -> TargetError {
 }
 
 /// Locate a memory type index satisfying `type_bits` and `flags`.
-fn find_memory_type(
-    shared: &DeviceShared,
+fn pick_memory_type(
+    properties: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
     flags: vk::MemoryPropertyFlags,
 ) -> Option<u32> {
-    // SAFETY: category 2 (ash dispatch): instance and physical device
-    // live via the spine.
-    let properties = unsafe {
-        shared
-            .instance
-            .get_physical_device_memory_properties(shared.physical)
-    };
-    (0..properties.memory_type_count).find(|&index| {
+    // `memory_types` is a fixed-size array and `type_bits` has one bit
+    // per type: a driver over-reporting the count would index out of
+    // bounds and shift out of range. Clamp rather than trust it.
+    let count = properties
+        .memory_type_count
+        .min(vk::MAX_MEMORY_TYPES.try_into().unwrap_or(u32::MAX));
+    (0..count).find(|&index| {
         let supported = type_bits & (1 << index) != 0;
         let type_flags = properties.memory_types[index as usize].property_flags;
         supported && type_flags.contains(flags)
     })
 }
 
+/// The memory type for the render image: device-local when this image
+/// can live there, any type it accepts otherwise.
+///
+/// The spec guarantees a device-local memory type exists, but not that
+/// a given image's `memoryTypeBits` includes one — the fallback is what
+/// keeps bring-up working on an implementation that does not, and it
+/// lives here, pure, because no test machine can be made into one.
+fn image_memory_type(
+    properties: &vk::PhysicalDeviceMemoryProperties,
+    type_bits: u32,
+) -> Option<u32> {
+    pick_memory_type(properties, type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        .or_else(|| pick_memory_type(properties, type_bits, vk::MemoryPropertyFlags::empty()))
+}
+
+/// The non-zero-extent contract as a value, so the release-build
+/// verdict is provable: a dev build asserts on a zero extent long
+/// before the returned error could be observed, and every test runs
+/// with assertions on.
+fn check_extent(extent: Extent) -> Result<(), TargetError> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err(TargetError::Creation {
+            call: "create_offscreen_target(zero extent)",
+            code: 0,
+        });
+    }
+    Ok(())
+}
+
 /// Everything created so far during bring-up, destroyed in reverse
 /// order when a later step fails.
+///
+/// The fence has no slot here: it is the last handle [`build`] creates
+/// and nothing fallible follows it, so an unwinder could never observe
+/// one. A new fallible step after the fence must add it back.
 #[derive(Default)]
 struct Partial {
     image: Option<vk::Image>,
@@ -55,7 +87,6 @@ struct Partial {
     buffer_memory: Option<vk::DeviceMemory>,
     mapped: bool,
     pool: Option<vk::CommandPool>,
-    fence: Option<vk::Fence>,
 }
 
 impl Partial {
@@ -63,11 +94,6 @@ impl Partial {
         // SAFETY: category 2: every present handle was created with
         // these callbacks and nothing submitted work against them yet.
         unsafe {
-            if let Some(fence) = self.fence.take() {
-                shared
-                    .device
-                    .destroy_fence(fence, Some(&shared.alloc_cbs()));
-            }
             if let Some(pool) = self.pool.take() {
                 shared
                     .device
@@ -135,17 +161,14 @@ impl Device {
     /// Creation and memory errors from the driver;
     /// [`TargetError::DeviceLost`] on a poisoned device.
     pub fn create_offscreen_target(&self, extent: Extent) -> Result<OffscreenTarget, TargetError> {
+        // Fatal in dev builds; in release, where the assertion is
+        // compiled out, the same verdict is returned instead.
+        let checked = check_extent(extent);
         debug_assert!(
-            extent.width > 0 && extent.height > 0,
-            "offscreen targets need a non-zero extent"
+            checked.is_ok(),
+            "offscreen targets need a non-zero extent, got {extent:?}"
         );
-        if extent.width == 0 || extent.height == 0 {
-            // Defensive release-build path for the asserted contract.
-            return Err(TargetError::Creation {
-                call: "create_offscreen_target(zero extent)",
-                code: 0,
-            });
-        }
+        checked?;
         if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
@@ -198,22 +221,18 @@ fn build(
 
     // SAFETY: image live.
     let image_requirements = unsafe { shared.device.get_image_memory_requirements(image) };
-    let image_type = find_memory_type(
-        shared,
-        image_requirements.memory_type_bits,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )
-    .or_else(|| {
-        find_memory_type(
-            shared,
-            image_requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::empty(),
-        )
-    })
-    .ok_or(TargetError::Creation {
-        call: "image memory type",
-        code: 0,
-    })?;
+    // SAFETY: instance and physical device live via the spine. Read
+    // once: the table is a property of the adapter, not of the moment.
+    let memory_properties = unsafe {
+        shared
+            .instance
+            .get_physical_device_memory_properties(shared.physical)
+    };
+    let image_type = image_memory_type(&memory_properties, image_requirements.memory_type_bits)
+        .ok_or(TargetError::Creation {
+            call: "image memory type",
+            code: 0,
+        })?;
     let image_alloc = vk::MemoryAllocateInfo::default()
         .allocation_size(image_requirements.size)
         .memory_type_index(image_type);
@@ -260,8 +279,8 @@ fn build(
 
     // SAFETY: buffer live.
     let buffer_requirements = unsafe { shared.device.get_buffer_memory_requirements(buffer) };
-    let buffer_type = find_memory_type(
-        shared,
+    let buffer_type = pick_memory_type(
+        &memory_properties,
         buffer_requirements.memory_type_bits,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )
@@ -330,7 +349,6 @@ fn build(
             .create_fence(&vk::FenceCreateInfo::default(), Some(&shared.alloc_cbs()))
     }
     .map_err(|code| creation("vkCreateFence", code))?;
-    partial.fence = Some(fence);
 
     // Ownership transfers to the target; disarm the unwinder.
     *partial = Partial::default();
@@ -671,5 +689,133 @@ impl Drop for OffscreenTarget {
                 .device
                 .destroy_image(self.image, Some(&self.shared.alloc_cbs()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A memory-properties table with one heap and the given types, in
+    /// order — the shape the driver reports, without a driver.
+    fn table(types: &[vk::MemoryPropertyFlags]) -> vk::PhysicalDeviceMemoryProperties {
+        let mut properties = vk::PhysicalDeviceMemoryProperties {
+            memory_type_count: u32::try_from(types.len()).expect("a plausible type count"),
+            memory_heap_count: 1,
+            ..Default::default()
+        };
+        for (slot, flags) in properties.memory_types.iter_mut().zip(types) {
+            slot.property_flags = *flags;
+        }
+        properties
+    }
+
+    const DEVICE_LOCAL: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+    const HOST: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    );
+
+    #[test]
+    fn the_render_image_prefers_device_local_memory() {
+        let properties = table(&[HOST, DEVICE_LOCAL]);
+        assert_eq!(
+            image_memory_type(&properties, 0b11),
+            Some(1),
+            "both types allowed: the device-local one wins"
+        );
+    }
+
+    // The spec guarantees a device-local memory type exists; it does not
+    // guarantee a given image may live in one. No test machine can be
+    // made to report that, so the fallback is proven here instead.
+    #[test]
+    fn the_render_image_falls_back_when_no_device_local_type_is_allowed() {
+        let properties = table(&[HOST, DEVICE_LOCAL]);
+        assert_eq!(
+            image_memory_type(&properties, 0b01),
+            Some(0),
+            "the image excludes the device-local type: take what it allows"
+        );
+    }
+
+    #[test]
+    fn a_memory_type_nothing_satisfies_is_reported_not_guessed() {
+        let properties = table(&[DEVICE_LOCAL]);
+        assert_eq!(
+            image_memory_type(&properties, 0),
+            None,
+            "an image allowing no type at all has nowhere to live"
+        );
+        assert_eq!(
+            pick_memory_type(&properties, 0b1, HOST),
+            None,
+            "the readback buffer needs host-visible memory, not any memory"
+        );
+    }
+
+    /// Every requested flag must be present, not merely one of them.
+    /// A type offering `HOST_VISIBLE` without `HOST_COHERENT` would be
+    /// accepted by an "intersects" test and would break readback
+    /// silently: this code never invalidates mapped ranges, so it would
+    /// hand back stale bytes rather than fail.
+    #[test]
+    fn a_partial_flag_match_is_not_a_match() {
+        let properties = table(&[vk::MemoryPropertyFlags::HOST_VISIBLE]);
+        assert_eq!(
+            pick_memory_type(&properties, 0b1, HOST),
+            None,
+            "host-visible alone does not satisfy host-visible AND coherent"
+        );
+        assert_eq!(
+            pick_memory_type(&properties, 0b1, vk::MemoryPropertyFlags::HOST_VISIBLE),
+            Some(0),
+            "the same type satisfies the weaker request"
+        );
+    }
+
+    // There is no minimized-window story headless, so a zero extent is
+    // a caller bug. It is fatal in dev builds; this pins what release
+    // builds answer instead, which no test run can otherwise reach.
+    #[test]
+    fn a_zero_extent_is_refused_in_either_dimension() {
+        for extent in [
+            Extent {
+                width: 0,
+                height: 8,
+            },
+            Extent {
+                width: 8,
+                height: 0,
+            },
+            Extent {
+                width: 0,
+                height: 0,
+            },
+        ] {
+            let refusal = check_extent(extent).expect_err("a zero extent has no target");
+            assert!(
+                matches!(refusal, TargetError::Creation { call, code: 0 }
+                    if call == "create_offscreen_target(zero extent)"),
+                "{extent:?} refused as {refusal:?}, which names no cause"
+            );
+        }
+        assert!(
+            check_extent(Extent {
+                width: 1,
+                height: 1
+            })
+            .is_ok(),
+            "one pixel is a real target"
+        );
+    }
+
+    #[test]
+    fn type_bits_are_matched_per_index_not_in_bulk() {
+        let properties = table(&[DEVICE_LOCAL, DEVICE_LOCAL, DEVICE_LOCAL]);
+        assert_eq!(pick_memory_type(&properties, 0b100, DEVICE_LOCAL), Some(2));
+        // Types past `memory_type_count` are unreported, so a bit set
+        // there selects nothing.
+        assert_eq!(pick_memory_type(&properties, 0b1000, DEVICE_LOCAL), None);
     }
 }
