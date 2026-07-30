@@ -190,7 +190,10 @@ fn triangle_matches_structure_and_the_committed_golden() {
     );
     assert_eq!(center[3], 255, "center pixel not opaque");
 
-    // Exact comparison only where rasterization is toolchain-pinned.
+    // Exact comparison only on the strict lane, whose stack is the
+    // pinned toolchain the golden's bytes attest. Any other software
+    // rasterizer (a distro lavapipe, a contributor's local build) has
+    // its own rasterization bits — structure above is its gate.
     let adapter = device.adapter();
     if adapter.kind != AdapterKind::SoftwareRasterizer {
         assert!(
@@ -203,6 +206,14 @@ fn triangle_matches_structure_and_the_committed_golden() {
         eprintln!(
             "SKIP exact-golden: adapter {:?} ({}) is not a software rasterizer",
             adapter.kind, adapter.name
+        );
+        return;
+    }
+    if !strict() {
+        eprintln!(
+            "SKIP exact-golden: software rasterizer {} outside the pinned lane \
+             (set RENEW_GOLDEN=1 only where the stack matches the golden's provenance)",
+            adapter.name
         );
         return;
     }

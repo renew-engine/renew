@@ -26,6 +26,7 @@ struct SmokeApp {
     size: Extent,
     frames: u32,
     updates: u32,
+    cycled: bool,
     skip: Option<String>,
     failure: Option<String>,
 }
@@ -42,6 +43,7 @@ impl SmokeApp {
             },
             frames: 0,
             updates: 0,
+            cycled: false,
             skip: None,
             failure: None,
         }
@@ -112,6 +114,45 @@ impl WindowApp for SmokeApp {
                     return;
                 };
                 let clear = Color::new(0.1, 0.2, 0.3, 1.0);
+                if self.frames == 5 && !self.cycled {
+                    // Dormant cycle mid-run: a zero-extent resize tears
+                    // the swapchain down, a dormant render reports
+                    // NeedsResize (and presents nothing), a real resize
+                    // rebuilds — the minimize protocol, exercised on
+                    // real glass.
+                    self.cycled = true;
+                    if let Err(error) = target.resize(Extent {
+                        width: 0,
+                        height: 0,
+                    }) {
+                        self.failure = Some(format!("dormant resize failed: {error}"));
+                        return;
+                    }
+                    if target.extent()
+                        != (Extent {
+                            width: 0,
+                            height: 0,
+                        })
+                    {
+                        self.failure = Some("dormant target reports a size".to_string());
+                        return;
+                    }
+                    match target.render(clear, None) {
+                        Ok(PresentOutcome::NeedsResize) => {}
+                        Ok(PresentOutcome::Presented) => {
+                            self.failure = Some("dormant target presented".to_string());
+                            return;
+                        }
+                        Err(error) => {
+                            self.failure = Some(format!("dormant render failed: {error}"));
+                            return;
+                        }
+                    }
+                    if let Err(error) = target.resize(self.size) {
+                        self.failure = Some(format!("rebuild resize failed: {error}"));
+                        return;
+                    }
+                }
                 match target.render(clear, self.pipeline.as_ref()) {
                     Ok(PresentOutcome::Presented) => self.frames += 1,
                     Ok(PresentOutcome::NeedsResize) => {

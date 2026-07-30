@@ -142,9 +142,17 @@ jobs:
           name: golden-candidates
           path: crates/rhi/tests/goldens/
           if-no-files-found: ignore
-      - name: Install a virtual display
-        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
+      - name: Install a virtual display and the distro software driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
+          grep -q '"library_path": "/usr/' /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      # The smoke presents through the distro lavapipe (the pinned
+      # tarball is a deliberately headless build); the golden steps
+      # above kept the pinned driver.
       - name: Present smoke under the virtual display
+        env:
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: xvfb-run -a cargo test --package renew-rhi --test present_smoke
 
   deny:
@@ -177,12 +185,25 @@ jobs:
       # count toward the gate honestly. libxkbcommon-x11 is the X11
       # keyboard runtime the windowing stack dlopens — absent on bare
       # runners, and its loader panics rather than erroring without it.
-      - name: Install a virtual display
-        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
-      # The rendering crate's GPU-facing lines must EXECUTE under the
-      # coverage gate, not skip: give the run a software Vulkan stack.
+      # mesa-vulkan-drivers is the distro lavapipe: unlike the pinned
+      # headless tarball, it carries window-system support, so the
+      # presentation path executes here instead of skipping. The
+      # absolute-path check guards against the loader resolving the
+      # driver library out of another stack on LD_LIBRARY_PATH.
+      - name: Install a virtual display and the distro software driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
+          grep -q '"library_path": "/usr/' /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      # The pinned action still supplies the validation layer (the
+      # oracle); only the driver is overridden below.
       - uses: ./.github/actions/software-vulkan
       - name: Collect coverage
+        env:
+          # Distro lavapipe for window-system support. No RENEW_GOLDEN
+          # here: this rasterizer's bits are not the golden's
+          # provenance, so exact comparison correctly stays off.
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine

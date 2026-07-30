@@ -208,6 +208,22 @@ fn invalid_spirv_is_rejected_per_stage() {
 }
 
 #[test]
+fn interior_nul_in_the_app_name_is_sanitized_not_swallowed() {
+    match Device::new(&DeviceDesc {
+        app_name: "renew\0device\0tests",
+        validation: Validation::Off,
+    }) {
+        Ok(device) => device.wait_idle().expect("wait_idle"),
+        Err(DeviceError::LoaderUnavailable { message })
+            if std::env::var_os("RENEW_GOLDEN").is_none_or(|v| v != "1") =>
+        {
+            eprintln!("SKIP: no Vulkan runtime: {message}");
+        }
+        Err(error) => panic!("bring-up with a NUL-bearing name failed: {error}"),
+    }
+}
+
+#[test]
 fn cross_device_pipeline_is_a_dev_build_contract_violation() {
     let Some(device_a) = required_device().expect("device bring-up") else {
         return;
