@@ -5,7 +5,7 @@ canonical developer tasks so that scripts, CI, and people all drive the same
 commands the same way.
 
 ```
-usage: renew <command> [--json]
+usage: renew <command> [options]
 
 commands:
   configure  verify the toolchain and cargo are present and sane
@@ -15,7 +15,17 @@ commands:
   lint       check formatting, then run clippy with warnings denied
   check      verify workspace crate manifests and dependencies
   doctor     check the development environment
+
+options:
+  --json     emit one machine-readable JSON document on stdout
+  --smoke    (bench only) run each benchmark once, without statistics
 ```
+
+`bench --smoke` is a second fixed entry in the command table (every bench
+executes once — the fast run-proof mode CI's benchmark stage uses), not a
+pass-through: the flag is rejected on every other subcommand. The JSON
+envelope does not distinguish smoke from a full bench run — the caller
+knows which mode it invoked, and the envelope shape stays uniform.
 
 ## Status
 

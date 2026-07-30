@@ -164,7 +164,7 @@ fn run_steps(invocation: Invocation) -> ExitCode {
 
     let mut stdout_all = String::new();
     let mut stderr_all = String::new();
-    for step in plan::steps(invocation.command) {
+    for step in plan::steps(invocation.command, invocation.smoke) {
         if invocation.json {
             match Process::new(step.program)
                 .args(step.args)
