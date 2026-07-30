@@ -919,6 +919,10 @@ impl FaultApp {
                 }
                 Err(error) => return Err(format!("device bring-up failed: {error}")),
             };
+            assert!(
+                device.validation_active() || !strict(),
+                "RENEW_FAULT_STRICT=1 but the validation layer is not active — the                  zero-validation-errors assertion in every scenario below would be                  a claim about nothing."
+            );
             match device.create_offscreen_target(Extent {
                 width: 8,
                 height: 8,

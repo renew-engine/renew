@@ -150,11 +150,30 @@ impl Outcome {
 pub fn relative_to(root: &str, path: &str) -> String {
     let prefix = format!("{}/", root.replace('\\', "/").trim_end_matches('/'));
     let path = path.replace('\\', "/");
-    match (path.get(..prefix.len()), path.get(prefix.len()..)) {
-        (Some(head), Some(tail)) if head.eq_ignore_ascii_case(&prefix) && !tail.is_empty() => {
-            tail.to_string()
-        }
-        _ => path,
+    if let (Some(head), Some(tail)) = (path.get(..prefix.len()), path.get(prefix.len()..))
+        && head.eq_ignore_ascii_case(&prefix)
+        && !tail.is_empty()
+    {
+        return tail.to_string();
+    }
+    // The prefix can fail on a path that is nonetheless inside the root:
+    // macOS resolves the temporary directory through /private, so a
+    // working directory and a path naming the same file differ
+    // textually. Falling back to the text after the root's own final
+    // component keeps such a path relative, instead of reporting an
+    // absolute one no manifest entry could ever name. A path from
+    // somewhere else entirely contains no such component and comes back
+    // whole, which is what the caller reports.
+    let Some(root_tail) = prefix.trim_end_matches('/').rsplit('/').next() else {
+        return path;
+    };
+    if root_tail.is_empty() {
+        return path;
+    }
+    let marker = format!("/{root_tail}/");
+    match path.rfind(&marker) {
+        Some(at) => path[at + marker.len()..].to_string(),
+        None => path,
     }
 }
 
@@ -763,6 +782,23 @@ mod tests {
         assert_eq!(relative_to("/w", "/works/a.rs"), "/works/a.rs");
         // A multi-byte tail must not be sliced apart.
         assert_eq!(relative_to("/w", "/w/çağdaş.rs"), "çağdaş.rs");
+        // macOS resolves the temporary directory through /private, so a
+        // working directory and a path naming the same file differ
+        // textually. The root's own final component still locates the
+        // tail, which is what the manifest can name.
+        assert_eq!(
+            relative_to(
+                "/var/folders/8j/T/renew-cli-coverage-stale-1",
+                "/private/var/folders/8j/T/renew-cli-coverage-stale-1/crates/a.rs"
+            ),
+            "crates/a.rs"
+        );
+        // The fallback is not a licence to match anything: a path with no
+        // such component is still reported whole.
+        assert_eq!(
+            relative_to("/var/folders/T/scratch-1", "/elsewhere/crates/a.rs"),
+            "/elsewhere/crates/a.rs"
+        );
     }
 
     /// An export of one file whose regions are given as

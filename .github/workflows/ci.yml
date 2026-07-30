@@ -145,7 +145,12 @@ jobs:
           VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
           RENEW_FAULT_STRICT: "1"
         run: |
-          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
           cargo test --package renew-rhi --test fault
       # The golden bootstrap/refresh ritual writes its candidate and
       # fails; surface the candidate for human inspection.
@@ -179,7 +184,12 @@ jobs:
             "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
-          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
           xvfb-run -a cargo test --package renew-rhi --test present_smoke
           xvfb-run -a cargo test --package renew-rhi --test fault_present
 
@@ -250,7 +260,12 @@ jobs:
             "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
           export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
-          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
           # The fault layer is test scaffolding that runs inside the

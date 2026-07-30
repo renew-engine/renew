@@ -275,6 +275,10 @@ fn every_driver_failure_ladder_behaves() {
             false
         }
     };
+    assert!(
+        validation_available || !strict(),
+        "RENEW_FAULT_STRICT=1 but the validation layer is not active — every          zero-validation-errors assertion below would be a claim about nothing.          Check that the layer search path still names the SDK's layer directory."
+    );
     if !validation_available {
         eprintln!("note: no validation layer; the E4/E7 scenarios are skipped");
     }

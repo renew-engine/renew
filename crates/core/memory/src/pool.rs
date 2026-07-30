@@ -295,14 +295,27 @@ mod tests {
         pool.free.push(9);
 
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.insert(7)));
-        let message = panic_text(
-            refused
-                .expect_err("an out-of-range free-list entry must be refused")
-                .as_ref(),
-        );
-        assert!(
-            message.contains("the free list must only hold indices of existing slots"),
-            "unexpected payload: {message}"
+        // The refusal is an assertion with debug assertions on and a
+        // returned Err without them; the suite runs under both, and the
+        // arm that does not apply is selected out rather than left in
+        // the binary as a region no coverage run can enter.
+        #[cfg(debug_assertions)]
+        {
+            let message = panic_text(
+                refused
+                    .expect_err("an out-of-range free-list entry must be refused")
+                    .as_ref(),
+            );
+            assert!(
+                message.contains("the free list must only hold indices of existing slots"),
+                "unexpected payload: {message}"
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            refused.expect("with assertions off the entry is refused by returning"),
+            Err(7),
+            "the value comes back to the caller"
         );
 
         // Nothing was stored, and the sound part of the pool survived the
@@ -335,14 +348,25 @@ mod tests {
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pool.insert("intruder".to_string())
         }));
-        let message = panic_text(
-            refused
-                .expect_err("a duplicated free-list entry must be refused")
-                .as_ref(),
-        );
-        assert!(
-            message.contains("the free list held an occupied slot"),
-            "unexpected payload: {message}"
+        // As above: loud with debug assertions, a returned Err without
+        // them, and only the applicable arm is compiled.
+        #[cfg(debug_assertions)]
+        {
+            let message = panic_text(
+                refused
+                    .expect_err("a duplicated free-list entry must be refused")
+                    .as_ref(),
+            );
+            assert!(
+                message.contains("the free list held an occupied slot"),
+                "unexpected payload: {message}"
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            refused.expect("with assertions off the entry is refused by returning"),
+            Err("intruder".to_string()),
+            "the value comes back to the caller"
         );
 
         // The occupant never moved: same handle, same value, same count —
