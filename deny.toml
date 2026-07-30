@@ -27,8 +27,9 @@ exceptions = [
 
 [advisories]
 # Vulnerabilities always fail. Yanked crates fail too (stricter than the
-# tool's default). Note: unmaintained/unsound advisories gate at their
-# default "workspace" scope — transitive ones surface in logs only.
+# tool's default). Unmaintained/unsound advisories fail as well —
+# observed in practice: a transitive unmaintained crate failed this
+# gate on its first encounter.
 yanked = "deny"
 
 [bans]
