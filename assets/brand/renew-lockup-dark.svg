@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 207.4 34.7" width="414.8" height="69.4" role="img" aria-label="renew">
+  <title>renew</title>
+  <defs>
+    <clipPath id="bowl1"><circle cx="67" cy="76" r="28.5"/></clipPath>
+    <clipPath id="bowl2"><circle cx="205" cy="76" r="28.5"/></clipPath>
+  </defs>
+  <g transform="translate(-4.42,-4.42)" fill="none" stroke="#F5F5F5">
+    <g transform="scale(0.68)" stroke-width="7" stroke-linecap="butt" stroke-linejoin="round">
+      <path d="M10,44 L10,22 A12,12 0 0 1 22,10 L42,10 A12,12 0 0 1 54,22 L54,42 A12,12 0 0 1 42,54 L32,54 A8,8 0 0 1 24,46 L24,26"/>
+    </g>
+    <g transform="translate(54.1,7.51) scale(0.5)" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter">
+      <g transform="translate(0,-47.5)">
+        <path d="M4.5,47.5 V104.5"/>
+        <path d="M4.5,76 A24,24 0 0 1 28.5,52"/>
+        <path d="M43,76 H100" clip-path="url(#bowl1)"/>
+        <path d="M91,76 A24,24 0 1 0 86.66,89.77"/>
+        <path d="M114,104.5 V74 A22,22 0 0 1 158,74 V104.5"/>
+        <path d="M181,76 H238" clip-path="url(#bowl2)"/>
+        <path d="M229,76 A24,24 0 1 0 224.66,89.77"/>
+        <path d="M249,49 L264.5,92.5 L280,58.4 L295.5,92.5 L311,49"/>
+      </g>
+    </g>
+  </g>
+</svg>
