@@ -261,13 +261,48 @@ mod tests {
     }
 
     #[test]
+    fn transform_sums_are_identity_stable() {
+        let vectors = [
+            Vec4::new(1.0, 2.0, 3.0, 4.0),
+            Vec4::new(-1.0, 0.5, 0.0, 1.0),
+        ];
+        let summed = mat4_transform_sum(Mat4::IDENTITY, &vectors);
+        let expected = vectors[0] + vectors[1];
+        assert!((summed - expected).dot(summed - expected) < 1e-12);
+
+        let points = [Vec3::X, Vec3::Y, Vec3::Z];
+        let rotated = quat_rotate_sum(Quat::IDENTITY, &points);
+        let expected = Vec3::new(1.0, 1.0, 1.0);
+        assert!((rotated - expected).dot(rotated - expected) < 1e-10);
+    }
+
+    #[test]
     fn builders_are_deterministic_for_the_same_seed() {
-        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        let bits3 = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        let bits4 = |v: Vec4| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), v.w.to_bits());
+
         let first = vec3_pairs(64, 7);
         let second = vec3_pairs(64, 7);
         for (a, b) in first.iter().zip(&second) {
-            assert_eq!(bits(a.0), bits(b.0));
-            assert_eq!(bits(a.1), bits(b.1));
+            assert_eq!(bits3(a.0), bits3(b.0));
+            assert_eq!(bits3(a.1), bits3(b.1));
+        }
+
+        for (a, b) in vec3_inputs(32, 11).iter().zip(&vec3_inputs(32, 11)) {
+            assert_eq!(bits3(*a), bits3(*b));
+        }
+        for (a, b) in vec4_inputs(32, 9).iter().zip(&vec4_inputs(32, 9)) {
+            assert_eq!(bits4(*a), bits4(*b));
+        }
+        // Quaternion and matrix builders route through sin_cos: exact
+        // within one process, which is all same-seed identity needs.
+        for (a, b) in quat_inputs(32, 13).iter().zip(&quat_inputs(32, 13)) {
+            assert_eq!(a.x.to_bits(), b.x.to_bits());
+            assert_eq!(a.w.to_bits(), b.w.to_bits());
+        }
+        let probe = Vec4::new(1.0, 2.0, 3.0, 1.0);
+        for (a, b) in mat4_inputs(16, 17).iter().zip(&mat4_inputs(16, 17)) {
+            assert_eq!(bits4(a.transform(probe)), bits4(b.transform(probe)));
         }
     }
 
