@@ -146,14 +146,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
-          grep -q '"library_path": "/usr/' /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       # The smoke presents through the distro lavapipe (the pinned
       # tarball is a deliberately headless build); the golden steps
-      # above kept the pinned driver.
+      # above kept the pinned driver. The manifest is copied with its
+      # library path pinned absolute so the loader can never resolve the
+      # driver library out of another stack on LD_LIBRARY_PATH.
       - name: Present smoke under the virtual display
-        env:
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-        run: xvfb-run -a cargo test --package renew-rhi --test present_smoke
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          test -n "$icd"
+          driver=/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          test -f "$driver"
+          mkdir -p "$RUNNER_TEMP/distro-icd"
+          sed "s|\"library_path\": \"[^\"]*libvulkan_lvp.so\"|\"library_path\": \"$driver\"|" \
+            "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          xvfb-run -a cargo test --package renew-rhi --test present_smoke
 
   deny:
     name: Licenses and advisories
@@ -187,24 +196,30 @@ jobs:
       # runners, and its loader panics rather than erroring without it.
       # mesa-vulkan-drivers is the distro lavapipe: unlike the pinned
       # headless tarball, it carries window-system support, so the
-      # presentation path executes here instead of skipping. The
-      # absolute-path check guards against the loader resolving the
-      # driver library out of another stack on LD_LIBRARY_PATH.
+      # presentation path executes here instead of skipping.
       - name: Install a virtual display and the distro software driver
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
-          grep -q '"library_path": "/usr/' /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       # The pinned action still supplies the validation layer (the
-      # oracle); only the driver is overridden below.
+      # oracle); only the driver is overridden below, through a manifest
+      # copy with its library path pinned absolute so the loader can
+      # never resolve the driver library out of another stack on
+      # LD_LIBRARY_PATH. No RENEW_GOLDEN here: this rasterizer's bits
+      # are not the golden's provenance, so exact comparison correctly
+      # stays off.
       - uses: ./.github/actions/software-vulkan
       - name: Collect coverage
-        env:
-          # Distro lavapipe for window-system support. No RENEW_GOLDEN
-          # here: this rasterizer's bits are not the golden's
-          # provenance, so exact comparison correctly stays off.
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          test -n "$icd"
+          driver=/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          test -f "$driver"
+          mkdir -p "$RUNNER_TEMP/distro-icd"
+          sed "s|\"library_path\": \"[^\"]*libvulkan_lvp.so\"|\"library_path\": \"$driver\"|" \
+            "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
           cargo llvm-cov report --fail-under-lines 95
