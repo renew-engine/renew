@@ -98,6 +98,10 @@ pub enum PointerButton {
     Left,
     Right,
     Middle,
+    Back,
+    Forward,
+    /// A native button by its OS index — distinct from the named
+    /// variants above; nothing is aliased.
     Other(u16),
 }
 
@@ -142,9 +146,12 @@ impl WindowRef<'_> {
     }
 }
 
-/// The application the window loop drives.
+/// The application the window loop drives — the module's designed
+/// extension point.
 pub trait WindowApp {
-    /// The window exists (fires once, before any other callback).
+    /// The window exists. On the success path this fires exactly once,
+    /// before any other callback; if window creation fails, no callback
+    /// fires and the failure surfaces through [`run_window_app`].
     fn ready(&mut self, window: &WindowRef<'_>);
     /// A translated OS event.
     fn event(&mut self, event: WindowEvent);
@@ -250,17 +257,21 @@ impl ApplicationHandler for Adapter<'_> {
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        let _ = event_loop;
         if let Some(translated) = translate_event(&event) {
             self.app.event(translated);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.failure.is_some() {
+            // The window never came up: the loop is exiting and the app
+            // never saw `ready` — do not feed it `update` either.
+            return;
+        }
         let mut control = LoopControl::default();
         self.app.update(&mut control);
         if control.redraw
@@ -340,8 +351,8 @@ fn translate_button(button: winit::event::MouseButton) -> PointerButton {
         Wb::Left => PointerButton::Left,
         Wb::Right => PointerButton::Right,
         Wb::Middle => PointerButton::Middle,
-        Wb::Back => PointerButton::Other(0),
-        Wb::Forward => PointerButton::Other(1),
+        Wb::Back => PointerButton::Back,
+        Wb::Forward => PointerButton::Forward,
         Wb::Other(id) => PointerButton::Other(id),
     }
 }
@@ -412,10 +423,68 @@ mod tests {
         assert_eq!(translate_button(MouseButton::Left), PointerButton::Left);
         assert_eq!(translate_button(MouseButton::Right), PointerButton::Right);
         assert_eq!(translate_button(MouseButton::Middle), PointerButton::Middle);
+        assert_eq!(translate_button(MouseButton::Back), PointerButton::Back);
+        assert_eq!(
+            translate_button(MouseButton::Forward),
+            PointerButton::Forward
+        );
         assert_eq!(
             translate_button(MouseButton::Other(7)),
             PointerButton::Other(7)
         );
+        // Named variants never alias native indices.
+        assert_ne!(translate_button(MouseButton::Back), PointerButton::Other(0));
+    }
+
+    #[test]
+    fn pointer_events_translate_through_the_full_event_path() {
+        use winit::event::{DeviceId, ElementState, WindowEvent as We};
+        let device = DeviceId::dummy();
+        assert_eq!(
+            translate_event(&We::CursorMoved {
+                device_id: device,
+                position: winit::dpi::PhysicalPosition::new(10.5, 20.5),
+            }),
+            Some(WindowEvent::PointerMoved { x: 10.5, y: 20.5 })
+        );
+        assert_eq!(
+            translate_event(&We::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            }),
+            Some(WindowEvent::PointerButton {
+                button: PointerButton::Left,
+                pressed: true
+            })
+        );
+        let wheel = translate_event(&We::MouseWheel {
+            device_id: device,
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        assert!(matches!(wheel, Some(WindowEvent::Wheel { .. })));
+    }
+
+    #[test]
+    fn unidentified_physical_keys_map_to_unidentified() {
+        use winit::keyboard::NativeKeyCode;
+        assert_eq!(
+            translate_key(PhysicalKey::Unidentified(NativeKeyCode::Unidentified)),
+            KeyCode::Unidentified
+        );
+    }
+
+    #[test]
+    fn window_errors_display_their_context() {
+        let unavailable = WindowError::LoopUnavailable {
+            message: "no display".to_string(),
+        };
+        assert!(unavailable.to_string().contains("no display"));
+        let looped = WindowError::Loop {
+            message: "backend fell over".to_string(),
+        };
+        assert!(looped.to_string().contains("backend fell over"));
     }
 
     #[test]

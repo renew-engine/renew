@@ -1,6 +1,6 @@
 [package]
 name = "renew-platform"
-description = "Operating-system seams: monotonic time, whole-file I/O, and named threads"
+description = "Operating-system seams: monotonic time, whole-file I/O, named threads, and the window"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ publish = false
 purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, and window seams."
 maturity = "internal"
 core = true
-extension_points = []
+extension_points = ["window-app"]
 simulation = false
 
 [features]
