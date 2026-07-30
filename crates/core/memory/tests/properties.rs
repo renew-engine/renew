@@ -2,9 +2,19 @@
 //! class). Models are plain vectors; the properties are exact.
 
 use proptest::prelude::*;
+use proptest::test_runner::RngSeed;
 use renew_memory::{LinearArena, Pool};
 
 proptest! {
+    // Fixed RNG seed: the suite explores the same inputs on every run
+    // and every machine, so a property failure anywhere reproduces
+    // everywhere. Fresh exploration is a deliberate act (change the
+    // seed), never an ambient one.
+    #![proptest_config(ProptestConfig {
+        rng_seed: RngSeed::Fixed(0x00AE_A000),
+        ..ProptestConfig::default()
+    })]
+
     #[test]
     fn arena_round_trips_every_value(values in prop::collection::vec(any::<u64>(), 0..64)) {
         let arena = LinearArena::with_capacity(1024);

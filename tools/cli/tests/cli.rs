@@ -390,3 +390,72 @@ fn failed_child_maps_to_exit_one_with_raw_code_in_the_envelope() {
     );
     let _ = fs::remove_dir_all(&directory);
 }
+
+// --- Structural envelope validation -------------------------------------
+//
+// The prefix assertions above prove field ordering at the byte level;
+// these prove the full envelope contract with the crate's own JSON
+// parser — every required field present and correctly typed — so the
+// emitter and the parser cross-check each other.
+
+use renew_cli::json::{self, Value};
+
+/// Fallible on purpose: the `expect()` lives inside the test, where the
+/// lint configuration scopes it.
+fn validated_envelope(document: &str, command: &str) -> Result<Value, String> {
+    let value = json::parse(document).map_err(|error| error.to_string())?;
+    let Some(fields) = value.as_object() else {
+        return Err("envelope is not an object".to_string());
+    };
+    match fields.first() {
+        Some((key, Value::Number(1))) if key.as_str() == "schema_version" => {}
+        other => {
+            return Err(format!(
+                "schema_version must lead with value 1, got {other:?}"
+            ));
+        }
+    }
+    if value.get("command").and_then(Value::as_str) != Some(command) {
+        return Err(format!("command field does not say {command:?}"));
+    }
+    for name in ["status", "stdout", "stderr"] {
+        if value.get(name).and_then(Value::as_str).is_none() {
+            return Err(format!("missing or mistyped string field `{name}`"));
+        }
+    }
+    for name in ["exit_code", "duration_ms"] {
+        if !matches!(value.get(name), Some(Value::Number(_))) {
+            return Err(format!("missing or mistyped number field `{name}`"));
+        }
+    }
+    Ok(value)
+}
+
+#[test]
+fn every_cheap_subcommand_emits_the_full_typed_envelope() {
+    // The expensive subcommands (build/test/bench/lint) share the same
+    // envelope emitter, covered by unit tests; spawning them here would
+    // recurse the whole workspace build inside the test suite.
+    for command in ["help", "configure", "doctor", "check"] {
+        let output = run(&[command, "--json"]).expect("binary should spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let envelope = validated_envelope(stdout.trim(), command)
+            .unwrap_or_else(|reason| panic!("{command} --json: {reason}"));
+        match command {
+            "doctor" => {
+                let checks = envelope.get("checks").and_then(Value::as_array);
+                assert!(
+                    checks.is_some_and(|items| !items.is_empty()),
+                    "doctor must carry a non-empty checks array"
+                );
+            }
+            "check" => {
+                assert!(
+                    envelope.get("findings").and_then(Value::as_array).is_some(),
+                    "check must carry a findings array"
+                );
+            }
+            _ => {}
+        }
+    }
+}

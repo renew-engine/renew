@@ -10,7 +10,7 @@ publish = false
 
 [package.metadata.renew]
 purpose = "The engine's only doorway to the operating system: clock, filesystem, and thread seams."
-maturity = "bootstrap"
+maturity = "internal"
 core = true
 extension_points = []
 simulation = false

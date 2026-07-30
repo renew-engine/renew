@@ -175,13 +175,14 @@ mod tests {
 
     #[test]
     fn reading_a_directory_fails_with_the_path_reported() {
-        // The kind differs per platform; the contract is that SOME
-        // classified error comes back and it names the path.
+        // The kind differs per operating system; the contract is that
+        // SOME classified error comes back carrying exactly this path.
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
         let error = read(directory).expect_err("directories are not files");
-        assert!(
-            error.to_string().contains("platform"),
-            "path missing from: {error}"
-        );
+        let (FsError::NotFound { path }
+        | FsError::PermissionDenied { path }
+        | FsError::InvalidUtf8 { path }
+        | FsError::Io { path, .. }) = &error;
+        assert_eq!(path, directory);
     }
 }
