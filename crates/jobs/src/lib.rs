@@ -1041,15 +1041,28 @@ mod tests {
             dispatch(&shared, &Plan::new(0..64, 8), &task);
         }));
 
-        let message = panic_text(
-            refused
-                .expect_err("publishing over a live batch must be refused")
-                .as_ref(),
-        );
-        assert!(
-            message.contains("a batch is already live"),
-            "unexpected payload: {message}"
-        );
+        // Which way the refusal is expressed depends on the profile,
+        // and the tests run in both: with debug assertions the
+        // assertion fires, without them the guard behind it returns.
+        // Either way nothing runs — that is the contract being pinned,
+        // and asserting only the dev half made this test fail the
+        // moment it was run under the bench profile.
+        if cfg!(debug_assertions) {
+            let message = panic_text(
+                refused
+                    .expect_err("publishing over a live batch must be refused")
+                    .as_ref(),
+            );
+            assert!(
+                message.contains("a batch is already live"),
+                "unexpected payload: {message}"
+            );
+        } else {
+            assert!(
+                refused.is_ok(),
+                "with assertions off the publish is refused by returning, not by panicking"
+            );
+        }
         assert_eq!(
             counted.load(Ordering::Relaxed),
             64,

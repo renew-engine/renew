@@ -197,24 +197,13 @@ impl Device {
                 .map_err(|code| {
                     fail(self, creation("vkGetPhysicalDeviceSurfaceFormatsKHR", code))
                 })?;
-        let chosen = [vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
-            .into_iter()
-            .find_map(|want| {
-                formats.iter().find(|f| {
-                    f.format == want && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-                })
-            });
-        let Some(surface_format) = chosen else {
+        let Some((surface_format, format)) = choose_surface_format(&formats) else {
             return Err(fail(
                 self,
                 TargetError::PresentUnsupported {
                     reason: "no 8-bit UNORM sRGB surface format",
                 },
             ));
-        };
-        let format = match surface_format.format {
-            vk::Format::R8G8B8A8_UNORM => TargetFormat::Rgba8Unorm,
-            _ => TargetFormat::Bgra8Unorm,
         };
 
         let pool_info = vk::CommandPoolCreateInfo::default()
@@ -813,6 +802,30 @@ impl WindowTarget {
     }
 }
 
+/// Pick the surface format to present in, preferring BGRA because it is
+/// what desktop compositors overwhelmingly report first.
+///
+/// Pure, and separated from the surface query for that reason: which
+/// formats a surface offers is a property of the machine, so testing
+/// the CHOICE through a real driver only ever proves what this one
+/// machine happens to report. Given the list, the answer is fixed.
+fn choose_surface_format(
+    formats: &[vk::SurfaceFormatKHR],
+) -> Option<(vk::SurfaceFormatKHR, TargetFormat)> {
+    let chosen = [vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
+        .into_iter()
+        .find_map(|want| {
+            formats
+                .iter()
+                .find(|f| f.format == want && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        })?;
+    let format = match chosen.format {
+        vk::Format::R8G8B8A8_UNORM => TargetFormat::Rgba8Unorm,
+        _ => TargetFormat::Bgra8Unorm,
+    };
+    Some((*chosen, format))
+}
+
 fn color_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -845,5 +858,66 @@ impl Drop for WindowTarget {
             self.surface_loader
                 .destroy_surface(self.surface, Some(&self.shared.alloc_cbs()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TargetFormat, choose_surface_format};
+    use ash::vk;
+
+    fn offered(format: vk::Format, color_space: vk::ColorSpaceKHR) -> vk::SurfaceFormatKHR {
+        vk::SurfaceFormatKHR {
+            format,
+            color_space,
+        }
+    }
+
+    const SRGB: vk::ColorSpaceKHR = vk::ColorSpaceKHR::SRGB_NONLINEAR;
+
+    #[test]
+    fn bgra_wins_when_a_surface_offers_both() {
+        let formats = [
+            offered(vk::Format::R8G8B8A8_UNORM, SRGB),
+            offered(vk::Format::B8G8R8A8_UNORM, SRGB),
+        ];
+        let (chosen, format) = choose_surface_format(&formats).expect("both are acceptable");
+        assert_eq!(chosen.format, vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(format, TargetFormat::Bgra8Unorm);
+    }
+
+    #[test]
+    fn rgba_is_taken_when_it_is_the_only_one_offered() {
+        // Reachable on real hardware, not on every machine: proving it
+        // through a driver would only prove what this machine reports.
+        let formats = [
+            offered(vk::Format::R8G8B8A8_SRGB, SRGB),
+            offered(vk::Format::R8G8B8A8_UNORM, SRGB),
+        ];
+        let (chosen, format) = choose_surface_format(&formats).expect("rgba is acceptable");
+        assert_eq!(chosen.format, vk::Format::R8G8B8A8_UNORM);
+        assert_eq!(format, TargetFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn the_colour_space_must_match_too() {
+        let formats = [offered(
+            vk::Format::B8G8R8A8_UNORM,
+            vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
+        )];
+        assert!(
+            choose_surface_format(&formats).is_none(),
+            "an 8-bit format in the wrong colour space is not acceptable"
+        );
+    }
+
+    #[test]
+    fn a_surface_offering_nothing_acceptable_is_refused() {
+        assert!(choose_surface_format(&[]).is_none(), "no formats at all");
+        let unusable = [offered(vk::Format::R5G6B5_UNORM_PACK16, SRGB)];
+        assert!(
+            choose_surface_format(&unusable).is_none(),
+            "only formats the engine cannot present in"
+        );
     }
 }
