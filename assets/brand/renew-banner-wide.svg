@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="renew — an AI-first game engine in Rust">
+  <title>renew — an AI-first game engine in Rust</title>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40,0 V40 M0,40 H40" fill="none" stroke="#FFFFFF" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="glow" cx="600" cy="120" r="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.075"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="600" cy="150" r="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0.45" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.6"/>
+    </radialGradient>
+    <clipPath id="bowl1"><circle cx="67" cy="76" r="28.5"/></clipPath>
+    <clipPath id="bowl2"><circle cx="205" cy="76" r="28.5"/></clipPath>
+  </defs>
+
+  <rect width="1200" height="300" fill="#0A0A0A"/>
+  <rect width="1200" height="300" fill="url(#grid)"/>
+  <rect width="1200" height="300" fill="url(#glow)"/>
+  <rect width="1200" height="300" fill="url(#vignette)"/>
+
+  <g transform="translate(408.1,100) scale(1.85)">
+    <g transform="translate(-4.42,-4.42)" fill="none" stroke="#F5F5F5">
+      <g transform="scale(0.68)" stroke-width="7" stroke-linecap="butt" stroke-linejoin="round">
+        <path d="M10,44 L10,22 A12,12 0 0 1 22,10 L42,10 A12,12 0 0 1 54,22 L54,42 A12,12 0 0 1 42,54 L32,54 A8,8 0 0 1 24,46 L24,26"/>
+      </g>
+      <g transform="translate(54.1,7.51) scale(0.5)" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter">
+        <g transform="translate(0,-47.5)">
+          <path d="M4.5,47.5 V104.5"/>
+          <path d="M4.5,76 A24,24 0 0 1 28.5,52"/>
+          <path d="M43,76 H100" clip-path="url(#bowl1)"/>
+          <path d="M91,76 A24,24 0 1 0 86.66,89.77"/>
+          <path d="M114,104.5 V74 A22,22 0 0 1 158,74 V104.5"/>
+          <path d="M181,76 H238" clip-path="url(#bowl2)"/>
+          <path d="M229,76 A24,24 0 1 0 224.66,89.77"/>
+          <path d="M249,49 L264.5,92.5 L280,58.4 L295.5,92.5 L311,49"/>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <text x="600" y="215" text-anchor="middle" fill="#8C8C8C" font-size="16" letter-spacing="5"
+        font-family="Inter, 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-weight="500">AI-FIRST · DETERMINISTIC · MODULAR</text>
+</svg>

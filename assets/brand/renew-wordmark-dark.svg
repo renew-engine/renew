@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 315.5 57" width="315.5" height="57" role="img" aria-label="renew">
+  <title>renew</title>
+  <defs>
+    <!-- Each e's crossbar is clipped to its own bowl, so the bar ends on the circle
+         instead of protruding past it as a rectangle. -->
+    <clipPath id="bowl1"><circle cx="67" cy="76" r="28.5"/></clipPath>
+    <clipPath id="bowl2"><circle cx="205" cy="76" r="28.5"/></clipPath>
+  </defs>
+  <g transform="translate(0,-47.5)" fill="none" stroke="#F5F5F5" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M4.5,47.5 V104.5"/>
+    <path d="M4.5,76 A24,24 0 0 1 28.5,52"/>
+    <path d="M43,76 H100" clip-path="url(#bowl1)"/>
+    <path d="M91,76 A24,24 0 1 0 86.66,89.77"/>
+    <path d="M114,104.5 V74 A22,22 0 0 1 158,74 V104.5"/>
+    <path d="M181,76 H238" clip-path="url(#bowl2)"/>
+    <path d="M229,76 A24,24 0 1 0 224.66,89.77"/>
+    <path d="M249,49 L264.5,92.5 L280,58.4 L295.5,92.5 L311,49"/>
+  </g>
+</svg>
