@@ -288,6 +288,11 @@ impl Device {
             vk::Result::ERROR_OUT_OF_HOST_MEMORY => DeviceError::OutOfHostMemory {
                 call: "vkCreateInstance",
             },
+            // A loader with no driver behind it (bare CI runners): the
+            // same "no usable GPU runtime" seam as a missing loader.
+            vk::Result::ERROR_INCOMPATIBLE_DRIVER => DeviceError::LoaderUnavailable {
+                message: "the loader found no compatible Vulkan driver".to_string(),
+            },
             other => creation("vkCreateInstance", other),
         })?;
 
