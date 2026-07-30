@@ -56,12 +56,32 @@ fn plan(size: usize, align: usize) -> Option<(Layout, usize)> {
 /// Allocate with the header scheme. Null on failure (the Vulkan
 /// contract: null means the allocation failed).
 fn allocate(ledger: &AllocLedger, size: usize, align: usize) -> *mut u8 {
+    allocate_with(ledger, size, align, |layout| {
+        // SAFETY: `layout` has non-zero size by construction (size >= 1,
+        // offset >= header size).
+        unsafe { System.alloc(layout) }
+    })
+}
+
+/// The body of [`allocate`], over a caller-supplied allocator.
+///
+/// The seam exists for one reason: a host that REFUSES an allocation is
+/// the branch below, and no portable request provokes a refusal —
+/// Linux over-commits an absurd size, Windows serves an absurd
+/// alignment, and an optimizing build may fold the null check away
+/// entirely. Injecting the refusal is the only way to prove the code
+/// handles it. The parameter is generic, so the real path monomorphizes
+/// to exactly what it was before.
+fn allocate_with(
+    ledger: &AllocLedger,
+    size: usize,
+    align: usize,
+    alloc: impl FnOnce(Layout) -> *mut u8,
+) -> *mut u8 {
     let Some((layout, offset)) = plan(size, align) else {
         return core::ptr::null_mut();
     };
-    // SAFETY: `layout` has non-zero size by construction (size >= 1,
-    // offset >= header size).
-    let base = unsafe { System.alloc(layout) };
+    let base = alloc(layout);
     if base.is_null() {
         return core::ptr::null_mut();
     }
@@ -245,29 +265,27 @@ mod tests {
         );
     }
 
+    /// A host that refuses the allocation must yield null and leave
+    /// the ledger untouched — Vulkan reads null as "allocation failed".
+    /// The refusal is INJECTED: no portable request provokes a real
+    /// one (Linux over-commits an absurd size, Windows serves an absurd
+    /// alignment, and a release build can fold the null check away), so
+    /// a test that asks the host to refuse is a test that passes for
+    /// the wrong reason on some machine.
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "the interpreter makes an unservable request a fatal resource error, not the null under test"
-    )]
-    #[cfg_attr(
-        feature = "sanitized",
-        ignore = "instrumented allocators abort on an oversized request instead of returning null"
-    )]
-    fn a_system_allocation_the_host_refuses_is_a_null_return() {
+    fn a_refused_host_allocation_is_a_null_return() {
         let ledger = AllocLedger::default();
-        // Plannable — `Layout` accepts it — but unservable by any host,
-        // so the refusal comes from the allocator rather than `plan`.
-        let size = usize::MAX / 2 - 4096;
-        assert!(
-            plan(size, 8).is_some(),
-            "the request must reach the allocator"
-        );
-        assert!(allocate(&ledger, size, 8).is_null());
+        let refused = allocate_with(&ledger, 64, 8, |_| core::ptr::null_mut());
+        assert!(refused.is_null(), "a refusal must surface as null");
         assert_eq!(
             ledger.allocations.load(Ordering::Relaxed),
             0,
             "a refusal is not an allocation"
+        );
+        assert_eq!(
+            ledger.bytes_in_use.load(Ordering::Relaxed),
+            0,
+            "a refusal reserves no bytes"
         );
     }
 
