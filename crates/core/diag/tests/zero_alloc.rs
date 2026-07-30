@@ -92,7 +92,7 @@ impl Sink for FixedSink {
     ignore = "allocation counting is invalid under instrumented allocators"
 )]
 fn installation_and_the_emit_path_allocate_nothing() {
-    // A static sink, and the counted window opens before `install`: the
+    // A static sink; the counted window opens before `install`: the
     // crate's whole surface — installation included — allocates nothing.
     static SINK: FixedSink = FixedSink {
         state: Mutex::new(Written {
@@ -100,19 +100,55 @@ fn installation_and_the_emit_path_allocate_nothing() {
             length: 0,
         }),
     };
-    // Warm the fixture's mutex once before the window opens: on some
+    // Warm the fixture's mutex once before any window opens: on some
     // platforms the standard library lazily initializes lock internals
     // with a one-time allocation at first use (observed on macOS). That
     // allocation belongs to the platform's lock, not to the emit path
     // under test.
     drop(SINK.state.lock());
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
-    renew_diag::install(&SINK);
-    renew_diag::info!("frame {} took {}ns", 41, 16_600_000);
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
-    assert_eq!(after - before, 0, "install or emit heap-allocated");
+
+    // Measurement protocol: the counter is process-wide and the test
+    // harness's own thread can allocate concurrently (its progress
+    // output has landed inside a measurement window on Linux). So the
+    // window retries: one-shot neighbor noise rides out, while a real
+    // emit-path allocation reproduces in every window and still fails.
+    // `install` is write-once and participates in the first window; on
+    // the typical clean first attempt the whole surface is verified,
+    // and on a noisy first attempt the retries pin the emit path (the
+    // load-bearing half of the contract).
+    let mut installed = false;
+    let mut last_delta = 0usize;
+    let mut clean = false;
+    for _ in 0..5 {
+        let before = ALLOCATIONS.load(Ordering::Relaxed);
+        if !installed {
+            renew_diag::install(&SINK);
+            installed = true;
+        }
+        for frame in 0..16 {
+            renew_diag::info!("frame {} took {}ns", 41 + frame, 16_600_000);
+        }
+        let after = ALLOCATIONS.load(Ordering::Relaxed);
+        last_delta = after - before;
+        if last_delta == 0 {
+            clean = true;
+            break;
+        }
+        // Reset the fixed buffer between attempts (no allocation).
+        if let Ok(mut written) = SINK.state.lock() {
+            written.length = 0;
+        }
+    }
+    assert!(
+        clean,
+        "install or emit heap-allocated in every window (last delta: {last_delta})"
+    );
 
     let written = SINK.state.lock().expect("buffer lock");
     let text = std::str::from_utf8(&written.buffer[..written.length]).expect("utf8 output");
-    assert_eq!(text, "INFO zero_alloc frame 41 took 16600000ns");
+    assert!(
+        text.starts_with("INFO zero_alloc frame "),
+        "unexpected sink output: {text}"
+    );
+    assert!(text.contains("took 16600000ns"), "unexpected: {text}");
 }

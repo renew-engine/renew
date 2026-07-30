@@ -22,6 +22,8 @@
 mod clock;
 pub mod fs;
 pub mod thread;
+#[cfg(feature = "window")]
+pub mod window;
 
 pub use clock::Clock;
 /// The error-classification vocabulary, re-exported so consumers match
