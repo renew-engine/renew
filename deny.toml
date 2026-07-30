@@ -1,0 +1,41 @@
+# cargo-deny policy: the license allowlist and advisory gate, enforced in
+# CI on every push. A license outside the allowlist or a RustSec advisory
+# against a pinned dependency fails the build.
+
+[licenses]
+# Check the FULL dependency graph, dev-dependencies included — today's
+# third-party tree is entirely dev-tier and must not escape the gate.
+include-dev = true
+# Every crate in the graph must satisfy one of these SPDX expressions...
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "BSL-1.0",
+    "ISC",
+    "Unlicense",
+]
+# ...except the named exceptions: crates whose extra license term is
+# acceptable ONLY in build tooling. The tool cannot verify build-time
+# placement itself — that placement is asserted and held by dependency
+# review; this entry only permits the named crate's expression.
+exceptions = [
+    { name = "unicode-ident", allow = ["Unicode-3.0"] },
+]
+
+[advisories]
+# Vulnerabilities always fail. Yanked crates fail too (stricter than the
+# tool's default). Note: unmaintained/unsound advisories gate at their
+# default "workspace" scope — transitive ones surface in logs only.
+yanked = "deny"
+
+[bans]
+# Advisory only, deliberately: duplicate dependency versions show up in
+# the CI log but never fail the build.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
