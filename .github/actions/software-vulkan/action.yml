@@ -1,0 +1,61 @@
+name: Software Vulkan
+description: >
+  Install the pinned software Vulkan stack on a Linux runner: Mesa's
+  lavapipe CPU rasterizer plus the LunarG SDK's loader and validation
+  layers. This file is the single pin point for the rendering lane —
+  bumping either pin is a deliberate change reviewed on its own, because
+  the golden images attest bytes produced by exactly this stack.
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the pinned tarballs from cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/software-vulkan/downloads
+        key: software-vulkan-mesa-build29-sdk-1.4.328.1
+
+    - name: Download and verify the pinned tarballs
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/software-vulkan/downloads
+        cd ~/software-vulkan/downloads
+        curl -sSfL -o mesa.tar.xz \
+          https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
+        curl -sSfL -o vulkan-sdk.tar.xz \
+          https://sdk.lunarg.com/sdk/download/1.4.328.1/linux/vulkansdk-linux-x86_64-1.4.328.1.tar.xz
+
+    - name: Extract, patch the ICD path, and export the environment
+      shell: bash
+      run: |
+        cd ~/software-vulkan
+        # Verify UNCONDITIONALLY — a poisoned or corrupted cache entry
+        # must fail here, not silently become the rendering stack.
+        printf '%s\n' \
+          "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  downloads/mesa.tar.xz" \
+          "241e75b56c91c0d210ed07a7c638ec05a3e5b0e4c66ba9f0ba0f102d823ad6bf  downloads/vulkan-sdk.tar.xz" \
+          | sha256sum -c -
+        mkdir -p mesa sdk
+        tar -xJf downloads/mesa.tar.xz -C mesa
+        tar -xJf downloads/vulkan-sdk.tar.xz -C sdk
+        mesa_root="$HOME/software-vulkan/mesa"
+        sdk_root="$HOME/software-vulkan/sdk/1.4.328.1/x86_64"
+        icd="$mesa_root/share/vulkan/icd.d/lvp_icd.x86_64.json"
+        driver="$mesa_root/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+        # The ICD manifest ships with the build machine's absolute
+        # library path; point it at the extracted driver, then prove
+        # the patch landed.
+        test -f "$icd"
+        test -f "$driver"
+        sed -i "s|\"library_path\": \".*libvulkan_lvp.so\"|\"library_path\": \"$driver\"|" "$icd"
+        grep -q "$driver" "$icd"
+        test -f "$sdk_root/lib/libVkLayer_khronos_validation.so"
+        {
+          echo "VK_DRIVER_FILES=$icd"
+          echo "VK_LOADER_DRIVERS_SELECT=lvp*"
+          echo "VK_ADD_LAYER_PATH=$sdk_root/share/vulkan/explicit_layer.d"
+          echo "LD_LIBRARY_PATH=$sdk_root/lib:$mesa_root/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          echo "LP_NUM_THREADS=4"
+        } >> "$GITHUB_ENV"

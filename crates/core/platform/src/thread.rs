@@ -124,15 +124,37 @@ mod tests {
         assert_eq!(observed.as_deref(), Some("renew-test-worker"));
     }
 
+    /// A thread body with nothing to do. A named function rather than a
+    /// closure so the rejected and the accepted spawn below reach the
+    /// same `spawn_named` instantiation: the rejection is measured
+    /// against exactly the code the success path runs.
+    fn nothing() {}
+
     #[test]
     fn interior_nul_names_are_an_error_not_a_panic() {
-        let result = spawn_named("bad\0name", || ());
-        match result {
-            Err(ThreadError::InvalidName { name }) => assert_eq!(name, "bad\0name"),
-            other => panic!(
-                "expected InvalidName, got {:?}",
-                other.map(super::ThreadHandle::join)
-            ),
+        // `err` up front: the diagnostic must be built eagerly, or the
+        // formatting is code no passing run ever executes.
+        let error = spawn_named("bad\0name", nothing).err();
+        assert!(
+            matches!(&error, Some(ThreadError::InvalidName { name }) if name == "bad\0name"),
+            "expected InvalidName naming the offending string, got {error:?}"
+        );
+        // The same body under a legal name spawns and joins: the name
+        // was the only reason the call above failed.
+        let joined = spawn_named("renew-test-legal-name", nothing).and_then(ThreadHandle::join);
+        assert!(
+            joined.is_ok(),
+            "the same body must spawn under a legal name, got {joined:?}"
+        );
+    }
+
+    /// The kind an operating-system refusal reports, or `None` for any
+    /// other failure — so the refusal's kind is asserted with a value
+    /// comparison that also proves the other variants carry no kind.
+    fn refusal_kind(error: &ThreadError) -> Option<ErrorKind> {
+        match error {
+            ThreadError::SpawnFailed { kind, .. } => Some(*kind),
+            ThreadError::InvalidName { .. } | ThreadError::Panicked { .. } => None,
         }
     }
 
@@ -143,17 +165,12 @@ mod tests {
             kind: ErrorKind::OutOfMemory,
         };
         assert!(spawn_failed.to_string().contains("renew-io"));
-        assert!(matches!(
-            spawn_failed,
-            ThreadError::SpawnFailed {
-                kind: ErrorKind::OutOfMemory,
-                ..
-            }
-        ));
+        assert_eq!(refusal_kind(&spawn_failed), Some(ErrorKind::OutOfMemory));
         let panicked = ThreadError::Panicked {
             name: "renew-sim".to_string(),
         };
         assert!(panicked.to_string().contains("renew-sim"));
+        assert_eq!(refusal_kind(&panicked), None);
         let invalid = ThreadError::InvalidName {
             name: "a\0b".to_string(),
         };
@@ -164,9 +181,9 @@ mod tests {
     fn a_panicking_thread_surfaces_as_an_error_naming_it() {
         let handle = spawn_named("renew-test-doomed", || panic!("deliberate")).expect("spawn");
         let error = handle.join().expect_err("panic surfaces");
-        match error {
-            ThreadError::Panicked { name } => assert_eq!(name, "renew-test-doomed"),
-            other => panic!("wrong variant: {other}"),
-        }
+        assert!(
+            matches!(&error, ThreadError::Panicked { name } if name == "renew-test-doomed"),
+            "expected Panicked naming the thread, got {error}"
+        );
     }
 }

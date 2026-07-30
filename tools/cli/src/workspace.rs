@@ -77,4 +77,14 @@ mod tests {
         // Best-effort cleanup: a transient file lock must not fail the test.
         let _ = fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn a_walk_that_reaches_the_top_without_a_workspace_yields_none() {
+        // The empty path is the one start whose ancestry is bounded on
+        // every platform: `Path::new("").parent()` is `None`, so the walk
+        // probes exactly one manifest — this crate's own, which cargo
+        // makes the working directory and which is a member manifest, not
+        // a root — and then runs out of parents.
+        assert_eq!(find_root(Path::new("")), None);
+    }
 }

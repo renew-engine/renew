@@ -1,0 +1,21 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: this crate talks to the GPU, never to the clock, the
+# filesystem, or raw threads.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "the RHI is single-threaded by contract; parallelism belongs to the job pool" },
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock; timing belongs to callers via renew-platform" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem; shader bytes arrive embedded or from callers" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bench/suite", "crates/core/diag", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/jobs", "hello-engine", "tools/cli"]
+members = ["bench/suite", "crates/core/diag", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/jobs", "crates/rhi", "hello-engine", "tools/cli", "tools/vk-fault-layer"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +22,9 @@ panic = "deny"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+# Every unsafe block states the invariant that makes it sound; the
+# reviewer checks the argument, the lint checks the presence.
+undocumented_unsafe_blocks = "deny"
 
 [profile.release]
 panic = "abort"

@@ -125,10 +125,9 @@ impl LoopControl {
     }
 }
 
-/// A live window, borrowed by [`WindowApp::ready`]. Accessors only;
-/// surface-handle exposure for the renderer arrives with the renderer.
+/// A live window, borrowed by [`WindowApp::ready`].
 pub struct WindowRef<'a> {
-    window: &'a winit::window::Window,
+    window: &'a std::sync::Arc<winit::window::Window>,
 }
 
 impl WindowRef<'_> {
@@ -143,6 +142,42 @@ impl WindowRef<'_> {
     #[must_use]
     pub fn scale_factor(&self) -> f64 {
         self.window.scale_factor()
+    }
+
+    /// An owned, opaque handle to this window for the renderer's surface
+    /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
+    /// as it (or anything owning it) exists — surface validity is
+    /// ownership, not convention.
+    #[must_use]
+    pub fn native(&self) -> NativeWindow {
+        NativeWindow {
+            window: std::sync::Arc::clone(self.window),
+        }
+    }
+}
+
+/// An owned window handle: the value the renderer's window target takes
+/// and holds. Opaque — it exposes nothing but the two standard
+/// window-handle traits the graphics stack consumes. Cloning shares the
+/// same OS window; the window stays alive while any clone exists.
+#[derive(Clone)]
+pub struct NativeWindow {
+    window: std::sync::Arc<winit::window::Window>,
+}
+
+impl raw_window_handle::HasDisplayHandle for NativeWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        raw_window_handle::HasDisplayHandle::display_handle(&*self.window)
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for NativeWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        raw_window_handle::HasWindowHandle::window_handle(&*self.window)
     }
 }
 
@@ -207,33 +242,43 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
         window: None,
         failure: None,
     };
-    event_loop
-        .run_app(&mut adapter)
-        .map_err(|error| WindowError::Loop {
-            message: error.to_string(),
-        })?;
-    match adapter.failure.take() {
-        Some(message) => Err(WindowError::Loop { message }),
-        None => Ok(()),
-    }
+    let run = event_loop.run_app(&mut adapter);
+    adapter.outcome(run)
 }
 
 /// The bridge between the OS loop and the engine app.
 struct Adapter<'a> {
     config: &'a WindowConfig,
     app: &'a mut dyn WindowApp,
-    window: Option<winit::window::Window>,
+    window: Option<std::sync::Arc<winit::window::Window>>,
     /// Failure inside a callback (window creation): carried out of the
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
     failure: Option<String>,
 }
 
-impl ApplicationHandler for Adapter<'_> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            // Desktop platforms emit exactly one Resumed; a second one
-            // must not recreate the window.
+/// Where a window comes from: the running loop's creation call, reduced
+/// to what [`Adapter::open`] needs of it — attributes in, a live window
+/// or the OS's reason out.
+///
+/// Passing it in rather than calling the loop directly is what makes the
+/// bring-up rules — at most one window, no retry after a refusal, a
+/// refusal reported through the returned `Result` rather than logged —
+/// testable against a refusing source, on machines and CI cells with no
+/// display at all. A trait object rather than a type parameter, so the
+/// real path and the tested path are literally the same instructions.
+type WindowSource<'a> =
+    dyn Fn(winit::window::WindowAttributes) -> Result<winit::window::Window, String> + 'a;
+
+impl Adapter<'_> {
+    /// Bring the window up and hand it to the app.
+    ///
+    /// Does nothing once a window exists — desktop platforms emit
+    /// exactly one resume, but a second must never recreate it — and
+    /// nothing after a refusal, which is final: the loop is on its way
+    /// out and the reason already recorded is the one to report.
+    fn open(&mut self, create: &WindowSource<'_>) {
+        if self.window.is_some() || self.failure.is_some() {
             return;
         }
         let attributes = winit::window::Window::default_attributes()
@@ -243,34 +288,33 @@ impl ApplicationHandler for Adapter<'_> {
                 self.config.logical_width,
                 self.config.logical_height,
             ));
-        match event_loop.create_window(attributes) {
+        match create(attributes) {
             Ok(window) => {
+                let window = std::sync::Arc::new(window);
                 self.app.ready(&WindowRef { window: &window });
                 self.window = Some(window);
             }
-            Err(error) => {
-                self.failure = Some(format!("window creation failed: {error}"));
-                event_loop.exit();
+            Err(message) => {
+                self.failure = Some(format!("window creation failed: {message}"));
             }
         }
     }
 
-    fn window_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: winit::event::WindowEvent,
-    ) {
-        if let Some(translated) = translate_event(&event) {
+    /// Deliver one OS event to the app. Events with no engine meaning
+    /// are dropped here — deliberately, not accidentally.
+    fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        if let Some(translated) = translate_event(event) {
             self.app.event(translated);
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    /// One loop iteration's app work, after the events. Returns whether
+    /// the loop must now leave: because the app asked, or because the
+    /// window never came up — the app never saw `ready`, so it must not
+    /// see `update` either, and there is nothing left to wait for.
+    fn tick(&mut self) -> bool {
         if self.failure.is_some() {
-            // The window never came up: the loop is exiting and the app
-            // never saw `ready` — do not feed it `update` either.
-            return;
+            return true;
         }
         let mut control = LoopControl::default();
         self.app.update(&mut control);
@@ -279,7 +323,48 @@ impl ApplicationHandler for Adapter<'_> {
         {
             window.request_redraw();
         }
-        if control.exit {
+        control.exit
+    }
+
+    /// The run's outcome. Two failures can reach here — the loop itself
+    /// reported one, or a callback recorded one — and both surface
+    /// through `run_window_app`'s `Result` instead of a log line.
+    fn outcome(
+        &mut self,
+        run: Result<(), winit::error::EventLoopError>,
+    ) -> Result<(), WindowError> {
+        if let Err(error) = run {
+            return Err(WindowError::Loop {
+                message: error.to_string(),
+            });
+        }
+        match self.failure.take() {
+            Some(message) => Err(WindowError::Loop { message }),
+            None => Ok(()),
+        }
+    }
+}
+
+impl ApplicationHandler for Adapter<'_> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.open(&|attributes| {
+            event_loop
+                .create_window(attributes)
+                .map_err(|error| error.to_string())
+        });
+    }
+
+    fn window_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        self.dispatch(&event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.tick() {
             event_loop.exit();
         }
     }
@@ -290,35 +375,55 @@ impl ApplicationHandler for Adapter<'_> {
 /// not accidentally.
 fn translate_event(event: &winit::event::WindowEvent) -> Option<WindowEvent> {
     use winit::event::WindowEvent as We;
-    match event {
-        We::CloseRequested => Some(WindowEvent::CloseRequested),
-        We::Resized(size) => Some(WindowEvent::Resized {
+    let translated = match event {
+        We::CloseRequested => WindowEvent::CloseRequested,
+        We::Resized(size) => WindowEvent::Resized {
             width: size.width,
             height: size.height,
-        }),
-        We::ScaleFactorChanged { scale_factor, .. } => Some(WindowEvent::ScaleFactorChanged {
-            scale: *scale_factor,
-        }),
-        We::RedrawRequested => Some(WindowEvent::RedrawRequested),
-        We::KeyboardInput { event, .. } => Some(WindowEvent::Key {
-            code: translate_key(event.physical_key),
-            pressed: event.state.is_pressed(),
-            repeat: event.repeat,
-        }),
-        We::CursorMoved { position, .. } => Some(WindowEvent::PointerMoved {
+        },
+        // The next two arms are the only ones no test can reach: the
+        // windowing library's scale-factor and key-event payloads have
+        // no public constructor, and neither event can be provoked from
+        // inside the process. Each is therefore a single delegation to
+        // a function that IS driven directly.
+        We::ScaleFactorChanged { scale_factor, .. } => scale_change(*scale_factor),
+        We::KeyboardInput { event, .. } => keyboard(event.physical_key, event.state, event.repeat),
+        We::RedrawRequested => WindowEvent::RedrawRequested,
+        We::CursorMoved { position, .. } => WindowEvent::PointerMoved {
             x: position.x,
             y: position.y,
-        }),
-        We::MouseInput { state, button, .. } => Some(WindowEvent::PointerButton {
+        },
+        We::MouseInput { state, button, .. } => WindowEvent::PointerButton {
             button: translate_button(*button),
             pressed: state.is_pressed(),
-        }),
+        },
         We::MouseWheel { delta, .. } => {
             let (dx, dy) = translate_wheel(*delta);
-            Some(WindowEvent::Wheel { dx, dy })
+            WindowEvent::Wheel { dx, dy }
         }
-        We::Focused(focused) => Some(WindowEvent::Focused(*focused)),
-        _ => None,
+        We::Focused(focused) => WindowEvent::Focused(*focused),
+        _ => return None,
+    };
+    Some(translated)
+}
+
+/// A display's scale factor changed.
+fn scale_change(scale: f64) -> WindowEvent {
+    WindowEvent::ScaleFactorChanged { scale }
+}
+
+/// A key changed state. Takes the fields loose rather than the library's
+/// key event, because that type cannot be constructed outside the
+/// library — this way the mapping is driven by tests without one.
+fn keyboard(
+    key: winit::keyboard::PhysicalKey,
+    state: winit::event::ElementState,
+    repeat: bool,
+) -> WindowEvent {
+    WindowEvent::Key {
+        code: translate_key(key),
+        pressed: state.is_pressed(),
+        repeat,
     }
 }
 
@@ -463,7 +568,7 @@ mod tests {
             delta: MouseScrollDelta::LineDelta(0.0, 1.0),
             phase: winit::event::TouchPhase::Moved,
         });
-        assert!(matches!(wheel, Some(WindowEvent::Wheel { .. })));
+        assert_eq!(wheel, Some(WindowEvent::Wheel { dx: 0.0, dy: 16.0 }));
     }
 
     #[test]
@@ -530,5 +635,163 @@ mod tests {
         control.exit();
         control.request_redraw();
         assert!(control.exit && control.redraw);
+    }
+
+    #[test]
+    fn scale_and_key_payloads_survive_translation() {
+        use winit::event::ElementState;
+        assert_eq!(
+            scale_change(2.5),
+            WindowEvent::ScaleFactorChanged { scale: 2.5 }
+        );
+        assert_eq!(
+            keyboard(PhysicalKey::Code(Wk::Space), ElementState::Pressed, true),
+            WindowEvent::Key {
+                code: KeyCode::Space,
+                pressed: true,
+                repeat: true
+            }
+        );
+        // The two flags are independent and neither is the other.
+        assert_eq!(
+            keyboard(PhysicalKey::Code(Wk::KeyZ), ElementState::Released, false),
+            WindowEvent::Key {
+                code: KeyCode::Unidentified,
+                pressed: false,
+                repeat: false
+            }
+        );
+    }
+
+    /// A [`WindowApp`] that records what the adapter told it, and asks
+    /// for whatever the test configured.
+    #[derive(Default)]
+    struct Recorder {
+        events: Vec<WindowEvent>,
+        updates: u32,
+        ask_redraw: bool,
+        ask_exit: bool,
+    }
+
+    impl WindowApp for Recorder {
+        // Unreachable from here, and nothing can change that: a
+        // `WindowRef` borrows a live OS window, which needs a running
+        // event loop no unit test can host. The callback's own contract
+        // — fires exactly once, before the rest — is proven by the
+        // windowed smoke test instead.
+        fn ready(&mut self, _window: &WindowRef<'_>) {}
+
+        fn event(&mut self, event: WindowEvent) {
+            self.events.push(event);
+        }
+
+        fn update(&mut self, control: &mut LoopControl) {
+            self.updates += 1;
+            if self.ask_redraw {
+                control.request_redraw();
+            }
+            if self.ask_exit {
+                control.exit();
+            }
+        }
+    }
+
+    /// An adapter over a fresh app, in the state the loop starts in.
+    fn new_adapter<'a>(config: &'a WindowConfig, app: &'a mut Recorder) -> Adapter<'a> {
+        Adapter {
+            config,
+            app,
+            window: None,
+            failure: None,
+        }
+    }
+
+    #[test]
+    fn a_refused_window_is_reported_once_and_never_retried() {
+        let config = WindowConfig {
+            title: "renew-refused".to_string(),
+            logical_width: 640.0,
+            logical_height: 480.0,
+            resizable: false,
+        };
+        let attempts = std::cell::Cell::new(0_u32);
+        let refuse: &WindowSource<'_> = &|attributes| {
+            attempts.set(attempts.get() + 1);
+            // The config reaches the OS call unaltered.
+            assert_eq!(attributes.title, "renew-refused");
+            assert!(!attributes.resizable);
+            assert_eq!(
+                attributes.inner_size,
+                Some(winit::dpi::LogicalSize::new(640.0, 480.0).into())
+            );
+            Err("no display".to_string())
+        };
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        adapter.open(refuse);
+        // A refusal is final: a second resume must not reach the OS again.
+        adapter.open(refuse);
+        assert_eq!(attempts.get(), 1, "a refusal must not be retried");
+        assert!(adapter.tick(), "a failed bring-up must end the loop");
+        let error = adapter
+            .outcome(Ok(()))
+            .expect_err("the refusal must surface through the Result");
+        assert_eq!(
+            error.to_string(),
+            "window loop failed: window creation failed: no display"
+        );
+        assert_eq!(app.updates, 0, "a failed bring-up must not drive the app");
+    }
+
+    #[test]
+    fn translated_events_reach_the_app_and_meaningless_ones_do_not() {
+        use winit::event::WindowEvent as We;
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        adapter.dispatch(&We::CloseRequested);
+        adapter.dispatch(&We::Destroyed);
+        adapter.dispatch(&We::Focused(false));
+        assert_eq!(
+            app.events,
+            [WindowEvent::CloseRequested, WindowEvent::Focused(false)],
+            "the untranslatable event must be dropped, and only it"
+        );
+    }
+
+    #[test]
+    fn an_iteration_drives_the_app_and_carries_its_exit_request() {
+        let config = WindowConfig::default();
+        let mut quiet = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut quiet);
+        assert!(!adapter.tick(), "an app that asks nothing keeps the loop");
+        assert_eq!(quiet.updates, 1, "every iteration drives the app once");
+
+        // Asking for a redraw before the window exists is not a reason
+        // to skip the app's exit request — or to reach for a window
+        // that is not there.
+        let mut demanding = Recorder {
+            ask_redraw: true,
+            ask_exit: true,
+            ..Recorder::default()
+        };
+        let mut adapter = new_adapter(&config, &mut demanding);
+        assert!(adapter.tick(), "the app asked to exit");
+        assert_eq!(demanding.updates, 1);
+    }
+
+    #[test]
+    fn a_loop_failure_surfaces_even_though_no_callback_recorded_one() {
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        let reported = winit::error::EventLoopError::ExitFailure(3);
+        let expected = format!("window loop failed: {reported}");
+        let error = adapter
+            .outcome(Err(reported))
+            .expect_err("a loop failure must surface");
+        assert_eq!(error.to_string(), expected);
+        // Nothing failed, nothing recorded: the run succeeded.
+        assert!(adapter.outcome(Ok(())).is_ok());
     }
 }
