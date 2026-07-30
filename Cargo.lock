@@ -609,7 +609,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 name = "hello-engine"
 version = "0.1.0"
 dependencies = [
- "criterion",
+ "renew-frame",
 ]
 
 [[package]]
@@ -1393,6 +1393,7 @@ name = "renew-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "renew-frame",
  "renew-jobs",
  "renew-math",
  "renew-memory",
@@ -1405,6 +1406,14 @@ version = "0.1.0"
 [[package]]
 name = "renew-diag"
 version = "0.1.0"
+
+[[package]]
+name = "renew-frame"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-memory",
+]
 
 [[package]]
 name = "renew-jobs"
@@ -1447,6 +1456,24 @@ dependencies = [
  "proptest",
  "raw-window-handle",
  "renew-diag",
+ "renew-platform",
+]
+
+[[package]]
+name = "renew-sample-hello-triangle"
+version = "0.1.0"
+dependencies = [
+ "renew-frame",
+ "renew-memory",
+ "renew-platform",
+ "renew-rhi",
+]
+
+[[package]]
+name = "renew-sample-input-echo"
+version = "0.1.0"
+dependencies = [
+ "renew-frame",
  "renew-platform",
 ]
 

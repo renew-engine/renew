@@ -86,36 +86,142 @@ jobs:
         run: cargo run --package renew-cli --bin renew -- check
 
   removability:
-    name: Removability (minus renew-jobs)
+    name: Removability (optional crates and headless configurations)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # The optional-crate configurations, derived from the manifest
-      # graph: removing renew-jobs also removes its dependents (the
-      # bench suite consumes it from bench targets). With one optional
-      # crate this is a hand-derived matrix of one cell; it grows (or
-      # gets generated) as optional crates appear.
-      - name: Build without the optional crate
-        run: cargo build --workspace --exclude renew-jobs --exclude renew-bench
-      - name: Test without the optional crate
-        run: cargo test --workspace --exclude renew-jobs --exclude renew-bench
+      # `--exclude` deselects a crate; it does NOT stop a still-selected
+      # member from pulling that crate in as a dependency. So the moment
+      # an exclude list stops being upward-closed, its cell keeps
+      # PASSING while compiling the very crate it claims to have
+      # removed: a green gate measuring nothing, which is the worst
+      # failure mode a gate has and one this tree has already paid for
+      # once. Every removal cell below therefore asks the resolver,
+      # before it builds anything, whether the crate is anywhere in the
+      # graph its selection resolves to.
+      #
+      # Two details make the guard hard to fool. It first proves the
+      # name IS in the full workspace graph, so a stale or misspelled
+      # crate name fails loudly instead of "passing" on a name that
+      # matches nothing. And it counts dev edges, because a
+      # dev-dependency is exactly how the bench suite reaches
+      # renew-jobs — the edge that already forces the jobs cell to
+      # exclude renew-bench, invisible to `cargo build` and compiled by
+      # `cargo test`.
+      #
+      # The exclude lists themselves are still written by hand.
+      # Deriving them from reverse-dependency closures reported by
+      # `renew check` is the durable fix and belongs with the structure
+      # checker; until it exists, this guard is what keeps a
+      # hand-written list from rotting in silence.
+      - name: Stage the build-graph guard
+        run: |
+          cat > "$RUNNER_TEMP/absent-from-graph.sh" <<'GUARD'
+          #!/usr/bin/env bash
+          # usage: absent-from-graph.sh <crate> <cargo package-selection flags...>
+          set -euo pipefail
+          crate="$1"
+          shift
+          # Build-only cells narrow this to normal,build: they never
+          # compile dev-dependencies, so counting those edges would
+          # redden a configuration that is in fact clean.
+          edges="${RENEW_GRAPH_EDGES:-normal,build,dev}"
+          # --target all rather than the runner's triple: an exclude
+          # list has to be upward-closed on every platform the engine
+          # targets, and a cfg-gated edge would otherwise stay hidden
+          # until someone ran this matrix somewhere other than Linux.
+          # Plain assignments, not a pipe, so a cargo failure aborts
+          # here instead of reading as "the crate is absent".
+          full=$(cargo tree --edges "$edges" --target all --prefix none --format '{p}' --workspace)
+          cell=$(cargo tree --edges "$edges" --target all --prefix none --format '{p}' "$@")
+          if ! grep -q "^${crate} " <<<"$full"; then
+            echo "::error::the guard was asked about '${crate}', which appears in no workspace graph at all — a stale or misspelled name proves nothing"
+            exit 1
+          fi
+          if grep -q "^${crate} " <<<"$cell"; then
+            echo "::error::'${crate}' is STILL in the build graph of [$*] — the exclude list is no longer upward-closed, so this cell would pass vacuously"
+            exit 1
+          fi
+          echo "absent from the graph, as claimed: ${crate}  <-  $*"
+          GUARD
+      # Every cell holds its package selection in one unquoted variable
+      # and feeds the same one to the guard and to both cargo runs:
+      # that is what makes it impossible to change what a cell builds
+      # without changing what the guard checked.
+      #
+      # renew-bench appears in two exclude lists because it reaches
+      # both renew-jobs and renew-frame from its bench targets.
+      - name: Build and test without the job system
+        run: |
+          sel="--workspace --exclude renew-jobs --exclude renew-bench"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-jobs $sel
+          cargo build $sel
+          cargo test $sel
+      # The frame loop's dependents on day one: both samples, the
+      # hello-engine example that now drives it instead of its own
+      # accumulator, and the bench suite.
+      - name: Build and test without the frame loop
+        run: |
+          sel="--workspace --exclude renew-frame --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude hello-engine --exclude renew-bench"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
+          cargo build $sel
+          cargo test $sel
+      # The rendering crate removed entirely. input_echo deliberately
+      # survives this cell: a frame-loop sample that still builds and
+      # runs with the GPU crate gone is the removability claim from the
+      # other side.
+      - name: Build and test without the rendering crate
+        run: |
+          sel="--workspace --exclude renew-rhi --exclude renew-sample-hello-triangle"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi $sel
+          cargo build $sel
+          cargo test $sel
+      # The other half of the removability claim, and the half no cell
+      # covered until now: the always-present crates on their own, with
+      # every optional engine crate proven out of the graph rather than
+      # merely left off the command line.
+      - name: Build and test the minimal core alone
+        run: |
+          sel="-p renew-platform -p renew-diag -p renew-memory -p renew-math"
+          for optional in renew-rhi renew-jobs renew-frame; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
+          done
+          cargo build $sel
+          cargo test $sel
       # The platform crate's headless configuration: the window feature
       # (and the whole windowing dependency tree) compiled out.
       - name: Build and test the platform crate headless
         run: |
-          cargo build -p renew-platform --no-default-features
-          cargo test -p renew-platform --no-default-features
-      # The rendering crate removed entirely, and its presentation-free
-      # configuration (offscreen only, no windowing interop).
-      - name: Build and test without the rendering crate
-        run: |
-          cargo build --workspace --exclude renew-rhi
-          cargo test --workspace --exclude renew-rhi
+          sel="-p renew-platform --no-default-features"
+          for wsi in winit raw-window-handle; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
+          done
+          cargo build $sel
+          cargo test $sel
+      # The rendering crate's presentation-free configuration
+      # (offscreen only, no windowing interop). No graph guard: this
+      # crate dev-depends on renew-platform with windowing on, so a
+      # WSI-absence claim would be false at dev-edge granularity while
+      # the library itself is clean.
       - name: Build and test the rendering crate without presentation
         run: |
           cargo build -p renew-rhi --no-default-features
           cargo test -p renew-rhi --no-default-features
+      # The same sample and the same frame loop with no winit and no
+      # window-system integration anywhere in the graph — the claim the
+      # loop's independence from windowing rests on. Build only:
+      # running it needs a Vulkan runtime this job does not have, so
+      # the run lives on the rendering lane.
+      - name: Build the sample with windowing compiled out
+        env:
+          RENEW_GRAPH_EDGES: normal,build
+        run: |
+          sel="-p renew-sample-hello-triangle --no-default-features"
+          for wsi in winit ash-window raw-window-handle; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
+          done
+          cargo build $sel
 
   rendering:
     name: Rendering (software Vulkan)
@@ -133,6 +239,65 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-rhi --test golden --test device --test zero_alloc
+      # The frame loop's rendering evidence, on the same pinned
+      # rasterizer and under the same rule: the tick-derived pixel
+      # oracle (does the readback match the colour the world computes
+      # for the tick the loop says it is on) and the sample's
+      # steady-state allocation gate. RENEW_FRAME_STRICT plays the part
+      # RENEW_GOLDEN plays above — on this lane a skip is a failure,
+      # because the coverage gate would otherwise be the only thing
+      # noticing that these never ran.
+      - name: Frame-loop sample tests on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+          RENEW_FRAME_STRICT: "1"
+        run: cargo test -p renew-sample-hello-triangle --test headless_frame --test zero_alloc
+      # The removability job proves this configuration BUILDS; only a
+      # lane with a Vulkan runtime can prove it RUNS. Same binary, same
+      # loop, same stats, with no winit anywhere in the graph — which
+      # is a claim about the shipped artifact, not about the compiler.
+      - name: Run the sample with windowing compiled out
+        env:
+          RENEW_FRAME_STRICT: "1"
+        run: |
+          cargo run -p renew-sample-hello-triangle --no-default-features \
+            --bin hello_triangle -- --headless --frames 60
+      # Cross-process determinism through the real CLI path: two whole
+      # processes, no shared state but the code, and a byte-identical
+      # digest line. A headless run reads no clock, so its output is a
+      # pure function of (frames, step pattern, seed) — which is what
+      # makes this comparable at all.
+      - name: Headless determinism through the CLI path
+        run: |
+          mkdir -p target/frame-stats
+          for run in 1 2; do
+            cargo run --package renew-cli --bin renew -- \
+              run hello_triangle --headless --frames 600 \
+              --dump-stats "target/frame-stats/run$run.json" \
+              > "target/frame-stats/run$run.log"
+            cat "target/frame-stats/run$run.log"
+            # The digest line is the whole contract: one stable string
+            # a human can read in a log and `diff` can compare, with no
+            # JSON parser in the sample's dev-dependencies. Extracted
+            # rather than diffing whole logs, because cargo's own
+            # progress output is not part of the claim — and grep
+            # failing here is the right outcome if the line vanishes,
+            # rather than two empty files agreeing with each other.
+            grep -m1 '^renew-frame ' "target/frame-stats/run$run.log" \
+              > "target/frame-stats/run$run.digest"
+          done
+          diff target/frame-stats/run1.digest target/frame-stats/run2.digest
+      # Timing is recorded here, never gated: hosted wall time decides
+      # nothing, but the numbers are worth having when a frame-budget
+      # negotiation starts. Uploaded even on failure — a red run is
+      # when they are most interesting.
+      - name: Upload frame stats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-stats
+          path: target/frame-stats/
+          if-no-files-found: ignore
       # The fault-injection layer makes driver-failure paths executable;
       # RENEW_FAULT_STRICT turns its absence into a failure here.
       - name: Build and stage the fault-injection layer
@@ -268,6 +433,26 @@ jobs:
           export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
+          # A binary target that is COMPILED but never RUN reports 0%
+          # and is charged in full against the 100% gate, so every
+          # sample binary has to execute here or the commit that adds
+          # one reddens Coverage for a reason that is not a coverage
+          # regression. Both arms of each sample run: the headless
+          # driver (synthetic time, no clock, no window) and, under the
+          # virtual display, the WindowApp arms that only a real event
+          # loop reaches.
+          mkdir -p "$RUNNER_TEMP/frame-stats"
+          cargo llvm-cov --no-report run -p renew-sample-hello-triangle --bin hello_triangle -- \
+            --headless --frames 8 --dump-stats "$RUNNER_TEMP/frame-stats/hello_triangle.json"
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-hello-triangle --bin hello_triangle -- \
+            --frames 30
+          # The scripted trace IS the input: no runner supplies
+          # keystrokes, so without --input-trace the whole event-
+          # handling half of this sample is uncoverable.
+          cargo llvm-cov --no-report run -p renew-sample-input-echo --bin input_echo -- \
+            --headless --input-trace walk
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-input-echo --bin input_echo -- \
+            --frames 30
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate

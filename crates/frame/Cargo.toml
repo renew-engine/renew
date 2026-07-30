@@ -1,0 +1,35 @@
+[package]
+name = "renew-frame"
+description = "Fixed-timestep frame scheduling: the accumulator, the step budget, and the render interpolation factor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Fixed-timestep frame scheduling: the deterministic accumulator, the step budget that bounds a stall, and the interpolation factor for rendering between steps."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+# Deliberately empty, and load-bearing. Zero dependencies makes the
+# determinism contract structurally true rather than contractually
+# claimed: there is no crate here that could offer a clock, a thread, or
+# a randomly seeded hasher. It also makes the crate byte-identical in
+# every removability configuration — there is no edge to remove.
+[dependencies]
+
+[dev-dependencies]
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[lints]
+workspace = true
