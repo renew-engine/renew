@@ -1,0 +1,43 @@
+[package]
+name = "renew-bench"
+description = "Benchmark suite: math and allocator kernels with allocation-count assertions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Criterion benchmarks over the math and allocator kernels, paired with exact allocation-count assertions."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+[dependencies]
+renew-math = { path = "../../crates/core/math" }
+renew-memory = { path = "../../crates/core/memory" }
+
+[dev-dependencies]
+criterion = "0.8"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "math"
+harness = false
+
+[[bench]]
+name = "alloc"
+harness = false
+
+[[bench]]
+name = "alloc_counted"
+harness = false
