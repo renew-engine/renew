@@ -1,0 +1,56 @@
+[package]
+name = "renew-rhi"
+description = "GPU device, render targets, and draw recording behind the engine's rendering interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The engine's only doorway to the GPU: device bring-up, window and offscreen render targets, and the clear-and-triangle draw path."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[features]
+default = ["present"]
+# The windowed presentation path (surface + swapchain). Off = the
+# offscreen-only RHI: no window-system integration in the graph at all.
+present = ["dep:ash-window", "dep:raw-window-handle"]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+[dependencies]
+# "loaded": the Vulkan runtime is dlopened at Device::new, so its absence
+# is a recoverable error, never a link failure.
+ash = { version = "=0.38.0", default-features = false, features = [
+    "loaded",
+    "debug",
+    "std",
+] }
+ash-window = { version = "=0.13.0", optional = true }
+raw-window-handle = { version = "=0.6.2", optional = true }
+renew-diag = { path = "../core/diag" }
+
+[dev-dependencies]
+renew-platform = { path = "../core/platform" }
+proptest = "1.11"
+
+[lints]
+workspace = true
+
+# The OS window loop is main-thread-only; this binary is its own harness
+# and skips gracefully where no display or no Vulkan runtime exists.
+[[test]]
+name = "present_smoke"
+harness = false
+required-features = ["present"]
+
+[[test]]
+name = "fault_present"
+harness = false
+required-features = ["present"]

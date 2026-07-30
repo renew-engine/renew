@@ -11,18 +11,20 @@ pub enum Command {
     Bench,
     Lint,
     Check,
+    Coverage,
     Doctor,
 }
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Configure,
         Self::Build,
         Self::Test,
         Self::Bench,
         Self::Lint,
         Self::Check,
+        Self::Coverage,
         Self::Doctor,
     ];
 
@@ -36,6 +38,7 @@ impl Command {
             Self::Bench => "bench",
             Self::Lint => "lint",
             Self::Check => "check",
+            Self::Coverage => "coverage",
             Self::Doctor => "doctor",
         }
     }
@@ -50,6 +53,7 @@ impl Command {
             Self::Bench => "run the workspace benchmarks",
             Self::Lint => "check formatting, then run clippy with warnings denied",
             Self::Check => "verify workspace crate manifests and dependencies",
+            Self::Coverage => "hold a coverage report against the exemption manifest",
             Self::Doctor => "check the development environment",
         }
     }
@@ -62,18 +66,21 @@ impl Command {
 }
 
 /// A successfully parsed invocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub command: Command,
     pub json: bool,
     /// Bench only (parse enforces): run each benchmark once, without
     /// statistics — the fast run-proof mode CI's bench stage uses.
     pub smoke: bool,
+    /// Coverage only (parse enforces, and requires): the `llvm-cov` JSON
+    /// export to read.
+    pub report: Option<String>,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
 /// Help carries the `--json` flag so usage can honor the output contract.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Parsed {
     Run(Invocation),
     Help { json: bool },
@@ -85,6 +92,13 @@ pub enum ParseError {
     NoCommand,
     UnknownCommand(String),
     UnexpectedArgument(String),
+    /// An option that takes a value was given without one.
+    MissingValue(&'static str),
+    /// A subcommand was given without an option it requires.
+    MissingOption {
+        command: &'static str,
+        option: &'static str,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -94,6 +108,10 @@ impl fmt::Display for ParseError {
             Self::UnknownCommand(name) => write!(f, "unknown command `{name}`"),
             Self::UnexpectedArgument(argument) => {
                 write!(f, "unexpected argument `{argument}`")
+            }
+            Self::MissingValue(option) => write!(f, "`{option}` needs a value"),
+            Self::MissingOption { command, option } => {
+                write!(f, "`{command}` needs `{option} <path>`")
             }
         }
     }
@@ -107,16 +125,26 @@ impl std::error::Error for ParseError {}
 ///
 /// Returns a [`ParseError`] when no subcommand is given, the subcommand is
 /// unknown, or an argument other than the known flags is present —
-/// including `--smoke` with any subcommand other than `bench`.
+/// including `--smoke` with any subcommand other than `bench`, `--report`
+/// with any subcommand other than `coverage`, `--report` without a path,
+/// and `coverage` without `--report`.
 pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut command = None;
     let mut json = false;
     let mut smoke = false;
     let mut help = false;
-    for argument in arguments {
+    let mut report = None;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
         match argument.as_str() {
             "--json" => json = true,
             "--smoke" => smoke = true,
+            // Consumes its value even under `help`, so the path can never
+            // be mistaken for a subcommand.
+            "--report" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--report"))?;
+                report = Some(path.clone());
+            }
             "help" | "--help" | "-h" => help = true,
             other => {
                 if help {
@@ -141,11 +169,23 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         // as unexpected as any stray argument.
         return Err(ParseError::UnexpectedArgument("--smoke".to_string()));
     }
+    if report.is_some() && command != Some(Command::Coverage) {
+        return Err(ParseError::UnexpectedArgument("--report".to_string()));
+    }
+    if command == Some(Command::Coverage) && report.is_none() {
+        // The report is the whole input: coverage has nothing to read
+        // without it, and guessing a path would be worse than refusing.
+        return Err(ParseError::MissingOption {
+            command: "coverage",
+            option: "--report",
+        });
+    }
     match command {
         Some(command) => Ok(Parsed::Run(Invocation {
             command,
             json,
             smoke,
+            report,
         })),
         None => Err(ParseError::NoCommand),
     }
@@ -162,9 +202,12 @@ pub fn usage() -> String {
         let summary = command.summary();
         let _ = writeln!(text, "  {name:<9}  {summary}");
     }
-    text.push_str(
-        "\noptions:\n  --json     emit one machine-readable JSON document on stdout\n  --smoke    (bench only) run each benchmark once, without statistics\n",
-    );
+    text.push_str(concat!(
+        "\noptions:\n",
+        "  --json            emit one machine-readable JSON document on stdout\n",
+        "  --report <path>   (coverage only, required) the llvm-cov JSON export to read\n",
+        "  --smoke           (bench only) run each benchmark once, without statistics\n",
+    ));
     text
 }
 
@@ -176,19 +219,37 @@ mod tests {
         list.iter().map(ToString::to_string).collect()
     }
 
+    /// The invocation a bare subcommand parses to.
+    fn plain(command: Command) -> Invocation {
+        Invocation {
+            command,
+            json: false,
+            smoke: false,
+            report: None,
+        }
+    }
+
     #[test]
     fn every_command_parses_by_name() {
         for command in Command::ALL {
-            let parsed = parse(&arguments(&[command.name()]));
+            let name = command.name();
+            // Coverage is the one subcommand with a required option; it
+            // still has to round-trip by name.
+            let (line, expected) = if command == Command::Coverage {
+                (
+                    vec![name, "--report", "cov.json"],
+                    Invocation {
+                        report: Some("cov.json".to_string()),
+                        ..plain(command)
+                    },
+                )
+            } else {
+                (vec![name], plain(command))
+            };
             assert_eq!(
-                parsed,
-                Ok(Parsed::Run(Invocation {
-                    command,
-                    json: false,
-                    smoke: false,
-                })),
-                "command `{}` did not round-trip",
-                command.name()
+                parse(&arguments(&line)),
+                Ok(Parsed::Run(expected)),
+                "command `{name}` did not round-trip"
             );
         }
     }
@@ -198,9 +259,8 @@ mod tests {
         let before = parse(&arguments(&["--json", "build"]));
         let after = parse(&arguments(&["build", "--json"]));
         let expected = Ok(Parsed::Run(Invocation {
-            command: Command::Build,
             json: true,
-            smoke: false,
+            ..plain(Command::Build)
         }));
         assert_eq!(before, expected);
         assert_eq!(after, expected);
@@ -209,18 +269,17 @@ mod tests {
     #[test]
     fn smoke_parses_with_bench_in_either_position_and_with_json() {
         let expected = Ok(Parsed::Run(Invocation {
-            command: Command::Bench,
-            json: false,
             smoke: true,
+            ..plain(Command::Bench)
         }));
         assert_eq!(parse(&arguments(&["bench", "--smoke"])), expected);
         assert_eq!(parse(&arguments(&["--smoke", "bench"])), expected);
         assert_eq!(
             parse(&arguments(&["bench", "--smoke", "--json"])),
             Ok(Parsed::Run(Invocation {
-                command: Command::Bench,
                 json: true,
                 smoke: true,
+                ..plain(Command::Bench)
             }))
         );
     }
@@ -237,6 +296,77 @@ mod tests {
         assert_eq!(
             parse(&arguments(&["--smoke"])),
             Err(ParseError::UnexpectedArgument("--smoke".to_string()))
+        );
+    }
+
+    #[test]
+    fn report_parses_with_coverage_in_either_position_and_with_json() {
+        let expected = Ok(Parsed::Run(Invocation {
+            report: Some("target/cov.json".to_string()),
+            ..plain(Command::Coverage)
+        }));
+        assert_eq!(
+            parse(&arguments(&["coverage", "--report", "target/cov.json"])),
+            expected
+        );
+        assert_eq!(
+            parse(&arguments(&["--report", "target/cov.json", "coverage"])),
+            expected
+        );
+        assert_eq!(
+            parse(&arguments(&["coverage", "--report", "cov.json", "--json"])),
+            Ok(Parsed::Run(Invocation {
+                json: true,
+                report: Some("cov.json".to_string()),
+                ..plain(Command::Coverage)
+            }))
+        );
+    }
+
+    #[test]
+    fn report_with_any_other_subcommand_is_rejected() {
+        for name in ["configure", "build", "test", "bench", "lint", "check"] {
+            assert_eq!(
+                parse(&arguments(&[name, "--report", "cov.json"])),
+                Err(ParseError::UnexpectedArgument("--report".to_string())),
+                "`{name} --report` must be rejected"
+            );
+        }
+        assert_eq!(
+            parse(&arguments(&["--report", "cov.json"])),
+            Err(ParseError::UnexpectedArgument("--report".to_string()))
+        );
+    }
+
+    #[test]
+    fn coverage_without_a_report_is_rejected() {
+        assert_eq!(
+            parse(&arguments(&["coverage"])),
+            Err(ParseError::MissingOption {
+                command: "coverage",
+                option: "--report",
+            })
+        );
+    }
+
+    #[test]
+    fn a_report_flag_without_a_path_is_rejected() {
+        assert_eq!(
+            parse(&arguments(&["coverage", "--report"])),
+            Err(ParseError::MissingValue("--report"))
+        );
+    }
+
+    #[test]
+    fn a_report_path_is_never_read_as_a_subcommand() {
+        // `--report` consumes the token after it, so a path that happens to
+        // spell a subcommand stays a path.
+        assert_eq!(
+            parse(&arguments(&["coverage", "--report", "build"])),
+            Ok(Parsed::Run(Invocation {
+                report: Some("build".to_string()),
+                ..plain(Command::Coverage)
+            }))
         );
     }
 
@@ -285,24 +415,47 @@ mod tests {
     }
 
     #[test]
-    fn help_swallows_the_smoke_flag_like_any_other_argument() {
+    fn help_swallows_the_smoke_and_report_flags_like_any_other_argument() {
         // Deliberate: help short-circuits everything except `--json`
-        // (same rule as `help nonsense`), so the bench-only validation
-        // never runs and help still prints.
-        for list in [&["help", "--smoke"][..], &["--smoke", "--help"]] {
+        // (same rule as `help nonsense`), so the subcommand-specific
+        // validation never runs and help still prints. `--report` still
+        // eats its value, which is why the path never reaches the
+        // subcommand slot.
+        for list in [
+            &["help", "--smoke"][..],
+            &["--smoke", "--help"],
+            &["help", "--report", "cov.json"],
+            &["--report", "cov.json", "--help"],
+        ] {
             assert_eq!(parse(&arguments(list)), Ok(Parsed::Help { json: false }));
         }
     }
 
     #[test]
-    fn usage_lists_every_command() {
+    fn usage_lists_every_command_and_every_option() {
         let text = usage();
         for command in Command::ALL {
-            assert!(
-                text.contains(command.name()),
-                "usage text is missing `{}`",
-                command.name()
-            );
+            let name = command.name();
+            assert!(text.contains(name), "usage text is missing `{name}`");
+        }
+        for option in ["--json", "--report", "--smoke"] {
+            assert!(text.contains(option), "usage text is missing `{option}`");
+        }
+    }
+
+    #[test]
+    fn every_parse_error_says_what_went_wrong() {
+        for error in [
+            ParseError::NoCommand,
+            ParseError::UnknownCommand("deploy".to_string()),
+            ParseError::UnexpectedArgument("extra".to_string()),
+            ParseError::MissingValue("--report"),
+            ParseError::MissingOption {
+                command: "coverage",
+                option: "--report",
+            },
+        ] {
+            assert!(!error.to_string().is_empty(), "{error:?}");
         }
     }
 }

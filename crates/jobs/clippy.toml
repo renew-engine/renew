@@ -16,3 +16,8 @@ disallowed-methods = [
     { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
     { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
 ]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

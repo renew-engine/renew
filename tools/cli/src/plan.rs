@@ -65,8 +65,9 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
             },
         ],
         // Internal subcommands: their work happens in-process (check spawns
-        // `cargo metadata` itself), not through this table.
-        Command::Check | Command::Doctor => &[],
+        // `cargo metadata` itself; coverage reads the export it is handed),
+        // not through this table.
+        Command::Check | Command::Coverage | Command::Doctor => &[],
     }
 }
 
@@ -130,5 +131,6 @@ mod tests {
     fn internal_subcommands_run_no_external_steps() {
         assert!(steps(Command::Doctor, false).is_empty());
         assert!(steps(Command::Check, false).is_empty());
+        assert!(steps(Command::Coverage, false).is_empty());
     }
 }

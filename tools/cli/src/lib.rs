@@ -5,6 +5,7 @@
 //! decision logic stays unit-testable without spawning processes.
 
 pub mod cli;
+pub mod coverage;
 pub mod doctor;
 pub mod json;
 pub mod plan;

@@ -111,66 +111,101 @@ pub fn exists(path: &Path) -> Result<bool, FsError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_error_variant_displays_its_path() {
-        let path = PathBuf::from("some/asset.bin");
-        let variants = [
-            FsError::NotFound { path: path.clone() },
-            FsError::PermissionDenied { path: path.clone() },
-            FsError::InvalidUtf8 { path: path.clone() },
+    /// One error of every variant, all naming the same path.
+    fn all_variants(path: &Path) -> [FsError; 4] {
+        [
+            FsError::NotFound {
+                path: path.to_path_buf(),
+            },
+            FsError::PermissionDenied {
+                path: path.to_path_buf(),
+            },
+            FsError::InvalidUtf8 {
+                path: path.to_path_buf(),
+            },
             FsError::Io {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 kind: ErrorKind::TimedOut,
             },
-        ];
-        for variant in &variants {
-            let text = variant.to_string();
-            assert!(
-                text.contains("some/asset.bin") || text.contains("some\\asset.bin"),
-                "path missing from: {text}"
-            );
+        ]
+    }
+
+    /// The path an error carries, whichever variant it is. The
+    /// or-pattern is exhaustive by construction: a future variant that
+    /// forgot its path would not compile here.
+    fn reported_path(error: &FsError) -> &Path {
+        let (FsError::NotFound { path }
+        | FsError::PermissionDenied { path }
+        | FsError::InvalidUtf8 { path }
+        | FsError::Io { path, .. }) = error;
+        path
+    }
+
+    /// Which error an [`FsError`] is, as a comparable value — with the
+    /// kind, where the variant carries one. Classification is then
+    /// asserted with `assert_eq!`, which reports the variant it actually
+    /// got, rather than with a pattern whose failing arm no passing run
+    /// ever reaches.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Variant {
+        NotFound,
+        PermissionDenied,
+        InvalidUtf8,
+        Io(ErrorKind),
+    }
+
+    fn variant(error: &FsError) -> Variant {
+        match error {
+            FsError::NotFound { .. } => Variant::NotFound,
+            FsError::PermissionDenied { .. } => Variant::PermissionDenied,
+            FsError::InvalidUtf8 { .. } => Variant::InvalidUtf8,
+            FsError::Io { kind, .. } => Variant::Io(*kind),
+        }
+    }
+
+    #[test]
+    fn every_error_variant_carries_its_path_in_the_field_and_the_message() {
+        let path = PathBuf::from("some/asset.bin");
+        let shown = path.display().to_string();
+        for error in &all_variants(&path) {
+            assert_eq!(reported_path(error), path, "wrong path in {error:?}");
+            let text = error.to_string();
+            assert!(text.contains(&shown), "path missing from: {text}");
         }
     }
 
     #[test]
     fn byte_level_classification_maps_the_documented_kinds() {
         let path = Path::new("p");
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::NotFound)),
-            FsError::NotFound { .. }
-        ));
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::PermissionDenied)),
-            FsError::PermissionDenied { .. }
-        ));
+        let classified = |kind: ErrorKind| variant(&classify(path, &std::io::Error::from(kind)));
+        assert_eq!(classified(ErrorKind::NotFound), Variant::NotFound);
+        assert_eq!(
+            classified(ErrorKind::PermissionDenied),
+            Variant::PermissionDenied
+        );
         // Byte-level InvalidData is NOT a text problem: plain Io.
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::InvalidData)),
-            FsError::Io {
-                kind: ErrorKind::InvalidData,
-                ..
-            }
-        ));
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::WouldBlock)),
-            FsError::Io {
-                kind: ErrorKind::WouldBlock,
-                ..
-            }
-        ));
+        assert_eq!(
+            classified(ErrorKind::InvalidData),
+            Variant::Io(ErrorKind::InvalidData)
+        );
+        assert_eq!(
+            classified(ErrorKind::WouldBlock),
+            Variant::Io(ErrorKind::WouldBlock)
+        );
     }
 
     #[test]
     fn text_classification_reserves_invalid_data_for_utf8() {
         let path = Path::new("p");
-        assert!(matches!(
-            classify_text(path, &std::io::Error::from(ErrorKind::InvalidData)),
-            FsError::InvalidUtf8 { .. }
-        ));
-        assert!(matches!(
-            classify_text(path, &std::io::Error::from(ErrorKind::NotFound)),
-            FsError::NotFound { .. }
-        ));
+        let classified =
+            |kind: ErrorKind| variant(&classify_text(path, &std::io::Error::from(kind)));
+        assert_eq!(classified(ErrorKind::InvalidData), Variant::InvalidUtf8);
+        // Everything else falls through to the byte-level rules.
+        assert_eq!(classified(ErrorKind::NotFound), Variant::NotFound);
+        assert_eq!(
+            classified(ErrorKind::WouldBlock),
+            Variant::Io(ErrorKind::WouldBlock)
+        );
     }
 
     #[test]
@@ -179,10 +214,26 @@ mod tests {
         // SOME classified error comes back carrying exactly this path.
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
         let error = read(directory).expect_err("directories are not files");
-        let (FsError::NotFound { path }
-        | FsError::PermissionDenied { path }
-        | FsError::InvalidUtf8 { path }
-        | FsError::Io { path, .. }) = &error;
-        assert_eq!(path, directory);
+        assert_eq!(reported_path(&error), directory, "wrong path in {error:?}");
+    }
+
+    #[test]
+    fn writing_and_probing_report_their_failures_against_the_same_path() {
+        // A NUL byte never reaches an OS filesystem call: every platform
+        // rejects the name itself, so both seams fail without depending
+        // on any filesystem state.
+        let path = Path::new("renew\0invalid");
+        let write_error = write(path, b"never lands").expect_err("a NUL path cannot be written");
+        assert_eq!(
+            reported_path(&write_error),
+            path,
+            "wrong path in {write_error:?}"
+        );
+        let exists_error = exists(path).expect_err("a NUL path's existence is undeterminable");
+        assert_eq!(
+            reported_path(&exists_error),
+            path,
+            "wrong path in {exists_error:?}"
+        );
     }
 }

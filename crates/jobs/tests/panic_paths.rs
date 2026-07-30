@@ -90,16 +90,26 @@ fn a_poisoned_pool_refuses_the_next_dispatch() {
             ran.fetch_add(1, Ordering::Relaxed);
         });
     }));
-    let payload = second.expect_err("dispatch on a poisoned pool must assert");
-    let message = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
-        .unwrap_or_default();
-    assert!(
-        message.contains("poisoned"),
-        "unexpected payload: {message}"
-    );
+    // The refusal is loud with debug assertions and silent without
+    // them; these tests run under both profiles, so pin what holds in
+    // either — no chunk runs — and the profile-specific shape beside it.
+    if cfg!(debug_assertions) {
+        let payload = second.expect_err("dispatch on a poisoned pool must assert");
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+            .unwrap_or_default();
+        assert!(
+            message.contains("poisoned"),
+            "unexpected payload: {message}"
+        );
+    } else {
+        assert!(
+            second.is_ok(),
+            "with assertions off a poisoned pool refuses by returning"
+        );
+    }
     assert_eq!(ran.load(Ordering::Relaxed), 0, "no chunk may run");
 
     // The INLINE path (single chunk) must honor the poison contract too
@@ -110,7 +120,11 @@ fn a_poisoned_pool_refuses_the_next_dispatch() {
             inline_ran.fetch_add(1, Ordering::Relaxed);
         });
     }));
-    assert!(third.is_err(), "inline dispatch on a poisoned pool asserts");
+    assert_eq!(
+        third.is_err(),
+        cfg!(debug_assertions),
+        "the inline path refuses loudly with assertions, silently without"
+    );
     assert_eq!(inline_ran.load(Ordering::Relaxed), 0);
 }
 

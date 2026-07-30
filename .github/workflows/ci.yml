@@ -106,6 +106,92 @@ jobs:
         run: |
           cargo build -p renew-platform --no-default-features
           cargo test -p renew-platform --no-default-features
+      # The rendering crate removed entirely, and its presentation-free
+      # configuration (offscreen only, no windowing interop).
+      - name: Build and test without the rendering crate
+        run: |
+          cargo build --workspace --exclude renew-rhi
+          cargo test --workspace --exclude renew-rhi
+      - name: Build and test the rendering crate without presentation
+        run: |
+          cargo build -p renew-rhi --no-default-features
+          cargo test -p renew-rhi --no-default-features
+
+  rendering:
+    name: Rendering (software Vulkan)
+    # Pinned runner image: the golden images attest bytes from exactly
+    # this stack, and a silent image bump must not be able to move them.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/software-vulkan
+      # RENEW_GOLDEN=1: on this lane a skipped GPU test is a failure —
+      # the lane exists to run them, so an environment that cannot must
+      # redden it rather than pass vacuously.
+      - name: Run rendering tests on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-rhi --test golden --test device --test zero_alloc
+      # The fault-injection layer makes driver-failure paths executable;
+      # RENEW_FAULT_STRICT turns its absence into a failure here.
+      - name: Build and stage the fault-injection layer
+        run: |
+          cargo build -p vk-fault-layer
+          mkdir -p target/fault-layer
+          printf '{\n  "file_format_version": "1.2.0",\n  "layer": {\n    "name": "VK_LAYER_RENEW_fault",\n    "type": "GLOBAL",\n    "library_path": "%s/target/debug/libvk_fault_layer.so",\n    "api_version": "1.3.281",\n    "implementation_version": "1",\n    "description": "renew fault-injection layer",\n    "functions": {\n      "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"\n    }\n  }\n}\n' "$PWD" > target/fault-layer/VK_LAYER_RENEW_fault.json
+      - name: Fault-injection scenarios on the pinned software rasterizer
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
+        run: |
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
+          cargo test --package renew-rhi --test fault
+      # The golden bootstrap/refresh ritual writes its candidate and
+      # fails; surface the candidate for human inspection.
+      - name: Upload golden candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-candidates
+          path: crates/rhi/tests/goldens/
+          if-no-files-found: ignore
+      - name: Install a virtual display and the distro software driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
+      # The smoke presents through the distro lavapipe (the pinned
+      # tarball is a deliberately headless build); the golden steps
+      # above kept the pinned driver. The manifest is copied with its
+      # library path pinned absolute so the loader can never resolve the
+      # driver library out of another stack on LD_LIBRARY_PATH.
+      - name: Present smoke and presentation fault scenarios under the virtual display
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          test -n "$icd"
+          driver=/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          test -f "$driver"
+          mkdir -p "$RUNNER_TEMP/distro-icd"
+          sed "s|\"library_path\": \"[^\"]*libvulkan_lvp.so\"|\"library_path\": \"$driver\"|" \
+            "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
+          xvfb-run -a cargo test --package renew-rhi --test present_smoke
+          xvfb-run -a cargo test --package renew-rhi --test fault_present
 
   deny:
     name: Licenses and advisories
@@ -137,10 +223,73 @@ jobs:
       # count toward the gate honestly. libxkbcommon-x11 is the X11
       # keyboard runtime the windowing stack dlopens — absent on bare
       # runners, and its loader panics rather than erroring without it.
-      - name: Install a virtual display
-        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
-      - name: Collect coverage
+      # mesa-vulkan-drivers is the distro lavapipe: unlike the pinned
+      # headless tarball, it carries window-system support, so the
+      # presentation path executes here instead of skipping.
+      - name: Install a virtual display and the distro software driver
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
+      # The pinned action still supplies the validation layer (the
+      # oracle); only the driver is overridden below, through a manifest
+      # copy with its library path pinned absolute so the loader can
+      # never resolve the driver library out of another stack on
+      # LD_LIBRARY_PATH. No RENEW_GOLDEN here: this rasterizer's bits
+      # are not the golden's provenance, so exact comparison correctly
+      # stays off.
+      - uses: ./.github/actions/software-vulkan
+      # The fault layer runs under the whole collection so the
+      # driver-failure ladders execute and count. Built with plain
+      # cargo: the tool itself is not a coverage subject.
+      - name: Build and stage the fault-injection layer
+        run: |
+          cargo build -p vk-fault-layer
+          mkdir -p target/fault-layer
+          printf '{\n  "file_format_version": "1.2.0",\n  "layer": {\n    "name": "VK_LAYER_RENEW_fault",\n    "type": "GLOBAL",\n    "library_path": "%s/target/debug/libvk_fault_layer.so",\n    "api_version": "1.3.281",\n    "implementation_version": "1",\n    "description": "renew fault-injection layer",\n    "functions": {\n      "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"\n    }\n  }\n}\n' "$PWD" > target/fault-layer/VK_LAYER_RENEW_fault.json
+      - name: Collect coverage
+        env:
+          VK_LOADER_LAYERS_ENABLE: VK_LAYER_RENEW_fault
+          RENEW_FAULT_STRICT: "1"
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          test -n "$icd"
+          driver=/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          test -f "$driver"
+          mkdir -p "$RUNNER_TEMP/distro-icd"
+          sed "s|\"library_path\": \"[^\"]*libvulkan_lvp.so\"|\"library_path\": \"$driver\"|" \
+            "$icd" > "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          grep -q "$driver" "$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          export VK_DRIVER_FILES="$RUNNER_TEMP/distro-icd/lvp_icd.json"
+          # Appended, never replaced: the pinned action put the SDK's
+          # layer directory here, and that is where the validation
+          # layer lives. Overwriting it silently disables validation,
+          # which turns every "zero validation errors" assertion in
+          # this step into a claim about nothing.
+          export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
-          cargo llvm-cov report --fail-under-lines 95
+          # The fault layer is test scaffolding that runs inside the
+          # loader, not engine code, and cargo-llvm-cov already keeps
+          # test sources out of the denominator — its tool crate
+          # belongs on the same side of that line. The same filter goes
+          # to both reports below, so the table in the log and the gate
+          # that follows are measuring the same tree.
+          #
+          # The export comes first so the gate always has something to
+          # read, even when the percentage backstop below trips.
+          cargo llvm-cov report --ignore-filename-regex 'tools[\/]vk-fault-layer' \
+            --json --output-path target/coverage.json
+          # The percentage is a backstop, not the gate: it puts the
+          # per-file table in the log, where the first person reading a
+          # failure needs it, and it catches a collection that collapsed
+          # wholesale rather than regressed line by line.
+          cargo llvm-cov report --ignore-filename-regex 'tools[\/]vk-fault-layer' --fail-under-lines 95
+      # The gate: 100% of every line the tree does not name in
+      # coverage-exemptions.toml, and it ratchets both ways — an
+      # unexempted uncovered line fails, and so does an exemption whose
+      # line is covered again, because a stale exemption is a hole left
+      # open on exactly the line someone once proved could not be
+      # closed. Reading the export rather than shelling out keeps the
+      # rule itself unit-tested and the failure message specific.
+      - name: Check coverage against the exemption manifest
+        run: cargo run --package renew-cli --bin renew -- coverage --report target/coverage.json

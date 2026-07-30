@@ -35,6 +35,7 @@ pub struct CrateShape {
 }
 
 /// The validated fields the rules consume.
+#[derive(Debug)]
 pub struct Meta {
     pub maturity: String,
     pub core: bool,
@@ -376,28 +377,32 @@ fn find_cycles(shapes: &[CrateShape]) -> Vec<Finding> {
         Done,
     }
     let mut states: Vec<State> = vec![State::New; shapes.len()];
-    let index_of = |name: &str| shapes.iter().position(|shape| shape.name == name);
+    // Resolve a name to its index *and* the crate itself, so the walk
+    // carries what it is visiting and never re-indexes `shapes`.
+    let lookup = |name: &str| {
+        shapes
+            .iter()
+            .enumerate()
+            .find(|(_, shape)| shape.name == name)
+    };
     let mut findings = Vec::new();
 
-    for start in 0..shapes.len() {
+    for (start, start_shape) in shapes.iter().enumerate() {
         if states.get(start) != Some(&State::New) {
             continue;
         }
-        // (crate index, next dependency position) — an explicit stack so
-        // the path is available for the report.
-        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        // (crate index, the crate, next dependency position) — an explicit
+        // stack so the path is available for the report.
+        let mut stack: Vec<(usize, &CrateShape, usize)> = vec![(start, start_shape, 0)];
         if let Some(state) = states.get_mut(start) {
             *state = State::Open;
         }
-        while let Some((current, position)) = stack.last().copied() {
-            let Some(shape) = shapes.get(current) else {
-                break;
-            };
+        while let Some((current, shape, position)) = stack.last().copied() {
             if let Some(dep_name) = shape.deps.get(position) {
                 if let Some(last) = stack.last_mut() {
-                    last.1 += 1;
+                    last.2 += 1;
                 }
-                let Some(dep_index) = index_of(dep_name) else {
+                let Some((dep_index, dep_shape)) = lookup(dep_name) else {
                     continue;
                 };
                 match states.get(dep_index).copied() {
@@ -405,13 +410,13 @@ fn find_cycles(shapes: &[CrateShape]) -> Vec<Finding> {
                         if let Some(state) = states.get_mut(dep_index) {
                             *state = State::Open;
                         }
-                        stack.push((dep_index, 0));
+                        stack.push((dep_index, dep_shape, 0));
                     }
                     Some(State::Open) => {
                         let mut path: Vec<&str> = stack
                             .iter()
-                            .skip_while(|(index, _)| *index != dep_index)
-                            .filter_map(|(index, _)| shapes.get(*index).map(|s| s.name.as_str()))
+                            .skip_while(|(index, _, _)| *index != dep_index)
+                            .map(|(_, shape, _)| shape.name.as_str())
                             .collect();
                         path.push(dep_name);
                         findings.push(Finding {
@@ -620,9 +625,10 @@ mod tests {
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
-        let Err(problems) = &shapes[0].meta else {
-            panic!("mistyped table should fail");
-        };
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("a mistyped table is rejected");
         assert!(problems[0].contains("not a table"), "{problems:?}");
     }
 
@@ -642,9 +648,10 @@ mod tests {
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
-        let Err(problems) = &shapes[0].meta else {
-            panic!("missing table should fail");
-        };
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("a missing table is rejected");
         assert!(problems[0].contains("missing"), "{problems:?}");
     }
 
@@ -655,9 +662,10 @@ mod tests {
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
-        let Err(problems) = &shapes[0].meta else {
-            panic!("wrong types should fail");
-        };
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("wrong field types are rejected");
         for named in [
             "`purpose` is not a string",
             "`maturity` is not a string",
@@ -679,9 +687,10 @@ mod tests {
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
-        let Err(problems) = &shapes[0].meta else {
-            panic!("should fail");
-        };
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("an empty purpose is rejected");
         assert!(problems.iter().any(|p| p.contains("`purpose` is empty")));
         assert!(problems.iter().any(|p| p.contains("items must be strings")));
     }
@@ -727,15 +736,67 @@ mod tests {
     }
 
     #[test]
-    fn closed_schema_rejects_unknown_and_missing_fields() {
+    fn an_empty_metadata_table_names_every_missing_field() {
+        let document = crate::json::parse(
+            r#"{"workspace_root":"/w","packages":[{"name":"x","manifest_path":"/w/crates/x/Cargo.toml","dependencies":[],"metadata":{"renew":{}}}]}"#,
+        )
+        .expect("parses");
+        let shapes = shapes_from_metadata(&document).expect("shapes build");
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("an empty table is missing everything");
+        let expected: Vec<String> = REQUIRED_FIELDS
+            .iter()
+            .map(|required| format!("missing field `{required}`"))
+            .collect();
+        // Exactly the five: an absent field is reported once, and never
+        // doubled up with a type complaint about a value that is not there.
+        assert_eq!(problems, &expected);
+    }
+
+    #[test]
+    fn a_core_listed_crate_outside_the_engine_roots_is_flagged() {
+        let shapes = [shape("renew-math", false, &[], "bootstrap", false)];
+        let findings = evaluate(&shapes);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].rule, "core-agreement");
+        assert!(
+            findings[0].message.contains("not an engine crate"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn core_closure_walks_a_diamond_once_and_terminates() {
+        // renew-memory is reachable by two paths. The walk must not
+        // re-expand it — and must still find nothing wrong here.
+        let shapes = [
+            shape(
+                "renew-diag",
+                true,
+                &["renew-platform", "renew-math"],
+                "bootstrap",
+                true,
+            ),
+            shape("renew-platform", true, &["renew-memory"], "bootstrap", true),
+            shape("renew-math", true, &["renew-memory"], "bootstrap", true),
+            shape("renew-memory", true, &[], "bootstrap", true),
+        ];
+        assert_eq!(evaluate(&shapes), Vec::new());
+    }
+
+    #[test]
+    fn closed_schema_rejects_unknown_fields_and_an_invalid_maturity() {
         let document = crate::json::parse(
             r#"{"workspace_root":"/w","packages":[{"name":"x","manifest_path":"/w/crates/x/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"weird","core":true,"extension_points":[],"simulation":false,"extra":1}}}]}"#,
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
-        let Err(problems) = &shapes[0].meta else {
-            panic!("schema should fail");
-        };
+        let problems = shapes[0]
+            .meta
+            .as_ref()
+            .expect_err("the closed schema is enforced");
         assert!(problems.iter().any(|p| p.contains("unknown field `extra`")));
         assert!(problems.iter().any(|p| p.contains("`maturity`")));
     }

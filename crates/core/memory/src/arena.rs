@@ -314,4 +314,29 @@ mod tests {
         // Beyond the base alignment there is no correct placement.
         assert!(arena.alloc(TooWide([0; 32])).is_none());
     }
+
+    /// `alloc_slice` runs its own alignment check, so it needs its own
+    /// proof: an element type the base pointer cannot align is refused
+    /// there too, and a refusal must be free — a partially advanced
+    /// offset would strand bytes no allocation ever gets to use.
+    #[test]
+    fn over_aligned_slice_elements_are_refused_like_scalars() {
+        #[repr(C, align(32))]
+        #[derive(Clone, Copy)]
+        struct TooWide([u8; 32]);
+
+        let arena = LinearArena::with_capacity(256);
+        // Even the EMPTY slice is refused: the arena would still be
+        // promising an address it cannot align, and the length never
+        // enters that question.
+        assert!(arena.alloc_slice::<TooWide>(&[]).is_none());
+        assert!(arena.alloc_slice(&[TooWide([7; 32]); 2]).is_none());
+        assert_eq!(arena.used(), 0, "a refusal must consume nothing");
+        assert_eq!(arena.high_water(), 0);
+
+        // And the arena is untouched for the types it CAN align.
+        let ok = arena.alloc_slice(&[1u128, 2]).expect("align 16 fits");
+        assert_eq!(ok, &[1u128, 2]);
+        assert_eq!(arena.used(), 32);
+    }
 }

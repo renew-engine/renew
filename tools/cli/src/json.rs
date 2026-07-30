@@ -185,6 +185,7 @@ const MAX_DEPTH: usize = 128;
 /// recursion bound that keeps hostile input from exhausting the stack).
 pub fn parse(text: &str) -> Result<Value, JsonError> {
     let mut parser = Parser {
+        text,
         bytes: text.as_bytes(),
         at: 0,
         depth: 0,
@@ -203,12 +204,36 @@ pub fn parse(text: &str) -> Result<Value, JsonError> {
 }
 
 struct Parser<'a> {
+    /// The document, kept beside its bytes. Scanning happens over the
+    /// bytes; slicing happens over the text, which is why no scanned run
+    /// ever needs UTF-8 revalidation.
+    text: &'a str,
     bytes: &'a [u8],
     at: usize,
     depth: usize,
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    /// The document text from `start` to the cursor.
+    ///
+    /// Every position the scanner can stop at is a character boundary: it
+    /// starts on one and only ever steps over ASCII bytes (`"`, `\`,
+    /// controls, digits, exponent punctuation), never into the middle of a
+    /// multi-byte sequence. The fallback therefore cannot be reached, and
+    /// yields the empty string rather than inventing an error case no
+    /// `&str` input can produce.
+    fn slice(&self, start: usize) -> &'a str {
+        // The empty fallback is only correct while both ends really are
+        // boundaries. This is a parser of untrusted input: if a future
+        // scanner change stops mid-codepoint, a silently truncated value
+        // is far worse than a loud failure, so dev builds say so.
+        debug_assert!(
+            self.text.is_char_boundary(start) && self.text.is_char_boundary(self.at),
+            "the scanner stopped inside a multi-byte sequence"
+        );
+        self.text.get(start..self.at).unwrap_or_default()
+    }
+
     fn err(&self, expected: &'static str) -> JsonError {
         JsonError::Syntax {
             at: self.at,
@@ -344,11 +369,7 @@ impl Parser<'_> {
                 self.at += 1;
             }
             if self.at > start {
-                let run = self.bytes.get(start..self.at).unwrap_or_default();
-                out.push_str(core::str::from_utf8(run).map_err(|_| JsonError::Syntax {
-                    at: start,
-                    expected: "valid UTF-8",
-                })?);
+                out.push_str(self.slice(start));
             }
             match self.bytes.get(self.at) {
                 Some(b'"') => {
@@ -381,23 +402,22 @@ impl Parser<'_> {
             b'r' => out.push('\r'),
             b't' => out.push('\t'),
             b'u' => {
-                let code = self.hex4()?;
+                let mut scalar = self.hex4()?;
                 // Surrogate pairs: cargo metadata output is plain, but the
                 // grammar allows them; decode or reject cleanly.
-                if (0xD800..=0xDBFF).contains(&code) {
+                if (0xD800..=0xDBFF).contains(&scalar) {
                     self.eat(b'\\', "a low surrogate")?;
                     self.eat(b'u', "a low surrogate")?;
                     let low = self.hex4()?;
                     if !(0xDC00..=0xDFFF).contains(&low) {
                         return Err(self.err("a low surrogate"));
                     }
-                    let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                    out.push(
-                        char::from_u32(combined).ok_or_else(|| self.err("a valid code point"))?,
-                    );
-                } else {
-                    out.push(char::from_u32(code).ok_or_else(|| self.err("a valid code point"))?);
+                    scalar = 0x10000 + ((scalar - 0xD800) << 10) + (low - 0xDC00);
                 }
+                // One conversion for both shapes. A decoded pair is always
+                // a scalar value; the check that bites is the lone
+                // surrogate arriving unpaired.
+                out.push(char::from_u32(scalar).ok_or_else(|| self.err("a valid code point"))?);
             }
             _ => return Err(self.err("a valid escape")),
         }
@@ -428,11 +448,7 @@ impl Parser<'_> {
         }) {
             self.at += 1;
         }
-        let lexeme = core::str::from_utf8(self.bytes.get(start..self.at).unwrap_or_default())
-            .map_err(|_| JsonError::Syntax {
-                at: start,
-                expected: "a number",
-            })?;
+        let lexeme = self.slice(start);
         if !lexeme.contains(['.', 'e', 'E'])
             && let Ok(integer) = lexeme.parse::<i64>()
         {
@@ -550,16 +566,45 @@ mod tests {
             "\"\\ud800\\ue000\"",
             "{1:2}",
             "1e999",
+            // Containers that end where a separator or a closer is due:
+            // truncated, and — for the object — run together.
+            "{\"a\":1",
+            "{\"a\":1 \"b\":2}",
+            "[1",
+            "[1 2]",
+            // A backslash with nothing after it: the escape itself runs
+            // off the end of the document.
+            "\"abc\\",
         ] {
             assert!(parse(bad).is_err(), "should reject: {bad}");
         }
     }
 
     #[test]
-    fn parse_decodes_every_simple_escape() {
+    fn parse_decodes_the_control_solidus_and_hex_escapes() {
         assert_eq!(
             parse(r#""\b\f\/\u0041\t""#).expect("escapes parse"),
             Value::String("\u{8}\u{c}/A\t".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_decodes_the_carriage_return_and_self_referential_escapes() {
+        // The rest of the escape table, which the test above omits: `\r`,
+        // and the two escapes for the delimiters themselves.
+        assert_eq!(
+            parse(r#""a\rb\"c\\d""#).expect("escapes parse"),
+            Value::String("a\rb\"c\\d".to_string())
+        );
+    }
+
+    #[test]
+    fn multi_byte_text_survives_the_run_slicing() {
+        // Unescaped text is taken in runs and pushed as one slice; a run
+        // bounded by an escape on either side must not split a code point.
+        assert_eq!(
+            parse("\"çağdaş\\tçağdaş!ç\"").expect("multi-byte text parses"),
+            Value::String("çağdaş\tçağdaş!ç".to_string())
         );
     }
 
