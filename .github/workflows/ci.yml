@@ -100,6 +100,12 @@ jobs:
         run: cargo build --workspace --exclude renew-jobs --exclude renew-bench
       - name: Test without the optional crate
         run: cargo test --workspace --exclude renew-jobs --exclude renew-bench
+      # The platform crate's headless configuration: the window feature
+      # (and the whole windowing dependency tree) compiled out.
+      - name: Build and test the platform crate headless
+        run: |
+          cargo build -p renew-platform --no-default-features
+          cargo test -p renew-platform --no-default-features
 
   deny:
     name: Licenses and advisories
@@ -126,8 +132,13 @@ jobs:
         with:
           components: llvm-tools
       - uses: taiki-e/install-action@cargo-llvm-cov
+      # The window smoke test needs a display; a virtual X server lets
+      # it run (instead of skipping) so the windowing adapter's lines
+      # count toward the gate honestly.
+      - name: Install a virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Collect coverage
         run: |
-          cargo llvm-cov --no-report test --workspace
+          xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
           cargo llvm-cov report --fail-under-lines 95

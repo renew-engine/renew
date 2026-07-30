@@ -9,11 +9,40 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The engine's only doorway to the operating system: clock, filesystem, and thread seams."
+purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, and window seams."
 maturity = "internal"
 core = true
 extension_points = []
 simulation = false
 
+[features]
+# Windowing and input via the platform's window module. Default-on;
+# headless builds (servers, harnesses, CI cells) disable default
+# features and compile the entire windowing stack out.
+default = ["window"]
+window = ["dep:winit"]
+
+[dependencies]
+# Explicit feature selection: both Linux backends and the window-handle
+# interop. Wayland client-side decorations are deliberately OFF — the
+# fallback decoration stack pulls an unmaintained font parser (caught by
+# the advisory gate); compositors with server-side decorations decorate
+# the window themselves, and an engine window works undecorated where
+# they don't.
+winit = { version = "=0.30.13", optional = true, default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+] }
+
 [lints]
 workspace = true
+
+# The OS event loop must run on the main thread, which the default test
+# harness cannot provide; this binary is its own harness and skips
+# gracefully where no display server exists.
+[[test]]
+name = "window_smoke"
+harness = false
+required-features = ["window"]
