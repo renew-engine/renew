@@ -78,3 +78,102 @@ pub fn messenger_info(counters: &ValidationCounters) -> vk::DebugUtilsMessengerC
         .pfn_user_callback(Some(messenger_cb))
         .user_data(core::ptr::from_ref(counters).cast_mut().cast())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(
+        counters: &ValidationCounters,
+        severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        message: &core::ffi::CStr,
+    ) -> vk::Bool32 {
+        let data = vk::DebugUtilsMessengerCallbackDataEXT::default().message(message);
+        messenger_cb(
+            severity,
+            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+            &raw const data,
+            core::ptr::from_ref(counters).cast_mut().cast(),
+        )
+    }
+
+    #[test]
+    fn errors_and_warnings_are_tallied_and_retained() {
+        let counters = ValidationCounters::default();
+        let verdict = call(
+            &counters,
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+            c"bad barrier",
+        );
+        assert_eq!(verdict, vk::FALSE, "the callback never aborts the call");
+        call(
+            &counters,
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
+            c"suspicious usage",
+        );
+        assert_eq!(counters.errors.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.warnings.load(Ordering::Relaxed), 1);
+        let retained = counters.first_messages.lock().expect("retained lock");
+        assert_eq!(retained.as_slice(), ["bad barrier", "suspicious usage"]);
+    }
+
+    #[test]
+    fn retention_caps_while_counters_keep_counting() {
+        let counters = ValidationCounters::default();
+        for _ in 0..(RETAINED_MESSAGES + 4) {
+            call(
+                &counters,
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                c"repeated",
+            );
+        }
+        assert_eq!(
+            counters.errors.load(Ordering::Relaxed),
+            (RETAINED_MESSAGES + 4) as u64
+        );
+        let retained = counters.first_messages.lock().expect("retained lock");
+        assert_eq!(retained.len(), RETAINED_MESSAGES, "retention is capped");
+    }
+
+    #[test]
+    fn null_pointers_are_tolerated_without_counting() {
+        let counters = ValidationCounters::default();
+        let data = vk::DebugUtilsMessengerCallbackDataEXT::default();
+        // Null user data: nothing to count into.
+        assert_eq!(
+            messenger_cb(
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+                &raw const data,
+                core::ptr::null_mut(),
+            ),
+            vk::FALSE
+        );
+        // Null callback data: nothing to read.
+        assert_eq!(
+            messenger_cb(
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+                core::ptr::null(),
+                core::ptr::from_ref(&counters).cast_mut().cast(),
+            ),
+            vk::FALSE
+        );
+        assert_eq!(counters.errors.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_message_less_record_still_counts_with_a_placeholder() {
+        let counters = ValidationCounters::default();
+        let data = vk::DebugUtilsMessengerCallbackDataEXT::default();
+        messenger_cb(
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+            &raw const data,
+            core::ptr::from_ref(&counters).cast_mut().cast(),
+        );
+        assert_eq!(counters.errors.load(Ordering::Relaxed), 1);
+        let retained = counters.first_messages.lock().expect("retained lock");
+        assert_eq!(retained.as_slice(), ["(no message)"]);
+    }
+}

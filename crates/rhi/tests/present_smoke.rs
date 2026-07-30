@@ -72,8 +72,8 @@ impl WindowApp for SmokeApp {
         self.size = Extent { width, height };
         let target = match device.create_window_target(window.native(), self.size) {
             Ok(target) => target,
-            Err(TargetError::PresentUnsupported) => {
-                self.skip = Some("device cannot present to this surface".to_string());
+            Err(TargetError::PresentUnsupported { reason }) => {
+                self.skip = Some(format!("cannot present to this surface: {reason}"));
                 return;
             }
             Err(error) => {

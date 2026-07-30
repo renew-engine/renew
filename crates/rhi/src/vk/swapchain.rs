@@ -127,7 +127,9 @@ impl Device {
                 .is_ok_and(|name| name == ash::khr::swapchain::NAME)
         });
         if !has_swapchain {
-            return Err(TargetError::PresentUnsupported);
+            return Err(TargetError::PresentUnsupported {
+                reason: "the device does not offer the swapchain extension",
+            });
         }
 
         let display = window
@@ -181,7 +183,12 @@ impl Device {
         }
         .map_err(|code| fail(self, creation("vkGetPhysicalDeviceSurfaceSupportKHR", code)))?;
         if !supported {
-            return Err(fail(self, TargetError::PresentUnsupported));
+            return Err(fail(
+                self,
+                TargetError::PresentUnsupported {
+                    reason: "the graphics queue cannot present to this surface",
+                },
+            ));
         }
 
         // SAFETY: category 2: as above.
@@ -198,7 +205,12 @@ impl Device {
                 })
             });
         let Some(surface_format) = chosen else {
-            return Err(fail(self, TargetError::PresentUnsupported));
+            return Err(fail(
+                self,
+                TargetError::PresentUnsupported {
+                    reason: "no 8-bit UNORM sRGB surface format",
+                },
+            ));
         };
         let format = match surface_format.format {
             vk::Format::R8G8B8A8_UNORM => TargetFormat::Rgba8Unorm,

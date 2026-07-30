@@ -65,9 +65,12 @@ pub enum TargetError {
     SurfaceCreation {
         code: i32,
     },
-    /// The graphics queue cannot present to this surface — an explicit
-    /// v0 limitation surfaced honestly.
-    PresentUnsupported,
+    /// Presentation to this surface is unsupported; `reason` names the
+    /// specific check that failed — an explicit v0 limitation surfaced
+    /// honestly and diagnosably.
+    PresentUnsupported {
+        reason: &'static str,
+    },
     Creation {
         call: &'static str,
         code: i32,
@@ -86,8 +89,8 @@ impl fmt::Display for TargetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SurfaceCreation { code } => write!(f, "surface creation failed (code {code})"),
-            Self::PresentUnsupported => {
-                write!(f, "the graphics queue cannot present to this surface")
+            Self::PresentUnsupported { reason } => {
+                write!(f, "cannot present to this surface: {reason}")
             }
             Self::Creation { call, code } => write!(f, "{call} failed (code {code})"),
             Self::Timeout { call } => write!(f, "{call} timed out"),
@@ -167,7 +170,13 @@ mod tests {
             ),
             (DeviceError::DeviceLost.to_string(), "lost"),
             (TargetError::SurfaceCreation { code: -9 }.to_string(), "-9"),
-            (TargetError::PresentUnsupported.to_string(), "present"),
+            (
+                TargetError::PresentUnsupported {
+                    reason: "no swapchain extension",
+                }
+                .to_string(),
+                "no swapchain extension",
+            ),
             (
                 TargetError::Timeout {
                     call: "vkWaitForFences",
