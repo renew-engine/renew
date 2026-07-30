@@ -20,7 +20,7 @@ simulation = false
 # headless builds (servers, harnesses, CI cells) disable default
 # features and compile the entire windowing stack out.
 default = ["window"]
-window = ["dep:winit"]
+window = ["dep:winit", "dep:raw-window-handle"]
 
 [dependencies]
 # Explicit feature selection: both Linux backends and the window-handle
@@ -35,6 +35,10 @@ winit = { version = "=0.30.13", optional = true, default-features = false, featu
     "wayland",
     "wayland-dlopen",
 ] }
+# The windowing/GPU interop vocabulary: NativeWindow implements its two
+# handle traits so the renderer can create a surface without either
+# crate naming the other's internals.
+raw-window-handle = { version = "=0.6.2", optional = true }
 
 [lints]
 workspace = true

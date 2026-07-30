@@ -125,10 +125,9 @@ impl LoopControl {
     }
 }
 
-/// A live window, borrowed by [`WindowApp::ready`]. Accessors only;
-/// surface-handle exposure for the renderer arrives with the renderer.
+/// A live window, borrowed by [`WindowApp::ready`].
 pub struct WindowRef<'a> {
-    window: &'a winit::window::Window,
+    window: &'a std::sync::Arc<winit::window::Window>,
 }
 
 impl WindowRef<'_> {
@@ -143,6 +142,42 @@ impl WindowRef<'_> {
     #[must_use]
     pub fn scale_factor(&self) -> f64 {
         self.window.scale_factor()
+    }
+
+    /// An owned, opaque handle to this window for the renderer's surface
+    /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
+    /// as it (or anything owning it) exists — surface validity is
+    /// ownership, not convention.
+    #[must_use]
+    pub fn native(&self) -> NativeWindow {
+        NativeWindow {
+            window: std::sync::Arc::clone(self.window),
+        }
+    }
+}
+
+/// An owned window handle: the value the renderer's window target takes
+/// and holds. Opaque — it exposes nothing but the two standard
+/// window-handle traits the graphics stack consumes. Cloning shares the
+/// same OS window; the window stays alive while any clone exists.
+#[derive(Clone)]
+pub struct NativeWindow {
+    window: std::sync::Arc<winit::window::Window>,
+}
+
+impl raw_window_handle::HasDisplayHandle for NativeWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        raw_window_handle::HasDisplayHandle::display_handle(&*self.window)
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for NativeWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        raw_window_handle::HasWindowHandle::window_handle(&*self.window)
     }
 }
 
@@ -222,7 +257,7 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
 struct Adapter<'a> {
     config: &'a WindowConfig,
     app: &'a mut dyn WindowApp,
-    window: Option<winit::window::Window>,
+    window: Option<std::sync::Arc<winit::window::Window>>,
     /// Failure inside a callback (window creation): carried out of the
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
@@ -245,6 +280,7 @@ impl ApplicationHandler for Adapter<'_> {
             ));
         match event_loop.create_window(attributes) {
             Ok(window) => {
+                let window = std::sync::Arc::new(window);
                 self.app.ready(&WindowRef { window: &window });
                 self.window = Some(window);
             }

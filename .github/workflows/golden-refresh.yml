@@ -1,0 +1,41 @@
+name: Golden refresh
+
+# Manual ritual only. Deletes the committed golden images and re-runs
+# the golden tests on the pinned software Vulkan stack; the test's
+# bootstrap path writes fresh candidates and FAILS BY DESIGN — a golden
+# can never enter the tree through a passing run. The candidates land in
+# an artifact for a human to inspect and commit alongside their
+# provenance sidecars.
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  refresh:
+    name: Produce fresh golden candidates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/software-vulkan
+      - name: Remove the committed goldens
+        run: rm -f crates/rhi/tests/goldens/*.rgba
+      # Expected to fail: the bootstrap path writes the candidate and
+      # panics so the refresh is never silent.
+      - name: Render fresh candidates (fails by design)
+        continue-on-error: true
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-rhi --test golden
+      - name: Verify candidates were produced
+        run: |
+          ls -l crates/rhi/tests/goldens/
+          test -f crates/rhi/tests/goldens/triangle-256x256.rgba
+      - name: Upload candidates for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-candidates
+          path: crates/rhi/tests/goldens/

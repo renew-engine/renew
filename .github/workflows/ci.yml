@@ -106,6 +106,46 @@ jobs:
         run: |
           cargo build -p renew-platform --no-default-features
           cargo test -p renew-platform --no-default-features
+      # The rendering crate removed entirely, and its presentation-free
+      # configuration (offscreen only, no windowing interop).
+      - name: Build and test without the rendering crate
+        run: |
+          cargo build --workspace --exclude renew-rhi
+          cargo test --workspace --exclude renew-rhi
+      - name: Build and test the rendering crate without presentation
+        run: |
+          cargo build -p renew-rhi --no-default-features
+          cargo test -p renew-rhi --no-default-features
+
+  rendering:
+    name: Rendering (software Vulkan)
+    # Pinned runner image: the golden images attest bytes from exactly
+    # this stack, and a silent image bump must not be able to move them.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/software-vulkan
+      # RENEW_GOLDEN=1: on this lane a skipped GPU test is a failure —
+      # the lane exists to run them, so an environment that cannot must
+      # redden it rather than pass vacuously.
+      - name: Run rendering tests on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-rhi --test golden --test device --test zero_alloc
+      # The golden bootstrap/refresh ritual writes its candidate and
+      # fails; surface the candidate for human inspection.
+      - name: Upload golden candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-candidates
+          path: crates/rhi/tests/goldens/
+          if-no-files-found: ignore
+      - name: Install a virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
+      - name: Present smoke under the virtual display
+        run: xvfb-run -a cargo test --package renew-rhi --test present_smoke
 
   deny:
     name: Licenses and advisories
@@ -139,6 +179,9 @@ jobs:
       # runners, and its loader panics rather than erroring without it.
       - name: Install a virtual display
         run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
+      # The rendering crate's GPU-facing lines must EXECUTE under the
+      # coverage gate, not skip: give the run a software Vulkan stack.
+      - uses: ./.github/actions/software-vulkan
       - name: Collect coverage
         run: |
           xvfb-run -a cargo llvm-cov --no-report test --workspace
