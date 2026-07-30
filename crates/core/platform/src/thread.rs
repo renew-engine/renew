@@ -148,6 +148,16 @@ mod tests {
         );
     }
 
+    /// The kind an operating-system refusal reports, or `None` for any
+    /// other failure — so the refusal's kind is asserted with a value
+    /// comparison that also proves the other variants carry no kind.
+    fn refusal_kind(error: &ThreadError) -> Option<ErrorKind> {
+        match error {
+            ThreadError::SpawnFailed { kind, .. } => Some(*kind),
+            ThreadError::InvalidName { .. } | ThreadError::Panicked { .. } => None,
+        }
+    }
+
     #[test]
     fn error_variants_display_their_thread_name() {
         let spawn_failed = ThreadError::SpawnFailed {
@@ -155,17 +165,12 @@ mod tests {
             kind: ErrorKind::OutOfMemory,
         };
         assert!(spawn_failed.to_string().contains("renew-io"));
-        assert!(matches!(
-            spawn_failed,
-            ThreadError::SpawnFailed {
-                kind: ErrorKind::OutOfMemory,
-                ..
-            }
-        ));
+        assert_eq!(refusal_kind(&spawn_failed), Some(ErrorKind::OutOfMemory));
         let panicked = ThreadError::Panicked {
             name: "renew-sim".to_string(),
         };
         assert!(panicked.to_string().contains("renew-sim"));
+        assert_eq!(refusal_kind(&panicked), None);
         let invalid = ThreadError::InvalidName {
             name: "a\0b".to_string(),
         };

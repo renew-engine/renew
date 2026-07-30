@@ -141,58 +141,71 @@ mod tests {
         path
     }
 
+    /// Which error an [`FsError`] is, as a comparable value — with the
+    /// kind, where the variant carries one. Classification is then
+    /// asserted with `assert_eq!`, which reports the variant it actually
+    /// got, rather than with a pattern whose failing arm no passing run
+    /// ever reaches.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Variant {
+        NotFound,
+        PermissionDenied,
+        InvalidUtf8,
+        Io(ErrorKind),
+    }
+
+    fn variant(error: &FsError) -> Variant {
+        match error {
+            FsError::NotFound { .. } => Variant::NotFound,
+            FsError::PermissionDenied { .. } => Variant::PermissionDenied,
+            FsError::InvalidUtf8 { .. } => Variant::InvalidUtf8,
+            FsError::Io { kind, .. } => Variant::Io(*kind),
+        }
+    }
+
     #[test]
     fn every_error_variant_carries_its_path_in_the_field_and_the_message() {
         let path = PathBuf::from("some/asset.bin");
-        for variant in &all_variants(&path) {
-            assert_eq!(reported_path(variant), path, "wrong path in {variant:?}");
-            let text = variant.to_string();
-            assert!(
-                text.contains("some/asset.bin") || text.contains("some\\asset.bin"),
-                "path missing from: {text}"
-            );
+        let shown = path.display().to_string();
+        for error in &all_variants(&path) {
+            assert_eq!(reported_path(error), path, "wrong path in {error:?}");
+            let text = error.to_string();
+            assert!(text.contains(&shown), "path missing from: {text}");
         }
     }
 
     #[test]
     fn byte_level_classification_maps_the_documented_kinds() {
         let path = Path::new("p");
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::NotFound)),
-            FsError::NotFound { .. }
-        ));
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::PermissionDenied)),
-            FsError::PermissionDenied { .. }
-        ));
+        let classified = |kind: ErrorKind| variant(&classify(path, &std::io::Error::from(kind)));
+        assert_eq!(classified(ErrorKind::NotFound), Variant::NotFound);
+        assert_eq!(
+            classified(ErrorKind::PermissionDenied),
+            Variant::PermissionDenied
+        );
         // Byte-level InvalidData is NOT a text problem: plain Io.
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::InvalidData)),
-            FsError::Io {
-                kind: ErrorKind::InvalidData,
-                ..
-            }
-        ));
-        assert!(matches!(
-            classify(path, &std::io::Error::from(ErrorKind::WouldBlock)),
-            FsError::Io {
-                kind: ErrorKind::WouldBlock,
-                ..
-            }
-        ));
+        assert_eq!(
+            classified(ErrorKind::InvalidData),
+            Variant::Io(ErrorKind::InvalidData)
+        );
+        assert_eq!(
+            classified(ErrorKind::WouldBlock),
+            Variant::Io(ErrorKind::WouldBlock)
+        );
     }
 
     #[test]
     fn text_classification_reserves_invalid_data_for_utf8() {
         let path = Path::new("p");
-        assert!(matches!(
-            classify_text(path, &std::io::Error::from(ErrorKind::InvalidData)),
-            FsError::InvalidUtf8 { .. }
-        ));
-        assert!(matches!(
-            classify_text(path, &std::io::Error::from(ErrorKind::NotFound)),
-            FsError::NotFound { .. }
-        ));
+        let classified =
+            |kind: ErrorKind| variant(&classify_text(path, &std::io::Error::from(kind)));
+        assert_eq!(classified(ErrorKind::InvalidData), Variant::InvalidUtf8);
+        // Everything else falls through to the byte-level rules.
+        assert_eq!(classified(ErrorKind::NotFound), Variant::NotFound);
+        assert_eq!(
+            classified(ErrorKind::WouldBlock),
+            Variant::Io(ErrorKind::WouldBlock)
+        );
     }
 
     #[test]

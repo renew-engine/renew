@@ -8,6 +8,16 @@
 //! target, because the fault layer arms at instance creation and fires
 //! exactly once.
 //!
+//! A second family arms `RENEW_QUIRK` rather than `RENEW_FAULT`:
+//! *response mutations*, where the driver succeeds while reporting
+//! something this machine's hardware never reports — no swapchain
+//! extension, no usable surface format, no swapchain images, an
+//! "application chooses" extent, an acquired index past the end of the
+//! swapchain. They reach the driver-diversity branches that otherwise
+//! only run on other hardware. A quirk is a standing property of the
+//! mutated device rather than a one-shot, so those scenarios assert
+//! *repeatability* where the fault scenarios assert recovery.
+//!
 //! Two scenarios arm nothing at all: their trigger is an argument (a
 //! zero extent, a window the WSI cannot make a surface from), not a
 //! driver failure.
@@ -16,10 +26,10 @@
 //! presentation support, or the fault layer; under
 //! `RENEW_FAULT_STRICT=1` every one of those becomes a failure.
 
-// Arming a fault is an environment write, `unsafe` since the 2024
-// edition. Sound here: this binary is single-threaded (the event loop
-// owns the main thread and every scenario runs on it), so nothing reads
-// or writes the environment concurrently.
+// Arming a fault or a quirk is an environment write, `unsafe` since the
+// 2024 edition. Sound here: this binary is single-threaded (the event
+// loop owns the main thread and every scenario runs on it), so nothing
+// reads or writes the environment concurrently.
 #![allow(unsafe_code)]
 
 use raw_window_handle::{
@@ -50,22 +60,46 @@ fn strict() -> bool {
     std::env::var_os("RENEW_FAULT_STRICT").is_some_and(|value| value == "1")
 }
 
-/// Arm `spec` for the duration of `run`, then disarm.
-fn with_fault<T>(spec: &str, run: impl FnOnce() -> T) -> T {
-    // SAFETY: single-threaded binary; see the module note.
-    unsafe { std::env::set_var("RENEW_FAULT", spec) };
+/// Set `name` to `value`, or remove it when `value` is empty.
+fn set_or_clear(name: &str, value: &str) {
+    if value.is_empty() {
+        // SAFETY: single-threaded binary; see the module note.
+        unsafe { std::env::remove_var(name) };
+    } else {
+        // SAFETY: as above.
+        unsafe { std::env::set_var(name, value) };
+    }
+}
+
+/// Arm exactly `fault` and `quirk` — either one empty meaning "not
+/// armed" — for the duration of `run`, then clear both. Every scenario
+/// arms through here, so none can inherit an arming from the one
+/// before it, whatever order they run in.
+fn armed<T>(fault: &str, quirk: &str, run: impl FnOnce() -> T) -> T {
+    set_or_clear("RENEW_FAULT", fault);
+    set_or_clear("RENEW_QUIRK", quirk);
     let outcome = run();
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("RENEW_FAULT") };
+    set_or_clear("RENEW_FAULT", "");
+    set_or_clear("RENEW_QUIRK", "");
     outcome
 }
 
-/// Run with nothing armed: the layer re-reads the environment at every
-/// instance creation, so an unset variable arms no fault at all.
+/// Arm `spec` as the one fault for the duration of `run`, then disarm.
+fn with_fault<T>(spec: &str, run: impl FnOnce() -> T) -> T {
+    armed(spec, "", run)
+}
+
+/// Arm the `RENEW_QUIRK` list `spec` for the duration of `run`, then
+/// disarm. A quirk is never spent by firing: it shapes every matching
+/// call the mutated device makes for as long as it is armed.
+fn with_quirk<T>(spec: &str, run: impl FnOnce() -> T) -> T {
+    armed("", spec, run)
+}
+
+/// Run with nothing armed: the layer re-reads both variables at every
+/// instance creation, so unset means an unfaulted, unmutated driver.
 fn without_fault<T>(run: impl FnOnce() -> T) -> T {
-    // SAFETY: single-threaded binary; see the module note.
-    unsafe { std::env::remove_var("RENEW_FAULT") };
-    run()
+    armed("", "", run)
 }
 
 /// Implicit layers (overlays, vendor shims) sit above this suite and
@@ -325,10 +359,62 @@ const LADDER: &[(&str, &str, Shape)] = &[
     ),
 ];
 
-/// The two scenarios that arm nothing, run after the table.
+/// The protocol a quirk scenario walks. Recovery is not among them: a
+/// quirk is not spent by firing, so inside one device the mutated
+/// driver keeps its behavior, and the contract worth proving is that
+/// the engine's answer is stable and leaves nothing behind.
+#[derive(Clone, Copy)]
+enum QuirkShape {
+    /// The device can never present to this surface; the payload is
+    /// the exact check that rejected it, and a second attempt on the
+    /// same device must give the same rejection.
+    NeverPresentable(&'static str),
+    /// The chain builds, but every acquire hands back an index that
+    /// addresses no image of it: the frame aborts, the target goes
+    /// dormant, and a rebuilt chain aborts the same way.
+    EveryFrameAborts(Expect),
+    /// The surface reports the "you choose" extent sentinel, so the
+    /// size the caller asked for is the size it gets — across a
+    /// rebuild too — and frames present at it.
+    ApplicationChoosesExtent,
+}
+
+/// Every quirk scenario: the name printed, the `RENEW_QUIRK` list
+/// armed, and the protocol the target must then honor. Each names a
+/// driver behavior that is legal Vulkan and simply absent from this
+/// machine's hardware.
+const QUIRKS: &[(&str, &str, QuirkShape)] = &[
+    (
+        "D1 no-swapchain-extension",
+        "no-swapchain-extension",
+        QuirkShape::NeverPresentable("the device does not offer the swapchain extension"),
+    ),
+    (
+        "D2 no-surface-formats",
+        "no-surface-formats",
+        QuirkShape::NeverPresentable("no 8-bit UNORM sRGB surface format"),
+    ),
+    (
+        "D3 acquire-out-of-range-index",
+        "acquire-out-of-range-index",
+        QuirkShape::EveryFrameAborts(Expect::Creation("vkAcquireNextImageKHR(index)")),
+    ),
+    (
+        "D4 no-swapchain-images",
+        "no-swapchain-images",
+        QuirkShape::EveryFrameAborts(Expect::Creation("vkAcquireNextImageKHR(index)")),
+    ),
+    (
+        "D5 undefined-surface-extent",
+        "undefined-surface-extent",
+        QuirkShape::ApplicationChoosesExtent,
+    ),
+];
+
+/// The two scenarios that arm nothing, run after both tables.
 const UNFAULTED_SCENARIOS: usize = 2;
 /// How many scenarios there are in total.
-const SCENARIOS: usize = LADDER.len() + UNFAULTED_SCENARIOS;
+const SCENARIOS: usize = LADDER.len() + QUIRKS.len() + UNFAULTED_SCENARIOS;
 
 /// The target must be dormant: no size, and rendering asks for a
 /// resize instead of presenting.
@@ -422,6 +508,16 @@ fn present_case(
     with_fault(fault, || target_case(extent, window, body))
 }
 
+/// Every quirk scenario: arm the response mutation, then run the case.
+fn quirk_case(
+    extent: Extent,
+    window: &NativeWindow,
+    quirk: &str,
+    body: impl FnOnce(&Device, Result<WindowTarget, TargetError>) -> Verdict,
+) -> Verdict {
+    with_quirk(quirk, || target_case(extent, window, body))
+}
+
 /// The target the body of a frame scenario needs, or a verdict blaming
 /// the build that should have succeeded.
 fn built(target: Result<WindowTarget, TargetError>) -> Result<WindowTarget, String> {
@@ -447,6 +543,111 @@ fn walk(
         Shape::ResizeFails(expect) => resize_fails(expect, target, size),
         Shape::ResizeLosesDevice => resize_loses_device(device, target, size, window),
     }
+}
+
+fn walk_quirk(
+    shape: QuirkShape,
+    device: &Device,
+    target: Result<WindowTarget, TargetError>,
+    size: Extent,
+    window: &NativeWindow,
+) -> Verdict {
+    match shape {
+        QuirkShape::NeverPresentable(reason) => {
+            never_presentable(reason, device, target, size, window)
+        }
+        QuirkShape::EveryFrameAborts(expect) => every_frame_aborts(expect, target, size),
+        QuirkShape::ApplicationChoosesExtent => application_chooses_extent(target, size),
+    }
+}
+
+/// `Ok(())` when the build was refused as unpresentable for exactly
+/// `reason` — the string is the whole diagnosis a caller gets, so it is
+/// the thing worth asserting.
+fn refused(reason: &'static str, target: Result<WindowTarget, TargetError>) -> Verdict {
+    match target {
+        Err(TargetError::PresentUnsupported { reason: got }) if got == reason => Ok(()),
+        Err(other) => Err(wrong(&format!("PresentUnsupported({reason})"), &other)),
+        Ok(unexpected) => Err(format!(
+            "a target built on a surface the device cannot present to (extent {:?})",
+            unexpected.extent()
+        )),
+    }
+}
+
+/// A device whose driver reports away its ability to present: the
+/// refusal must name the failing check, and it must repeat. The second
+/// attempt is the leak check too — the first unwound past a surface
+/// (and, past the format gate, nothing else), so a second surface on
+/// the same window has to be creatable.
+fn never_presentable(
+    reason: &'static str,
+    device: &Device,
+    target: Result<WindowTarget, TargetError>,
+    size: Extent,
+    window: &NativeWindow,
+) -> Verdict {
+    refused(reason, target)?;
+    refused(reason, device.create_window_target(window.clone(), size))
+}
+
+/// A chain that builds and then cannot be drawn into, because every
+/// acquire names an image the chain does not have. The frame aborts and
+/// the target goes dormant; the quirk is still armed, so the rebuilt
+/// chain must abort identically — the abort path is re-entrant, not a
+/// one-shot that corrupts the target on its second use.
+fn every_frame_aborts(
+    expect: Expect,
+    target: Result<WindowTarget, TargetError>,
+    size: Extent,
+) -> Verdict {
+    let mut target = built(target)?;
+    match target.render(CLEAR, None) {
+        Err(error) => expect.matched(&error)?,
+        Ok(outcome) => return Err(wrong("an error", &outcome)),
+    }
+    assert_dormant(&mut target)?;
+    target
+        .resize(size)
+        .map_err(|error| format!("rebuild after the abort failed: {error}"))?;
+    if target.extent() != size {
+        return Err(format!(
+            "expected the rebuilt chain at {size:?}, got {:?}",
+            target.extent()
+        ));
+    }
+    match target.render(CLEAR, None) {
+        Err(error) => expect.matched(&error)?,
+        Ok(outcome) => return Err(wrong("an error from the rebuilt chain", &outcome)),
+    }
+    assert_dormant(&mut target)
+}
+
+/// The target must be sized exactly `size` and present a frame at it.
+fn presents_at(target: &mut WindowTarget, size: Extent, stage: &str) -> Verdict {
+    let extent = target.extent();
+    if extent != size {
+        return Err(format!(
+            "expected the chosen extent {size:?} {stage}, got {extent:?}"
+        ));
+    }
+    match target.render(CLEAR, None) {
+        Ok(PresentOutcome::Presented) => Ok(()),
+        other => Err(wrong(&format!("Presented {stage}"), &other)),
+    }
+}
+
+/// A surface that leaves the extent to the application: the engine's
+/// clamp against the reported bounds decides the size, so the size
+/// asked for is the size delivered — on the first build and on a
+/// rebuild — and frames present at it.
+fn application_chooses_extent(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
+    let mut target = built(target)?;
+    presents_at(&mut target, size, "on the first build")?;
+    target
+        .resize(size)
+        .map_err(|error| format!("resize failed: {error}"))?;
+    presents_at(&mut target, size, "after a resize")
 }
 
 fn build_fails(
@@ -701,7 +902,14 @@ impl FaultApp {
             });
             return (name, verdict);
         }
-        match index - LADDER.len() {
+        let after_ladder = index - LADDER.len();
+        if let Some(&(name, quirk, shape)) = QUIRKS.get(after_ladder) {
+            let verdict = quirk_case(size, window, quirk, |device, target| {
+                walk_quirk(shape, device, target, size, window)
+            });
+            return (name, verdict);
+        }
+        match after_ladder - QUIRKS.len() {
             0 => ("S1 born-dormant", born_dormant(window, size)),
             _ => ("S2 unsupported-window-handles", unsupported_handles()),
         }
@@ -805,7 +1013,7 @@ fn main() {
     }
     if !app.failures.is_empty() {
         eprintln!(
-            "FAIL: {} presentation fault scenario(s):\n{}",
+            "FAIL: {} presentation scenario(s):\n{}",
             app.failures.len(),
             app.failures.join("\n")
         );
@@ -815,5 +1023,10 @@ fn main() {
         eprintln!("FAIL: {} of {SCENARIOS} scenarios ran", app.passed);
         std::process::exit(1);
     }
-    println!("OK: {} presentation fault scenarios", app.passed);
+    println!(
+        "OK: {} presentation scenarios ({} faults, {} quirks, {UNFAULTED_SCENARIOS} unarmed)",
+        app.passed,
+        LADDER.len(),
+        QUIRKS.len()
+    );
 }

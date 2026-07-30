@@ -156,6 +156,15 @@ impl<T> Pool<T> {
 mod tests {
     use super::*;
 
+    /// The text of a caught panic, whichever payload shape it carries.
+    fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+            .unwrap_or_default()
+    }
+
     #[test]
     fn insert_get_remove_round_trip() {
         let mut pool: Pool<u64> = Pool::with_capacity(4);
@@ -266,5 +275,81 @@ mod tests {
         assert_eq!(pool.get(a), Some(&10));
         assert_eq!(pool.get(b), Some(&20));
         assert_eq!(pool.len(), 2);
+    }
+
+    /// `insert`'s bounds check guards a state the public API cannot
+    /// produce — the free list is private and only ever receives indices
+    /// that already passed a bounds check. Corrupting the list from
+    /// inside the crate is the only way to drive the guard, and it must
+    /// name the broken invariant rather than let the lookup fall through
+    /// to the indistinguishable "pool is full" answer.
+    ///
+    /// This proves the ASSERTION, not the `Err` return below it: the two
+    /// share one condition (`index < slots.len()`), so wherever the
+    /// return would fire the assertion fires first. The `Err` itself is
+    /// reached by the other route — an empty free list — which
+    /// `a_full_pool_returns_the_value` already covers.
+    #[test]
+    fn a_free_list_entry_outside_the_slot_array_is_named_not_swallowed() {
+        let mut pool: Pool<u8> = Pool::with_capacity(1);
+        pool.free.push(9);
+
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.insert(7)));
+        let message = panic_text(
+            refused
+                .expect_err("an out-of-range free-list entry must be refused")
+                .as_ref(),
+        );
+        assert!(
+            message.contains("the free list must only hold indices of existing slots"),
+            "unexpected payload: {message}"
+        );
+
+        // Nothing was stored, and the sound part of the pool survived the
+        // refusal: the one real slot is still free and still the only one.
+        assert_eq!(pool.len(), 0, "the refused insert stored nothing");
+        let handle = pool.insert(7).expect("the real slot is still free");
+        assert_eq!(pool.get(handle), Some(&7));
+        assert_eq!(pool.insert(8), Err(8), "capacity is still one");
+    }
+
+    /// A free-list entry naming an OCCUPIED slot is the corruption that
+    /// costs memory safety at the API level: filling that slot would drop
+    /// the previous occupant without anyone calling `remove`, and hand
+    /// back a second handle carrying the live one's exact identity —
+    /// index and generation. `String` occupants make a silent
+    /// displacement observable: the survivor is read back through the
+    /// original handle.
+    ///
+    /// Same caveat as the bounds test: the assertion and the `Err` return
+    /// under it test `slot.value` for the same thing, so with debug
+    /// assertions on (test builds) the assertion is what fires, and it is
+    /// what this proves. It fires BEFORE the write, which is the property
+    /// that matters — the occupant is still there afterwards.
+    #[test]
+    fn a_free_list_entry_naming_an_occupied_slot_never_displaces_its_occupant() {
+        let mut pool: Pool<String> = Pool::with_capacity(2);
+        let live = pool.insert("occupant".to_string()).expect("has room");
+        pool.free.push(live.index);
+
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.insert("intruder".to_string())
+        }));
+        let message = panic_text(
+            refused
+                .expect_err("a duplicated free-list entry must be refused")
+                .as_ref(),
+        );
+        assert!(
+            message.contains("the free list held an occupied slot"),
+            "unexpected payload: {message}"
+        );
+
+        // The occupant never moved: same handle, same value, same count —
+        // and it is still the one that owns the slot at removal time.
+        assert_eq!(pool.get(live).map(String::as_str), Some("occupant"));
+        assert_eq!(pool.len(), 1, "the intruder was never counted");
+        assert_eq!(pool.remove(live).as_deref(), Some("occupant"));
+        assert!(pool.is_empty());
     }
 }

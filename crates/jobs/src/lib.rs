@@ -686,6 +686,22 @@ mod tests {
         }
     }
 
+    /// The text of a caught panic, whichever payload shape it carries.
+    fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+            .unwrap_or_default()
+    }
+
+    /// A task whose closure is erased behind a trait object. The
+    /// protocol tests that call [`dispatch`] directly all use this one
+    /// shape, so they drive a SINGLE instantiation of the dispatch
+    /// machinery — the successful dispatch below and the refusals that
+    /// follow exercise the very same code, not sibling copies of it.
+    type ErasedTask<'a> = ForChunks<&'a (dyn Fn(Range<usize>) + Sync)>;
+
     /// A pool's shared state, standing alone — for the protocol pieces
     /// that are exercised without workers.
     fn fresh_shared() -> Shared {
@@ -969,6 +985,84 @@ mod tests {
             again.fetch_add(chunk.len(), Ordering::Relaxed);
         });
         assert_eq!(again.load(Ordering::Relaxed), 1024);
+    }
+
+    /// The publish/participate/retire bracket standing alone, and the
+    /// guard that keeps it exclusive.
+    ///
+    /// First, the clean slot: with no workers the caller runs the whole
+    /// plan itself, and the barrier must hand the slot back EMPTY —
+    /// a retired batch is precisely what makes the next publish legal.
+    ///
+    /// Then the corrupt one. Publishing over a LIVE batch would overwrite
+    /// the erased pointer in-flight workers are about to dereference:
+    /// the dangling read the soundness argument exists to exclude.
+    /// `parallel_for`'s `&mut self` makes that unreachable from outside
+    /// the crate, so the state is planted here. The refusal half proves
+    /// the ASSERTION and the publish guard beside it, not the `return`
+    /// beneath them — assertion and return read the same `was_live`, so
+    /// with debug assertions on (every test build) the assertion is what
+    /// fires. What it pins is that the planted batch is still the live
+    /// one afterwards: the refusal ran no chunk and clobbered nothing.
+    #[test]
+    fn a_batch_is_retired_by_the_barrier_and_never_published_over() {
+        let shared = Arc::new(fresh_shared());
+        let counted = AtomicUsize::new(0);
+        let body = |chunk: Range<usize>| {
+            counted.fetch_add(chunk.len(), Ordering::Relaxed);
+        };
+        let task: ErasedTask<'_> = ForChunks { body: &body };
+
+        // The probe runs over real work first: one that cannot fire would
+        // make "no chunk ran" below prove nothing.
+        dispatch(&shared, &Plan::new(0..64, 8), &task);
+        assert_eq!(counted.load(Ordering::Relaxed), 64, "the whole plan ran");
+        {
+            let state = shared.locked();
+            assert!(state.task.is_none(), "the barrier retires the batch");
+            assert_eq!(state.epoch, 1, "exactly one publish");
+            assert!(!state.panicked, "nothing panicked");
+            assert!(!state.poisoned, "a clean dispatch poisons nothing");
+        }
+
+        // A batch the protocol now believes is in flight. Its `ctx` is
+        // null and stays null: the refusal happens before any thread is
+        // woken, so nothing ever reads it — and null is exactly what
+        // tells the planted entry apart from a freshly published one.
+        {
+            let mut state = shared.locked();
+            state.task = Some(TaskRef {
+                call: run_batch::<ErasedTask<'_>>,
+                ctx: core::ptr::null(),
+            });
+            state.epoch = 7;
+        }
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch(&shared, &Plan::new(0..64, 8), &task);
+        }));
+
+        let message = panic_text(
+            refused
+                .expect_err("publishing over a live batch must be refused")
+                .as_ref(),
+        );
+        assert!(
+            message.contains("a batch is already live"),
+            "unexpected payload: {message}"
+        );
+        assert_eq!(
+            counted.load(Ordering::Relaxed),
+            64,
+            "the refused dispatch ran no chunk"
+        );
+
+        let state = shared.locked();
+        assert!(
+            state.task.is_some_and(|live| live.ctx.is_null()),
+            "the planted batch must still be the live one"
+        );
+        assert_eq!(state.epoch, 7, "a refused publish opens no new epoch");
+        assert!(!state.panicked, "the live dispatch's flag is untouched");
     }
 
     mod plan {

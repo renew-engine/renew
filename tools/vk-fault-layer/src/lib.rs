@@ -18,6 +18,19 @@
 //! malformed re-arms to nothing, silently — this layer lives in a
 //! stranger's process and never panics over an env var.
 //!
+//! Quirk protocol: `RENEW_QUIRK=<name>[,<name>…]` arms any number of
+//! *response mutations*, orthogonal to the fault above and composing
+//! freely with it. A quirk always calls down first and only rewrites a
+//! response the driver already gave successfully — it never fabricates
+//! success out of an error. Its purpose is the mirror image of a
+//! fault's: a driver that *succeeds* while reporting something this
+//! machine's driver never reports (no adapters, no swapchain
+//! extension, an "application chooses" surface extent, an image index
+//! past the end of its own swapchain) exercises engine paths that
+//! otherwise only run on other hardware. The names are listed in
+//! [`QUIRK_NAMES`]; unknown ones are ignored silently, and the variable
+//! is re-read at `vkCreateInstance` exactly like `RENEW_FAULT`.
+//!
 //! Everything here is FFI: `unsafe` throughout, every site commented.
 
 use std::collections::HashMap;
@@ -155,6 +168,128 @@ fn should_fail(call: &str) -> Option<vk::Result> {
     }
     fault.seen += 1;
     (fault.seen == fault.ordinal).then_some(fault.result)
+}
+
+// --- Response mutations (`RENEW_QUIRK`). One bit per name; the wrapper
+// that owns each mutation names its bit at the point it applies it.
+
+/// `vkEnumeratePhysicalDevices` reports no adapters.
+const QUIRK_NO_ADAPTERS: u32 = 1 << 0;
+/// `vkEnumerateDeviceExtensionProperties` reports no device extensions
+/// at all, the swapchain extension among them — which is what the name
+/// promises and what the engine's presentation gate reads.
+const QUIRK_NO_SWAPCHAIN_EXTENSION: u32 = 1 << 1;
+/// `vkGetPhysicalDeviceSurfaceFormatsKHR` reports no surface formats.
+const QUIRK_NO_SURFACE_FORMATS: u32 = 1 << 2;
+/// `vkGetSwapchainImagesKHR` reports no swapchain images.
+const QUIRK_NO_SWAPCHAIN_IMAGES: u32 = 1 << 3;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` reports the "application
+/// chooses" extent sentinel, with bounds that make a clamp meaningful.
+const QUIRK_UNDEFINED_SURFACE_EXTENT: u32 = 1 << 4;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` supports only the
+/// `INHERIT` composite-alpha mode — the last fallback in the engine's
+/// preference order.
+const QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY: u32 = 1 << 5;
+/// `vkAcquireNextImageKHR` succeeds but reports an image index past the
+/// end of its own swapchain: a driver violating its own contract.
+const QUIRK_ACQUIRE_OUT_OF_RANGE_INDEX: u32 = 1 << 6;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` caps the swapchain at one
+/// image, so the engine's min-plus-one image count must clamp.
+const QUIRK_MAX_IMAGE_COUNT_ONE: u32 = 1 << 7;
+
+/// Every `RENEW_QUIRK` name paired with its bit. The only place a quirk
+/// name is spelled, so parsing and documentation cannot drift.
+const QUIRK_NAMES: [(&str, u32); 8] = [
+    ("no-adapters", QUIRK_NO_ADAPTERS),
+    ("no-swapchain-extension", QUIRK_NO_SWAPCHAIN_EXTENSION),
+    ("no-surface-formats", QUIRK_NO_SURFACE_FORMATS),
+    ("no-swapchain-images", QUIRK_NO_SWAPCHAIN_IMAGES),
+    ("undefined-surface-extent", QUIRK_UNDEFINED_SURFACE_EXTENT),
+    (
+        "composite-alpha-inherit-only",
+        QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY,
+    ),
+    (
+        "acquire-out-of-range-index",
+        QUIRK_ACQUIRE_OUT_OF_RANGE_INDEX,
+    ),
+    ("max-image-count-one", QUIRK_MAX_IMAGE_COUNT_ONE),
+];
+
+/// The armed response mutations: a set, because quirks compose and each
+/// wrapper only ever asks whether its own is armed.
+#[derive(Clone, Copy, Default)]
+struct Quirks {
+    armed: u32,
+}
+
+impl Quirks {
+    fn has(self, quirk: u32) -> bool {
+        self.armed & quirk != 0
+    }
+}
+
+fn quirk_slot() -> &'static Mutex<Quirks> {
+    static SLOT: LazyLock<Mutex<Quirks>> = LazyLock::new(|| Mutex::new(Quirks::default()));
+    &SLOT
+}
+
+/// Parse a comma-separated quirk list. Unknown names arm nothing and
+/// say nothing: a typo surfaces as a test that fails to observe its
+/// mutation, which is a far better place to learn of it than a
+/// diagnostic printed inside a stranger's process.
+fn parse_quirks(spec: &str) -> Quirks {
+    let mut armed = 0;
+    for name in spec.split(',') {
+        let name = name.trim();
+        if let Some(&(_, bit)) = QUIRK_NAMES.iter().find(|&&(known, _)| known == name) {
+            armed |= bit;
+        }
+    }
+    Quirks { armed }
+}
+
+/// Re-arm the quirk set from `RENEW_QUIRK`; unset clears it. Read at
+/// the same point as `RENEW_FAULT` so a scenario arms both by setting
+/// two variables before one `Device::new`.
+fn rearm_quirks() {
+    let armed = std::env::var("RENEW_QUIRK")
+        .ok()
+        .map_or_else(Quirks::default, |spec| parse_quirks(&spec));
+    if let Ok(mut slot) = quirk_slot().lock() {
+        *slot = armed;
+    }
+}
+
+/// The armed quirk set; an empty set if the lock is poisoned, since a
+/// layer degrades to passthrough rather than fail its host.
+fn quirks() -> Quirks {
+    quirk_slot().lock().map(|slot| *slot).unwrap_or_default()
+}
+
+/// Rewrite a two-call-idiom count to zero on a call that succeeded.
+///
+/// Both halves of the idiom pass through here, which is what makes the
+/// mutation safe: the count query (null data pointer) reports nothing
+/// available, so the caller sizes its buffer to zero, and the data call
+/// therefore has nothing to have written. `INCOMPLETE` folds into
+/// `SUCCESS` — the driver only reports it because this mutation
+/// understated the count on the query, and callers (ash among them)
+/// loop on `INCOMPLETE` until the count stops growing, which under this
+/// quirk would never happen.
+///
+/// # Safety
+///
+/// `p_count` must be null or point to a writable `u32`.
+unsafe fn zero_count(result: vk::Result, p_count: *mut u32) -> vk::Result {
+    if result != vk::Result::SUCCESS && result != vk::Result::INCOMPLETE {
+        return result;
+    }
+    if !p_count.is_null() {
+        // SAFETY: per this function's contract `p_count` is writable.
+        unsafe { *p_count = 0 };
+    }
+    vk::Result::SUCCESS
 }
 
 /// The next layer's entry points for every intercepted instance-level
@@ -788,9 +923,11 @@ unsafe extern "system" fn fault_create_instance(
     p_allocator: *const vk::AllocationCallbacks<'_>,
     p_instance: *mut vk::Instance,
 ) -> vk::Result {
-    // Every instance creation re-arms the fault from the environment,
-    // so one test process can run many scenarios back to back.
+    // Every instance creation re-arms the fault and the quirk set from
+    // the environment, so one test process can run many scenarios back
+    // to back.
     rearm_fault();
+    rearm_quirks();
     if p_create_info.is_null() || p_instance.is_null() {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     }
@@ -1033,7 +1170,13 @@ unsafe extern "system" fn fault_enumerate_physical_devices(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe { next(instance, p_physical_device_count, p_physical_devices) }
+    let result = unsafe { next(instance, p_physical_device_count, p_physical_devices) };
+    if quirks().has(QUIRK_NO_ADAPTERS) {
+        // SAFETY: the Vulkan contract makes the caller's count pointer
+        // writable for this call.
+        return unsafe { zero_count(result, p_physical_device_count) };
+    }
+    result
 }
 
 /// # Safety
@@ -1063,14 +1206,20 @@ unsafe extern "system" fn fault_enumerate_device_extension_properties(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe {
+    let result = unsafe {
         next(
             physical_device,
             p_layer_name,
             p_property_count,
             p_properties,
         )
+    };
+    if quirks().has(QUIRK_NO_SWAPCHAIN_EXTENSION) {
+        // SAFETY: the Vulkan contract makes the caller's count pointer
+        // writable for this call.
+        return unsafe { zero_count(result, p_property_count) };
     }
+    result
 }
 
 /// # Safety
@@ -1155,14 +1304,20 @@ unsafe extern "system" fn fault_get_physical_device_surface_formats_khr(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe {
+    let result = unsafe {
         next(
             physical_device,
             surface,
             p_surface_format_count,
             p_surface_formats,
         )
+    };
+    if quirks().has(QUIRK_NO_SURFACE_FORMATS) {
+        // SAFETY: the Vulkan contract makes the caller's count pointer
+        // writable for this call.
+        return unsafe { zero_count(result, p_surface_format_count) };
     }
+    result
 }
 
 /// # Safety
@@ -1189,7 +1344,42 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe { next(physical_device, surface, p_surface_capabilities) }
+    let result = unsafe { next(physical_device, surface, p_surface_capabilities) };
+    let quirks = quirks();
+    let rewrites_caps = quirks.has(QUIRK_UNDEFINED_SURFACE_EXTENT)
+        || quirks.has(QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY)
+        || quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE);
+    if !rewrites_caps || result != vk::Result::SUCCESS || p_surface_capabilities.is_null() {
+        return result;
+    }
+    // SAFETY: on SUCCESS the driver has just written through this
+    // pointer, so it is a live, writable, initialized capabilities
+    // struct; nothing else aliases it for the duration of the call.
+    let caps = unsafe { &mut *p_surface_capabilities };
+    if quirks.has(QUIRK_UNDEFINED_SURFACE_EXTENT) {
+        // The "application chooses" sentinel, with bounds far enough
+        // either side of any real window that the caller's clamp is a
+        // clamp against real limits rather than a no-op.
+        caps.current_extent = vk::Extent2D {
+            width: u32::MAX,
+            height: u32::MAX,
+        };
+        caps.min_image_extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        caps.max_image_extent = vk::Extent2D {
+            width: 16384,
+            height: 16384,
+        };
+    }
+    if quirks.has(QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY) {
+        caps.supported_composite_alpha = vk::CompositeAlphaFlagsKHR::INHERIT;
+    }
+    if quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE) {
+        caps.max_image_count = 1;
+    }
+    result
 }
 
 /// # Safety
@@ -1455,14 +1645,20 @@ unsafe extern "system" fn fault_get_swapchain_images_khr(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe {
+    let result = unsafe {
         next(
             device,
             swapchain,
             p_swapchain_image_count,
             p_swapchain_images,
         )
+    };
+    if quirks().has(QUIRK_NO_SWAPCHAIN_IMAGES) {
+        // SAFETY: the Vulkan contract makes the caller's count pointer
+        // writable for this call.
+        return unsafe { zero_count(result, p_swapchain_image_count) };
     }
+    result
 }
 
 /// # Safety
@@ -1756,7 +1952,22 @@ unsafe extern "system" fn fault_acquire_next_image_khr(
     };
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
-    unsafe { next(device, swapchain, timeout, semaphore, fence, p_image_index) }
+    let result = unsafe { next(device, swapchain, timeout, semaphore, fence, p_image_index) };
+    // A driver breaking its own contract: the acquire really did
+    // succeed — an image is the caller's and its semaphore signal is
+    // genuinely pending — but the index reported addresses no image of
+    // this swapchain. Only a successful acquire is rewritten; an error
+    // stays an error.
+    if quirks().has(QUIRK_ACQUIRE_OUT_OF_RANGE_INDEX)
+        && matches!(result, vk::Result::SUCCESS | vk::Result::SUBOPTIMAL_KHR)
+        && !p_image_index.is_null()
+    {
+        // SAFETY: on success the driver has just written the acquired
+        // index through this pointer, so it is live and writable.
+        unsafe { *p_image_index = u32::MAX };
+        return vk::Result::SUCCESS;
+    }
+    result
 }
 
 /// # Safety
