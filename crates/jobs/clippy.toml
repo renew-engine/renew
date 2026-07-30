@@ -1,0 +1,18 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). This crate's
+# contract tripwires: no clock, no filesystem, and no raw thread
+# spawning — workers come from the platform seam only.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "workers come from renew_platform::thread::spawn_named — the only thread-spawn seam" },
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock; timing belongs to callers via renew-platform" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]

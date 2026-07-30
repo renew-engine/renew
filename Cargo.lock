@@ -569,6 +569,7 @@ name = "renew-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "renew-jobs",
  "renew-math",
  "renew-memory",
 ]
@@ -580,6 +581,16 @@ version = "0.1.0"
 [[package]]
 name = "renew-diag"
 version = "0.1.0"
+
+[[package]]
+name = "renew-jobs"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-diag",
+ "renew-memory",
+ "renew-platform",
+]
 
 [[package]]
 name = "renew-math"

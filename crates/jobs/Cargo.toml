@@ -1,0 +1,32 @@
+[package]
+name = "renew-jobs"
+description = "Thread pool and parallel-for: the engine's parallelism seam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Fixed-size worker pool with blocking chunk-granular parallel-for; all engine parallelism routes through it."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+[dependencies]
+renew-platform = { path = "../core/platform" }
+renew-diag = { path = "../core/diag" }
+
+[dev-dependencies]
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[lints]
+workspace = true
