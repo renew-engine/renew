@@ -85,6 +85,22 @@ jobs:
       - name: Check workspace structure
         run: cargo run --package renew-cli --bin renew -- check
 
+  removability:
+    name: Removability (minus renew-jobs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The optional-crate configurations, derived from the manifest
+      # graph: removing renew-jobs also removes its dependents (the
+      # bench suite consumes it from bench targets). With one optional
+      # crate this is a hand-derived matrix of one cell; it grows (or
+      # gets generated) as optional crates appear.
+      - name: Build without the optional crate
+        run: cargo build --workspace --exclude renew-jobs --exclude renew-bench
+      - name: Test without the optional crate
+        run: cargo test --workspace --exclude renew-jobs --exclude renew-bench
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

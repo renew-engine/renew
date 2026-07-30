@@ -1,6 +1,6 @@
 [package]
 name = "renew-bench"
-description = "Benchmark suite: math and allocator kernels with allocation-count assertions"
+description = "Benchmark suite: math, allocator, and job-pool kernels with allocation-count assertions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over the math and allocator kernels, paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over the math, allocator, and job-pool kernels, paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -26,6 +26,9 @@ renew-memory = { path = "../../crates/core/memory" }
 
 [dev-dependencies]
 criterion = "0.8"
+# Bench-target-only: keeps the library's dependency graph free of the
+# job pool it never uses.
+renew-jobs = { path = "../../crates/jobs" }
 
 [lints]
 workspace = true
@@ -40,4 +43,8 @@ harness = false
 
 [[bench]]
 name = "alloc_counted"
+harness = false
+
+[[bench]]
+name = "jobs"
 harness = false

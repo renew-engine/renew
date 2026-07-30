@@ -48,7 +48,14 @@ jobs:
         # The sanitized feature marks allocation-counting tests ignored:
         # instrumented runtimes allocate on their own, so those counts are
         # meaningless here (the regular CI workflow measures them).
-        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized -Zbuild-std --target ${{ matrix.target }}
+        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized -Zbuild-std --target ${{ matrix.target }}
+      # The jobs crate's long stress tier is #[ignore]d in ordinary runs;
+      # under the sanitizers it runs in full — the interleaving depth is
+      # the point of this job.
+      - name: Run the jobs long stress tier
+        env:
+          RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+        run: cargo +nightly test -p renew-jobs --test stress --features renew-jobs/sanitized -Zbuild-std --target ${{ matrix.target }} -- --ignored
 
   miri:
     name: Miri (unsafe-bearing crates)
@@ -63,8 +70,11 @@ jobs:
           MIRIFLAGS: -Zmiri-disable-isolation
           PROPTEST_CASES: "8"
         # Scope: every crate carrying library `unsafe`; extend the list as
-        # such crates appear. The counting-allocator integration test is
+        # such crates appear. Counting-allocator integration tests are
         # excluded (global-allocator installation trips a known std/Miri
         # interaction, and the counters are exercised by the lib tests'
-        # callers indirectly in regular CI).
-        run: cargo +nightly miri test -p renew-memory --lib --test properties
+        # callers indirectly in regular CI). The jobs suites shrink their
+        # thread/iteration constants under cfg(miri).
+        run: |
+          cargo +nightly miri test -p renew-memory --lib --test properties
+          cargo +nightly miri test -p renew-jobs --lib --test properties --test panic_paths --test stress
