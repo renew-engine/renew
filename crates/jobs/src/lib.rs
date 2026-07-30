@@ -1047,7 +1047,13 @@ mod tests {
         // Either way nothing runs — that is the contract being pinned,
         // and asserting only the dev half made this test fail the
         // moment it was run under the bench profile.
-        if cfg!(debug_assertions) {
+        // Selected with `#[cfg]`, not `cfg!`: the macro keeps both
+        // paths in the binary, so the one for the build the tests are
+        // not running under becomes a region no coverage run can enter
+        // — a permanent gap. The attribute compiles only the arm that
+        // applies, and the other leaves nothing behind to measure.
+        #[cfg(debug_assertions)]
+        {
             let message = panic_text(
                 refused
                     .expect_err("publishing over a live batch must be refused")
@@ -1057,12 +1063,12 @@ mod tests {
                 message.contains("a batch is already live"),
                 "unexpected payload: {message}"
             );
-        } else {
-            assert!(
-                refused.is_ok(),
-                "with assertions off the publish is refused by returning, not by panicking"
-            );
         }
+        #[cfg(not(debug_assertions))]
+        assert!(
+            refused.is_ok(),
+            "with assertions off the publish is refused by returning, not by panicking"
+        );
         assert_eq!(
             counted.load(Ordering::Relaxed),
             64,

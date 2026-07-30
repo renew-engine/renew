@@ -13,6 +13,7 @@ use std::process::{Command as Process, ExitCode};
 use std::time::Instant;
 
 use renew_cli::cli::{self, Command, Invocation, Parsed};
+use renew_cli::coverage::{self, Outcome};
 use renew_cli::doctor::{self, Facts};
 use renew_cli::json::{self, Value};
 use renew_cli::plan;
@@ -31,7 +32,7 @@ fn main() -> ExitCode {
             emit_stdout_line(&document.render());
             ExitCode::SUCCESS
         }
-        Ok(Parsed::Run(invocation)) => run(invocation),
+        Ok(Parsed::Run(invocation)) => run(&invocation),
         Err(error) => {
             eprint!("error: {error}\n\n{}", cli::usage());
             ExitCode::from(2)
@@ -39,10 +40,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(invocation: Invocation) -> ExitCode {
+fn run(invocation: &Invocation) -> ExitCode {
     match invocation.command {
         Command::Doctor => run_doctor(invocation.json),
         Command::Check => run_check(invocation.json),
+        // Parsing guarantees the path; an empty one would simply fail to
+        // open, which is the same answer by a shorter road.
+        Command::Coverage => run_coverage(
+            invocation.report.as_deref().unwrap_or_default(),
+            invocation.json,
+        ),
         _ => run_steps(invocation),
     }
 }
@@ -156,7 +163,164 @@ fn findings_from_metadata(text: &str) -> Result<Vec<structure::Finding>, String>
     Ok(structure::evaluate(&shapes))
 }
 
-fn run_steps(invocation: Invocation) -> ExitCode {
+fn run_coverage(report_path: &str, json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    match evaluate_coverage(report_path) {
+        Ok(outcome) => {
+            let ok = outcome.passes();
+            if json_mode {
+                emit_stdout_line(&coverage_envelope(&outcome, started).render());
+            } else {
+                emit_stdout(&coverage_report(&outcome));
+            }
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(message) => {
+            // A gate that cannot read its inputs has failed — an empty
+            // uncovered set is never a pass.
+            if json_mode {
+                // Same shape as the success path: every coverage key is
+                // present, so consumers never see a conditional one.
+                let document = Value::Object(vec![
+                    ("schema_version".to_string(), Value::Number(1)),
+                    ("command".to_string(), Value::String("coverage".to_string())),
+                    ("status".to_string(), Value::String("error".to_string())),
+                    ("exit_code".to_string(), Value::Number(1)),
+                    (
+                        "duration_ms".to_string(),
+                        Value::Number(duration_ms(started)),
+                    ),
+                    ("stdout".to_string(), Value::String(String::new())),
+                    ("stderr".to_string(), Value::String(message)),
+                    ("measured_files".to_string(), Value::Number(0)),
+                    ("exempt_lines".to_string(), Value::Number(0)),
+                    ("uncovered".to_string(), Value::Array(Vec::new())),
+                    ("stale".to_string(), Value::Array(Vec::new())),
+                ]);
+                emit_stdout_line(&document.render());
+                return ExitCode::FAILURE;
+            }
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The same envelope prefix as every other subcommand, plus one array per
+/// direction of the ratchet.
+fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
+    let ok = outcome.passes();
+    let uncovered: Vec<Value> = outcome.gaps.iter().map(site_fields).collect();
+    let stale: Vec<Value> = outcome
+        .stale
+        .iter()
+        .map(|stale| {
+            let mut fields = site_pairs(&stale.site);
+            fields.push((
+                "state".to_string(),
+                Value::String(stale.kind.label().to_string()),
+            ));
+            fields.push(("reason".to_string(), Value::String(stale.reason.clone())));
+            Value::Object(fields)
+        })
+        .collect();
+    Value::Object(vec![
+        ("schema_version".to_string(), Value::Number(1)),
+        ("command".to_string(), Value::String("coverage".to_string())),
+        (
+            "status".to_string(),
+            Value::String(if ok { "ok" } else { "failed" }.to_string()),
+        ),
+        ("exit_code".to_string(), Value::Number(i64::from(!ok))),
+        (
+            "duration_ms".to_string(),
+            Value::Number(duration_ms(started)),
+        ),
+        ("stdout".to_string(), Value::String(String::new())),
+        ("stderr".to_string(), Value::String(String::new())),
+        (
+            "measured_files".to_string(),
+            Value::Number(count(outcome.measured_files)),
+        ),
+        (
+            "exempt_lines".to_string(),
+            Value::Number(count(outcome.exempt_lines)),
+        ),
+        ("uncovered".to_string(), Value::Array(uncovered)),
+        ("stale".to_string(), Value::Array(stale)),
+    ])
+}
+
+/// One line per finding, in `check`'s shape, then a summary.
+fn coverage_report(outcome: &Outcome) -> String {
+    let mut report = String::new();
+    for site in &outcome.gaps {
+        let _ = writeln!(
+            report,
+            "FAIL {:<17} {site} is uncovered and has no exemption",
+            "uncovered"
+        );
+    }
+    for stale in &outcome.stale {
+        let _ = writeln!(
+            report,
+            "FAIL {:<17} {} {}",
+            "stale-exemption",
+            stale.site,
+            stale.kind.explanation()
+        );
+    }
+    let summary = if outcome.passes() {
+        format!(
+            "coverage is complete: {} file(s) measured, {} exempt line(s), no gaps",
+            outcome.measured_files, outcome.exempt_lines
+        )
+    } else {
+        format!(
+            "{} coverage finding(s) against {} exempt line(s)",
+            outcome.findings(),
+            outcome.exempt_lines
+        )
+    };
+    let _ = writeln!(report, "{summary}");
+    report
+}
+
+/// Read the manifest and the report, then hold them against each other.
+/// Split out from the rendering half so every way the gate can fail to run
+/// is nameable in one place.
+fn evaluate_coverage(report_path: &str) -> Result<Outcome, String> {
+    let root = workspace_root()
+        .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
+    let manifest_path = root.join(coverage::MANIFEST);
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?;
+    let exemptions = coverage::parse_manifest(&manifest)
+        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+    let text = std::fs::read_to_string(report_path)
+        .map_err(|error| format!("failed to read {report_path}: {error}"))?;
+    let document = json::parse(&text)
+        .map_err(|error| format!("unreadable llvm-cov export {report_path}: {error}"))?;
+    let measured = coverage::measure(&document, &root.to_string_lossy())?;
+    Ok(coverage::compare(&measured, &exemptions))
+}
+
+fn site_pairs(site: &coverage::Site) -> Vec<(String, Value)> {
+    vec![
+        ("file".to_string(), Value::String(site.file.clone())),
+        ("line".to_string(), Value::Number(i64::from(site.line))),
+    ]
+}
+
+fn site_fields(site: &coverage::Site) -> Value {
+    Value::Object(site_pairs(site))
+}
+
+fn run_steps(invocation: &Invocation) -> ExitCode {
     let started = Instant::now();
     let name = invocation.command.name();
     let Some(root) = workspace_root() else {
@@ -374,6 +538,10 @@ fn emit_stdout_line(text: &str) {
 
 fn duration_ms(started: Instant) -> i64 {
     i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
+fn count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

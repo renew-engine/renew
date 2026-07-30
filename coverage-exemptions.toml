@@ -1,0 +1,56 @@
+# Coverage exemptions: the named lines the coverage gate accepts as
+# uncovered. Everything the gate measures and this file does not list must
+# be covered — the threshold for the rest of the tree is 100%.
+#
+# The ratchet runs in BOTH directions, and both directions fail CI:
+#
+#   * an uncovered line with no entry here is a new gap. Cover it, or add
+#     an entry whose reason survives review.
+#   * a line listed here that the report says is covered is a STALE
+#     exemption, and that is a failure too. A stale exemption is not
+#     harmless: it is a hole punched in the gate, blinding it to every
+#     future regression on that exact line. Exemptions are deleted when
+#     they stop being true, never left to rot.
+#
+# Exempting a whole file is never acceptable, for the same reason: it
+# would blind the gate to every future regression anywhere in that file.
+# Exemptions are per line, and they are named.
+#
+# Enforced by `renew coverage --report <llvm-cov export>`, which CI runs in
+# the Coverage job. Format — one `[[exempt]]` table per group of lines that
+# share one reason:
+#
+#   file    repository-relative, forward slashes, on every platform
+#   lines   the exempt line numbers, as one array on one line
+#   reason  why the line cannot be covered. Plain text on one line: the
+#           reader accepts no escapes, so a stray quote or backslash is a
+#           loud error rather than a silent truncation.
+#
+# Line numbers move when the text above them moves. Editing an exempt file
+# means re-checking its entry here — and if it is forgotten, the gate says
+# so, in whichever direction the mistake went.
+
+[[exempt]]
+file = "crates/core/memory/src/arena.rs"
+lines = [75, 95]
+reason = "Calls handle_alloc_error, which aborts through ud2; that bypasses atexit, so the profiling runtime never writes its counters. The line executes, but no counter can survive to record it."
+
+[[exempt]]
+file = "crates/core/memory/src/pool.rs"
+lines = [93]
+reason = "A release-mode refusal guarded by a debug assertion on the same condition, so it is unreachable in any build that measures coverage. It is the last defence against slot aliasing in a build with assertions off."
+
+[[exempt]]
+file = "crates/jobs/src/lib.rs"
+lines = [455, 517]
+reason = "A release-mode refusal guarded by a debug assertion on the same condition, so it is unreachable in any build that measures coverage. It is the last defence against dispatching on a poisoned pool, or over a live batch, in a build with assertions off."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [389, 390]
+reason = "Translates a windowing event whose payload type has no public constructor in the pinned windowing crate, so the input cannot be built outside it. The translation logic itself is covered directly through the helper it delegates to. Note for local runs: on a machine with a live desktop, a stray keyboard event can reach the window smoke test's real window and cover line 390, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [682]
+reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."

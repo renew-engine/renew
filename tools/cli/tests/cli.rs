@@ -653,6 +653,303 @@ fn check_fails_loudly_when_cargo_metadata_cannot_be_read() {
     let _ = fs::remove_dir_all(&directory);
 }
 
+// --- The coverage gate ---------------------------------------------------
+//
+// Driven through a scratch workspace holding its own manifest and its own
+// llvm-cov export, so both directions of the ratchet — and every way the
+// gate can fail to run — are exercised without a real coverage collection.
+
+/// An `llvm-cov` export naming one file under `root`, with the given
+/// `[line_start, column_start, line_end, column_end, count, file_id, …]`
+/// regions. Forward slashes on both platforms: the reader normalizes the
+/// root it compares against.
+fn coverage_export(root: &Path, regions: &str) -> String {
+    let base = root.to_string_lossy().replace('\\', "/");
+    format!(
+        concat!(
+            "{{\"data\":[{{\"files\":[{{\"filename\":\"{base}/crates/a.rs\"}}],",
+            "\"functions\":[{{\"filenames\":[\"{base}/crates/a.rs\"],",
+            "\"regions\":[{regions}]}}]}}]}}"
+        ),
+        base = base,
+        regions = regions
+    )
+}
+
+/// A scratch workspace carrying a coverage manifest and a report.
+fn coverage_workspace(tag: &str, manifest: &str, regions: &str) -> std::io::Result<PathBuf> {
+    let directory = scratch_directory(&format!("coverage-{tag}"))?;
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[workspace]\nresolver = \"3\"\nmembers = []\n",
+    )?;
+    fs::write(directory.join("coverage-exemptions.toml"), manifest)?;
+    fs::write(
+        directory.join("report.json"),
+        coverage_export(&directory, regions),
+    )?;
+    Ok(directory)
+}
+
+/// Line 10 never ran; line 20 did.
+const ONE_GAP: &str = "[10,1,10,9,0,0,0,0],[20,1,20,9,3,0,0,0]";
+
+fn exempting(file: &str, lines: &str) -> String {
+    format!("[[exempt]]\nfile = \"{file}\"\nlines = {lines}\nreason = \"documented\"\n")
+}
+
+#[test]
+fn coverage_passes_when_every_uncovered_line_is_exempt() {
+    let directory = coverage_workspace("pass", &exempting("crates/a.rs", "[10]"), ONE_GAP)
+        .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("coverage is complete"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("1 exempt line(s)"), "stdout was: {stdout}");
+
+    let output = run_in(
+        &directory,
+        &["coverage", "--report", "report.json", "--json"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "coverage")
+        .unwrap_or_else(|reason| panic!("coverage --json: {reason}"));
+    assert_eq!(envelope.get("status").and_then(Value::as_str), Some("ok"));
+    assert_eq!(envelope.get("uncovered"), Some(&Value::Array(Vec::new())));
+    assert_eq!(envelope.get("stale"), Some(&Value::Array(Vec::new())));
+    assert_eq!(envelope.get("exempt_lines"), Some(&Value::Number(1)));
+    assert_eq!(envelope.get("measured_files"), Some(&Value::Number(1)));
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn coverage_fails_on_an_uncovered_line_with_no_exemption() {
+    let directory = coverage_workspace("gap", "# nothing is exempt\n", ONE_GAP)
+        .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("FAIL uncovered"), "stdout was: {stdout}");
+    assert!(stdout.contains("crates/a.rs:10"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("1 coverage finding(s)"),
+        "stdout was: {stdout}"
+    );
+
+    let output = run_in(
+        &directory,
+        &["coverage", "--report", "report.json", "--json"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "coverage")
+        .unwrap_or_else(|reason| panic!("coverage --json: {reason}"));
+    assert_eq!(
+        envelope.get("status").and_then(Value::as_str),
+        Some("failed")
+    );
+    let uncovered = envelope
+        .get("uncovered")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    assert_eq!(uncovered.len(), 1, "stdout was: {stdout}");
+    assert_eq!(
+        uncovered.first().and_then(|site| site.get("line")),
+        Some(&Value::Number(10))
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn coverage_fails_on_an_exemption_whose_line_is_covered_now() {
+    // The other direction of the ratchet: line 20 ran, so its exemption is
+    // a hole in the gate and has to be deleted.
+    let directory = coverage_workspace("stale", &exempting("crates/a.rs", "[10, 20]"), ONE_GAP)
+        .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FAIL stale-exemption"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("crates/a.rs:20 is covered now"),
+        "stdout was: {stdout}"
+    );
+
+    let output = run_in(
+        &directory,
+        &["coverage", "--report", "report.json", "--json"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "coverage")
+        .unwrap_or_else(|reason| panic!("coverage --json: {reason}"));
+    let stale = envelope
+        .get("stale")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    assert_eq!(stale.len(), 1, "stdout was: {stdout}");
+    let entry = stale.first().expect("one stale entry");
+    assert_eq!(entry.get("line"), Some(&Value::Number(20)));
+    assert_eq!(
+        entry.get("state").and_then(Value::as_str),
+        Some("now-covered")
+    );
+    assert_eq!(
+        entry.get("reason").and_then(Value::as_str),
+        Some("documented"),
+        "the entry's own reason travels with the finding"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn coverage_fails_on_an_exemption_the_report_never_measured() {
+    let directory = coverage_workspace(
+        "absent",
+        &format!(
+            "{}{}",
+            exempting("crates/a.rs", "[10]"),
+            exempting("crates/gone.rs", "[5]")
+        ),
+        ONE_GAP,
+    )
+    .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("crates/gone.rs:5 is not in the report"),
+        "stdout was: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_coverage_gate_that_cannot_read_its_inputs_fails_loudly() {
+    let directory = coverage_workspace("inputs", &exempting("crates/a.rs", "[10]"), ONE_GAP)
+        .expect("scratch workspace should be creatable");
+    let manifest = directory.join("coverage-exemptions.toml");
+    let report = directory.join("report.json");
+
+    // A report that is not there at all.
+    let output =
+        run_in(&directory, &["coverage", "--report", "missing.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to read missing.json"),
+        "stderr was: {stderr}"
+    );
+
+    // A report that is not JSON, and one that is JSON but not an export.
+    for (body, expected) in [
+        ("not json at all", "unreadable llvm-cov export"),
+        ("{\"nope\":1}", "no `data` array"),
+    ] {
+        fs::write(&report, body).expect("scratch report");
+        let output = run_in(&directory, &["coverage", "--report", "report.json"])
+            .expect("binary should spawn");
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "stderr was: {stderr}");
+    }
+
+    // A manifest that does not parse, reported against its own line.
+    fs::write(&manifest, "[[exempt]]\nfile = nope\n").expect("scratch manifest");
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("line 2:"), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("coverage-exemptions.toml"),
+        "stderr was: {stderr}"
+    );
+
+    // No manifest at all: silence is not a pass. The machine mode carries
+    // the same refusal, with both arrays present and empty.
+    fs::remove_file(&manifest).expect("scratch manifest should be removable");
+    let output = run_in(
+        &directory,
+        &["coverage", "--report", "report.json", "--json"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "coverage")
+        .unwrap_or_else(|reason| panic!("coverage --json: {reason}"));
+    assert_eq!(
+        envelope.get("status").and_then(Value::as_str),
+        Some("error")
+    );
+    assert_eq!(envelope.get("exit_code"), Some(&Value::Number(1)));
+    assert_eq!(envelope.get("uncovered"), Some(&Value::Array(Vec::new())));
+    assert_eq!(envelope.get("stale"), Some(&Value::Array(Vec::new())));
+    assert!(
+        envelope_stderr(&envelope).contains("coverage-exemptions.toml"),
+        "stdout was: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn coverage_outside_any_workspace_has_no_manifest_to_read() {
+    let directory =
+        scratch_directory("coverage-noroot").expect("scratch directory should be creatable");
+    assert!(
+        renew_cli::workspace::find_root(&directory).is_none(),
+        "precondition: no workspace manifest may sit above {}",
+        directory.display()
+    );
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no workspace root"), "stderr was: {stderr}");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn coverage_without_a_report_is_a_usage_error() {
+    let output = run(&["coverage"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--report"), "stderr was: {stderr}");
+
+    let output = run(&["coverage", "--report"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`--report` needs a value"),
+        "stderr was: {stderr}"
+    );
+}
+
 /// One named check out of a doctor envelope.
 fn doctor_check<'a>(envelope: &'a Value, name: &str) -> Option<&'a Value> {
     envelope

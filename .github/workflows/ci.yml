@@ -256,5 +256,25 @@ jobs:
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate
-          # belongs on the same side of that line.
+          # belongs on the same side of that line. The same filter goes
+          # to both reports below, so the table in the log and the gate
+          # that follows are measuring the same tree.
+          #
+          # The export comes first so the gate always has something to
+          # read, even when the percentage backstop below trips.
+          cargo llvm-cov report --ignore-filename-regex 'tools[\/]vk-fault-layer' \
+            --json --output-path target/coverage.json
+          # The percentage is a backstop, not the gate: it puts the
+          # per-file table in the log, where the first person reading a
+          # failure needs it, and it catches a collection that collapsed
+          # wholesale rather than regressed line by line.
           cargo llvm-cov report --ignore-filename-regex 'tools[\/]vk-fault-layer' --fail-under-lines 95
+      # The gate: 100% of every line the tree does not name in
+      # coverage-exemptions.toml, and it ratchets both ways — an
+      # unexempted uncovered line fails, and so does an exemption whose
+      # line is covered again, because a stale exemption is a hole left
+      # open on exactly the line someone once proved could not be
+      # closed. Reading the export rather than shelling out keeps the
+      # rule itself unit-tested and the failure message specific.
+      - name: Check coverage against the exemption manifest
+        run: cargo run --package renew-cli --bin renew -- coverage --report target/coverage.json
