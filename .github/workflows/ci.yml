@@ -134,9 +134,11 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       # The window smoke test needs a display; a virtual X server lets
       # it run (instead of skipping) so the windowing adapter's lines
-      # count toward the gate honestly.
+      # count toward the gate honestly. libxkbcommon-x11 is the X11
+      # keyboard runtime the windowing stack dlopens — absent on bare
+      # runners, and its loader panics rather than erroring without it.
       - name: Install a virtual display
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
       - name: Collect coverage
         run: |
           xvfb-run -a cargo llvm-cov --no-report test --workspace
