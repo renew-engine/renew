@@ -1,0 +1,9 @@
+# Crate-local lint configuration. Deliberately INVERTED relative to the
+# sibling engine crates: this crate is the designated home of clock and
+# filesystem access, so no disallowed-methods list appears here. (A
+# crate-local file fully replaces the workspace one, so the test
+# allowances are repeated.)
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
