@@ -253,4 +253,8 @@ jobs:
           export VK_ADD_LAYER_PATH="$PWD/target/fault-layer"
           xvfb-run -a cargo llvm-cov --no-report test --workspace
           cargo llvm-cov --no-report run --bin hello-engine
-          cargo llvm-cov report --fail-under-lines 95
+          # The fault layer is test scaffolding that runs inside the
+          # loader, not engine code, and cargo-llvm-cov already keeps
+          # test sources out of the denominator — its tool crate
+          # belongs on the same side of that line.
+          cargo llvm-cov report --ignore-filename-regex 'tools/vk-fault-layer' --fail-under-lines 95
