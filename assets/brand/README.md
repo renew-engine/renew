@@ -21,7 +21,8 @@ values in the system are the ones in the table below.
 | `renew-wordmark-dark.svg` / `-light.svg` | Wordmark alone |
 | `renew-lockup-dark.svg` / `-light.svg` | Mark + wordmark, horizontal |
 | `renew-banner.svg` / `.png` | 1280×640 — repository social preview |
-| `renew-banner-wide.svg` | 1200×300 — README header |
+| `renew-banner-wide.svg` | 1200×300 — README header (dark) |
+| `renew-banner-wide-light.svg` | 1200×300 — README header (light); paired with the above in a `<picture>` so the header follows the reader's theme |
 | `renew-icon.svg` / `renew-icon-512.png` | App icon and favicon (self-contained tile) |
 
 The PNGs are rasterized from the SVGs of the same name; regenerate them rather than
