@@ -164,5 +164,5 @@ the same license.
 
 <div align="center">
 <br>
-<sub>Brand assets and usage rules live in <a href="assets/brand/README.md"><code>assets/brand/</code></a>.</sub>
+<sub>Brand assets live in <a href="assets/brand/"><code>assets/brand/</code></a>.</sub>
 </div>
