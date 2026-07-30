@@ -74,7 +74,7 @@ jobs:
       # gating lives in the allocation-count assertions in the test
       # suite, and timing baselines are recorded out of band.
       - name: Run benchmark smoke (each bench once)
-        run: cargo bench --workspace -- --test
+        run: cargo run --package renew-cli --bin renew -- bench --smoke
 
   structure:
     name: Structure

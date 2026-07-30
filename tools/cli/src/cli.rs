@@ -66,6 +66,9 @@ impl Command {
 pub struct Invocation {
     pub command: Command,
     pub json: bool,
+    /// Bench only (parse enforces): run each benchmark once, without
+    /// statistics — the fast run-proof mode CI's bench stage uses.
+    pub smoke: bool,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -103,14 +106,17 @@ impl std::error::Error for ParseError {}
 /// # Errors
 ///
 /// Returns a [`ParseError`] when no subcommand is given, the subcommand is
-/// unknown, or an argument other than `--json` is present.
+/// unknown, or an argument other than the known flags is present —
+/// including `--smoke` with any subcommand other than `bench`.
 pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut command = None;
     let mut json = false;
+    let mut smoke = false;
     let mut help = false;
     for argument in arguments {
         match argument.as_str() {
             "--json" => json = true,
+            "--smoke" => smoke = true,
             "help" | "--help" | "-h" => help = true,
             other => {
                 if help {
@@ -130,8 +136,17 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     if help {
         return Ok(Parsed::Help { json });
     }
+    if smoke && command != Some(Command::Bench) {
+        // The flag belongs to exactly one subcommand; anywhere else it is
+        // as unexpected as any stray argument.
+        return Err(ParseError::UnexpectedArgument("--smoke".to_string()));
+    }
     match command {
-        Some(command) => Ok(Parsed::Run(Invocation { command, json })),
+        Some(command) => Ok(Parsed::Run(Invocation {
+            command,
+            json,
+            smoke,
+        })),
         None => Err(ParseError::NoCommand),
     }
 }
@@ -141,13 +156,15 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
 pub fn usage() -> String {
     use core::fmt::Write as _;
 
-    let mut text = String::from("usage: renew <command> [--json]\n\ncommands:\n");
+    let mut text = String::from("usage: renew <command> [options]\n\ncommands:\n");
     for command in Command::ALL {
         let name = command.name();
         let summary = command.summary();
         let _ = writeln!(text, "  {name:<9}  {summary}");
     }
-    text.push_str("\noptions:\n  --json     emit one machine-readable JSON document on stdout\n");
+    text.push_str(
+        "\noptions:\n  --json     emit one machine-readable JSON document on stdout\n  --smoke    (bench only) run each benchmark once, without statistics\n",
+    );
     text
 }
 
@@ -167,7 +184,8 @@ mod tests {
                 parsed,
                 Ok(Parsed::Run(Invocation {
                     command,
-                    json: false
+                    json: false,
+                    smoke: false,
                 })),
                 "command `{}` did not round-trip",
                 command.name()
@@ -182,9 +200,44 @@ mod tests {
         let expected = Ok(Parsed::Run(Invocation {
             command: Command::Build,
             json: true,
+            smoke: false,
         }));
         assert_eq!(before, expected);
         assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn smoke_parses_with_bench_in_either_position_and_with_json() {
+        let expected = Ok(Parsed::Run(Invocation {
+            command: Command::Bench,
+            json: false,
+            smoke: true,
+        }));
+        assert_eq!(parse(&arguments(&["bench", "--smoke"])), expected);
+        assert_eq!(parse(&arguments(&["--smoke", "bench"])), expected);
+        assert_eq!(
+            parse(&arguments(&["bench", "--smoke", "--json"])),
+            Ok(Parsed::Run(Invocation {
+                command: Command::Bench,
+                json: true,
+                smoke: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn smoke_with_any_other_subcommand_is_rejected() {
+        for name in ["configure", "build", "test", "lint", "check", "doctor"] {
+            assert_eq!(
+                parse(&arguments(&[name, "--smoke"])),
+                Err(ParseError::UnexpectedArgument("--smoke".to_string())),
+                "`{name} --smoke` must be rejected"
+            );
+        }
+        assert_eq!(
+            parse(&arguments(&["--smoke"])),
+            Err(ParseError::UnexpectedArgument("--smoke".to_string()))
+        );
     }
 
     #[test]
@@ -229,6 +282,16 @@ mod tests {
             parse(&arguments(&["help", "nonsense"])),
             Ok(Parsed::Help { json: false })
         );
+    }
+
+    #[test]
+    fn help_swallows_the_smoke_flag_like_any_other_argument() {
+        // Deliberate: help short-circuits everything except `--json`
+        // (same rule as `help nonsense`), so the bench-only validation
+        // never runs and help still prints.
+        for list in [&["help", "--smoke"][..], &["--smoke", "--help"]] {
+            assert_eq!(parse(&arguments(list)), Ok(Parsed::Help { json: false }));
+        }
     }
 
     #[test]

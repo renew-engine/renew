@@ -459,3 +459,28 @@ fn every_cheap_subcommand_emits_the_full_typed_envelope() {
         }
     }
 }
+
+#[test]
+fn smoke_with_a_non_bench_subcommand_is_a_usage_error() {
+    let output = run(&["test", "--smoke"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--smoke"), "stderr was: {stderr}");
+}
+
+#[test]
+fn usage_documents_the_smoke_flag() {
+    let output = run(&["help"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--smoke"), "stdout was: {stdout}");
+}
+
+#[test]
+fn smoke_usage_error_emits_no_envelope_even_with_json() {
+    let output = run(&["test", "--smoke", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "usage errors never emit an envelope"
+    );
+}

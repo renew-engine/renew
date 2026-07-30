@@ -13,8 +13,13 @@ pub struct Step {
 
 /// The steps a subcommand runs, in order. `Doctor` runs no external steps
 /// (its probes are gathered separately) and returns an empty slice.
+///
+/// `smoke` selects bench's run-once mode (criterion test mode — every
+/// bench executes once, no statistics). Argument parsing never produces
+/// `smoke` together with any other subcommand; if a future caller passes
+/// that pairing anyway, the flag is ignored and the normal plan applies.
 #[must_use]
-pub fn steps(command: Command) -> &'static [Step] {
+pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
     match command {
         Command::Configure => &[
             Step {
@@ -33,6 +38,10 @@ pub fn steps(command: Command) -> &'static [Step] {
         Command::Test => &[Step {
             program: "cargo",
             args: &["test", "--workspace"],
+        }],
+        Command::Bench if smoke => &[Step {
+            program: "cargo",
+            args: &["bench", "--workspace", "--", "--test"],
         }],
         Command::Bench => &[Step {
             program: "cargo",
@@ -67,7 +76,7 @@ mod tests {
 
     #[test]
     fn configure_verifies_toolchain_then_cargo() {
-        let plan = steps(Command::Configure);
+        let plan = steps(Command::Configure, false);
         assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].program, "rustup");
         assert_eq!(plan[0].args, ["show"]);
@@ -82,7 +91,7 @@ mod tests {
             (Command::Test, "test"),
             (Command::Bench, "bench"),
         ] {
-            let plan = steps(command);
+            let plan = steps(command, false);
             assert_eq!(plan.len(), 1, "{verb} should be a single step");
             assert_eq!(plan[0].program, "cargo");
             assert_eq!(plan[0].args, [verb, "--workspace"]);
@@ -90,8 +99,16 @@ mod tests {
     }
 
     #[test]
+    fn bench_smoke_runs_every_bench_once() {
+        let plan = steps(Command::Bench, true);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].program, "cargo");
+        assert_eq!(plan[0].args, ["bench", "--workspace", "--", "--test"]);
+    }
+
+    #[test]
     fn lint_runs_format_check_then_clippy_with_denied_warnings() {
-        let plan = steps(Command::Lint);
+        let plan = steps(Command::Lint, false);
         assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].program, "cargo");
         assert_eq!(plan[0].args, ["fmt", "--all", "--check"]);
@@ -111,7 +128,7 @@ mod tests {
 
     #[test]
     fn internal_subcommands_run_no_external_steps() {
-        assert!(steps(Command::Doctor).is_empty());
-        assert!(steps(Command::Check).is_empty());
+        assert!(steps(Command::Doctor, false).is_empty());
+        assert!(steps(Command::Check, false).is_empty());
     }
 }

@@ -76,7 +76,7 @@ cargo run --bin renew -- help
 
 | Command | What it does |
 |---|---|
-| `renew build` / `test` / `bench` / `lint` | the workspace tasks, exactly as CI runs them |
+| `renew build` / `test` / `bench` / `lint` | the workspace tasks, the same commands CI runs (CI's bench stage uses `bench --smoke`: every bench once, no statistics) |
 | `renew check` | verifies crate manifests and the dependency graph (also a CI gate) |
 | `renew doctor` | checks your toolchain against the repository's pins |
 
