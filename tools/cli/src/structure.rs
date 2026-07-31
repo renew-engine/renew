@@ -26,6 +26,8 @@ const REQUIRED_FIELDS: &[&str] = &[
 /// One crate as the rules see it.
 pub struct CrateShape {
     pub name: String,
+    /// The directory holding this crate's `Cargo.toml`, forward-slashed.
+    pub dir: String,
     /// Under the engine module roots (`crates/`)?
     pub engine: bool,
     /// Workspace-internal dependencies, any kind, dev included.
@@ -93,6 +95,9 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
             .unwrap_or_default()
             .replace('\\', "/");
         let engine = manifest_path.starts_with(&engine_root);
+        let dir = manifest_path
+            .rsplit_once('/')
+            .map_or(String::new(), |(parent, _)| parent.to_string());
         let deps = package
             .get("dependencies")
             .and_then(Value::as_array)
@@ -107,6 +112,7 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
         let meta = validate_meta(package);
         shapes.push(CrateShape {
             name,
+            dir,
             engine,
             deps,
             meta,
@@ -230,6 +236,39 @@ pub fn evaluate(shapes: &[CrateShape]) -> Vec<Finding> {
         }
     }
 
+    findings
+}
+
+/// Rule 7: every engine crate carries a crate-local `clippy.toml`.
+///
+/// The zoning policy each engine crate enforces lives in that file —
+/// tripwires that reject a clock, a filesystem call, or a raw thread
+/// spawn from a crate whose contract forbids them. Nine crates have added
+/// it by hand, correctly, every time. That is exactly when the habit
+/// should stop being a habit: the crate that forgets will not fail to
+/// compile, will not fail a test, and will simply have no tripwires,
+/// which is indistinguishable from having them and passing.
+///
+/// The predicate is injected rather than called directly so the rule is
+/// exercisable without a filesystem — the same reason the rest of this
+/// module takes parsed metadata rather than running cargo itself.
+pub fn lint_file_findings(shapes: &[CrateShape], exists: &dyn Fn(&str) -> bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for shape in shapes {
+        if !shape.engine {
+            continue;
+        }
+        let path = format!("{}/clippy.toml", shape.dir);
+        if !exists(&path) {
+            findings.push(Finding {
+                rule: "lint-files",
+                message: format!(
+                    "engine crate {} has no clippy.toml; every engine crate carries one,                      so its zoning tripwires are enforced by the compiler rather than by review",
+                    shape.name
+                ),
+            });
+        }
+    }
     findings
 }
 
@@ -444,6 +483,7 @@ mod tests {
     fn shape(name: &str, engine: bool, deps: &[&str], maturity: &str, core: bool) -> CrateShape {
         CrateShape {
             name: name.to_string(),
+            dir: format!("/w/crates/{name}"),
             engine,
             deps: deps.iter().map(ToString::to_string).collect(),
             meta: Ok(Meta {
@@ -452,6 +492,57 @@ mod tests {
                 simulation: false,
             }),
         }
+    }
+
+    #[test]
+    fn an_engine_crate_without_a_clippy_file_is_a_finding() {
+        let shapes = [shape("renew-diag", true, &[], "bootstrap", true)];
+        let findings = lint_file_findings(&shapes, &|_| false);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].rule, "lint-files");
+        assert!(findings[0].message.contains("renew-diag"), "{findings:?}");
+    }
+
+    #[test]
+    fn an_engine_crate_with_a_clippy_file_is_not() {
+        let shapes = [shape("renew-diag", true, &[], "bootstrap", true)];
+        assert!(lint_file_findings(&shapes, &|_| true).is_empty());
+    }
+
+    /// The rule binds engine crates only. Samples, tools and benchmarks
+    /// are outside the module roots and legitimately carry no zoning of
+    /// their own, so demanding the file there would train people to add
+    /// empty ones.
+    #[test]
+    fn a_non_engine_crate_without_a_clippy_file_is_ignored() {
+        let shapes = [shape("renew-cli", false, &[], "bootstrap", false)];
+        assert!(lint_file_findings(&shapes, &|_| false).is_empty());
+    }
+
+    /// The predicate is asked about the crate's own directory, not about
+    /// some path that merely ends in the right name — a rule that looked
+    /// anywhere else would pass on a stray file at the workspace root.
+    #[test]
+    fn the_rule_looks_beside_the_crates_own_manifest() {
+        let shapes = [shape("renew-math", true, &[], "internal", true)];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let findings = lint_file_findings(&shapes, &|path| {
+            asked.borrow_mut().push(path.to_string());
+            false
+        });
+        assert_eq!(asked.into_inner(), ["/w/crates/renew-math/clippy.toml"]);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn every_engine_crate_missing_the_file_is_named_separately() {
+        let shapes = [
+            shape("renew-diag", true, &[], "bootstrap", true),
+            shape("renew-math", true, &[], "bootstrap", true),
+            shape("renew-cli", false, &[], "bootstrap", false),
+        ];
+        let findings = lint_file_findings(&shapes, &|_| false);
+        assert_eq!(findings.len(), 2, "{findings:?}");
     }
 
     #[test]
@@ -468,6 +559,7 @@ mod tests {
     fn schema_problems_surface_per_crate() {
         let shapes = [CrateShape {
             name: "broken".to_string(),
+            dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
             meta: Err(vec!["missing field `core`".to_string()]),
@@ -549,6 +641,7 @@ mod tests {
     fn non_engine_crates_stay_in_their_lane() {
         let flagged = [CrateShape {
             name: "tool".to_string(),
+            dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
             meta: Ok(Meta {
@@ -722,6 +815,7 @@ mod tests {
             shape("renew-diag", true, &["renew-broken"], "bootstrap", true),
             CrateShape {
                 name: "renew-broken".to_string(),
+                dir: "/w/crates/x".to_string(),
                 engine: true,
                 deps: Vec::new(),
                 meta: Err(vec!["missing field `core`".to_string()]),
