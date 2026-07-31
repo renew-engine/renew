@@ -76,7 +76,9 @@ order does not change behaviour.
 
 `bootstrap`. Bindings and edges are settled; anything above them — axes,
 chords, gamepads, runtime rebinding UI, serialised binding sets — is not,
-and none of it has a consumer asking yet.
+and none of it has a consumer asking yet. The `[package.metadata.renew]`
+table in [Cargo.toml](Cargo.toml) is authoritative for maturity; the word
+above is a convenience and that table decides.
 
 **It has a consumer now**, which is the more useful fact: the input-echo
 sample's drivers own the map and pass resolved intent into the
