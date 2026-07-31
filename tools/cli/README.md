@@ -17,6 +17,7 @@ commands:
   lint       check formatting, then run clippy with warnings denied
   check      verify workspace crate manifests and dependencies
   coverage   hold a coverage report against the exemption manifest
+  modules    list every module with its maturity, from the manifests
   doctor     check the development environment
 
 options:
@@ -78,6 +79,33 @@ caller knows what it invoked, and the envelope shape stays uniform.
 A failing sample follows the same contract as any other failing child:
 the `renew` process exits `1`, and the sample's raw exit code survives in
 the envelope's `exit_code`.
+
+## The module inventory
+
+`modules` prints every workspace crate with the maturity it declares, read
+from that crate's own manifest:
+
+```
+renew modules
+renew modules --json
+```
+
+Each crate states its maturity in `[package.metadata.renew]`, and that is
+the only place it is written down. Anything that needs the list — a
+release note recording what a version promises, a document naming the
+optional crates — reads it from here rather than restating it, because a
+retyped table is a second copy of a fact that goes stale without saying
+so. Rows are ordered by maturity rather than alphabetically, and the
+summary line counts how many crates are `stable`, since that is the set a
+version's compatibility promise can cover.
+
+A crate whose metadata does not parse still gets a row, carrying the
+reason in place of its fields. Dropping it would make the inventory
+quietly shorter than the workspace, and an inventory that silently omits
+what it could not read is the kind that gets believed.
+
+It reports; it does not gate. `check` is what fails on a malformed
+manifest.
 
 ## The coverage gate
 

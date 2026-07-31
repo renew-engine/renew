@@ -71,6 +71,7 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
         // of the command line.
         Command::Check
         | Command::Coverage
+        | Command::Modules
         | Command::Doctor
         | Command::Run
         | Command::Record
@@ -179,6 +180,7 @@ mod tests {
         assert!(steps(Command::Doctor, false).is_empty());
         assert!(steps(Command::Check, false).is_empty());
         assert!(steps(Command::Coverage, false).is_empty());
+        assert!(steps(Command::Modules, false).is_empty());
         assert!(steps(Command::Run, false).is_empty());
         assert!(steps(Command::Record, false).is_empty());
         assert!(steps(Command::Replay, false).is_empty());
