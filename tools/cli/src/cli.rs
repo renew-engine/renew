@@ -14,6 +14,8 @@ pub enum Command {
     Check,
     Coverage,
     Modules,
+    AssetPack,
+    AssetInspect,
     Doctor,
     Record,
     Replay,
@@ -21,7 +23,7 @@ pub enum Command {
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Configure,
         Self::Build,
         Self::Test,
@@ -33,6 +35,8 @@ impl Command {
         Self::Check,
         Self::Coverage,
         Self::Modules,
+        Self::AssetPack,
+        Self::AssetInspect,
         Self::Doctor,
     ];
 
@@ -49,6 +53,8 @@ impl Command {
             Self::Check => "check",
             Self::Coverage => "coverage",
             Self::Modules => "modules",
+            Self::AssetPack => "asset-pack",
+            Self::AssetInspect => "asset-inspect",
             Self::Doctor => "doctor",
             Self::Record => "record",
             Self::Replay => "replay",
@@ -91,6 +97,8 @@ impl Command {
             Self::Check => "verify workspace crate manifests and dependencies",
             Self::Coverage => "hold a coverage report against the exemption manifest",
             Self::Modules => "list every module with its maturity, from the manifests",
+            Self::AssetPack => "build an asset pack from a directory of files",
+            Self::AssetInspect => "list an asset pack's entries, optionally verifying them",
             Self::Doctor => "check the development environment",
             Self::Record => "run a sample, writing the input it saw to a file",
             Self::Replay => "run a sample from a recorded input file",
@@ -125,6 +133,16 @@ pub struct Invocation {
     /// subcommand can be in play, and two would let a caller construct an
     /// invocation naming both.
     pub trace: Option<String>,
+    /// Both asset subcommands (parse enforces, and requires): the pack
+    /// file to write, or to read.
+    pub pack: Option<String>,
+    /// `asset-pack` only (parse enforces, and requires): the directory
+    /// whose files become the pack's entries.
+    pub from: Option<String>,
+    /// `asset-inspect` only (parse enforces): also check every payload
+    /// against its recorded digest. Off by default because it reads every
+    /// byte, where listing reads only the table.
+    pub verify: bool,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -205,6 +223,9 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut help = false;
     let mut report = None;
     let mut trace: Option<(&'static str, String)> = None;
+    let mut pack: Option<String> = None;
+    let mut from: Option<String> = None;
+    let mut verify = false;
     let mut sample: Option<String> = None;
     let mut sample_args: Vec<String> = Vec::new();
     // The separator, if it comes at all, comes immediately after the
@@ -243,6 +264,17 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--input"))?;
                 trace = Some(("--input", path.clone()));
             }
+            // Same reason as `--report`: the value is consumed here so a
+            // path can never be mistaken for a subcommand.
+            "--pack" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--pack"))?;
+                pack = Some(path.clone());
+            }
+            "--from" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--from"))?;
+                from = Some(path.clone());
+            }
+            "--verify" => verify = true,
             "help" | "--help" | "-h" => help = true,
             other => {
                 if help {
@@ -276,6 +308,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         trace.as_ref().map(|(flag, _)| *flag),
         sample.as_deref(),
     )?;
+    check_asset_combination(command, pack.as_deref(), from.as_deref(), verify)?;
     match command {
         Some(command) => Ok(Parsed::Run(Invocation {
             command,
@@ -285,9 +318,60 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             sample,
             sample_args,
             trace: trace.map(|(_, path)| path),
+            pack,
+            from,
+            verify,
         })),
         None => Err(ParseError::NoCommand),
     }
+}
+
+/// The asset subcommands' own flag rules.
+///
+/// Separate from [`check_combination`] rather than three more parameters
+/// on it: that function already carries five, and a sixth and seventh
+/// would make the one thing it is good at — reading as a list of rules —
+/// stop being true.
+fn check_asset_combination(
+    command: Option<Command>,
+    pack: Option<&str>,
+    from: Option<&str>,
+    verify: bool,
+) -> Result<(), ParseError> {
+    let is_pack = command == Some(Command::AssetPack);
+    let is_inspect = command == Some(Command::AssetInspect);
+
+    // Stray flags first, matching the order the other rules use: a flag
+    // on the wrong subcommand is as unexpected as any other argument.
+    if pack.is_some() && !(is_pack || is_inspect) {
+        return Err(ParseError::UnexpectedArgument("--pack".to_string()));
+    }
+    if from.is_some() && !is_pack {
+        return Err(ParseError::UnexpectedArgument("--from".to_string()));
+    }
+    if verify && !is_inspect {
+        return Err(ParseError::UnexpectedArgument("--verify".to_string()));
+    }
+
+    // Then what each subcommand cannot work without. Both paths are the
+    // whole input: guessing one would be worse than refusing.
+    if (is_pack || is_inspect) && pack.is_none() {
+        return Err(ParseError::MissingOption {
+            command: if is_pack {
+                "asset-pack"
+            } else {
+                "asset-inspect"
+            },
+            option: "--pack",
+        });
+    }
+    if is_pack && from.is_none() {
+        return Err(ParseError::MissingOption {
+            command: "asset-pack",
+            option: "--from",
+        });
+    }
+    Ok(())
 }
 
 /// The rules that can only be decided once the whole line has been read:
@@ -412,6 +496,9 @@ mod tests {
             sample: None,
             sample_args: Vec::new(),
             trace: None,
+            pack: None,
+            from: None,
+            verify: false,
         }
     }
 
@@ -443,6 +530,21 @@ mod tests {
                     vec![name, "--report", "cov.json"],
                     Invocation {
                         report: Some("cov.json".to_string()),
+                        ..plain(command)
+                    },
+                ),
+                Command::AssetPack => (
+                    vec![name, "--from", "assets", "--pack", "out.rpk"],
+                    Invocation {
+                        from: Some("assets".to_string()),
+                        pack: Some("out.rpk".to_string()),
+                        ..plain(command)
+                    },
+                ),
+                Command::AssetInspect => (
+                    vec![name, "--pack", "out.rpk"],
+                    Invocation {
+                        pack: Some("out.rpk".to_string()),
                         ..plain(command)
                     },
                 ),

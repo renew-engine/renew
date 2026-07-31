@@ -1,0 +1,30 @@
+[package]
+name = "renew-asset"
+description = "The runtime asset pack: a content-addressed container with a deterministic writer and a reader that validates every field before it is used"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The runtime asset pack format: a content-addressed container, a writer whose output is byte-identical for the same inputs, and a reader that trusts nothing the header claims."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# Deliberately empty, for the same reason the trace codec's is. This
+# crate turns bytes into a pack and a pack into bytes; it never opens a
+# file and never accepts a path. That keeps the whole untrusted-input
+# surface to one function, makes the crate fuzzable with no filesystem,
+# and puts the size bound on a whole-file read at the seam that can
+# actually enforce it — the caller doing the reading.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true
