@@ -12,13 +12,20 @@
 //! neighbour noise rides out while a genuine per-frame allocation
 //! reproduces in every window and still fails.
 //!
-//! Three specific regressions this exists to catch: a per-frame
-//! `println!` (allocates and locks — the mandated frame-time readout
-//! aggregates into the timing summary's four scalars instead), a
-//! per-frame `format!`, and a `Vec` of plans accumulating anywhere on
-//! the frame path.
+//! Four specific regressions this exists to catch: a per-frame
+//! `println!` (allocates and locks — the frame-time capture aggregates
+//! into the timing summary's four scalars instead), a per-frame
+//! `format!`, a `Vec` of plans accumulating anywhere on the frame path,
+//! and a window-title readout that builds its text with `format!`. That
+//! last one has no window in this process to give it away, so it is
+//! driven directly, before the part of the test a machine without a GPU
+//! skips.
 
+#[cfg(feature = "window")]
+use renew_frame::{Nanos, Timestamp};
 use renew_memory::{CountingAllocator, counters};
+#[cfg(feature = "window")]
+use renew_sample_hello_triangle::Readout;
 use renew_sample_hello_triangle::{Draw, HeadlessRun, SampleError, WARMUP_FRAMES};
 
 #[global_allocator]
@@ -57,6 +64,40 @@ fn quiet_window(attempts: usize, mut window: impl FnMut()) -> Result<(), String>
     ignore = "allocation counting is invalid under instrumented allocators"
 )]
 fn steady_state_frames_allocate_nothing() {
+    // The window-title readout, driven over a synthetic timeline that
+    // crosses several relabel intervals. It is the only thing on the
+    // frame path that turns numbers into text, which makes it the
+    // likeliest place for a `format!` to appear — and there is no window
+    // in this process, so nothing below the seam would give one away.
+    // Before the GPU half, so a machine without a driver still checks it.
+    #[cfg(feature = "window")]
+    {
+        // A short interval so one window of frames spans several
+        // relabels; the interval the sample actually uses is asserted by
+        // the readout's own unit tests.
+        let mut readout = Readout::new("renew", Nanos::from_nanos(50_000_000));
+        let mut frame = 0u64;
+        let mut relabels = 0u32;
+        let mut malformed = 0u32;
+        quiet_window(5, || {
+            for _ in 0..WINDOW_FRAMES {
+                frame += 1;
+                let now = Timestamp::from_nanos(frame.saturating_mul(16_666_667));
+                if let Some(title) = readout.record(Nanos::from_nanos(16_600_000), now) {
+                    relabels += 1;
+                    if !title.starts_with("renew — 16.6") {
+                        malformed += 1;
+                    }
+                }
+            }
+        })
+        .expect("the readout formats into its own buffer and never onto the heap");
+        // Without these the windows above could have been sixteen early
+        // returns each: no text formatted, and nothing proved.
+        assert!(relabels > 0, "no relabel interval elapsed inside a window");
+        assert_eq!(malformed, 0, "a relabel produced text nobody expected");
+    }
+
     let mut run = match HeadlessRun::start(0, Draw::Triangle) {
         Ok(run) => run,
         Err(SampleError::Unavailable(reason)) if !strict() => {

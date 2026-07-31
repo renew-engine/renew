@@ -4,12 +4,33 @@ name: Benchmark baselines
 # all three platforms and uploads criterion's estimates as artifacts.
 # Hosted-runner numbers are indicative only; authoritative budgets are
 # measured on the recorded reference machine.
+#
+# The suite measures pieces of the engine in isolation. The second half
+# of this workflow measures the whole sample end to end — the frame time
+# a player would actually feel — through the same
+# command a human would type to run it. Two different kinds of number,
+# uploaded as two different artifacts, and never to be compared with
+# each other: see the profile note on the sample run below.
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # One frame count for every platform, written once. Baselines taken
+  # over different numbers of frames are not comparable, and three
+  # copies of the same literal is exactly how they drift apart.
+  #
+  # Five times the sample's own 600-frame default, which its source
+  # calls long enough for a summary to mean something. The summary is a
+  # count/min/max/sum over the run, so the headline figure is a mean:
+  # more frames cost seconds here and buy a mean that moves less
+  # between dispatches. Length also dilutes the warm-up — the first
+  # frames pay for the driver's lazy initialization and are included in
+  # the summary, so they own `max_ns` on nearly every run.
+  BASELINE_FRAMES: "3000"
 
 jobs:
   baselines:
@@ -19,9 +40,41 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        # One script for three platforms; Git Bash is present on the
+        # Windows runners. Without this the Windows cell would need a
+        # second dialect of every line below, which is how three cells
+        # stop running the same measurement.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # A number with no record of what produced it is not a baseline.
+      # This is what a reader needs months later to decide whether two
+      # dispatches are comparable at all — and the runner labels in the
+      # matrix are `-latest`, so the image moves under us on its own
+      # schedule and this file is how anyone notices.
+      #
+      # Written before the benchmarks so the upload below has something
+      # to carry even when a later step fails.
+      - name: Record what produced these numbers
+        run: |
+          mkdir -p target/frame-baseline
+          record="target/frame-baseline/environment-${{ matrix.os }}.txt"
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "runner_label: ${{ matrix.os }}"
+            echo "runner_os: $RUNNER_OS"
+            echo "runner_arch: $RUNNER_ARCH"
+            echo "runner_image: ${ImageOS:-unknown}"
+            echo "uname: $(uname -sm)"
+            echo "frames: $BASELINE_FRAMES"
+            echo "sample_profile: dev (unoptimized)"
+            rustc --version
+            cargo --version
+          } > "$record"
+          cat "$record"
       - name: Run benchmarks
         run: cargo bench --workspace
       - name: Upload criterion estimates
@@ -29,4 +82,176 @@ jobs:
         with:
           name: criterion-${{ matrix.os }}
           path: target/criterion/**/new/estimates.json
+          if-no-files-found: error
+      # The only platform where this repository can put a Vulkan
+      # implementation on a GPU-less runner: the pinned lavapipe stack
+      # the rendering lane already uses, fetched by checksum so the
+      # rasterizer under the numbers cannot change without someone
+      # editing a pin. It also fixes the rasterizer's thread count,
+      # which would otherwise follow the runner's core count.
+      #
+      # Deliberately after the benchmark steps, not with the other
+      # setup: this action exports a library path and a set of loader
+      # variables, and the criterion half of this workflow must run in
+      # exactly the environment it ran in before the sample half
+      # existed. Nothing in the bench suite touches the renderer, so
+      # there is nothing to gain by installing it earlier and a
+      # baseline's worth of doubt to lose.
+      - name: Install the pinned software Vulkan stack
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/software-vulkan
+      # The budget's actual number: the sample's own frame time,
+      # measured end to end through the command documented for it rather
+      # than through a harness built for this workflow. What CI runs and
+      # what a human runs stay the same thing.
+      #
+      # These are dev-profile numbers. Starting a sample through the
+      # workspace runner is the canonical path and it has no release
+      # mode, so the sample builds unoptimized while `cargo bench` above
+      # measured optimized code. That makes the two artifacts from one
+      # cell incomparable with each other, and it makes this figure a
+      # tracking baseline — did the sample's frame time move between
+      # commits on the same runner — not a statement of what the engine
+      # can do. Teaching the runner a release mode would change the
+      # number recorded here, so it belongs in a deliberate change to
+      # that tool rather than in a flag smuggled in on this line.
+      #
+      # Strict on Linux only, and that asymmetry is the honest part of
+      # this workflow. Strictness turns "no GPU runtime here" from a
+      # skip into a failure, which is right on the one platform where
+      # the step above guarantees a rasterizer: a Linux cell that skips
+      # means the pinned stack broke, and it has to go red rather than
+      # upload a file that says nothing.
+      #
+      # Neither of the other two runners can render this. They have no
+      # GPU, the Windows images carry no Vulkan driver, and macOS has no
+      # Vulkan at all — its native API is Metal, and Vulkan there means
+      # MoltenVK, which is not installed. The sample reports that as a
+      # skip and exits zero without writing a stats file, so those cells
+      # upload their log and their environment record and nothing else.
+      # That is the intended outcome: an artifact saying "not measured
+      # here, and here is the machine's own reason" is worth having,
+      # while a stats file conjured some other way would look exactly
+      # like the Linux one and mean something entirely different.
+      #
+      # Turning either into a real measurement is a dependency decision,
+      # not an edit to this file: it needs a pinned, checksum-verified
+      # Vulkan implementation for that platform — a Windows lavapipe
+      # build, or MoltenVK plus a loader on macOS — added the way the
+      # Linux stack was, as one reviewed pin point. Until someone makes
+      # that call, the frame-time baseline is met on Linux and honestly
+      # recorded as unmet on the other two. If a future runner image
+      # does bring a usable Vulkan driver, the run produces a stats file
+      # and it is uploaded with no change here; if it brings one the
+      # sample cannot use, the cell goes red with the reason in the log
+      # instead of quietly passing.
+      - name: Run the headless sample and dump its frame stats
+        env:
+          RENEW_FRAME_STRICT: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: |
+          stats="target/frame-baseline/hello_triangle-${{ matrix.os }}.json"
+          log="target/frame-baseline/hello_triangle-${{ matrix.os }}.log"
+          # Both streams into the log: the digest line and the skip line
+          # go to stdout, a failure explains itself on stderr, and which
+          # of the three happened is the entire content of this artifact
+          # on a platform that cannot render. `tee` keeps it on the
+          # console too, where whoever dispatched the run is already
+          # looking. This shell stops on a failed pipeline, so a real
+          # failure still reddens the cell instead of being swallowed by
+          # tee's exit code.
+          cargo run --package renew-cli --bin renew -- \
+            run hello_triangle --headless --frames "$BASELINE_FRAMES" \
+            --dump-stats "$stats" 2>&1 | tee "$log"
+          if [ "$RUNNER_OS" = Linux ]; then
+            # A file that exists is not a measurement. The timing
+            # section is the thing this dispatch exists to produce, and
+            # a truncated or empty dump has to redden the cell rather
+            # than ride out as an artifact somebody trusts.
+            grep -q '"timing"' "$stats"
+          fi
+      # The headline number where a human sees it without downloading
+      # anything, and — on the platforms that skipped — the machine's
+      # own sentence explaining why there is no number.
+      - name: Summarize the frame-time baseline
+        if: always()
+        run: |
+          stats="target/frame-baseline/hello_triangle-${{ matrix.os }}.json"
+          log="target/frame-baseline/hello_triangle-${{ matrix.os }}.log"
+          echo "### Frame-time baseline — ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$stats" ]; then
+            # Read out of the dump rather than recomputed, so the
+            # summary a human reads and the artifact they download are
+            # the same numbers.
+            #
+            # Every field is then checked right here, in the step's own
+            # shell. A helper function reads better and does not work: a
+            # command that fails inside a command substitution does not
+            # stop the step, it just hands back an empty string, and an
+            # empty cell in the table below reads as a zero rather than
+            # as a mistake. This shape check is the only thing standing
+            # between a renamed field in the dump and a summary that
+            # quietly reports nothing.
+            count=$(grep -o '"count":[0-9]\{1,\}' "$stats" | head -n 1 | cut -d: -f2 || true)
+            sum=$(grep -o '"sum_ns":[0-9]\{1,\}' "$stats" | head -n 1 | cut -d: -f2 || true)
+            min=$(grep -o '"min_ns":[0-9]\{1,\}' "$stats" | head -n 1 | cut -d: -f2 || true)
+            max=$(grep -o '"max_ns":[0-9]\{1,\}' "$stats" | head -n 1 | cut -d: -f2 || true)
+            for pair in "count=$count" "sum_ns=$sum" "min_ns=$min" "max_ns=$max"; do
+              case "${pair#*=}" in
+                "" | *[!0-9]*)
+                  echo "::error::no numeric ${pair%%=*} in $stats — the dump's shape changed and this summary is reading a document the sample no longer writes"
+                  exit 1
+                  ;;
+              esac
+            done
+            # Zero frames would divide by zero below, and a run that
+            # measured nothing is not a baseline whatever it reports.
+            if [ "$count" -eq 0 ]; then
+              echo "::error::$stats reports zero measured frames"
+              exit 1
+            fi
+            # Integer microseconds, computed in the shell: no awk, no
+            # locale, nothing that could format the number differently
+            # on one of the three platforms. Exact nanoseconds are in
+            # the artifact for anyone who needs them.
+            {
+              echo
+              echo "| frames | mean | min | max |"
+              echo "| --- | --- | --- | --- |"
+              echo "| $count | $((sum / count / 1000)) us | $((min / 1000)) us | $((max / 1000)) us |"
+              echo
+              # No claim about which adapter drew this: the dump does
+              # not name one, and "software rasterizer" would be a guess
+              # that happens to be true on today's Linux runner and
+              # false the day any of these machines grows a GPU. The
+              # environment record in the artifact is where provenance
+              # lives.
+              echo "Unoptimized build. Tracking baseline, not a budget."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo
+              echo "Not measured on this runner — no stats file was produced."
+            } >> "$GITHUB_STEP_SUMMARY"
+            # The sample's own sentence, not this file's paraphrase of
+            # it. Absent when the run never got to start — an earlier
+            # step failed — which is a different story and must not be
+            # told as though the platform were the reason.
+            grep -m1 '^SKIP: ' "$log" >> "$GITHUB_STEP_SUMMARY" ||
+              echo "No skip line either: the run may not have started. Read the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Uploaded even when the run failed: a red cell's log is the most
+      # interesting thing this workflow produces, and on the two
+      # platforms that cannot render it is the only thing. Every file
+      # carries the runner label in its name so three downloaded
+      # artifacts can be unpacked side by side without colliding.
+      - name: Upload the sample frame-time baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-baseline-${{ matrix.os }}
+          path: target/frame-baseline/
+          # The environment record is written before the benchmarks, so
+          # an empty directory here means the job never reached that
+          # step — worth failing on, rather than publishing an empty zip
+          # named like a result.
           if-no-files-found: error
