@@ -47,6 +47,17 @@ fn run(invocation: &Invocation) -> ExitCode {
         Command::Doctor => run_doctor(invocation.json),
         Command::Check => run_check(invocation.json),
         Command::Modules => run_modules(invocation.json),
+        // Parsing guarantees both paths for pack and the one for inspect.
+        Command::AssetPack => run_asset_pack(
+            invocation.from.as_deref().unwrap_or_default(),
+            invocation.pack.as_deref().unwrap_or_default(),
+            invocation.json,
+        ),
+        Command::AssetInspect => run_asset_inspect(
+            invocation.pack.as_deref().unwrap_or_default(),
+            invocation.verify,
+            invocation.json,
+        ),
         // Parsing guarantees the path; an empty one would simply fail to
         // open, which is the same answer by a shorter road.
         Command::Coverage => run_coverage(
@@ -184,6 +195,221 @@ fn parsed_metadata(text: &str) -> Result<Value, String> {
 fn findings_from_metadata(text: &str) -> Result<Vec<structure::Finding>, String> {
     let shapes = structure::shapes_from_metadata(&parsed_metadata(text)?)?;
     Ok(structure::evaluate(&shapes))
+}
+
+/// Every file under `root`, with the forward-slashed relative path each
+/// will be named by in the pack.
+///
+/// Forward slashes on every platform, deliberately: a pack built on
+/// Windows and one built on Linux from the same tree must be byte
+/// identical, and a backslash in a name would make them differ. Order
+/// does not matter here because the builder sorts, which is the point of
+/// doing it there.
+fn asset_files(
+    root: &Path,
+    prefix: &str,
+    found: &mut Vec<(String, PathBuf)>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(root)
+        .map_err(|error| format!("cannot read {}: {error}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read {}: {error}", root.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let path = entry.path();
+        let joined = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path.is_dir() {
+            asset_files(&path, &joined, found)?;
+        } else {
+            found.push((joined, path));
+        }
+    }
+    Ok(())
+}
+
+/// `renew asset-pack` -- build a pack from a directory.
+fn run_asset_pack(from: &str, pack_path: &str, json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    match build_pack(Path::new(from), Path::new(pack_path)) {
+        Ok(count) => {
+            if json_mode {
+                let document = Value::Object(vec![
+                    ("schema_version".to_string(), Value::Number(1)),
+                    (
+                        "command".to_string(),
+                        Value::String("asset-pack".to_string()),
+                    ),
+                    ("status".to_string(), Value::String("ok".to_string())),
+                    ("exit_code".to_string(), Value::Number(0)),
+                    (
+                        "duration_ms".to_string(),
+                        Value::Number(duration_ms(started)),
+                    ),
+                    ("stdout".to_string(), Value::String(String::new())),
+                    ("stderr".to_string(), Value::String(String::new())),
+                    ("entries".to_string(), Value::Number(count)),
+                    ("pack".to_string(), Value::String(pack_path.to_string())),
+                ]);
+                emit_stdout_line(&document.render());
+            } else {
+                emit_stdout(&format!("packed {count} entries into {pack_path}\n"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(message) => asset_failure("asset-pack", &message, json_mode, started),
+    }
+}
+
+/// Read the directory, build the pack, write it. Split from the reporting
+/// so the whole fallible part has one exit.
+fn build_pack(from: &Path, pack_path: &Path) -> Result<i64, String> {
+    if !from.is_dir() {
+        return Err(format!("{} is not a directory", from.display()));
+    }
+    let mut found = Vec::new();
+    asset_files(from, "", &mut found)?;
+
+    let mut builder = renew_asset::PackBuilder::new();
+    for (name, path) in &found {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        builder
+            .insert(name, &bytes)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    let count = i64::try_from(builder.len()).unwrap_or(i64::MAX);
+    let bytes = builder.finish().map_err(|error| error.to_string())?;
+    std::fs::write(pack_path, &bytes)
+        .map_err(|error| format!("cannot write {}: {error}", pack_path.display()))?;
+    Ok(count)
+}
+
+/// `renew asset-inspect` -- list a pack, optionally verifying payloads.
+fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    let bytes = match std::fs::read(pack_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return asset_failure(
+                "asset-inspect",
+                &format!("cannot read {pack_path}: {error}"),
+                json_mode,
+                started,
+            );
+        }
+    };
+    let pack = match renew_asset::Pack::read(&bytes) {
+        Ok(pack) => pack,
+        Err(error) => {
+            return asset_failure("asset-inspect", &error.to_string(), json_mode, started);
+        }
+    };
+    // Computed before reporting either way, so the two output modes
+    // cannot disagree about what was checked.
+    let bad: Vec<String> = if verify {
+        pack.mismatched()
+            .iter()
+            .map(|entry| entry.name.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let ok = bad.is_empty();
+
+    if json_mode {
+        let items: Vec<Value> = pack
+            .entries()
+            .map(|entry| {
+                Value::Object(vec![
+                    ("name".to_string(), Value::String(entry.name.to_string())),
+                    (
+                        "hash".to_string(),
+                        Value::String(format!("{:016x}", entry.hash)),
+                    ),
+                    (
+                        "bytes".to_string(),
+                        Value::Number(i64::try_from(entry.bytes.len()).unwrap_or(i64::MAX)),
+                    ),
+                ])
+            })
+            .collect();
+        let document = Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1)),
+            (
+                "command".to_string(),
+                Value::String("asset-inspect".to_string()),
+            ),
+            (
+                "status".to_string(),
+                Value::String(if ok { "ok" } else { "failed" }.to_string()),
+            ),
+            ("exit_code".to_string(), Value::Number(i64::from(!ok))),
+            (
+                "duration_ms".to_string(),
+                Value::Number(duration_ms(started)),
+            ),
+            ("stdout".to_string(), Value::String(String::new())),
+            ("stderr".to_string(), Value::String(String::new())),
+            ("verified".to_string(), Value::Bool(verify)),
+            (
+                "mismatched".to_string(),
+                Value::Array(bad.iter().map(|n| Value::String(n.clone())).collect()),
+            ),
+            ("entries".to_string(), Value::Array(items)),
+        ]);
+        emit_stdout_line(&document.render());
+    } else {
+        let widest = pack.entries().map(|e| e.name.len()).max().unwrap_or(0);
+        let mut report = String::new();
+        for entry in pack.entries() {
+            let _ = writeln!(
+                report,
+                "{:<width$}  {:>10}  {:016x}",
+                entry.name,
+                entry.bytes.len(),
+                entry.hash,
+                width = widest
+            );
+        }
+        for name in &bad {
+            let _ = writeln!(report, "MISMATCH {name}");
+        }
+        let checked = if verify { ", verified" } else { "" };
+        let _ = writeln!(report, "{} entries{checked}", pack.len());
+        emit_stdout(&report);
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// One refusal shape for both asset subcommands.
+fn asset_failure(command: &str, message: &str, json_mode: bool, started: Instant) -> ExitCode {
+    if json_mode {
+        let document = Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1)),
+            ("command".to_string(), Value::String(command.to_string())),
+            ("status".to_string(), Value::String("error".to_string())),
+            ("exit_code".to_string(), Value::Number(1)),
+            (
+                "duration_ms".to_string(),
+                Value::Number(duration_ms(started)),
+            ),
+            ("stdout".to_string(), Value::String(String::new())),
+            ("stderr".to_string(), Value::String(message.to_string())),
+            ("entries".to_string(), Value::Array(Vec::new())),
+        ]);
+        emit_stdout_line(&document.render());
+    } else {
+        eprintln!("error: {message}");
+    }
+    ExitCode::FAILURE
 }
 
 /// Read the runnable samples out of `cargo metadata` output.

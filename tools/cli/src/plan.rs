@@ -72,6 +72,8 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
         Command::Check
         | Command::Coverage
         | Command::Modules
+        | Command::AssetPack
+        | Command::AssetInspect
         | Command::Doctor
         | Command::Run
         | Command::Record
@@ -181,6 +183,8 @@ mod tests {
         assert!(steps(Command::Check, false).is_empty());
         assert!(steps(Command::Coverage, false).is_empty());
         assert!(steps(Command::Modules, false).is_empty());
+        assert!(steps(Command::AssetPack, false).is_empty());
+        assert!(steps(Command::AssetInspect, false).is_empty());
         assert!(steps(Command::Run, false).is_empty());
         assert!(steps(Command::Record, false).is_empty());
         assert!(steps(Command::Replay, false).is_empty());

@@ -15,6 +15,14 @@ core = false
 extension_points = []
 simulation = false
 
+# The CLI's first dependency, and a workspace one: every engine
+# capability gets a command-line face, and the pack format lives in the
+# crate that defines it rather than being reimplemented here. A
+# within-workspace edge carries no supply-chain or licence question; the
+# hand-rolled JSON parser stays hand-rolled.
+[dependencies]
+renew-asset = { path = "../../crates/asset" }
+
 [features]
 # Enabled by instrumented (sanitizer) test runs. Five integration tests
 # replace PATH with a single directory so the test decides what the

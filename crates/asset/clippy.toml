@@ -1,0 +1,51 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# Same shape and same reasoning as the trace codec's, and for the same
+# reason: this crate is a container format and nothing else. It takes
+# bytes and returns a pack, or takes a pack and returns bytes. It never
+# opens a file and never accepts a path.
+#
+# That is not tidiness. A pack is read from a file the engine did not
+# write, so the size bound on that read has to live at the seam that can
+# refuse an oversized file before a byte reaches a parser. One
+# `fs::read` added here for convenience would move an untrusted-input
+# bound into a crate with no way to enforce it — and would make the
+# reader unfuzzable without a filesystem, which is the one thing it most
+# needs to be.
+#
+# The types are banned as well as the calls. Banning `File::open` alone
+# is not enough: `OpenOptions::new().read(true).open(…)` plus
+# `Read::read_to_end` is the same unbounded read of the same untrusted
+# file, spelled in two lines.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "this crate never touches the filesystem: it parses bytes a caller already holds" },
+    { path = "std::fs::read_to_string", reason = "an unbounded whole-file read of untrusted input belongs at the I/O seam, which can refuse an oversized file; this crate never does I/O" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem: it returns bytes for a caller to write" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem, and asking about a file is one line away from opening it" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a container format is a pure function of its argument; a value from the environment would make one run differ from the next with nothing in the input to explain it" },
+    { path = "std::time::Instant::now", reason = "packing reads no clock: a pack built twice from the same inputs must be byte-identical, and a timestamp in the output would destroy that" },
+    { path = "std::time::SystemTime::now", reason = "packing reads no clock: a timestamp is the classic reason two builds of identical inputs differ" },
+    { path = "std::thread::spawn", reason = "the crate spawns nothing; it is a pure function of its input" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle, which banning `File::open` alone does not" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on `File::open` misses" },
+    { path = "std::path::Path", reason = "the crate takes bytes and names, never a path: a function that can name a file will eventually open one" },
+    { path = "std::path::PathBuf", reason = "the crate takes bytes and names, never a path" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs; a pack's entry order is part of its bytes and must not depend on a hash seed" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
