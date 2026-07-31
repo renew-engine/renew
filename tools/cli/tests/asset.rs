@@ -111,6 +111,26 @@ fn both_subcommands_emit_the_typed_envelope() {
     assert_eq!(document.get("entries"), Some(&Value::Number(2)));
     assert_eq!(document.get("status").and_then(Value::as_str), Some("ok"));
 
+    // The same check without `--json`, because the two paths print from
+    // different code and only the JSON one was ever asserted. The
+    // human-readable success line went unexercised until a match arm made
+    // that visible -- the summary was one line then, covered incidentally
+    // by the corrupt-pack test taking the same branch.
+    let plain = run(&[
+        "asset-inspect",
+        "--pack",
+        &pack.to_string_lossy(),
+        "--verify",
+    ])
+    .expect("binary should spawn");
+    assert_eq!(plain.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&plain.stdout);
+    assert!(
+        text.contains("2 entries, verified"),
+        "a clean verify must say so: {text}"
+    );
+    assert!(!text.contains("MISMATCH"), "nothing is wrong here: {text}");
+
     let output = run(&[
         "asset-inspect",
         "--pack",
@@ -205,6 +225,20 @@ fn a_corrupted_payload_fails_verification_and_only_verification() {
     assert_eq!(checked.status.code(), Some(1), "verification must fail");
     let stdout = String::from_utf8_lossy(&checked.stdout);
     assert!(stdout.contains("MISMATCH"), "stdout was: {stdout}");
+
+    // The summary line has to agree with the line above it. This test
+    // asserted the exit code and the MISMATCH and stopped there, so for a
+    // while the output read `MISMATCH b.txt` and then `2 entries,
+    // verified` two lines later -- the code correct, the JSON correct,
+    // and the only part a person reads contradicting itself.
+    assert!(
+        !stdout.contains(", verified"),
+        "a failed run must not call itself verified: {stdout}"
+    );
+    assert!(
+        stdout.contains("FAILED verification"),
+        "the summary must say verification failed: {stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
