@@ -197,8 +197,9 @@ pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleEr
 
 #[cfg(test)]
 mod tests {
-    use super::{replay, run};
+    use super::{SAMPLE_NAME, replay, replay_recorded, run};
     use crate::cli::Options;
+    use crate::error::SampleError;
     use crate::trace;
 
     fn walk(frames: u64) -> crate::cli::Report {
@@ -277,5 +278,64 @@ mod tests {
             ..options
         };
         assert!(run(&unknown).is_err());
+    }
+
+    /// The driver refuses what the codec is not asked to judge.
+    ///
+    /// The codec stores the timestep and the budget without interpreting
+    /// them, so a zero reaches this driver intact — and the frame loop's
+    /// types cannot hold one. Refusing here is not defensive duplication;
+    /// it is the only place the check can live.
+    #[test]
+    fn a_header_the_frame_loop_cannot_accept_is_refused() {
+        let header = |sample: &str, timestep: u64, budget: u32| {
+            renew_trace::TraceHeader::new(sample, 1, timestep, budget)
+                .expect("a well-formed header")
+        };
+        let trace = |header| renew_trace::Trace::new(header, Vec::new()).expect("no events");
+
+        let wrong = replay_recorded(&trace(header("hello_triangle", 1, 1)));
+        assert!(
+            matches!(&wrong, Err(SampleError::Usage(message)) if message.contains("hello_triangle")),
+            "{wrong:?}"
+        );
+
+        let no_timestep = replay_recorded(&trace(header(SAMPLE_NAME, 0, 1)));
+        assert!(
+            matches!(&no_timestep, Err(SampleError::Usage(message)) if message.contains("timestep")),
+            "{no_timestep:?}"
+        );
+
+        let no_budget = replay_recorded(&trace(header(SAMPLE_NAME, 1, 0)));
+        assert!(
+            matches!(&no_budget, Err(SampleError::Usage(message)) if message.contains("budget")),
+            "{no_budget:?}"
+        );
+    }
+
+    /// A seed that is not a number is refused rather than silently zero.
+    #[test]
+    fn a_seed_that_is_not_a_number_is_refused() {
+        let header = renew_trace::TraceHeader::new(SAMPLE_NAME, 1, 1, 1)
+            .and_then(|header| header.with_key("seed", "later"))
+            .expect("a well-formed header");
+        let trace = renew_trace::Trace::new(header, Vec::new()).expect("no events");
+        let refused = replay_recorded(&trace);
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("seed")),
+            "{refused:?}"
+        );
+    }
+
+    /// With no seed key at all the run is seed zero, not an error: the
+    /// key is the caller's, and a trace that omits it is still a trace.
+    #[test]
+    fn a_trace_without_a_seed_replays_at_zero() {
+        let header =
+            renew_trace::TraceHeader::new(SAMPLE_NAME, 1, 16_666_667, 5).expect("a header");
+        let trace = renew_trace::Trace::new(header, Vec::new()).expect("no events");
+        let report = replay_recorded(&trace).expect("a seedless trace still replays");
+        assert_eq!(report.seed, 0);
+        assert_eq!(report.world.ticks(), 1);
     }
 }

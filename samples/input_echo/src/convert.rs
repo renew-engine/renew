@@ -64,16 +64,23 @@ const fn key_to_trace(code: KeyCode) -> TraceKey {
     }
 }
 
-const fn button_to_trace(button: PointerButton) -> TraceButton {
-    match button {
+/// `None` for a button this build has no name for.
+///
+/// The wildcard is required because the vocabulary is non-exhaustive, and
+/// it **refuses** rather than folding an unknown button into `Other`. A
+/// silent fold would be the writer-side drop this whole module exists to
+/// prevent: every future button would record as the same one, and the
+/// recording would be wrong in a way nothing could detect.
+const fn button_to_trace(button: PointerButton) -> Option<TraceButton> {
+    Some(match button {
         PointerButton::Left => TraceButton::Left,
         PointerButton::Right => TraceButton::Right,
         PointerButton::Middle => TraceButton::Middle,
         PointerButton::Back => TraceButton::Back,
         PointerButton::Forward => TraceButton::Forward,
         PointerButton::Other(index) => TraceButton::Other(index),
-        _ => TraceButton::Other(u16::MAX),
-    }
+        _ => return None,
+    })
 }
 
 /// Encode one event, or refuse it by name.
@@ -101,9 +108,9 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
             pressed,
             repeat,
         },
-        WindowEvent::PointerButton { button, pressed } => TraceEvent::PointerButton {
-            button: button_to_trace(button),
-            pressed,
+        WindowEvent::PointerButton { button, pressed } => match button_to_trace(button) {
+            Some(button) => TraceEvent::PointerButton { button, pressed },
+            None => return Err(Unencodable { shape }),
         },
         // The float-bearing shapes are the only ones that can fail on
         // their payload rather than their kind: the trace format holds
@@ -201,7 +208,9 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
 #[cfg(test)]
 mod tests {
     use super::{Unencodable, to_trace};
-    use renew_platform::window::{EVERY_EVENT_SHAPE, WindowEvent, shape_index};
+    use renew_platform::window::{
+        EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index,
+    };
 
     /// Every shape the window seam can produce has an encoding.
     ///
@@ -213,11 +222,7 @@ mod tests {
     #[test]
     fn every_window_event_shape_can_be_written_down() {
         for event in EVERY_EVENT_SHAPE {
-            assert!(
-                to_trace(*event).is_ok(),
-                "shape {} has no encoding: {event:?}",
-                shape_index(event)
-            );
+            assert!(to_trace(*event).is_ok(), "no encoding: {event:?}");
         }
     }
 
@@ -235,8 +240,68 @@ mod tests {
             assert_eq!(
                 super::from_trace(encoded),
                 *event,
-                "shape {} changed in the round trip",
-                shape_index(event)
+                "changed in the round trip: {event:?}"
+            );
+        }
+    }
+
+    /// Every key and every button survives the round trip.
+    ///
+    /// The shape list carries one key and one button, which is all it
+    /// needs to prove each *shape* is encodable — but it leaves twelve
+    /// key arms and five button arms unexercised, and a rename in either
+    /// of the two mirrored vocabularies would go unnoticed. Naming them
+    /// here is the only way to cover the mapping rather than the shape.
+    #[test]
+    fn every_key_and_button_name_maps_back_to_itself() {
+        const BUTTONS: [PointerButton; 6] = [
+            PointerButton::Left,
+            PointerButton::Right,
+            PointerButton::Middle,
+            PointerButton::Back,
+            PointerButton::Forward,
+            PointerButton::Other(9),
+        ];
+
+        const KEYS: [KeyCode; 13] = [
+            KeyCode::Escape,
+            KeyCode::Space,
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::Unidentified,
+        ];
+        for code in KEYS {
+            let event = WindowEvent::Key {
+                code,
+                pressed: true,
+                repeat: false,
+            };
+            let encoded = to_trace(event).expect("every named key encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                event,
+                "{code:?} did not survive"
+            );
+        }
+
+        for button in BUTTONS {
+            let event = WindowEvent::PointerButton {
+                button,
+                pressed: false,
+            };
+            let encoded = to_trace(event).expect("every named button encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                event,
+                "{button:?} did not survive"
             );
         }
     }
@@ -265,6 +330,15 @@ mod tests {
             to_trace(wheel),
             Err(Unencodable {
                 shape: shape_index(&wheel)
+            })
+        );
+
+        // The third float-bearing shape, so every one of them is pinned.
+        let scale = WindowEvent::ScaleFactorChanged { scale: f64::NAN };
+        assert_eq!(
+            to_trace(scale),
+            Err(Unencodable {
+                shape: shape_index(&scale)
             })
         );
     }

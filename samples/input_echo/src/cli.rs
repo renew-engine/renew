@@ -355,4 +355,28 @@ mod tests {
         assert!(!json.contains("timing"), "{json}");
         assert!(json.ends_with("}}"), "{json}");
     }
+
+    /// The two trace flags are mutually exclusive, and the message names
+    /// the one the header already owns.
+    #[test]
+    fn a_replay_cannot_also_name_a_built_in_trace() {
+        let refused = parse_args(
+            [
+                "--headless",
+                "--replay-trace",
+                "run.trace",
+                "--input-trace",
+                "walk",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        // One assertion rather than a let-else: the `else` arm is a line
+        // no passing run can reach, and an uncovered line in a test is
+        // still an uncovered line.
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("--input-trace")),
+            "{refused:?}"
+        );
+    }
 }

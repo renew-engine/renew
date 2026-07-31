@@ -54,3 +54,9 @@ reason = "Translates a windowing event whose payload type has no public construc
 file = "crates/core/platform/src/window.rs"
 lines = [800]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
+
+[[exempt]]
+file = "samples/input_echo/src/convert.rs"
+lines = [82, 113, 133]
+reason = "The wildcard arms that a non-exhaustive vocabulary forces a downstream crate to write, and the refusal one of them feeds. Every variant that exists today has its own arm above, so these are unreachable until the vocabulary grows - which is exactly when they must already be there, because the compiler will not report the new variant as unhandled in this crate. They refuse rather than folding an unknown event into a neighbouring one, so a recording can never quietly claim something that did not happen."
+
