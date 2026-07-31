@@ -316,7 +316,14 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
           RENEW_FRAME_STRICT: "1"
-        run: cargo test -p renew-sample-hello-triangle --test headless_frame --test zero_alloc
+        # cli_determinism belongs here and was missing. It asserts
+        # `!strict()` when a run reports SKIP, so it was written for this
+        # lane specifically -- and this lane did not run it, which left
+        # that assertion unreachable in the only configuration that sets
+        # the variable. Naming suites by hand is why: the list and the
+        # directory are maintained separately and drifted apart.
+        run: |
+          cargo test -p renew-sample-hello-triangle             --test headless_frame --test zero_alloc --test cli_determinism
       # The removability job proves this configuration BUILDS; only a
       # lane with a Vulkan runtime can prove it RUNS. Same binary, same
       # loop, same stats, with no winit anywhere in the graph — which
