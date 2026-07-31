@@ -1,0 +1,47 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate is data structures and nothing else: entity slots and
+# component storage. It opens no file, reads no clock, spawns no thread,
+# and takes no path. Those are not incidental — a store whose iteration
+# order could depend on a clock or a hash seed would break the one
+# property the whole storage choice was made for, which is that a query
+# visits entities in a defined order whatever happened before it.
+#
+# `HashMap` is banned for exactly that reason and it is the entry most
+# worth reading: its default hasher is seeded per process, so iterating
+# one gives a different order in every run. A single `HashMap` reached
+# for out of convenience inside a query would make the engine's
+# determinism invariant quietly false, and nothing would fail until two
+# machines disagreed about a replay.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "this crate is data structures; it never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate does no I/O at all" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate is data structures; it never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem, and asking about a file is one line away from opening it" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a value from the environment would make one run differ from the next with nothing in the inputs to explain it" },
+    { path = "std::time::Instant::now", reason = "simulation state reads no clock: the same inputs must produce the same state, and a timestamp would destroy that" },
+    { path = "std::time::SystemTime::now", reason = "simulation state reads no clock" },
+    { path = "std::thread::spawn", reason = "storage spawns nothing; parallelism over components belongs to the job system" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on `File::open` misses" },
+    { path = "std::path::Path", reason = "the crate takes entity slots and components, never a path" },
+    { path = "std::path::PathBuf", reason = "the crate takes entity slots and components, never a path" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per process, so iteration order differs every run; a query that iterated one would break the defined order the storage exists to provide" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per process, so iteration order differs every run" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
