@@ -83,7 +83,28 @@ impl Value {
             }
             Self::Null => out.push_str("null"),
             Self::Number(number) => out.push_str(&number.to_string()),
-            Self::Float(number) => out.push_str(&number.to_string()),
+            Self::Float(number) => {
+                let text = number.to_string();
+                out.push_str(&text);
+                // `2.0f64.to_string()` is `"2"`, which the parser reads
+                // back as `Number(2)` because the integer branch takes any
+                // lexeme without `.`/`e`. The value survives that trip but
+                // its type does not, so a parsed float re-emitted once
+                // comes back as an integer. Nothing renders a parsed float
+                // today -- the parser is the only thing that builds one --
+                // which is why this never showed up in output. It still
+                // makes `parse(render(v)) == v` false for a value the
+                // parser itself can produce, so the suffix goes on here
+                // rather than the property being weakened to match.
+                //
+                // Finite only: the parser refuses non-finite numbers (JSON
+                // cannot spell them), so a non-finite `Float` is already
+                // unconstructible from input and `"inf.0"` would be no
+                // more valid than `"inf"`.
+                if number.is_finite() && !text.contains(['.', 'e', 'E']) {
+                    out.push_str(".0");
+                }
+            }
             Self::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
             Self::Array(items) => {
                 out.push('[');

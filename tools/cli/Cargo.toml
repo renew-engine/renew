@@ -23,6 +23,14 @@ simulation = false
 [dependencies]
 renew-asset = { path = "../../crates/asset" }
 
+# Test-only, and already approved for exactly this use: the entry covering
+# it scopes it to dev-dependencies in test code, never linked into shipped
+# code. The hand-rolled JSON reader is the third parser of external input
+# in this workspace and the only one whose robustness rested on examples
+# alone; the other two are covered by generated input.
+[dev-dependencies]
+proptest = "1.11"
+
 [features]
 # Enabled by instrumented (sanitizer) test runs. Five integration tests
 # replace PATH with a single directory so the test decides what the
