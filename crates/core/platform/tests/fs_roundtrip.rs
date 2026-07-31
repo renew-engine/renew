@@ -78,3 +78,74 @@ fn reading_a_directory_fails_with_the_path_reported() {
     };
     assert_eq!(reported, directory);
 }
+
+/// A bounded read accepts a file exactly at the limit and refuses the
+/// same file one byte longer. The boundary is the whole point: an
+/// off-by-one here either rejects legitimate content or admits the
+/// unbounded allocation the limit exists to prevent.
+#[test]
+fn a_bounded_read_accepts_the_limit_and_refuses_one_byte_past_it() {
+    let file = scratch("bounded.txt");
+    let exactly = "0123456789";
+    fs::write(&file.0, exactly.as_bytes()).expect("write succeeds");
+    assert_eq!(
+        fs::read_to_string_bounded(&file.0, exactly.len()).expect("at the limit is allowed"),
+        exactly
+    );
+
+    fs::write(&file.0, format!("{exactly}x").as_bytes()).expect("write succeeds");
+    match fs::read_to_string_bounded(&file.0, exactly.len()) {
+        Err(fs::FsError::TooLarge { path, limit }) => {
+            assert_eq!(path, file.0);
+            assert_eq!(limit, exactly.len());
+        }
+        other => panic!("expected a refusal naming the limit, got {other:?}"),
+    }
+}
+
+/// The refusal says how big the caller said was acceptable, because the
+/// first question anyone asks of this error is "how big is too big".
+#[test]
+fn the_refusal_names_the_limit_in_its_message() {
+    let file = scratch("bounded-message.txt");
+    fs::write(&file.0, b"far too much content for this").expect("write succeeds");
+    let error = fs::read_to_string_bounded(&file.0, 4).expect_err("must refuse");
+    let shown = error.to_string();
+    assert!(shown.contains('4'), "{shown}");
+    assert!(shown.contains("bounded-message"), "{shown}");
+}
+
+/// A zero limit is a real request, not a degenerate one: it accepts an
+/// empty file and refuses everything else.
+#[test]
+fn a_zero_limit_admits_only_an_empty_file() {
+    let file = scratch("bounded-empty.txt");
+    fs::write(&file.0, b"").expect("write succeeds");
+    assert_eq!(
+        fs::read_to_string_bounded(&file.0, 0).expect("empty is within a zero limit"),
+        ""
+    );
+    fs::write(&file.0, b"x").expect("write succeeds");
+    assert!(matches!(
+        fs::read_to_string_bounded(&file.0, 0),
+        Err(fs::FsError::TooLarge { .. })
+    ));
+}
+
+/// Bounding does not weaken the other classifications: a missing file
+/// and non-UTF-8 content report what they always did.
+#[test]
+fn a_bounded_read_still_classifies_missing_and_non_utf8() {
+    let missing = scratch("bounded-missing.txt");
+    assert!(matches!(
+        fs::read_to_string_bounded(&missing.0, 64),
+        Err(fs::FsError::NotFound { .. })
+    ));
+
+    let invalid = scratch("bounded-invalid.txt");
+    fs::write(&invalid.0, &[0xF0, 0x28, 0x8C, 0x28]).expect("write succeeds");
+    assert!(matches!(
+        fs::read_to_string_bounded(&invalid.0, 64),
+        Err(fs::FsError::InvalidUtf8 { .. })
+    ));
+}
