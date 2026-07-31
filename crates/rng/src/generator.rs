@@ -69,9 +69,12 @@ impl Rng {
     ///   of how many generators were built before it, not of anything
     ///   ambient. Rebuilding a stream halfway through a replay gives the
     ///   same generator the recording had.
-    /// - **Distinct streams under one seed cannot collide.** Both words
-    ///   come from a bijective derivation, so two different `StreamId`s
-    ///   under the same `Seed` always produce different starting states.
+    /// - **Distinct streams under one seed cannot collide.** The state
+    ///   word comes from a bijective derivation, so two different
+    ///   `StreamId`s under the same `Seed` always produce different
+    ///   starting states. The increment word is not bijective — it is
+    ///   forced odd, which is two-to-one — so the guarantee rests on the
+    ///   state word alone, not on both.
     ///   The property those streams do *not* have is proven statistical
     ///   independence — see the crate documentation, which states the
     ///   bound honestly.

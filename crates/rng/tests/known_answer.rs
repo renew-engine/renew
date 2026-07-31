@@ -23,8 +23,9 @@
 //! * **The seeding this crate actually uses.** The reference's seeding
 //!   procedure is reproduced below out of the public API, because that is
 //!   what the published numbers are stated against. Callers never use it;
-//!   `Rng::new` derives both words through the mixer instead, for the
-//!   reasons in the design note. What the vectors pin is the *generator* —
+//!   `Rng::new` derives both words through the mixer instead, because a
+//!   seed used raw leaves the first output at zero for a wide range of
+//!   small seeds. What the vectors pin is the *generator* —
 //!   the step and the output function — which is the part the seeding then
 //!   feeds.
 //! * **The wide draws.** The reference is a 32-bit generator and publishes

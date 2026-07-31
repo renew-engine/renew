@@ -53,9 +53,10 @@ restate them.
   the bound.
 - **Nothing can fail.** Non-zero bounds by type, a total constructor: no
   method returns a `Result`, nothing panics, nothing unwinds.
-- **No floating point.** Not in the generator, not in the draws, not in
-  the tests. The crate denies float arithmetic at its root, so it is the
-  compiler that holds the line, not review.
+- **No floating point.** Not in the generator, not in the draws. The
+  crate denies float *arithmetic* at its root, which the compiler holds;
+  that lint covers operators only, so keeping float-typed signatures out
+  of the API is a review rule rather than a compiled-in guarantee.
 
 ## Why PCG32, and how we know it is PCG32
 

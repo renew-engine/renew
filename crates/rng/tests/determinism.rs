@@ -8,9 +8,9 @@
 //! crate's `StateHash`. Not because a second implementation is welcome —
 //! it is not — but because a test-only dependency from this crate to an
 //! optional sibling would put a false edge in the removability graph, and
-//! this fold is six lines. Where a shared digest should live once the
-//! determinism harness needs one across several crates is an open question
-//! in the design note, not something to settle from inside a test file.
+//! this fold is six lines. Where a shared digest should live once several
+//! crates need one is deliberately unsettled — not something to decide from
+//! inside a test file.
 
 use core::num::{NonZeroU32, NonZeroU64};
 
@@ -90,6 +90,20 @@ fn the_sequence_is_frozen_against_published_constants() {
         Rng::new(SEED, PHYSICS).parts(),
         (0xf60b_d34d_8990_bec7, 0xa544_b2cf_968b_f449)
     );
+    // The per-entity derivation is frozen too, and it has to be. `child`
+    // is the path a replay leans on hardest: one stream per entity, drawn
+    // from a parent stream. Every other test of it asserts only that
+    // children differ from each other and from their parent, which holds
+    // for any injective avalanching function — so a future simplification
+    // of `child` would keep the whole suite green and silently invalidate
+    // every trace ever recorded against it. Verified by mutation:
+    // replacing the derivation with `mix(self.0 ^ index)` passes all the
+    // inequality tests and fails exactly these two.
+    assert_eq!(
+        Rng::new(SEED, PHYSICS.child(7)).parts(),
+        (0x481b_ac75_3e91_dd4d, 0xf7dd_bfb1_d3fc_68ef)
+    );
+    assert_eq!(PHYSICS.child(3).child(9).get(), 0x61ae_595c_4f48_7703);
 }
 
 /// The same seed and stream, built five separate times, produce the same

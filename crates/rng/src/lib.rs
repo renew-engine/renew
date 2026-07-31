@@ -58,9 +58,12 @@
 //! - **Nothing can fail.** Non-zero bounds by type, a total constructor,
 //!   saturating nothing because there is nothing to saturate: no method
 //!   here returns a `Result`, nothing panics, and nothing unwinds.
-//! - **No floating point.** Not in the generator, not in the draws, not
-//!   in the tests. The crate denies float arithmetic at its root, so the
-//!   claim is checked by the compiler rather than by review.
+//! - **No floating point.** Not in the generator, not in the draws. The
+//!   crate denies float *arithmetic* at its root, which the compiler does
+//!   hold — but that lint covers operators only, so a float-typed
+//!   signature, a cast, or a comparison would still pass. Keeping floats
+//!   out of the API surface is a review rule, and saying otherwise would
+//!   overstate what the gate does.
 //!
 //! # No float draws in v0, on purpose
 //!
