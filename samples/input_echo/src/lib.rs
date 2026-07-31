@@ -36,6 +36,7 @@ use std::process::ExitCode;
 
 mod app;
 mod cli;
+mod convert;
 mod error;
 mod scripted;
 mod trace;
