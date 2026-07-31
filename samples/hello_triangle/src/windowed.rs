@@ -67,6 +67,11 @@ pub fn run(options: &Options) -> Result<Report, SampleError> {
 /// available, so it is the only place they can be built. That is the
 /// price of the seam's inverted control, and it is paid here in a
 /// sample rather than anywhere in the engine.
+/// The frame after which the swapchain is rebuilt once. Early enough
+/// that even a short run reaches it, and not the first frame, so the
+/// rebuild happens against a chain that has already presented.
+const REBUILD_AFTER_FRAME: u64 = 2;
+
 pub struct TriangleApp {
     clock: Clock,
     seed: u64,
@@ -185,6 +190,21 @@ impl TriangleApp {
             Ok(true) => {
                 self.presented = self.presented.saturating_add(1);
                 self.drawn_since_update = true;
+                // Rebuild the chain once, mid-run, at the size it
+                // already has. A sample exists to exercise the engine
+                // end to end, and a swapchain that is only ever built
+                // once has not been shown to survive being rebuilt
+                // under a live surface — the thing that actually
+                // happens every time a user drags a window edge. Doing
+                // it deliberately also keeps this path covered wherever
+                // the sample runs, rather than only on a desktop with a
+                // window manager to send the event: a virtual display
+                // has none, and a path that is exercised on one machine
+                // and not another is a path nobody is really watching.
+                if self.presented == REBUILD_AFTER_FRAME {
+                    let size = self.size;
+                    self.resize(size);
+                }
             }
             Ok(false) => {
                 let size = self.size;
