@@ -13,6 +13,7 @@ pub enum Command {
     Lint,
     Check,
     Coverage,
+    Modules,
     Doctor,
     Record,
     Replay,
@@ -20,7 +21,7 @@ pub enum Command {
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Configure,
         Self::Build,
         Self::Test,
@@ -31,6 +32,7 @@ impl Command {
         Self::Lint,
         Self::Check,
         Self::Coverage,
+        Self::Modules,
         Self::Doctor,
     ];
 
@@ -46,6 +48,7 @@ impl Command {
             Self::Lint => "lint",
             Self::Check => "check",
             Self::Coverage => "coverage",
+            Self::Modules => "modules",
             Self::Doctor => "doctor",
             Self::Record => "record",
             Self::Replay => "replay",
@@ -87,6 +90,7 @@ impl Command {
             Self::Lint => "check formatting, then run clippy with warnings denied",
             Self::Check => "verify workspace crate manifests and dependencies",
             Self::Coverage => "hold a coverage report against the exemption manifest",
+            Self::Modules => "list every module with its maturity, from the manifests",
             Self::Doctor => "check the development environment",
             Self::Record => "run a sample, writing the input it saw to a file",
             Self::Replay => "run a sample from a recorded input file",

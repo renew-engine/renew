@@ -421,6 +421,205 @@ fn check_json_reports_an_empty_findings_array_here() {
     assert!(document.contains("\"findings\":[]"), "stdout was: {stdout}");
 }
 
+/// The inventory names every workspace crate, and says how many are
+/// `stable` — the number a release's compatibility promise is scoped to.
+#[test]
+fn modules_lists_the_whole_workspace_with_its_maturities() {
+    let output = run(&["modules"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout was: {stdout}");
+
+    // Named crates rather than a count: a count would keep passing while
+    // the walk silently stopped finding half the tree.
+    for crate_name in [
+        "renew-diag",
+        "renew-platform",
+        "renew-jobs",
+        "renew-trace",
+        "renew-cli",
+        "vk-fault-layer",
+    ] {
+        assert!(
+            stdout.contains(crate_name),
+            "`{crate_name}` is missing from the inventory; stdout was: {stdout}"
+        );
+    }
+    assert!(stdout.contains("stable"), "stdout was: {stdout}");
+}
+
+/// The JSON carries one row per crate with the fields a release note
+/// needs, and the keys are unconditional.
+#[test]
+fn modules_json_carries_every_crate_with_unconditional_keys() {
+    let output = run(&["modules", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document = stdout.trim();
+    let envelope = validated_envelope(document, "modules").expect("modules --json envelope");
+
+    let rows = envelope
+        .get("modules")
+        .and_then(Value::as_array)
+        .expect("a modules array");
+    assert!(rows.len() > 10, "only {} module(s) listed", rows.len());
+    for row in rows {
+        for key in ["name", "maturity", "core", "problem"] {
+            assert!(
+                row.get(key).is_some(),
+                "a module row is missing `{key}`; a consumer must never test for a key"
+            );
+        }
+    }
+    // Ordering is part of the contract: maturity first, so a reader sees
+    // what a release promises before what it does not.
+    let first = rows[0]
+        .get("maturity")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        first == "stable" || first == "internal",
+        "rows must be ordered by maturity; the first was `{first}`"
+    );
+}
+
+/// A crate whose metadata will not parse still appears, carrying the
+/// reason. An inventory that silently drops what it could not read is
+/// shorter than the workspace and gets believed anyway.
+#[test]
+fn modules_lists_a_crate_whose_metadata_is_unreadable() {
+    let directory = std::env::temp_dir().join(format!("renew-cli-modules-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    // Two members, not one: with a single row `sort_by` never calls the
+    // comparator, so a one-crate fixture cannot show where an unreadable
+    // row sorts — and would leave the ordering rule untested.
+    let member = directory.join("bad");
+    let sound = directory.join("sound");
+    fs::create_dir_all(member.join("src")).expect("scratch dirs");
+    fs::create_dir_all(sound.join("src")).expect("scratch dirs");
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[workspace]
+resolver = \"3\"
+members = [\"bad\", \"sound\"]
+",
+    )
+    .expect("scratch root manifest");
+    fs::write(
+        member.join("Cargo.toml"),
+        concat!(
+            "[package]
+name = \"bad\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+",
+            "[package.metadata.renew]
+purpose = \"x\"
+maturity = \"wrong\"
+",
+            "core = false
+extension_points = []
+simulation = false
+",
+        ),
+    )
+    .expect("scratch member manifest");
+    fs::write(
+        sound.join("Cargo.toml"),
+        concat!(
+            "[package]
+name = \"sound\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+",
+            "[package.metadata.renew]
+purpose = \"x\"
+maturity = \"internal\"
+",
+            "core = false
+extension_points = []
+simulation = false
+",
+        ),
+    )
+    .expect("scratch member manifest");
+    fs::write(member.join("src").join("lib.rs"), "").expect("scratch lib");
+    fs::write(sound.join("src").join("lib.rs"), "").expect("scratch lib");
+
+    // Reporting, not gating: the inventory succeeds and says what is
+    // wrong. `check` is the one that fails on this workspace.
+    let output = run_in(&directory, &["modules"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("bad"), "stdout was: {stdout}");
+    assert!(stdout.contains("unreadable"), "stdout was: {stdout}");
+    assert!(stdout.contains("maturity"), "stdout was: {stdout}");
+    assert!(stdout.contains("0 stable"), "stdout was: {stdout}");
+
+    let output = run_in(&directory, &["modules", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "modules").expect("modules --json envelope");
+    let rows = envelope
+        .get("modules")
+        .and_then(Value::as_array)
+        .expect("a modules array");
+    assert_eq!(rows.len(), 2, "two members, two rows");
+    // The readable crate sorts first and the unreadable one last, which is
+    // the ordering rule: a reader sees what is known before what is not.
+    assert_eq!(rows[0].get("name").and_then(Value::as_str), Some("sound"));
+    let broken = &rows[1];
+    assert_eq!(broken.get("name").and_then(Value::as_str), Some("bad"));
+    assert_eq!(broken.get("core"), Some(&Value::Null), "core is unknown");
+    let problem = broken.get("problem").and_then(Value::as_str);
+    assert!(
+        problem.is_some_and(|text| text.contains("maturity")),
+        "the row must carry the reason; got {problem:?}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// Outside a workspace the inventory refuses, on both paths, rather than
+/// reporting an empty tree — the failure mode this whole tool exists to
+/// avoid.
+#[test]
+fn modules_outside_a_workspace_refuses_rather_than_reporting_nothing() {
+    let directory = std::env::temp_dir().join(format!("renew-cli-nomods-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).expect("scratch dir");
+
+    let output = run_in(&directory, &["modules"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "the plain path reports on stderr");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no workspace root"), "stderr was: {stderr}");
+
+    let output = run_in(&directory, &["modules", "--json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "modules")
+        .unwrap_or_else(|reason| panic!("modules --json: {reason}"));
+    assert_eq!(
+        envelope.get("status").and_then(Value::as_str),
+        Some("error")
+    );
+    // The array is present and empty rather than absent, so a consumer
+    // never has to test for the key on the failure path.
+    assert_eq!(
+        envelope.get("modules"),
+        Some(&Value::Array(Vec::new())),
+        "the modules key must survive the error path"
+    );
+    assert!(
+        envelope_stderr(&envelope).contains("no workspace root"),
+        "stdout was: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
 #[test]
 fn check_flags_a_workspace_with_broken_metadata() {
     let directory = std::env::temp_dir().join(format!("renew-cli-check-{}", std::process::id()));
@@ -537,7 +736,7 @@ fn every_cheap_subcommand_emits_the_full_typed_envelope() {
     // The expensive subcommands (build/test/bench/lint) share the same
     // envelope emitter, covered by unit tests; spawning them here would
     // recurse the whole workspace build inside the test suite.
-    for command in ["help", "configure", "doctor", "check"] {
+    for command in ["help", "configure", "doctor", "check", "modules"] {
         let output = run(&[command, "--json"]).expect("binary should spawn");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let envelope = validated_envelope(stdout.trim(), command)
@@ -554,6 +753,13 @@ fn every_cheap_subcommand_emits_the_full_typed_envelope() {
                 assert!(
                     envelope.get("findings").and_then(Value::as_array).is_some(),
                     "check must carry a findings array"
+                );
+            }
+            "modules" => {
+                let modules = envelope.get("modules").and_then(Value::as_array);
+                assert!(
+                    modules.is_some_and(|items| !items.is_empty()),
+                    "modules must carry a non-empty modules array"
                 );
             }
             _ => {}
