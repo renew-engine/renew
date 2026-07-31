@@ -7,8 +7,13 @@ seam.
 - `Clock` — a value the caller owns, anchored at `start()`, reporting
   integer nanoseconds (`elapsed_nanos`, saturating at ~584 years). No
   floating-point time exists in the engine.
-- `fs` — whole-file operations (`read`, `read_to_string`, `write`,
-  `exists`), every error naming its path with a classified kind.
+- `fs` — whole-file operations (`read`, `read_to_string`,
+  `read_to_string_bounded`, `write`, `exists`), every error naming its
+  path with a classified kind. The bounded read exists because a parser
+  can only validate a hostile file once it is already in memory, so a
+  size limit has to be enforced here, before the allocation — and it is
+  applied to the bytes actually read, never to the size the filesystem
+  claims, which can be stale or a lie about a growing file.
 - `thread` — `spawn_named` and `ThreadHandle`: every engine thread
   carries a name, and a *joined* thread's panic surfaces as an error
   naming it. Dropping the handle detaches the thread — deliberate, and
