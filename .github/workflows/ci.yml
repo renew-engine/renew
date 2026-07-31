@@ -204,10 +204,36 @@ jobs:
       # covered until now: the always-present crates on their own, with
       # every optional engine crate proven out of the graph rather than
       # merely left off the command line.
+      # Three crates landed on 2026-07-31 and each needed its own cell.
+      # The pack format's only dependent is the CLI, which calls it for
+      # `asset-pack` and `asset-inspect` — an edge that makes this list
+      # upward-closed only because it is named here.
+      - name: Build and test without the asset pack
+        run: |
+          sel="--workspace --exclude renew-asset --exclude renew-cli"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-asset $sel
+          cargo build $sel
+          cargo test $sel
+      # Storage has no dependents yet, so the exclude list is one crate.
+      # It will grow the moment a system uses it, and the guard is what
+      # turns forgetting that into a red cell rather than a green one.
+      - name: Build and test without the entity storage
+        run: |
+          sel="--workspace --exclude renew-ecs"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
+          cargo build $sel
+          cargo test $sel
+      # The input layer, likewise without dependents today.
+      - name: Build and test without the input mapping
+        run: |
+          sel="--workspace --exclude renew-input"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-input $sel
+          cargo build $sel
+          cargo test $sel
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-jobs renew-frame renew-rng renew-trace; do
+          for optional in renew-rhi renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
