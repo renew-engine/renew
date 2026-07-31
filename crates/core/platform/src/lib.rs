@@ -20,8 +20,12 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod clock;
+/// The event vocabulary, always available — see the module docs for why
+/// it is not behind the `window` feature.
+pub mod event;
 pub mod fs;
 pub mod thread;
+
 #[cfg(feature = "window")]
 pub mod window;
 

@@ -248,6 +248,19 @@ jobs:
           done
           cargo build $sel
           cargo test $sel
+      # The input layer names keys; it must not compile a windowing
+      # library to do it. This is the whole reason the event vocabulary
+      # sits outside the window feature, so it is guarded rather than
+      # assumed -- the crate has no feature flags, so the plain build is
+      # the only build, and winit must be absent from it.
+      - name: Build and test the input layer with no windowing library
+        run: |
+          sel="-p renew-input"
+          for wsi in winit raw-window-handle; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
+          done
+          cargo build $sel
+          cargo test $sel
       # The rendering crate's presentation-free configuration
       # (offscreen only, no windowing interop). No graph guard: this
       # crate dev-depends on renew-platform with windowing on, so a

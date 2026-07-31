@@ -46,6 +46,15 @@ Actions are a caller-defined type, not strings — a typo is a compile
 error rather than an action that silently never fires. The bound is
 `Copy + Eq`, deliberately not `Hash`.
 
+## What it compiles against
+
+`renew-platform` with default features **off**: this crate needs the
+event vocabulary in `renew_platform::event`, not the OS event loop, so no
+windowing library enters its dependency graph. A build guard asserts that
+absence rather than trusting it — an input layer that dragged in a window
+system would be a strange thing to discover later, and the vocabulary was
+moved out from behind the `window` feature precisely so it cannot.
+
 ## Thread safety and ownership
 
 No shared state, no interior mutability, no globals. `InputMap<A>` owns
