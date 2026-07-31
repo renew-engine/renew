@@ -12,6 +12,28 @@
 //!   and everything holding one is `!Send + !Sync` by construction:
 //!   Vulkan's external-synchronization rules are unrepresentable to
 //!   violate. Lifting this is a future, deliberate change.
+//!
+//!   The two examples below are the contract, executed. They must fail
+//!   to compile, and the error code is pinned so they cannot pass
+//!   vacuously on a typo:
+//!
+//!   ```compile_fail,E0277
+//!   fn needs_send<T: Send>() {}
+//!   needs_send::<renew_rhi::Device>();
+//!   ```
+//!
+//!   ```compile_fail,E0277
+//!   fn needs_sync<T: Sync>() {}
+//!   needs_sync::<renew_rhi::Device>();
+//!   ```
+//!
+//!   **What this does and does not catch.** The spine is asserted, not
+//!   every resource, because the resources are `!Send` for one reason —
+//!   each holds an `Rc<DeviceShared>` — and a change that made them
+//!   shareable would have to make that `Rc` shareable first, which these
+//!   two catch. What they do not catch is a hand-written `unsafe impl
+//!   Send` on one resource; that is governed by the crate's `unsafe`
+//!   policy instead, which requires a written safety argument per site.
 //! - **Errors are the environment's; assertions are the caller's.** A
 //!   missing Vulkan runtime, a lost device, an out-of-date swapchain —
 //!   recoverable results. Mixing objects across devices or handing a
