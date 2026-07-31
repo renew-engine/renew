@@ -28,6 +28,7 @@ renew-memory = { path = "../../crates/core/memory" }
 # Bench-target-only, like the job pool above: the library itself
 # schedules nothing.
 renew-frame = { path = "../../crates/frame" }
+renew-rng = { path = "../../crates/rng" }
 criterion = "0.8"
 # Bench-target-only: keeps the library's dependency graph free of the
 # job pool it never uses.
@@ -54,4 +55,8 @@ harness = false
 
 [[bench]]
 name = "frame"
+harness = false
+
+[[bench]]
+name = "rng"
 harness = false
