@@ -167,6 +167,16 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
+      # The generator removed entirely. Nothing in the engine depends on
+      # it yet, so the exclude list is short today — but the bench suite
+      # reaches it from a bench target, which is exactly the edge that
+      # makes an exclude list stop being upward-closed if it is forgotten.
+      - name: Build and test without the generator
+        run: |
+          sel="--workspace --exclude renew-rng --exclude renew-bench"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
+          cargo build $sel
+          cargo test $sel
       # The rendering crate removed entirely. input_echo deliberately
       # survives this cell: a frame-loop sample that still builds and
       # runs with the GPU crate gone is the removability claim from the
