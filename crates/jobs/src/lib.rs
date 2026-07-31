@@ -873,6 +873,47 @@ mod tests {
         );
     }
 
+    /// The slice entry point dispatches too, and nothing said so.
+    ///
+    /// `parallel_for_slice_mut` documents the same execution contract as
+    /// `parallel_for`, and `parallel_for` has the test above proving work
+    /// reaches a worker. The slice form had only result assertions — and
+    /// running every chunk inline on the caller produces exactly the same
+    /// results, so inverting its inline-versus-dispatch decision passed
+    /// the whole suite.
+    ///
+    /// Forced the same way as its sibling: whoever claims the first chunk
+    /// parks until the second has run, so a build that never dispatches
+    /// fails the bounded wait instead of quietly serialising.
+    #[test]
+    fn the_slice_form_reaches_a_worker() {
+        let mut pool = JobPool::new(&PoolConfig::new(1)).expect("pool");
+        let caller = std::thread::current().id();
+        let worker_ran = AtomicBool::new(false);
+        let second_chunk_done = AtomicBool::new(false);
+        let mut data = [0usize; 2];
+
+        pool.parallel_for_slice_mut(&mut data, grain(1), |offset, slice| {
+            if std::thread::current().id() != caller {
+                worker_ran.store(true, Ordering::Release);
+            }
+            if offset == 0 {
+                wait_for(&second_chunk_done);
+            } else {
+                second_chunk_done.store(true, Ordering::Release);
+            }
+            for cell in slice {
+                *cell = offset + 1;
+            }
+        });
+
+        assert_eq!(data, [1, 2], "every chunk must still run exactly once");
+        assert!(
+            worker_ran.load(Ordering::Acquire),
+            "the slice form must dispatch: the caller cannot hold both chunks"
+        );
+    }
+
     /// Fewer chunks than workers still completes every chunk exactly once.
     ///
     /// The dispatch wakes `chunks - 1` workers, so with a pool wider than
