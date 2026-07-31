@@ -149,10 +149,18 @@ pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[
 /// This is the forcing function. The match is exhaustive and carries no
 /// wildcard, so a new variant fails to compile until it is given an
 /// index — and the test below fails until it is also added to the list.
-/// Both halves are needed: a match alone would let the list rot, and a
-/// list alone would never notice the variant existed.
+/// Public because the consumer that iterates the list wants it: an index
+/// is how a translation layer keys a coverage table, and how it names the
+/// shape it is refusing.
+///
+/// One limit, stated rather than implied. The compile error forces the
+/// *match* to be updated; the list beside it is still maintained by hand,
+/// so a variant given an index and then left out of the list would pass
+/// everything here. What that costs is bounded — a consumer's own test
+/// iterates the list — and it is the reason this is a guard rather than
+/// a proof.
 #[must_use]
-const fn shape_index(event: &WindowEvent) -> usize {
+pub const fn shape_index(event: &WindowEvent) -> usize {
     match event {
         WindowEvent::CloseRequested => 0,
         WindowEvent::Resized { .. } => 1,
