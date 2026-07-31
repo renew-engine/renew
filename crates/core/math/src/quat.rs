@@ -182,4 +182,17 @@ mod tests {
     fn a_non_unit_axis_is_a_contract_violation() {
         let _ = Quat::from_axis_angle(Vec3::splat(3.0), 1.0);
     }
+
+    /// The other half of this type's contract, and it was the untested
+    /// half: `normalize` documents a positive squared length and asserts
+    /// it, `Vec3` carries exactly this test for exactly this assertion,
+    /// and the quaternion did not. Weakening the comparison from `>` to
+    /// `>=` — which lets the zero quaternion through the check written to
+    /// reject it — passed the whole suite before this existed.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "positive squared length")]
+    fn normalizing_zero_is_a_contract_violation() {
+        let _ = Quat::new(0.0, 0.0, 0.0, 0.0).normalize();
+    }
 }
