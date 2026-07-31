@@ -1400,6 +1400,7 @@ name = "renew-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "renew-ecs",
  "renew-frame",
  "renew-jobs",
  "renew-math",
