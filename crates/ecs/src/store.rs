@@ -9,8 +9,8 @@
 //! two iterators rather than one. After any churn the dense array is in
 //! no useful order at all, so a query that walked it would visit entities
 //! in an order decided by their removal history — reproducible only if
-//! every prior operation was. The engine defines an order instead
-//! (ADR-0010), and [`Store::iter`] provides it by walking `sparse`.
+//! every prior operation was. The engine defines an order instead —
+//! ascending slot — and [`Store::iter`] provides it by walking `sparse`.
 
 /// Components of one type, addressed by entity slot.
 #[derive(Debug)]

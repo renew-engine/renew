@@ -9,6 +9,7 @@ allow-panic-in-tests = true
 
 disallowed-methods = [
     { path = "std::thread::spawn", reason = "workers come from renew_platform::thread::spawn_named — the only thread-spawn seam" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; workers come from renew_platform::thread::spawn_named — the only thread-spawn seam" },
     { path = "std::time::Instant::now", reason = "this crate never reads a clock; timing belongs to callers via renew-platform" },
     { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
     { path = "std::fs::read", reason = "this crate never touches the filesystem" },
