@@ -29,6 +29,10 @@ path = "src/main.rs"
 # manifest. Headless mode compiles the same window vocabulary and simply
 # opens no window.
 renew-frame = { path = "../../crates/frame" }
+# The input layer's first consumer. Movement mapping belongs to the
+# driver, not to the world: a binding table is a fact about the machine
+# someone is sitting at, and the simulation receives resolved intent.
+renew-input = { path = "../../crates/input" }
 renew-platform = { path = "../../crates/core/platform" }
 renew-trace = { path = "../../crates/trace" }
 

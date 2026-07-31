@@ -223,10 +223,13 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
           cargo build $sel
           cargo test $sel
-      # The input layer, likewise without dependents today.
+      # The input layer, and the sample that consumes it. The exclude
+      # list is upward-closed by necessity: removing a crate means
+      # removing everything that calls it, or the configuration does not
+      # build and proves nothing about removability.
       - name: Build and test without the input mapping
         run: |
-          sel="--workspace --exclude renew-input"
+          sel="--workspace --exclude renew-input --exclude renew-sample-input-echo"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-input $sel
           cargo build $sel
           cargo test $sel

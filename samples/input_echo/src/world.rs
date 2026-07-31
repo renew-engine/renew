@@ -2,34 +2,20 @@
 //!
 //! Events arrive whenever the OS feels like sending them; the world they
 //! land in advances only in fixed steps. That separation is the point of
-//! the sample — a key held for three ticks moves the same distance on
+//! the sample — an intent held for three ticks moves the same distance on
 //! every machine, whatever the frame rate was while it was held.
+//!
+//! **The world does not map keys to movement, and used to.** Which
+//! physical key means "left" is a fact about the machine someone is
+//! sitting at; the binding table that decides it lives in
+//! [`crate::Input`], on the driver side. What arrives here is
+//! [`Intent`] — already resolved, already `Copy`. The world still
+//! *counts* raw events, because echoing input is what this sample is
+//! for, but it no longer *interprets* them.
 
+use crate::input::Intent;
 use renew_frame::{StateHash, Step};
-use renew_platform::window::{KeyCode, WindowEvent};
-
-/// The eight movement keys, one bit each.
-///
-/// **Keys, not directions, and the distinction is a bug fix.** The mask
-/// used to hold four direction bits, so releasing either key bound to a
-/// direction cleared it: press Up, press W, release Up, and the sample
-/// stopped moving up while W was still down. A direction is held while
-/// *any* of its keys is, which is an OR over the keys — and that can only
-/// be expressed by tracking the keys.
-const K_ARROW_UP: u8 = 1 << 0;
-const K_W: u8 = 1 << 1;
-const K_ARROW_DOWN: u8 = 1 << 2;
-const K_S: u8 = 1 << 3;
-const K_ARROW_LEFT: u8 = 1 << 4;
-const K_A: u8 = 1 << 5;
-const K_ARROW_RIGHT: u8 = 1 << 6;
-const K_D: u8 = 1 << 7;
-
-/// A direction is held while any of its keys is.
-const UP: u8 = K_ARROW_UP | K_W;
-const DOWN: u8 = K_ARROW_DOWN | K_S;
-const LEFT: u8 = K_ARROW_LEFT | K_A;
-const RIGHT: u8 = K_ARROW_RIGHT | K_D;
+use renew_platform::event::{KeyCode, WindowEvent};
 
 /// How many speeds a seed can select.
 const SPEEDS: u64 = 4;
@@ -66,8 +52,6 @@ pub struct EchoWorld {
     /// Units per tick, selected by the seed.
     speed: i64,
     position: (i64, i64),
-    /// Which movement keys are physically down, one bit each.
-    held: u8,
     ticks: u64,
     events: u64,
     keys_pressed: u64,
@@ -97,7 +81,6 @@ impl EchoWorld {
             seed,
             speed: speed_for(seed),
             position: (0, 0),
-            held: 0,
             ticks: 0,
             events: 0,
             keys_pressed: 0,
@@ -158,53 +141,35 @@ impl EchoWorld {
         } else {
             self.keys_released = self.keys_released.saturating_add(1);
         }
-        let key = match code {
-            KeyCode::ArrowUp => K_ARROW_UP,
-            KeyCode::KeyW => K_W,
-            KeyCode::ArrowDown => K_ARROW_DOWN,
-            KeyCode::KeyS => K_S,
-            KeyCode::ArrowLeft => K_ARROW_LEFT,
-            KeyCode::KeyA => K_A,
-            KeyCode::ArrowRight => K_ARROW_RIGHT,
-            KeyCode::KeyD => K_D,
-            // Escape asks to quit, exactly as the window's own close
-            // button does; every other key is counted and ignored.
-            KeyCode::Escape => {
-                self.close_requested = pressed;
-                0
-            }
-            _ => 0,
-        };
-        if pressed {
-            self.held |= key;
-        } else {
-            self.held &= !key;
+        // Escape asks to quit, exactly as the window's own close button
+        // does. Every other key is counted above and otherwise ignored
+        // here — what a key *means* for movement is the driver's
+        // question now, answered by the binding table in `Input`.
+        if code == KeyCode::Escape {
+            self.close_requested = pressed;
         }
     }
 
     /// Advance one fixed step — the only way this world ever moves.
-    pub fn step(&mut self, step: Step) {
+    /// The intent is supplied by the caller rather than read from state
+    /// here: it is the driver that knows which keys are down, and the
+    /// world that knows how fast a seed moves.
+    pub fn step(&mut self, step: Step, intent: Intent) {
         self.ticks = self.ticks.saturating_add(1);
-        let horizontal = self.axis(RIGHT, LEFT);
-        let vertical = self.axis(DOWN, UP);
-        self.position.0 = self.position.0.saturating_add(horizontal);
-        self.position.1 = self.position.1.saturating_add(vertical);
+        self.position.0 = self
+            .position
+            .0
+            .saturating_add(intent.horizontal.saturating_mul(self.speed));
+        self.position.1 = self
+            .position
+            .1
+            .saturating_add(intent.vertical.saturating_mul(self.speed));
         self.trace = self
             .trace
             .absorb_u64(step.tick)
             .absorb_u64(step.sim_time.get())
             .absorb_bytes(&self.position.0.to_le_bytes())
             .absorb_bytes(&self.position.1.to_le_bytes());
-    }
-
-    /// One axis of movement: opposite directions held together cancel.
-    ///
-    /// Each argument is the set of keys meaning that direction, so a
-    /// direction counts as held while any one of them is down.
-    fn axis(&self, positive: u8, negative: u8) -> i64 {
-        let forward = i64::from(self.held & positive != 0);
-        let back = i64::from(self.held & negative != 0);
-        (forward - back).saturating_mul(self.speed)
     }
 
     /// Whether the run has been asked to stop — by the close button, or
@@ -291,20 +256,35 @@ impl EchoWorld {
 #[cfg(test)]
 mod tests {
     use super::EchoWorld;
+    use crate::input::Intent;
     use renew_frame::{Nanos, Step};
-    use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+    use renew_platform::event::{KeyCode, PointerButton, WindowEvent};
 
-    fn tick(world: &mut EchoWorld, ticks: u64) {
+    /// Steps with one fixed intent, which is what a driver does: no
+    /// event can arrive between two steps of the same frame.
+    fn tick(world: &mut EchoWorld, ticks: u64, intent: Intent) {
         let first = world.ticks();
         for offset in 0..ticks {
             let index = first + offset;
-            world.step(Step {
-                tick: index,
-                dt: Nanos::from_nanos(16_666_667),
-                sim_time: Nanos::from_nanos(index * 16_666_667),
-            });
+            world.step(
+                Step {
+                    tick: index,
+                    dt: Nanos::from_nanos(16_666_667),
+                    sim_time: Nanos::from_nanos(index * 16_666_667),
+                },
+                intent,
+            );
         }
     }
+
+    const STILL: Intent = Intent {
+        horizontal: 0,
+        vertical: 0,
+    };
+    const RIGHT: Intent = Intent {
+        horizontal: 1,
+        vertical: 0,
+    };
 
     fn press(code: KeyCode) -> WindowEvent {
         WindowEvent::Key {
@@ -325,7 +305,7 @@ mod tests {
     #[test]
     fn a_fresh_world_stands_still_however_long_it_runs() {
         let mut world = EchoWorld::new(0);
-        tick(&mut world, 100);
+        tick(&mut world, 100, STILL);
         assert_eq!(world.position(), (0, 0));
         assert_eq!(world.ticks(), 100);
         assert_eq!(world.events(), 0);
@@ -335,100 +315,77 @@ mod tests {
     /// function of ticks held, never of how many events arrived or how
     /// fast the frames came.
     #[test]
-    fn a_held_key_moves_one_speed_per_tick_and_stops_when_released() {
+    fn an_intent_moves_one_speed_per_tick_and_stops_when_it_clears() {
+        let mut world = EchoWorld::new(0);
+        tick(&mut world, 3, RIGHT);
+        assert_eq!(world.position(), (3, 0));
+        tick(&mut world, 5, STILL);
+        assert_eq!(world.position(), (3, 0), "a cleared intent moves nothing");
+    }
+
+    /// Counting and moving are separate concerns now, and this is the
+    /// test that says so: the same world is told about key events *and*
+    /// handed an intent, and neither reaches the other. A driver does
+    /// exactly this.
+    #[test]
+    fn events_are_counted_without_being_interpreted() {
         let mut world = EchoWorld::new(0);
         world.event(press(KeyCode::ArrowRight));
-        tick(&mut world, 3);
-        assert_eq!(world.position(), (3, 0));
         world.event(release(KeyCode::ArrowRight));
-        tick(&mut world, 5);
-        assert_eq!(world.position(), (3, 0), "a released key moves nothing");
-        assert_eq!(world.keys(), (1, 1, 0));
+        tick(&mut world, 4, STILL);
+        assert_eq!(world.keys(), (1, 1, 0), "both keys counted");
+        assert_eq!(
+            world.position(),
+            (0, 0),
+            "and neither moved anything: movement comes from the intent"
+        );
+
+        tick(&mut world, 2, RIGHT);
+        assert_eq!(
+            world.position(),
+            (2, 0),
+            "an intent moves with no key event at all"
+        );
+        assert_eq!(world.keys(), (1, 1, 0), "and counts nothing");
     }
 
     #[test]
     fn the_seed_selects_the_speed_and_nothing_else() {
         for seed in 0..8u64 {
             let mut world = EchoWorld::new(seed);
-            world.event(press(KeyCode::KeyD));
-            tick(&mut world, 1);
+            tick(&mut world, 1, RIGHT);
             let expected = 1 + i64::try_from(seed % 4).unwrap_or(0);
             assert_eq!(world.position(), (expected, 0), "seed {seed}");
         }
     }
 
+    /// Speed scales an intent rather than replacing it, on both axes and
+    /// in both directions.
     #[test]
-    fn opposite_keys_held_together_cancel() {
-        let mut world = EchoWorld::new(0);
-        world.event(press(KeyCode::KeyA));
-        world.event(press(KeyCode::KeyD));
-        world.event(press(KeyCode::ArrowUp));
-        world.event(press(KeyCode::ArrowDown));
-        tick(&mut world, 10);
-        assert_eq!(world.position(), (0, 0));
-        // Release one of each pair and the other one wins.
-        world.event(release(KeyCode::KeyA));
-        world.event(release(KeyCode::ArrowDown));
-        tick(&mut world, 2);
-        assert_eq!(world.position(), (2, -2));
-    }
-
-    /// Both keys for one direction, released one at a time. Releasing
-    /// either used to clear the direction outright, so the sample stopped
-    /// moving while a key meaning "up" was still physically down.
-    #[test]
-    fn releasing_one_of_two_keys_for_a_direction_keeps_it_held() {
-        let mut world = EchoWorld::new(0);
-        world.event(press(KeyCode::ArrowUp));
-        world.event(press(KeyCode::KeyW));
-        tick(&mut world, 1);
-        assert_eq!(
-            world.position(),
-            (0, -1),
-            "two keys for one direction is not two units"
+    fn a_negative_intent_moves_the_other_way_at_the_same_speed() {
+        let mut world = EchoWorld::new(3);
+        tick(
+            &mut world,
+            2,
+            Intent {
+                horizontal: -1,
+                vertical: 1,
+            },
         );
-
-        world.event(release(KeyCode::ArrowUp));
-        tick(&mut world, 1);
-        assert_eq!(world.position(), (0, -2), "W is still down");
-
-        world.event(release(KeyCode::KeyW));
-        tick(&mut world, 3);
-        assert_eq!(world.position(), (0, -2), "and now nothing is");
+        assert_eq!(world.position(), (-8, 8), "seed 3 selects speed 4");
     }
 
+    /// A repeat is the OS re-sending a key that is already held. The
+    /// world counts it and nothing else — what it means for movement is
+    /// the binding table's question, and it answers "nothing".
     #[test]
-    fn every_direction_key_has_a_letter_and_an_arrow() {
-        for (letter, arrow) in [
-            (KeyCode::KeyW, KeyCode::ArrowUp),
-            (KeyCode::KeyS, KeyCode::ArrowDown),
-            (KeyCode::KeyA, KeyCode::ArrowLeft),
-            (KeyCode::KeyD, KeyCode::ArrowRight),
-        ] {
-            let mut with_letter = EchoWorld::new(0);
-            with_letter.event(press(letter));
-            tick(&mut with_letter, 4);
-            let mut with_arrow = EchoWorld::new(0);
-            with_arrow.event(press(arrow));
-            tick(&mut with_arrow, 4);
-            assert_eq!(with_letter.position(), with_arrow.position(), "{letter:?}");
-            assert_ne!(with_letter.position(), (0, 0));
-        }
-    }
-
-    /// Acting on key repeats would make movement depend on the
-    /// keyboard's repeat rate, which is the frame-rate dependence a
-    /// fixed timestep exists to remove.
-    #[test]
-    fn key_repeats_are_counted_and_never_acted_on() {
+    fn key_repeats_are_counted_separately_from_presses() {
         let mut world = EchoWorld::new(0);
         world.event(WindowEvent::Key {
             code: KeyCode::ArrowRight,
             pressed: true,
             repeat: true,
         });
-        tick(&mut world, 4);
-        assert_eq!(world.position(), (0, 0));
         assert_eq!(world.keys(), (0, 0, 1));
     }
 
@@ -448,11 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unmapped_key_is_counted_and_moves_nothing() {
+    fn an_unmapped_key_is_counted() {
         let mut world = EchoWorld::new(0);
         world.event(press(KeyCode::Space));
-        tick(&mut world, 3);
-        assert_eq!(world.position(), (0, 0));
         assert_eq!(world.keys(), (1, 0, 0));
     }
 
@@ -489,9 +444,9 @@ mod tests {
         let run = || {
             let mut world = EchoWorld::new(2);
             world.event(press(KeyCode::ArrowRight));
-            tick(&mut world, 6);
+            tick(&mut world, 6, RIGHT);
             world.event(release(KeyCode::ArrowRight));
-            tick(&mut world, 6);
+            tick(&mut world, 6, STILL);
             world
         };
         assert_eq!(run(), run());
@@ -499,11 +454,10 @@ mod tests {
     }
 
     #[test]
-    fn holding_a_key_one_tick_longer_changes_the_digest() {
+    fn holding_an_intent_one_tick_longer_changes_the_digest() {
         let held = |ticks| {
             let mut world = EchoWorld::new(0);
-            world.event(press(KeyCode::ArrowRight));
-            tick(&mut world, ticks);
+            tick(&mut world, ticks, RIGHT);
             world.state_hash()
         };
         assert_ne!(held(6), held(7));

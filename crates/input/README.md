@@ -78,6 +78,14 @@ order does not change behaviour.
 chords, gamepads, runtime rebinding UI, serialised binding sets — is not,
 and none of it has a consumer asking yet.
 
+**It has a consumer now**, which is the more useful fact: the input-echo
+sample's drivers own the map and pass resolved intent into the
+simulation. That is what settled the shape — the first attempt tried to
+put the map *inside* the world and stopped at the compiler, because the
+world is `Copy` simulation state and this is heap-backed. The lesson
+generalises past this sample: a binding table belongs to the driver, and
+what crosses into a simulation is the decision, not the keyboard.
+
 ## Key decisions
 
 - **Edges on the tick, not the event.** The alternative is to report a

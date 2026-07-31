@@ -1509,6 +1509,7 @@ name = "renew-sample-input-echo"
 version = "0.1.0"
 dependencies = [
  "renew-frame",
+ "renew-input",
  "renew-platform",
  "renew-trace",
 ]

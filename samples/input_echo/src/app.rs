@@ -20,6 +20,7 @@ use renew_platform::window::{
 
 use crate::cli::{Options, Report};
 use crate::error::SampleError;
+use crate::input::Input;
 use crate::world::EchoWorld;
 
 /// Open a window and echo what arrives in it.
@@ -79,6 +80,9 @@ pub struct EchoApp {
     seed: u64,
     frames_wanted: u64,
     world: EchoWorld,
+    /// The binding table, on the driver side where it belongs — the
+    /// world is `Copy` simulation state and this is neither.
+    input: Input,
     stats: FrameStats,
     /// Anchored in `ready`: time spent bringing a window up is not time
     /// the simulation owes.
@@ -93,6 +97,7 @@ impl EchoApp {
             seed: options.seed,
             frames_wanted: options.frames,
             world: EchoWorld::new(options.seed),
+            input: Input::new(),
             stats: FrameStats::new(),
             frame: None,
         }
@@ -148,7 +153,17 @@ impl WindowApp for EchoApp {
 
     fn event(&mut self, event: WindowEvent) {
         println!("{}", describe(event));
+        // Both, and they want different things from it: the world counts
+        // the event because echoing input is what this sample is for,
+        // and the map interprets it because deciding what a key means is
+        // what the map is for.
         self.world.event(event);
+        self.input.handle(event);
+        // The OS stops delivering key-up while another window has focus,
+        // so a player who alt-tabs mid-move would come back still moving.
+        if event == WindowEvent::Focused(false) {
+            self.input.release_all();
+        }
     }
 
     fn update(&mut self, control: &mut LoopControl) {
@@ -171,9 +186,14 @@ impl EchoApp {
     fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
         if let Some(frame) = &mut self.frame {
             let plan = frame.begin_frame(now);
+            // Resolved once for the frame, not once per step: no event
+            // can arrive between two steps of the same frame, so asking
+            // again would be asking the same question.
+            let intent = self.input.intent();
             for step in plan.steps() {
-                self.world.step(step);
+                self.world.step(step, intent);
             }
+            self.input.advance();
             self.stats.absorb(&plan);
         }
         if self.done() {
@@ -187,6 +207,7 @@ mod tests {
     use super::{EchoApp, describe, verdict};
     use crate::cli::{Options, Report};
     use crate::error::SampleError;
+    use crate::input::Intent;
     use crate::world::EchoWorld;
     use renew_frame::{FrameLoop, FrameStats, Nanos, Step, StepBudget, Timestamp, Timestep};
     use renew_platform::window::{
@@ -215,6 +236,8 @@ mod tests {
     /// Derived from the timestep rather than written out, so changing the
     /// rate cannot silently turn this back into zero steps.
     const ONE_STEP: Timestamp = Timestamp::from_nanos(Timestep::HZ_60.nanos().get());
+    const TWO_STEPS: Timestamp = Timestamp::from_nanos(2 * Timestep::HZ_60.nanos().get());
+    const THREE_STEPS: Timestamp = Timestamp::from_nanos(3 * Timestep::HZ_60.nanos().get());
 
     #[test]
     fn an_update_plans_a_frame_whether_or_not_a_step_is_due() {
@@ -252,11 +275,16 @@ mod tests {
         let mut app = fresh(2);
         for tick in 0..2 {
             assert!(!app.done());
-            app.world.step(Step {
-                tick,
-                dt: Nanos::from_nanos(16_666_667),
-                sim_time: Nanos::from_nanos(tick * 16_666_667),
-            });
+            app.world.step(
+                Step {
+                    tick,
+                    dt: Nanos::from_nanos(16_666_667),
+                    sim_time: Nanos::from_nanos(tick * 16_666_667),
+                },
+                // Standing still: this test is about when the run ends,
+                // not about where anything moved.
+                Intent::default(),
+            );
         }
         assert!(app.done(), "two steps were asked for and two were run");
     }
@@ -276,6 +304,37 @@ mod tests {
         assert!(!app.done());
         app.event(WindowEvent::CloseRequested);
         assert!(app.done(), "the close request is latched in the world");
+    }
+
+    /// Losing focus drops every held key. The OS stops delivering
+    /// key-up while another window has focus, so without this a player
+    /// who alt-tabs mid-move comes back still moving — and the world
+    /// would keep integrating a key nobody is pressing.
+    #[test]
+    fn losing_focus_stops_the_movement_it_cannot_see_released() {
+        let mut app = fresh(1_000);
+        app.event(WindowEvent::Key {
+            code: KeyCode::ArrowRight,
+            pressed: true,
+            repeat: false,
+        });
+        app.update_at(ONE_STEP, &mut LoopControl::default());
+        let moved = app.report().world.position();
+        assert_ne!(moved, (0, 0), "the key moved it at least once");
+
+        app.event(WindowEvent::Focused(false));
+        app.update_at(TWO_STEPS, &mut LoopControl::default());
+        assert_eq!(
+            app.report().world.position(),
+            moved,
+            "focus loss released the key, so nothing moved after it"
+        );
+
+        // Regaining focus does not resurrect the key: the player has to
+        // press it again, which is what actually happens.
+        app.event(WindowEvent::Focused(true));
+        app.update_at(THREE_STEPS, &mut LoopControl::default());
+        assert_eq!(app.report().world.position(), moved);
     }
 
     #[test]

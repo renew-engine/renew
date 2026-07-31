@@ -95,6 +95,15 @@ recording reproduces the run that made it.
   machines.
 - **Events change what the next step does, never the state.** The world
   is advanced by `step` and by nothing else.
+- **The world counts input; it does not interpret it.** Which physical
+  key means "left" is decided by a binding table in the driver, and what
+  reaches the simulation is resolved intent — two axes, already OR-ed
+  across both keys for a direction and already cancelled where opposites
+  are held. The world still tallies raw events, because echoing input is
+  what this sample is for, but a binding table is a fact about the
+  machine someone is sitting at: it does not belong in simulation state,
+  it must not appear in a recording, and it should not have to be `Copy`
+  merely because the world is.
 - **The state hash is a fingerprint of behaviour, not of configuration.**
   The seed is deliberately not folded into it. A digest that absorbs an
   input cannot show that input had an effect — every seed would produce
