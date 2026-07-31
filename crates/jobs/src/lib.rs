@@ -830,26 +830,43 @@ mod tests {
     fn workers_carry_their_configured_names() {
         let mut pool =
             JobPool::new(&PoolConfig::new(1).thread_name_prefix("renew-jobs-test")).expect("pool");
-        // Deterministic participation: the caller parks inside its first
-        // chunk until the worker has observed (and recorded) its own
-        // name from inside a job — with two chunks and a gated caller,
-        // the worker must claim the other one. Caller and worker are
-        // told apart by thread id, so a MISnamed worker records a false
-        // and fails the assertion instead of being mistaken for the
-        // caller and hanging the gate.
+        // Participation is forced by the *chunk*, not by whichever thread
+        // runs it: whoever claims the first chunk parks inside it until the
+        // second has run, so no thread can hold both, and with two chunks
+        // and two participants each runs exactly one. Threads are still
+        // told apart by id, so a MISnamed worker records a false and fails
+        // the assertion rather than being mistaken for the caller.
+        //
+        // The gate used to key on thread id — the caller parked in "its"
+        // chunk — which quietly assumed the caller claimed a chunk at all.
+        // Nothing guarantees that, and which thread wins is a property of
+        // the machine: with the gate disabled the caller drains both chunks
+        // 400 runs out of 400 here, while the host that first reported the
+        // caller's branch unexecuted had the worker winning instead. A test
+        // whose two threads' roles depend on the hardware is not testing
+        // what it says.
         let caller = std::thread::current().id();
         let worker_named_ok = AtomicBool::new(false);
-        let worker_seen = AtomicBool::new(false);
-        pool.parallel_for(0..2, grain(1), |_| {
-            if std::thread::current().id() == caller {
-                // The caller's chunk: wait for the worker, bounded.
-                wait_for(&worker_seen);
-            } else {
+        let worker_ran = AtomicBool::new(false);
+        let second_chunk_done = AtomicBool::new(false);
+        pool.parallel_for(0..2, grain(1), |chunk| {
+            if std::thread::current().id() != caller {
                 let named_ok = std::thread::current().name() == Some("renew-jobs-test-0");
                 worker_named_ok.store(named_ok, Ordering::Release);
-                worker_seen.store(true, Ordering::Release);
+                worker_ran.store(true, Ordering::Release);
+            }
+            if chunk.start == 0 {
+                // Bounded, so a pool that never woke its worker fails
+                // here instead of hanging the suite.
+                wait_for(&second_chunk_done);
+            } else {
+                second_chunk_done.store(true, Ordering::Release);
             }
         });
+        assert!(
+            worker_ran.load(Ordering::Acquire),
+            "the worker must run one of the two chunks; the caller cannot hold both"
+        );
         assert!(
             worker_named_ok.load(Ordering::Acquire),
             "the worker must observe its configured name from inside a job"
