@@ -28,8 +28,13 @@ use renew_rhi::{
 
 use crate::cli::{Options, Report};
 use crate::error::{SampleError, device_error, pipeline_error, render_error, target_error};
+use crate::readout::{self, Readout};
 use crate::render::{Surface, clear_color};
 use crate::world::World;
+
+/// What the window is called before any measurement exists, and the text
+/// every frame-time reading is appended to.
+const TITLE: &str = "renew — hello triangle";
 
 /// How long a run may go without presenting anything before it is
 /// declared wedged.
@@ -51,7 +56,7 @@ const WEDGE_AFTER: Nanos = Nanos::from_nanos(5_000_000_000);
 pub fn run(options: &Options) -> Result<Report, SampleError> {
     let mut app = TriangleApp::new(options);
     let config = WindowConfig {
-        title: "renew — hello triangle".to_string(),
+        title: TITLE.to_string(),
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
@@ -79,8 +84,17 @@ pub struct TriangleApp {
     world: World,
     stats: FrameStats,
     timing: FrameTiming,
+    /// The on-screen half of the frame-time capture: the window title,
+    /// because the engine renders no text yet. Folds every frame's cost
+    /// in and answers with a new title four times a second.
+    readout: Readout,
     /// Anchored in `ready`, after bring-up.
     frame: Option<FrameLoop>,
+    /// A second handle on the same OS window, kept so the title can be
+    /// relabelled. The renderer owns the one it was given; this one
+    /// costs a reference count and keeps the window seam the only place
+    /// that knows what a window is.
+    window: Option<NativeWindow>,
     device: Option<Device>,
     surface: Option<Surface>,
     pipeline: Option<RenderPipeline>,
@@ -115,7 +129,9 @@ impl TriangleApp {
             world: World::new(options.seed),
             stats: FrameStats::new(),
             timing: FrameTiming::new(),
+            readout: Readout::new(TITLE, readout::INTERVAL),
             frame: None,
+            window: None,
             device: None,
             surface: None,
             pipeline: None,
@@ -296,7 +312,12 @@ impl WindowApp for TriangleApp {
     fn ready(&mut self, window: &WindowRef<'_>) {
         let (width, height) = window.physical_size();
         self.size = Extent { width, height };
-        let outcome = self.bring_up(window.native(), self.size);
+        // Two handles on one window: the renderer consumes one for its
+        // surface, and the readout keeps the other. Cloning is a
+        // reference count, and the window outlives both by construction.
+        let native = window.native();
+        self.window = Some(native.clone());
+        let outcome = self.bring_up(native, self.size);
         self.record(outcome);
         // Anchor AFTER bring-up: device creation costs on the order of
         // a hundred milliseconds, and banking it as frame one would open
@@ -329,10 +350,20 @@ impl WindowApp for TriangleApp {
             // The measured cost of one loop iteration. Nothing sleeps
             // here (the seam polls), so the interval between updates is
             // what the frame cost.
-            self.timing.record(
-                now.saturating_since(self.last_update),
-                self.drawn_since_update,
-            );
+            let cpu = now.saturating_since(self.last_update);
+            self.timing.record(cpu, self.drawn_since_update);
+            // The same number, on the window instead of in the summary
+            // — deliberately the same one, over the same population of
+            // frames (drawn and skipped alike), so the title and
+            // `--dump-stats` can never describe different things. The
+            // readout decides when a relabel is due from `now`, so the
+            // sample never reads a second clock for it, and the OS call
+            // happens four times a second rather than every frame.
+            if let Some(title) = self.readout.record(cpu, now)
+                && let Some(window) = &self.window
+            {
+                window.set_title(title);
+            }
             if self.drawn_since_update {
                 self.last_progress = now;
             }

@@ -92,6 +92,76 @@ fn a_different_run_is_a_different_line() {
     assert_ne!(base, seeded, "another seed must move the digest");
 }
 
+/// The state digest, the part of the line that is about the world
+/// rather than about the schedule.
+fn state_digest(line: &str) -> &str {
+    line.split("state_hash=")
+        .nth(1)
+        .map(|rest| rest.split_whitespace().next().unwrap_or_default())
+        .unwrap_or_default()
+}
+
+/// How many times each seed runs. Three catches a process-to-process
+/// difference on every push; a longer campaign can ask for more without
+/// touching this file.
+fn runs_per_seed() -> usize {
+    std::env::var("RENEW_DETERMINISM_RUNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|runs| *runs >= 2)
+        .unwrap_or(3)
+}
+
+/// The seed matrix: every seed reproduces itself across processes, and
+/// no two seeds move the world the same way.
+///
+/// Identity within a seed is the determinism claim. Distinctness across
+/// seeds is what proves the seed REACHES the simulation — a seed that is
+/// parsed, printed and then ignored satisfies identity perfectly.
+///
+/// That second half only means something because the digest does not
+/// absorb the seed (see `World::state_hash`). If it did, every seed
+/// would carry its own digest whether or not it changed anything.
+///
+/// Four seeds, out of the seven distinct strides this sample derives
+/// from a seed: enough that a collision would be a real finding, few
+/// enough that the matrix stays cheap on a lane where every run brings
+/// up a device.
+#[test]
+fn every_seed_reproduces_itself_and_no_two_seeds_move_the_world_alike() {
+    const SEEDS: [&str; 4] = ["0", "1", "2", "3"];
+    let runs = runs_per_seed();
+    let mut digests: Vec<(&str, String)> = Vec::with_capacity(SEEDS.len());
+
+    for seed in SEEDS {
+        let arguments = ["--headless", "--frames", "16", "--seed", seed];
+        let Some(first) = digest_line(&arguments) else {
+            return;
+        };
+        for attempt in 1..runs {
+            let Some(again) = digest_line(&arguments) else {
+                return;
+            };
+            assert_eq!(
+                again, first,
+                "seed {seed} did not reproduce on run {attempt}"
+            );
+        }
+        let digest = state_digest(&first);
+        assert!(!digest.is_empty(), "no state digest in {first}");
+        digests.push((seed, digest.to_string()));
+    }
+
+    for (index, (seed, digest)) in digests.iter().enumerate() {
+        for (other_seed, other_digest) in &digests[index + 1..] {
+            assert_ne!(
+                digest, other_digest,
+                "seeds {seed} and {other_seed} moved the world identically"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_stats_file_is_written_after_the_run_and_carries_both_halves() {
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hello_triangle-stats.json");

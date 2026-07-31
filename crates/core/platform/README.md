@@ -17,7 +17,9 @@ seam.
   keyboard/mouse input behind an engine-only vocabulary: the OS owns
   the loop, a `WindowApp` receives translated events and drives exit
   and redraws (`WindowApp` is the manifest's `window-app` extension
-  point), and no windowing-library type crosses the boundary.
+  point), and no windowing-library type crosses the boundary. The
+  window's title can be changed after creation, which is how a sample
+  puts a live number where a person can see it without a text renderer.
   Headless builds disable default features and compile the entire
   windowing stack out; headless environments at runtime get a
   recoverable `LoopUnavailable`. The loop runs on the main thread only

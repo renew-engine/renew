@@ -30,11 +30,13 @@
 //!   the state hash a cross-platform promise the engine does not make.
 //!   If the triangle ever spins, the angle is a tick count and the trig
 //!   happens in the shader — render, not simulation.
-//! - **Steady state is frames `[3, N)`** (§10). Everything that
-//!   allocates happens before frame zero: device, target, pipeline, and
-//!   the readback buffer. No file I/O, no logging, no formatting and no
-//!   serialization happens inside the loop — `--dump-stats` writes after
-//!   it exits.
+//! - **Steady state is frames `[3, N)`, and it allocates nothing.**
+//!   Everything that allocates happens before frame zero: device,
+//!   target, pipeline, and the readback buffer. No file I/O, no logging
+//!   and no serialization happens inside the loop — `--dump-stats`
+//!   writes after it exits — and the one thing on the frame path that
+//!   formats text, the window-title readout, formats into a buffer it
+//!   owns.
 //! - **An environment that cannot host the run is a skip, not a
 //!   failure.** No GPU runtime and no display server are ordinary
 //!   answers on ordinary machines; the binary says `SKIP:` and exits
@@ -46,6 +48,8 @@ use std::process::ExitCode;
 mod cli;
 mod error;
 mod offscreen;
+#[cfg(feature = "window")]
+mod readout;
 mod render;
 #[cfg(feature = "window")]
 mod windowed;
@@ -54,6 +58,8 @@ mod world;
 pub use cli::{DEFAULT_FRAMES, Options, Report, SAMPLE, USAGE, parse_args};
 pub use error::SampleError;
 pub use offscreen::{Draw, EXTENT, HeadlessRun, WARMUP_FRAMES};
+#[cfg(feature = "window")]
+pub use readout::Readout;
 pub use render::{Surface, clear_color};
 pub use world::World;
 

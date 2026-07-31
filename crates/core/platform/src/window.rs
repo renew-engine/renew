@@ -165,6 +165,30 @@ pub struct NativeWindow {
     window: std::sync::Arc<winit::window::Window>,
 }
 
+impl NativeWindow {
+    /// Relabel the window's title bar.
+    ///
+    /// The engine renders no text yet, so the title bar is the only
+    /// surface an application has for a running measurement — a real and
+    /// conventional one, visible in the task switcher as well as on the
+    /// window.
+    ///
+    /// MAIN THREAD ONLY, like everything else that touches a window.
+    ///
+    /// Ownership: `title` is borrowed for the duration of the call and
+    /// copied into whatever representation the OS keeps; nothing here
+    /// retains the string, and no allocation of the engine's survives
+    /// the call.
+    ///
+    /// Cost: one OS call, which on some platforms round-trips to a
+    /// window manager. Callers relabel on an interval, never once a
+    /// frame — a title that changes faster than it can be read is
+    /// unreadable anyway.
+    pub fn set_title(&self, title: &str) {
+        self.window.set_title(title);
+    }
+}
+
 impl raw_window_handle::HasDisplayHandle for NativeWindow {
     fn display_handle(
         &self,
