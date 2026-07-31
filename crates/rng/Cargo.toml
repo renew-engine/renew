@@ -1,0 +1,35 @@
+[package]
+name = "renew-rng"
+description = "Seeded, reproducible pseudo-random numbers for simulation: PCG32 with derived per-domain streams"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Seeded, reproducible pseudo-random numbers for simulation: PCG32 with per-domain streams derived from one master seed, and bounded draws with no modulo bias."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+# Deliberately empty, and load-bearing for the same reason as the frame
+# crate's. A generator with no dependency cannot be handed a clock, a
+# thread, or an entropy source by accident: "seeded, always" stops being a
+# promise and becomes a property of the build graph. It also makes the
+# crate byte-identical in every removability configuration.
+[dependencies]
+
+[dev-dependencies]
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[lints]
+workspace = true

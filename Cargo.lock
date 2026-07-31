@@ -1460,6 +1460,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-rng"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-memory",
+]
+
+[[package]]
 name = "renew-sample-hello-triangle"
 version = "0.1.0"
 dependencies = [
