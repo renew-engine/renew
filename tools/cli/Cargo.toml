@@ -15,6 +15,14 @@ core = false
 extension_points = []
 simulation = false
 
+[features]
+# Enabled by instrumented (sanitizer) test runs. Five integration tests
+# replace PATH with a single directory so the test decides what the
+# binary can and cannot spawn; under ASan on Windows that also removes
+# the sanitizer runtime DLL, and the child dies with
+# STATUS_DLL_NOT_FOUND before it can choose the exit code they assert on.
+sanitized = []
+
 [lints]
 workspace = true
 
