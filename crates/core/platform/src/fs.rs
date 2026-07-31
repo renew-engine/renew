@@ -120,18 +120,30 @@ pub fn read_to_string_bounded(path: &Path, limit: usize) -> Result<String, FsErr
     let file = std::fs::File::open(path).map_err(|error| classify(path, &error))?;
     // One byte past the limit is enough to tell "at the limit" from
     // "over it" without reading a byte more than that.
-    let mut text = String::new();
+    //
+    // Bytes first, decoding second, and the order is load-bearing.
+    // Decoding the truncated read would report a character the cut
+    // happened to split as invalid text — true about the bytes read, and
+    // misleading about the file, whose only fault is its size. Checking
+    // the length before anything is decoded makes size win, which is the
+    // right precedence: an oversized file is oversized whatever its
+    // contents turn out to be.
+    let mut bytes = Vec::new();
     let read = file
         .take(limit as u64 + 1)
-        .read_to_string(&mut text)
-        .map_err(|error| classify_text(path, &error))?;
+        .read_to_end(&mut bytes)
+        .map_err(|error| classify(path, &error))?;
     if read > limit {
         return Err(FsError::TooLarge {
             path: path.to_path_buf(),
             limit,
         });
     }
-    Ok(text)
+    // Takes the buffer rather than copying it, so this costs no more
+    // than reading into a `String` did.
+    String::from_utf8(bytes).map_err(|_| FsError::InvalidUtf8 {
+        path: path.to_path_buf(),
+    })
 }
 
 /// Write a whole file, replacing any existing content.
