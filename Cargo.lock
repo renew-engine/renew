@@ -1420,6 +1420,13 @@ name = "renew-diag"
 version = "0.1.0"
 
 [[package]]
+name = "renew-ecs"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "renew-frame"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,28 @@
+[package]
+name = "renew-ecs"
+description = "Entities and component storage: a sparse set with a defined iteration order, so a query's result never depends on churn history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Entity handles with generations, and sparse-set component storage whose iteration order is defined by slot rather than by insertion history."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+# Deliberately empty. Storage depends on nothing: it holds slots and
+# values, and everything about when or how it is driven belongs to a
+# caller. That also keeps it byte-identical in every removability
+# configuration, because there is no edge to remove.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true
