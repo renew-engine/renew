@@ -1491,6 +1491,7 @@ name = "renew-trace"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "renew-memory",
 ]
 
 [[package]]

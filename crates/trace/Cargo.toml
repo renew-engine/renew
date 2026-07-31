@@ -23,6 +23,10 @@ simulation = false
 [dependencies]
 
 [dev-dependencies]
+# Test-only, and only for the counting global allocator: one test asks
+# whether refusing a huge file holds any of it, and that question has no
+# answer without an allocator that can be read.
+renew-memory = { path = "../core/memory" }
 proptest = "1.11"
 
 [lints]

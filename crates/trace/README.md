@@ -196,15 +196,30 @@ property suite also hands the reader generated garbage and generated
 near-traces and requires an answer rather than a crash, with a fixed
 generator seed so the same inputs are explored on every machine.
 
-One caution is worth writing down, because it is the failure mode this
-kind of suite has. An earlier version of the generator drew header text
-from an alphabet with no `=` in it. Every test passed — and so did a
+One caution is worth writing down as a rule, not an anecdote, because it
+is the failure mode this kind of suite has:
+
+> **An input set that contains no counterexample proves nothing, however
+> much of the code it runs.** Coverage says every line executed. It does
+> not say any input could have told correct behaviour from incorrect.
+
+It has already been true here twice, in two different rules. The
+generator once drew header text from an alphabet with no `=` in it, and a
 reader deliberately broken to split a header field at its *last* `=`
-rather than its first, inverting the one rule the format states about
-that character. Full coverage did not help, and could not: coverage says
-every line ran, not that any input could tell right behaviour from wrong.
-Values are generated with `=` in them now, and the rule has a fixed
-hand-written case of its own.
+rather than its first — inverting the one thing the format states about
+that character — passed every test. Separately, every negative word in
+the refusal tests was a stranger to the vocabulary (`gamepad`, `thumb`,
+`meta`), so a reader that accepted any word merely *beginning* with a
+legal one passed too: `event 0 close` read as a close, and `renew-tracex`
+read as this format's own identity line.
+
+Both are fixed the same way — by choosing inputs a wrong implementation
+would get wrong. Values are generated with `=` in them, every keyword
+table is probed with a near miss in both directions as well as with a
+stranger, and the rules that a generator would have to be lucky to hit
+have fixed hand-written cases of their own. When adding a rule here, the
+question to ask is not "is this line covered" but "what would still be
+green if this rule did nothing".
 
 Measured with `cargo llvm-cov`, line, region and function coverage are all
 100% — which for a reader means every refusal edge is *taken* by a test,

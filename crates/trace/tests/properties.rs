@@ -161,13 +161,19 @@ proptest! {
     }
 
     /// The same, over text shaped like a trace: mutations of a real file
-    /// reach far deeper into the reader than random characters do.
+    /// reach far deeper into the reader than random characters do. The
+    /// caller-key tail varies too, since it is the half of the header
+    /// the codec does not interpret and therefore the half where a
+    /// parsing mistake has least to trip over.
     ///
-    /// The caller-key tail varies too, and with `=` in its alphabet. It
-    /// is the half of the header the codec does not interpret, which
-    /// makes it the half where a parsing mistake has nothing else to
-    /// trip over — and leaving it fixed at `sample=s …` was how a
-    /// deliberately broken split rule once passed the whole suite.
+    /// Note what this property can and cannot see. Its two arms are
+    /// "wrote something" and "named a line", so it catches a crash, a
+    /// hang, or a refusal with no line number — and it is blind to a
+    /// reader that merely *decides differently*, because a mutation
+    /// turning an accept into a refusal lands in the `Err` arm and
+    /// passes. The two round-trip properties above are what tell right
+    /// from wrong here; this one is a robustness check and should not be
+    /// credited with more.
     #[test]
     fn text_shaped_like_a_trace_gets_an_answer(
         version in "[0-9]{0,3}",

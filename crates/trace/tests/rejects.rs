@@ -6,6 +6,17 @@
 //! malformed file to one refusal and one line number. A single test that
 //! asserted "these twenty files are all rejected" would still pass if
 //! nineteen of them started being rejected for the twentieth's reason.
+//!
+//! **Negatives have to be near misses, not strangers.** A refusal test is
+//! only as sharp as the distance between the input it refuses and the
+//! input it must accept. `gamepad` and `thumb` and `meta` are strangers:
+//! they share nothing with a legal word, so refusing them says only that
+//! the reader has *some* notion of a vocabulary. They cannot tell an
+//! exact-match reader from one that accepts any word beginning with a
+//! legal one — and that reader accepts `event 0 close`, `err 0 close`
+//! and, worse, `renew-tracex` as the file's own identity line. So every
+//! table of words here is probed twice: with a stranger, and with a word
+//! one character away from a legal one, in both directions.
 
 use renew_trace::{TraceError, TraceErrorKind, parse};
 
@@ -68,6 +79,24 @@ fn a_first_line_that_is_not_a_header_is_refused() {
             found: "hello".to_string()
         }
     );
+}
+
+/// The file's own identity line, probed one character away. A reader
+/// that accepted anything *beginning* with the format's name would read
+/// `renew-tracex` as a trace of this format, which is the one question
+/// the first word of the first line exists to answer.
+#[test]
+fn a_word_that_merely_begins_with_the_format_name_is_not_a_header() {
+    for word in ["renew-tracex", "renew-trace2", "renew-trac"] {
+        let text = format!("{word} 0 sample=x ticks=1 timestep_ns=1 budget=1\n");
+        assert_eq!(
+            refuse(&text).kind(),
+            &TraceErrorKind::NotATrace {
+                found: word.to_string()
+            },
+            "{word} was read as a header"
+        );
+    }
 }
 
 #[test]
@@ -305,6 +334,37 @@ fn an_unknown_line_keyword_is_refused_rather_than_skipped() {
     );
 }
 
+/// The event keyword is one character long, which makes it the easiest
+/// word in the format to match loosely by accident: every one of these
+/// begins with `e`, and a reader comparing prefixes would read all three
+/// as ordinary event lines.
+#[test]
+fn a_line_keyword_that_merely_begins_with_the_event_keyword_is_unknown() {
+    for keyword in ["event", "err", "ee"] {
+        assert_eq!(
+            refuse_event(&format!("{keyword} 0 close")).kind(),
+            &TraceErrorKind::UnknownKeyword {
+                keyword: keyword.to_string()
+            },
+            "{keyword} was read as an event line"
+        );
+    }
+}
+
+/// The header's own keys, probed the same way: `ticksx` is not `ticks`,
+/// and a reader that thought otherwise would take its run length from a
+/// field the writer never wrote.
+#[test]
+fn a_header_key_that_merely_begins_with_a_known_one_is_out_of_order() {
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticksx=1 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::HeaderFieldOutOfOrder {
+            expected: "`ticks=<u64>`",
+            found: "ticksx=1".to_string(),
+        }
+    );
+}
+
 /// A blank line is not nothing; it is a line this reader cannot read.
 #[test]
 fn a_blank_line_between_events_is_refused() {
@@ -419,6 +479,23 @@ fn an_unknown_key_name_is_refused() {
         }
     );
     assert!(error.to_string().contains("arrow-right"), "{error}");
+}
+
+/// Key names, probed one character away in both directions: `spaceship`
+/// begins with `space` and `spac` is begun by it. A lookup comparing
+/// prefixes either way would answer `Space` to both, and a trace would
+/// replay a key nobody pressed.
+#[test]
+fn a_key_name_one_character_from_a_known_one_is_unknown() {
+    for name in ["spaceship", "spac", "arrow-rights", "arrow-righ"] {
+        assert_eq!(
+            refuse_event(&format!("e 0 key {name} down")).kind(),
+            &TraceErrorKind::UnknownKey {
+                name: name.to_string()
+            },
+            "{name} was read as a known key"
+        );
+    }
 }
 
 /// The same refusal serves keys and buttons, and says so: both are
@@ -639,6 +716,22 @@ fn an_unknown_pointer_button_is_refused() {
         }
     );
     assert!(error.to_string().contains("other:<index>"), "{error}");
+}
+
+/// Button names, probed the same way as key names — including
+/// `otherwise`, which begins with the native-index prefix without being
+/// it.
+#[test]
+fn a_button_name_one_character_from_a_known_one_is_unknown() {
+    for name in ["leftmost", "lef", "middles", "otherwise"] {
+        assert_eq!(
+            refuse_event(&format!("e 0 button {name} down")).kind(),
+            &TraceErrorKind::UnknownButton {
+                name: name.to_string()
+            },
+            "{name} was read as a known button"
+        );
+    }
 }
 
 #[test]

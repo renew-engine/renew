@@ -133,7 +133,14 @@ impl fmt::Display for TraceErrorKind {
     // would need either a second match to route between them or a
     // catch-all arm in each, and a catch-all is exactly the thing whose
     // absence is doing the work here.
-    #[allow(clippy::too_many_lines)]
+    //
+    // `expect` rather than `allow`: if this table ever shrinks back
+    // under the limit, the compiler says so and the exemption goes,
+    // instead of sitting here outliving its reason.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table of messages, kept in one exhaustive match on purpose"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
@@ -512,6 +519,94 @@ mod tests {
                 text: hostile.to_string()
             }
         );
+    }
+
+    /// Every refusal that quotes the file, checked one by one.
+    ///
+    /// Two of these were pinned before and fifteen were not, which meant
+    /// fifteen sites where the escaping could be dropped and nothing
+    /// would notice. The table is counted for the same reason the
+    /// message tables above are: a new refusal that carries text from
+    /// the file has to be added here, or the count says so.
+    #[test]
+    fn every_refusal_that_quotes_the_file_escapes_what_it_quotes() {
+        let hostile = "\u{1b}[2Kgone\u{7}";
+        let quoting: Vec<TraceErrorKind> = vec![
+            TraceErrorKind::NotATrace {
+                found: hostile.to_string(),
+            },
+            TraceErrorKind::HeaderFieldOutOfOrder {
+                expected: "`ticks=<u64>`",
+                found: hostile.to_string(),
+            },
+            TraceErrorKind::NotAKeyValuePair {
+                field: hostile.to_string(),
+            },
+            TraceErrorKind::DuplicateHeaderKey {
+                key: hostile.to_string(),
+            },
+            TraceErrorKind::UnwritableText {
+                text: hostile.to_string(),
+                reason: "a control character is invisible in a diff and in a log",
+            },
+            TraceErrorKind::UnknownKeyword {
+                keyword: hostile.to_string(),
+            },
+            TraceErrorKind::UnknownEventKind {
+                kind: hostile.to_string(),
+            },
+            TraceErrorKind::TrailingText {
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::NotADecimalInteger {
+                field: "the tick",
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::IntegerTooLarge {
+                field: "the tick",
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::NotAHexPattern {
+                field: "the scale factor",
+                text: hostile.to_string(),
+                digits: 16,
+            },
+            TraceErrorKind::NonFinite {
+                field: "the scale factor",
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::UnknownKey {
+                name: hostile.to_string(),
+            },
+            TraceErrorKind::UnknownButton {
+                name: hostile.to_string(),
+            },
+            TraceErrorKind::NotAPressedState {
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::NotAFocusState {
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::NotTheRepeatFlag {
+                text: hostile.to_string(),
+            },
+        ];
+        assert_eq!(
+            quoting.len(),
+            17,
+            "every refusal that quotes the file belongs in this table"
+        );
+        for kind in quoting {
+            let printed = kind.to_string();
+            assert!(
+                !printed.contains('\u{1b}') && !printed.contains('\u{7}'),
+                "raw control characters reached the message: {printed:?}"
+            );
+            assert!(
+                printed.contains("\\u{1b}[2Kgone\\u{7}"),
+                "the quoted text is missing or unescaped: {printed:?}"
+            );
+        }
     }
 
     /// And a field long enough to bury the message is cut short with a
