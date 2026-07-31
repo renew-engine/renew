@@ -105,6 +105,67 @@ pub enum PointerButton {
     Other(u16),
 }
 
+/// One value of every shape [`WindowEvent`] can take.
+///
+/// The event vocabulary is `#[non_exhaustive]`, which binds every crate
+/// except this one: downstream matches must carry a wildcard arm, so the
+/// compiler will never tell a consumer that a new variant is unhandled.
+/// A consumer that translates events — into a file format, a script
+/// binding, a replay log — would therefore start silently dropping the
+/// new one, and nothing would fail until someone noticed the output was
+/// wrong.
+///
+/// This list, and the exhaustive match beside it, move that failure to
+/// where the compiler can still speak: adding a variant breaks the build
+/// **here**, in the crate that owns the enum, at the moment it is added.
+/// A consumer then iterates this slice and asserts it handles every
+/// entry, which turns "did we remember?" into a test rather than a habit.
+///
+/// The values are arbitrary. Only the shapes matter.
+pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[
+    WindowEvent::CloseRequested,
+    WindowEvent::Resized {
+        width: 640,
+        height: 360,
+    },
+    WindowEvent::ScaleFactorChanged { scale: 2.0 },
+    WindowEvent::RedrawRequested,
+    WindowEvent::Key {
+        code: KeyCode::KeyW,
+        pressed: true,
+        repeat: false,
+    },
+    WindowEvent::PointerMoved { x: 12.5, y: 34.5 },
+    WindowEvent::PointerButton {
+        button: PointerButton::Left,
+        pressed: true,
+    },
+    WindowEvent::Wheel { dx: 0.0, dy: 1.0 },
+    WindowEvent::Focused(true),
+];
+
+/// Where a shape sits in [`EVERY_EVENT_SHAPE`].
+///
+/// This is the forcing function. The match is exhaustive and carries no
+/// wildcard, so a new variant fails to compile until it is given an
+/// index — and the test below fails until it is also added to the list.
+/// Both halves are needed: a match alone would let the list rot, and a
+/// list alone would never notice the variant existed.
+#[must_use]
+const fn shape_index(event: &WindowEvent) -> usize {
+    match event {
+        WindowEvent::CloseRequested => 0,
+        WindowEvent::Resized { .. } => 1,
+        WindowEvent::ScaleFactorChanged { .. } => 2,
+        WindowEvent::RedrawRequested => 3,
+        WindowEvent::Key { .. } => 4,
+        WindowEvent::PointerMoved { .. } => 5,
+        WindowEvent::PointerButton { .. } => 6,
+        WindowEvent::Wheel { .. } => 7,
+        WindowEvent::Focused(_) => 8,
+    }
+}
+
 /// What the app tells the loop each iteration.
 #[derive(Debug, Default)]
 pub struct LoopControl {
@@ -509,6 +570,31 @@ mod tests {
     use super::*;
     use winit::event::{MouseButton, MouseScrollDelta};
     use winit::keyboard::{KeyCode as Wk, PhysicalKey};
+
+    /// The list and the exhaustive match must agree, in both directions.
+    ///
+    /// Adding a variant already breaks the build at `shape_index`, which
+    /// is what makes the match a forcing function. This closes the other
+    /// half: without it, someone could give the new variant an index and
+    /// never add it to the list, and every consumer iterating the list
+    /// would keep silently missing it — the exact failure the list
+    /// exists to prevent, reintroduced one step further along.
+    #[test]
+    fn every_shape_is_listed_exactly_once_and_in_index_order() {
+        for (position, event) in EVERY_EVENT_SHAPE.iter().enumerate() {
+            // No extra argument in the message: `assert_eq!` already
+            // prints both sides, and an expression evaluated only on
+            // failure is a region no passing run can cover.
+            assert_eq!(shape_index(event), position, "misplaced: {event:?}");
+        }
+        // Every index below the length is covered, so no gap can hide a
+        // variant that was indexed and then left out of the list.
+        let mut seen = vec![false; EVERY_EVENT_SHAPE.len()];
+        for event in EVERY_EVENT_SHAPE {
+            seen[shape_index(event)] = true;
+        }
+        assert!(seen.iter().all(|covered| *covered), "{seen:?}");
+    }
 
     #[test]
     fn config_defaults_are_sane() {
