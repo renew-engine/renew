@@ -54,6 +54,10 @@
 //! # Ok::<(), Box<dyn core::error::Error>>(())
 //! ```
 
+// A container format writes bytes for a caller and returns refusals as
+// values; anything it printed would reach a stream it does not own.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 mod error;
 mod hash;
 mod layout;
