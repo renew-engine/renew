@@ -145,9 +145,12 @@ impl Entities {
         if let Some(generation) = self.generations.get_mut(slot) {
             // Wrapping is the honest choice: at four billion reuses of one
             // slot a handle from the first pass could alias, and there is
-            // no cheaper fix that does not leak slots forever. Recorded
-            // rather than hidden behind a saturating counter that would
-            // silently stop detecting staleness at the same point.
+            // no cheaper fix that does not leak slots forever. A
+            // saturating counter would stop detecting staleness at the
+            // same point while looking safe, which is worse. The bound is
+            // stated in the crate README beside the property it limits;
+            // it cannot be tested, because reaching it needs 2^32
+            // despawns of one slot.
             *generation = generation.wrapping_add(1);
         }
         self.free.push(entity.index());
