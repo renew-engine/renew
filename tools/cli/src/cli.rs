@@ -465,6 +465,10 @@ pub fn usage() -> String {
         "  --smoke           (bench only) run each benchmark once, without statistics\n",
         "  --output <path>   (record only, required) the trace file to write\n",
         "  --input <path>    (replay only, required) the trace file to read\n",
+        "  --pack <path>     (asset-pack, asset-inspect; required) the pack file\n",
+        "  --from <dir>      (asset-pack only, required) the directory to pack\n",
+        "  --verify          (asset-inspect only) check each entry against its digest\n",
+        "  --help, -h        print this text; `renew help` does the same\n",
         "\nEverything after `run <sample>` goes to the sample untouched, including\n",
         "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
         "`--json`, while `renew --json run hello_triangle` gives it to renew. One `--`\n",
@@ -997,8 +1001,17 @@ mod tests {
         }
     }
 
+    /// The command half is derived from `Command::ALL`, so it cannot rot.
+    ///
+    /// **The option half used to be three hardcoded strings under a name
+    /// promising every option**, and five flags went undocumented while
+    /// this passed. The flags are now checked against the parser's own
+    /// match arms by `the_usage_text_documents_every_flag_the_parser_
+    /// accepts` in `tests/workspace_lists.rs`; the three kept here are a
+    /// cheap smoke test in the same file as the text, not the guarantee.
+    /// The name says what is actually checked.
     #[test]
-    fn usage_lists_every_command_and_every_option() {
+    fn usage_lists_every_command_and_explains_the_pass_through() {
         let text = usage();
         for command in Command::ALL {
             let name = command.name();

@@ -592,3 +592,68 @@ fn every_engine_crate_denies_printing_at_its_root() {
          cannot supply because the CLI and the samples print by design: {faults:?}"
     );
 }
+
+/// Every flag the parser accepts appears in the usage text.
+///
+/// **There was already a test called `usage_lists_every_command_and_every
+/// _option`, and five flags were undocumented anyway.** It derived the
+/// command half from `Command::ALL`, so that half could not rot — and
+/// hardcoded the option half as three strings. The name made a claim
+/// about twelve flags while the body checked a quarter of them, which is
+/// the failure mode this file exists for: a test that keeps passing while
+/// measuring less than it says.
+///
+/// `--pack`, `--from` and `--verify` were the casualties, all three
+/// belonging to the two most recently added subcommands, and `--pack` is
+/// *required* by both — so the tool told a user it needed a flag that its
+/// own help never mentioned.
+///
+/// Derived from the parser's own match arms rather than a list kept
+/// beside them. A source scan is cruder than a shared constant, but it
+/// cannot be updated in one place and forgotten in the other, which is
+/// exactly what happened.
+#[test]
+fn the_usage_text_documents_every_flag_the_parser_accepts() {
+    let root = workspace_root();
+    let source = std::fs::read_to_string(root.join("tools/cli/src/cli.rs"))
+        .expect("the parser source is readable");
+    // Only the parser, never its test module: test fixtures name sample
+    // flags like `--frames` that renew passes through and does not own.
+    let parser = source
+        .split_once(
+            "
+mod tests",
+        )
+        .map_or(source.as_str(), |(before, _)| before);
+
+    let mut flags: Vec<String> = Vec::new();
+    let mut rest = parser;
+    while let Some(at) = rest.find("\"--") {
+        rest = &rest[at + 1..];
+        if let Some(end) = rest.find('"') {
+            let flag = &rest[..end];
+            if flag.len() > 2
+                && flag[2..]
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '-')
+                && !flags.iter().any(|seen| seen == flag)
+            {
+                flags.push(flag.to_string());
+            }
+        }
+    }
+    assert!(
+        flags.len() >= 8,
+        "the scan found only {flags:?}, which means it stopped matching the source"
+    );
+
+    let text = renew_cli::cli::usage();
+    let missing: Vec<&String> = flags
+        .iter()
+        .filter(|f| !text.contains(f.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the parser accepts {missing:?} and the usage text never mentions them;          a flag a user cannot discover may as well not exist"
+    );
+}
