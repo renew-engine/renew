@@ -66,14 +66,21 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
         ],
         // Subcommands whose child cannot be a fixed table entry: check
         // spawns `cargo metadata` itself, coverage reads the export it is
-        // handed, doctor's probes are gathered separately, and `run`'s
-        // child is built by `sample_step` out of the command line.
-        Command::Check | Command::Coverage | Command::Doctor | Command::Run => &[],
+        // handed, doctor's probes are gathered separately, and run,
+        // record and replay have their child built by `sample_step` out
+        // of the command line.
+        Command::Check
+        | Command::Coverage
+        | Command::Doctor
+        | Command::Run
+        | Command::Record
+        | Command::Replay => &[],
     }
 }
 
-/// The cargo arguments `run` spawns for one sample: build and start that
-/// binary, then hand it the rest of the command line.
+/// The cargo arguments `run`, `record` and `replay` spawn for one
+/// sample: build and start that binary, then hand it the rest of the
+/// command line.
 ///
 /// Owned rather than a table entry, because which sample runs and what it
 /// is told are not knowable until the command line is read — that is the
@@ -82,8 +89,19 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
 ///
 /// The trailing `--` is always present, so a sample argument that looks
 /// like a cargo flag reaches the sample instead of cargo.
+///
+/// `lead` is the flag a subcommand translates to — `--record-trace` or
+/// `--replay-trace` and its path — and goes at the **front** of the
+/// sample's line, ahead of anything the caller wrote. Front rather than
+/// back because the caller's half is verbatim and may end in a flag
+/// still waiting for its value, which would otherwise swallow this one.
 #[must_use]
-pub fn sample_step(package: &str, binary: &str, sample_args: &[String]) -> Vec<String> {
+pub fn sample_step(
+    package: &str,
+    binary: &str,
+    lead: Option<(&str, &str)>,
+    sample_args: &[String],
+) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
         "--package".to_string(),
@@ -92,6 +110,10 @@ pub fn sample_step(package: &str, binary: &str, sample_args: &[String]) -> Vec<S
         binary.to_string(),
         "--".to_string(),
     ];
+    if let Some((flag, value)) = lead {
+        args.push(flag.to_string());
+        args.push(value.to_string());
+    }
     args.extend(sample_args.iter().cloned());
     args
 }
@@ -158,6 +180,8 @@ mod tests {
         assert!(steps(Command::Check, false).is_empty());
         assert!(steps(Command::Coverage, false).is_empty());
         assert!(steps(Command::Run, false).is_empty());
+        assert!(steps(Command::Record, false).is_empty());
+        assert!(steps(Command::Replay, false).is_empty());
     }
 
     #[test]
@@ -165,6 +189,7 @@ mod tests {
         let args = sample_step(
             "renew-sample-hello-triangle",
             "hello_triangle",
+            None,
             &["--headless".to_string(), "--frames".to_string()],
         );
         assert_eq!(
@@ -186,7 +211,7 @@ mod tests {
     fn a_sample_step_with_nothing_to_hand_over_still_ends_in_the_separator() {
         // Uniform shape: the separator is not conditional, so nothing
         // downstream has to know whether the sample was given arguments.
-        let args = sample_step("renew-sample-input-echo", "input_echo", &[]);
+        let args = sample_step("renew-sample-input-echo", "input_echo", None, &[]);
         assert_eq!(
             args,
             [
@@ -196,6 +221,35 @@ mod tests {
                 "--bin",
                 "input_echo",
                 "--",
+            ]
+        );
+    }
+
+    /// The translated flag leads the sample's line, ahead of everything
+    /// the caller wrote. Ordering is the point: the caller's half is
+    /// verbatim and may end in a flag still waiting for a value, which
+    /// would swallow this one if it came last.
+    #[test]
+    fn a_trace_flag_leads_the_samples_line_ahead_of_the_callers_own() {
+        let args = sample_step(
+            "renew-sample-input-echo",
+            "input_echo",
+            Some(("--replay-trace", "walk.trace")),
+            &["--headless".to_string(), "--seed".to_string()],
+        );
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--package",
+                "renew-sample-input-echo",
+                "--bin",
+                "input_echo",
+                "--",
+                "--replay-trace",
+                "walk.trace",
+                "--headless",
+                "--seed",
             ]
         );
     }

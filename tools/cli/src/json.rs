@@ -141,8 +141,9 @@ pub fn result_envelope(
     duration_ms: i64,
     stdout: &str,
     stderr: &str,
+    extra: Vec<(String, Value)>,
 ) -> Value {
-    Value::Object(vec![
+    let mut fields = vec![
         ("schema_version".to_string(), Value::Number(1)),
         ("command".to_string(), Value::String(command.to_string())),
         ("status".to_string(), Value::String(status.to_string())),
@@ -150,7 +151,14 @@ pub fn result_envelope(
         ("duration_ms".to_string(), Value::Number(duration_ms)),
         ("stdout".to_string(), Value::String(stdout.to_string())),
         ("stderr".to_string(), Value::String(stderr.to_string())),
-    ])
+    ];
+    // Appended, never interleaved, so a reader finds the shared keys in
+    // the same place whatever ran. Taken as a parameter rather than
+    // patched into the returned value by the caller, because that needs
+    // a match on `Value::Object` whose other arm can only silently drop
+    // the fields it was asked to add.
+    fields.extend(extra);
+    Value::Object(fields)
 }
 
 /// Why parsing failed.
@@ -503,7 +511,7 @@ mod tests {
 
     #[test]
     fn parse_round_trips_what_the_emitter_writes() {
-        let original = result_envelope("check", "ok", 0, 7, "a\"b\\c\nd", "çağdaş ✔");
+        let original = result_envelope("check", "ok", 0, 7, "a\"b\\c\nd", "çağdaş ✔", Vec::new());
         let parsed = parse(&original.render()).expect("emitter output parses");
         assert_eq!(parsed, original);
     }
@@ -654,7 +662,7 @@ mod tests {
 
     #[test]
     fn envelope_leads_with_schema_version_one() {
-        let document = result_envelope("test", "ok", 0, 42, "out", "err").render();
+        let document = result_envelope("test", "ok", 0, 42, "out", "err", Vec::new()).render();
         assert!(
             document.starts_with("{\"schema_version\":1,\"command\":\"test\""),
             "unexpected prefix: {document}"
