@@ -5,11 +5,19 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 #
-# Provenance, so nobody reads this as a released defect: the case below
-# was found while deliberately mutating `any_down_for` to consider only
-# the FIRST binding of an action instead of all of them. It has never
-# failed against unmutated code. It is kept because it is the minimal
-# input that distinguishes the two -- six keys all bound to one action,
-# with a press on a key that is not the first. Anything less cannot tell
-# an OR from a lookup of the first match.
+# Provenance, so nobody reads these as released defects. Neither has ever
+# failed against unmutated code; both were found by deliberately breaking
+# the crate to check that a property could fail at all.
+#
+# 1. `table = [0,...], script = [(1, true)]` -- found by making
+#    `any_down_for` consider only the FIRST binding of an action instead
+#    of all of them. It is the minimal input that tells an OR from a
+#    lookup of the first match: six keys on one action, pressing a key
+#    that is not the first.
+# 2. `... order = [...], swaps = [...]` -- found by making `bind` append
+#    instead of inserting in sorted position, so the binary search over
+#    the binding table went wrong in a way that depended on registration
+#    order. It is the case that distinguishes "order does not matter"
+#    from "the table happened to be built in a helpful order".
 cc 158dca2c03bfabcff073fb5f7a261dca695ec2f15d46050fd1fadef0d361b0d8 # shrinks to table = [0, 0, 0, 0, 0, 0], script = [(1, true)]
+cc 5a82d16fac466b38f576b013da395d737a1ca93f133c17e4e475c374a0b6698a # shrinks to table = [0, 0, 0, 0, 0, 0], script = [(2, true)], order = [0, 1, 2, 3, 4, 5], swaps = [(4, 1)]

@@ -88,21 +88,36 @@ proptest! {
 
     /// The claim the sorted binding table exists to make: which order the
     /// bindings were registered in never reaches the resulting state.
+    ///
+    /// **An arbitrary permutation, not a rotation.** The first version
+    /// rotated the registration order, which is six orderings out of 720
+    /// and leaves every key's neighbours intact — so it could not
+    /// distinguish "order does not matter" from "only adjacency matters".
+    /// The name said *never*; the body checked a sixth of a percent of
+    /// the space.
     #[test]
-    fn binding_order_never_reaches_state(table in table(), script in script(), rotate in 0usize..6) {
+    fn binding_order_never_reaches_state(
+        table in table(),
+        script in script(),
+        order in proptest::sample::subsequence((0..KEYS.len()).collect::<Vec<_>>(), KEYS.len()),
+        swaps in proptest::collection::vec((0usize..6, 0usize..6), 0..12),
+    ) {
+        let mut permuted: Vec<usize> = order;
+        for (a, b) in swaps {
+            permuted.swap(a, b);
+        }
+
         let mut forward = build(&table);
-        // The same table, registered starting from a different key.
-        let mut rotated = InputMap::new();
-        for offset in 0..KEYS.len() {
-            let index = (offset + rotate) % KEYS.len();
-            rotated.bind(Binding::key(KEYS[index]), ACTIONS[table[index]]);
+        let mut shuffled = InputMap::new();
+        for index in &permuted {
+            shuffled.bind(Binding::key(KEYS[*index]), ACTIONS[table[*index]]);
         }
 
         for (index, pressed) in &script {
             forward.handle(key_event(*index, *pressed));
-            rotated.handle(key_event(*index, *pressed));
+            shuffled.handle(key_event(*index, *pressed));
         }
-        prop_assert_eq!(states(&forward), states(&rotated));
+        prop_assert_eq!(states(&forward), states(&shuffled), "order {:?}", permuted);
     }
 
     /// An action is held exactly when at least one key bound to it is
