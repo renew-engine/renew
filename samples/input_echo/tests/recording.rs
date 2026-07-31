@@ -99,3 +99,82 @@ fn an_event_past_the_final_tick_is_refused_at_recording_time() {
         .expect_err("must refuse");
     assert!(refused.to_string().contains("trace"), "{refused}");
 }
+
+/// Recording a scripted run produces a file that says what the run did.
+///
+/// The expected text is written out here in full rather than compared to
+/// something the recorder produced, so this fails if the recorder, the
+/// codec, or the driver's idea of which tick an event belongs to changes
+/// — which is the point. It also pins the whole vocabulary in one place:
+/// every event shape the sample can deliver appears below.
+#[test]
+fn a_scripted_run_records_the_input_it_was_given() {
+    let path = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("walk-recording.trace");
+    let _ = std::fs::remove_file(&path);
+
+    let code = renew_sample_input_echo::run_cli(
+        [
+            "--headless",
+            "--input-trace",
+            "walk",
+            "--seed",
+            "3",
+            "--record-trace",
+            &path.to_string_lossy(),
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    assert_eq!(code, 0, "the run should succeed");
+
+    let recorded = std::fs::read_to_string(&path).expect("the trace the run was asked for");
+    let expected = concat!(
+        "renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=3\n",
+        "e 1 key arrow-right down\n",
+        "e 1 pointer 0x4029000000000000 0x4041400000000000\n",
+        "e 3 key arrow-down down\n",
+        "e 5 button left down\n",
+        "e 5 button left up\n",
+        "e 7 key arrow-down up\n",
+        "e 8 wheel 0x00000000 0x41800000\n",
+        "e 9 focus in\n",
+        "e 10 resize 640 360\n",
+        "e 11 redraw\n",
+        "e 12 key arrow-right down repeat\n",
+        "e 13 key arrow-right up\n",
+        "e 15 scale 0x4000000000000000\n",
+        "e 19 close\n",
+    );
+    assert_eq!(recorded, expected);
+}
+
+/// What the recorder writes, its own reader accepts — and reproduces.
+///
+/// A recorder that emitted something its reader refused would be the
+/// defect the format's tick rules exist to prevent, and the only way to
+/// know is to read the file back.
+#[test]
+fn the_recorded_file_reads_back_and_rewrites_identically() {
+    let path = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("walk-roundtrip.trace");
+    let _ = std::fs::remove_file(&path);
+    let code = renew_sample_input_echo::run_cli(
+        [
+            "--headless",
+            "--input-trace",
+            "walk",
+            "--record-trace",
+            &path.to_string_lossy(),
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    assert_eq!(code, 0);
+
+    let text = std::fs::read_to_string(&path).expect("the recorded trace");
+    let parsed =
+        renew_trace::parse(&text).expect("the recorder must not write what it cannot read");
+    assert_eq!(renew_trace::write(&parsed), text);
+    // The trailing bucket is the common case, not an edge case: the walk
+    // trace ends by asking to close, and that arrives after the last step.
+    assert_eq!(parsed.header().ticks(), 20);
+}

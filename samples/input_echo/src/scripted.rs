@@ -6,9 +6,11 @@
 //! in CI.
 
 use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
+use renew_trace::TraceHeader;
 
 use crate::cli::{Options, Report};
 use crate::error::SampleError;
+use crate::record::Recorder;
 use crate::trace::{self, Trace};
 use crate::world::EchoWorld;
 
@@ -25,8 +27,33 @@ const FRAME_INTERVAL_NS: u64 = Timestep::HZ_60.nanos().get();
 /// [`SampleError::Usage`] when no trace goes by that name.
 pub fn run(options: &Options) -> Result<Report, SampleError> {
     let trace = trace::by_name(&options.trace)?;
-    Ok(replay(trace, options.seed, options.frames))
+    let Some(path) = &options.record_trace else {
+        return Ok(replay(trace, options.seed, options.frames));
+    };
+
+    let mut recorder = Recorder::default();
+    let report = replay_recording(trace, options.seed, options.frames, Some(&mut recorder));
+    // The header is written after the run, not before it, because two of
+    // its fields are facts about what happened: how many ticks the run
+    // actually reached, which the trace's own close request decides.
+    let header = TraceHeader::new(
+        SAMPLE_NAME,
+        report.world.ticks(),
+        FRAME_INTERVAL_NS,
+        StepBudget::DEFAULT.get().get(),
+    )
+    .and_then(|header| header.with_key("seed", &options.seed.to_string()))
+    .map_err(|error| SampleError::failed("describing the recording", &error))?;
+    let written = recorder
+        .finish(header)
+        .map_err(|error| SampleError::failed("closing the recording", &error))?;
+    renew_platform::fs::write(path, renew_trace::write(&written).as_bytes())
+        .map_err(|error| SampleError::failed("writing the trace file", &error))?;
+    Ok(report)
 }
+
+/// The name a recording carries so a replay can refuse the wrong sample.
+const SAMPLE_NAME: &str = "input_echo";
 
 /// Replay one trace for at most `frames` frames.
 ///
@@ -37,6 +64,23 @@ pub fn run(options: &Options) -> Result<Report, SampleError> {
 /// script or a person.
 #[must_use]
 pub fn replay(trace: &Trace, seed: u64, frames: u64) -> Report {
+    replay_recording(trace, seed, frames, None)
+}
+
+/// Replay a trace, optionally recording the events as they are delivered.
+///
+/// The recorder sees exactly what the world sees, at the tick the world
+/// sees it. That is why recording lives here rather than beside the trace
+/// table: a recording taken from the source data would be a copy of the
+/// input, not a record of what this run did with it, and the two stop
+/// agreeing the moment a driver changes.
+#[must_use]
+pub fn replay_recording(
+    trace: &Trace,
+    seed: u64,
+    frames: u64,
+    mut recorder: Option<&mut Recorder>,
+) -> Report {
     let mut world = EchoWorld::new(seed);
     let mut frame = FrameLoop::new(
         Timestep::HZ_60,
@@ -47,6 +91,12 @@ pub fn replay(trace: &Trace, seed: u64, frames: u64) -> Report {
     for index in 1..=frames {
         for (at, event) in trace.events {
             if *at == index {
+                // `index - 1` is the tick the next step will carry, which
+                // is what the format means by an event's tick: delivered
+                // before that step.
+                if let Some(recorder) = recorder.as_deref_mut() {
+                    recorder.event(index.saturating_sub(1), *event);
+                }
                 world.event(*event);
             }
         }

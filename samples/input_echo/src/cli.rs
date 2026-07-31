@@ -13,7 +13,7 @@ pub const SAMPLE: &str = "input_echo";
 
 /// What the sample accepts, in the words it accepts them.
 pub const USAGE: &str = "usage: input_echo [--headless [--input-trace NAME]] [--frames N] \
-                         [--seed N] [--dump-stats PATH]";
+                         [--seed N] [--dump-stats PATH] [--record-trace PATH]";
 
 /// The trace a headless run replays unless told otherwise.
 pub const DEFAULT_TRACE: &str = "walk";
@@ -40,6 +40,13 @@ pub struct Options {
     pub trace: String,
     /// Where to write the machine-readable report, if anywhere.
     pub dump_stats: Option<PathBuf>,
+    /// Where to write the run's input as a replayable trace, if anywhere.
+    ///
+    /// Recording is independent of how the run is driven: a scripted run
+    /// records the script, a windowed run records the person. The file
+    /// says nothing about which, because a trace is the input and not the
+    /// thing that produced it.
+    pub record_trace: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -50,6 +57,7 @@ impl Default for Options {
             seed: 0,
             trace: DEFAULT_TRACE.to_string(),
             dump_stats: None,
+            record_trace: None,
         }
     }
 }
@@ -76,6 +84,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
             }
             "--dump-stats" => {
                 options.dump_stats = Some(PathBuf::from(value(&mut args, "--dump-stats")?));
+            }
+            "--record-trace" => {
+                options.record_trace = Some(PathBuf::from(value(&mut args, "--record-trace")?));
             }
             other => {
                 return Err(SampleError::Usage(format!(
@@ -217,6 +228,7 @@ mod tests {
                 seed: 17,
                 trace: "idle".to_string(),
                 dump_stats: Some(PathBuf::from("target/stats.json")),
+                record_trace: None,
             }
         );
     }
