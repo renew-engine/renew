@@ -337,9 +337,24 @@ impl WindowApp for TriangleApp {
     }
 
     fn update(&mut self, control: &mut LoopControl) {
-        // The one clock read on the path. Everything downstream of it is
-        // the same pure state machine the headless run drives.
+        // The one clock read on the path, and the whole of this method:
+        // everything downstream is `update_at`, which is handed the
+        // timestamp rather than reading one.
         let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
+        self.update_at(now, control);
+    }
+}
+
+impl TriangleApp {
+    /// The update the seam asks for, as a pure function of the frame's
+    /// timestamp: the same state machine the headless run drives.
+    ///
+    /// Split from [`WindowApp::update`] so tests can say what time it is.
+    /// Driving it through the real clock made the number of simulation
+    /// steps a fact about how fast the machine was — usually none, since
+    /// a test reaches here microseconds after the schedule is anchored —
+    /// which left the step body exercised only by luck.
+    fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
         if let Some(frame) = &mut self.frame {
             let plan = frame.begin_frame(now);
             for step in plan.steps() {
@@ -413,6 +428,12 @@ mod tests {
         app
     }
 
+    /// Exactly one 60 Hz step past the anchor `fresh` sets, so an update
+    /// from here has exactly one step to run however fast the machine is.
+    /// Derived from the timestep rather than written out, so changing the
+    /// rate cannot silently turn this back into zero steps.
+    const ONE_STEP: Timestamp = Timestamp::from_nanos(Timestep::HZ_60.nanos().get());
+
     fn report() -> Report {
         Report {
             seed: 0,
@@ -426,9 +447,25 @@ mod tests {
     fn an_update_plans_a_frame_and_asks_for_the_redraw_that_draws_it() {
         let mut app = fresh(10);
         let mut control = LoopControl::default();
+        app.update_at(ONE_STEP, &mut control);
+        assert_eq!(app.stats.frames(), 1);
+        // A step was due, so the world advanced by exactly one. Asserted
+        // because the alternative — a plan with no steps — also counts a
+        // frame, and would leave the step body untested.
+        assert_eq!(app.world.ticks(), 1);
+        // Nothing has presented yet, so the loop must keep going.
+        assert!(!app.done());
+    }
+
+    /// The seam's own callback, which reads the clock and hands the
+    /// result to `update_at`. What time it finds is the machine's
+    /// business, so this asserts only what holds at any speed.
+    #[test]
+    fn the_seam_callback_reads_the_clock_and_drives_the_update() {
+        let mut app = fresh(10);
+        let mut control = LoopControl::default();
         app.update(&mut control);
         assert_eq!(app.stats.frames(), 1);
-        // Nothing has presented yet, so the loop must keep going.
         assert!(!app.done());
     }
 
@@ -438,7 +475,7 @@ mod tests {
         // call `update` before it: with no schedule there is no frame to
         // plan, and nothing to record about one.
         let mut app = TriangleApp::new(&Options::default());
-        app.update(&mut LoopControl::default());
+        app.update_at(ONE_STEP, &mut LoopControl::default());
         assert_eq!(app.stats.frames(), 0);
         assert!(app.failure.is_none() && app.skip.is_none());
     }
@@ -515,12 +552,12 @@ mod tests {
     fn a_run_that_never_presents_is_declared_wedged_rather_than_left_spinning() {
         let mut app = fresh(1);
         let mut control = LoopControl::default();
-        app.update(&mut control);
+        app.update_at(ONE_STEP, &mut control);
         assert!(app.failure.is_none(), "a fresh run has not stalled");
         // Nothing has ever reached the screen, and now the budget is
         // spent: the run ends, saying so, instead of spinning forever.
         app.wedge_after = Nanos::ZERO;
-        app.update(&mut control);
+        app.update_at(ONE_STEP, &mut control);
         let failure = app.failure.as_deref().unwrap_or_default();
         assert!(failure.starts_with("wedged: 0 of 1 frames"), "{failure}");
         assert!(app.done());
@@ -532,8 +569,11 @@ mod tests {
     fn a_presented_frame_moves_the_stall_deadline() {
         let mut app = fresh(1_000);
         app.record_draw(Ok(true));
-        app.update(&mut LoopControl::default());
-        assert!(app.last_progress > Timestamp::from_nanos(0));
+        app.update_at(ONE_STEP, &mut LoopControl::default());
+        // The exact timestamp of the update that saw the presented
+        // frame, rather than merely "later than the anchor": with the
+        // clock out of the way the deadline is a value, not a bound.
+        assert_eq!(app.last_progress, ONE_STEP);
         assert!(app.failure.is_none());
     }
 
@@ -582,7 +622,7 @@ mod tests {
     fn tearing_down_without_a_window_still_produces_the_report() {
         let mut app = fresh(10);
         let mut control = LoopControl::default();
-        app.update(&mut control);
+        app.update_at(ONE_STEP, &mut control);
         let report = app.finish(Ok(())).expect("a run that recorded nothing");
         assert_eq!(report.stats.frames(), 1);
     }

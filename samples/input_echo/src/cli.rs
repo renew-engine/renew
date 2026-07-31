@@ -13,7 +13,7 @@ pub const SAMPLE: &str = "input_echo";
 
 /// What the sample accepts, in the words it accepts them.
 pub const USAGE: &str = "usage: input_echo [--headless [--input-trace NAME]] [--frames N] \
-                         [--seed N] [--dump-stats PATH]";
+                         [--seed N] [--dump-stats PATH] [--record-trace PATH] \n                         [--replay-trace PATH]";
 
 /// The trace a headless run replays unless told otherwise.
 pub const DEFAULT_TRACE: &str = "walk";
@@ -40,6 +40,19 @@ pub struct Options {
     pub trace: String,
     /// Where to write the machine-readable report, if anywhere.
     pub dump_stats: Option<PathBuf>,
+    /// Where to write the run's input as a replayable trace, if anywhere.
+    ///
+    /// Recording is independent of how the run is driven: a scripted run
+    /// records the script, a windowed run records the person. The file
+    /// says nothing about which, because a trace is the input and not the
+    /// thing that produced it.
+    pub record_trace: Option<PathBuf>,
+    /// A recorded trace to drive this run, instead of a named script.
+    ///
+    /// The file owns the run: its header carries the length, the
+    /// timestep, the budget and the seed, so the flags that would set
+    /// those are refused alongside it rather than silently losing.
+    pub replay_trace: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -50,6 +63,8 @@ impl Default for Options {
             seed: 0,
             trace: DEFAULT_TRACE.to_string(),
             dump_stats: None,
+            record_trace: None,
+            replay_trace: None,
         }
     }
 }
@@ -64,12 +79,19 @@ impl Default for Options {
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, SampleError> {
     let mut options = Options::default();
     let mut scripted = false;
+    let mut overridden: Vec<&str> = Vec::new();
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--headless" => options.headless = true,
-            "--frames" => options.frames = number(&mut args, "--frames")?,
-            "--seed" => options.seed = number(&mut args, "--seed")?,
+            "--frames" => {
+                options.frames = number(&mut args, "--frames")?;
+                overridden.push("--frames");
+            }
+            "--seed" => {
+                options.seed = number(&mut args, "--seed")?;
+                overridden.push("--seed");
+            }
             "--input-trace" => {
                 options.trace = value(&mut args, "--input-trace")?;
                 scripted = true;
@@ -77,11 +99,37 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
             "--dump-stats" => {
                 options.dump_stats = Some(PathBuf::from(value(&mut args, "--dump-stats")?));
             }
+            "--record-trace" => {
+                options.record_trace = Some(PathBuf::from(value(&mut args, "--record-trace")?));
+            }
+            "--replay-trace" => {
+                options.replay_trace = Some(PathBuf::from(value(&mut args, "--replay-trace")?));
+            }
             other => {
                 return Err(SampleError::Usage(format!(
                     "unknown argument `{other}`; {USAGE}"
                 )));
             }
+        }
+    }
+    if let Some(path) = &options.replay_trace {
+        // The header owns length, timestep, budget and seed. A flag that
+        // set one of them would be silently ignored or would silently
+        // win, and both make a digest line unexplainable.
+        if scripted {
+            overridden.push("--input-trace");
+        }
+        if !overridden.is_empty() {
+            return Err(SampleError::Usage(format!(
+                "--replay-trace owns the run, so {} cannot be given with it;                  the trace's own header carries them",
+                overridden.join(" and ")
+            )));
+        }
+        if !options.headless {
+            return Err(SampleError::Usage(format!(
+                "--replay-trace needs --headless: replaying {} against a live                  window would mix recorded input with real input",
+                path.display()
+            )));
         }
     }
     if scripted && !options.headless {
@@ -217,6 +265,8 @@ mod tests {
                 seed: 17,
                 trace: "idle".to_string(),
                 dump_stats: Some(PathBuf::from("target/stats.json")),
+                replay_trace: None,
+                record_trace: None,
             }
         );
     }
@@ -304,5 +354,29 @@ mod tests {
         // No timing section: this sample presents nothing.
         assert!(!json.contains("timing"), "{json}");
         assert!(json.ends_with("}}"), "{json}");
+    }
+
+    /// The two trace flags are mutually exclusive, and the message names
+    /// the one the header already owns.
+    #[test]
+    fn a_replay_cannot_also_name_a_built_in_trace() {
+        let refused = parse_args(
+            [
+                "--headless",
+                "--replay-trace",
+                "run.trace",
+                "--input-trace",
+                "walk",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        // One assertion rather than a let-else: the `else` arm is a line
+        // no passing run can reach, and an uncovered line in a test is
+        // still an uncovered line.
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("--input-trace")),
+            "{refused:?}"
+        );
     }
 }

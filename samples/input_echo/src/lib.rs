@@ -36,7 +36,9 @@ use std::process::ExitCode;
 
 mod app;
 mod cli;
+pub mod convert;
 mod error;
+pub mod record;
 mod scripted;
 mod trace;
 mod world;
@@ -74,9 +76,25 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
     }
 }
 
+/// The most a trace file may be before this sample refuses to read it.
+///
+/// Recordings here are tens of lines; the limit exists for the file that
+/// is not a recording at all.
+const TRACE_BYTE_LIMIT: usize = 1 << 20;
+
 fn run<I: IntoIterator<Item = String>>(args: I) -> Result<Report, SampleError> {
     let options = parse_args(args)?;
-    let report = if options.headless {
+    let report = if let Some(path) = &options.replay_trace {
+        // Bounded, because a trace is untrusted input and the parser can
+        // only judge bytes it already holds. A megabyte is far more than
+        // any recording this sample produces and far less than a file
+        // that could hurt.
+        let text = renew_platform::fs::read_to_string_bounded(path, TRACE_BYTE_LIMIT)
+            .map_err(|error| SampleError::failed("reading the trace file", &error))?;
+        let recorded = renew_trace::parse(&text)
+            .map_err(|error| SampleError::failed("reading the trace file", &error))?;
+        scripted::replay_recorded(&recorded)?
+    } else if options.headless {
         scripted::run(&options)?
     } else {
         app::run(&options)?

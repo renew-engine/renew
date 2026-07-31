@@ -1,0 +1,353 @@
+//! Translating between the window seam's event vocabulary and the one
+//! the trace format uses.
+//!
+//! The two vocabularies mirror each other deliberately, so almost every
+//! arm here is a rename. That is the point: the codec owns its own
+//! vocabulary and depends on nothing, so a change to the window seam
+//! cannot silently change what a file on disk means. The cost of that
+//! independence is this file, and it is a cost worth paying once.
+//!
+//! # Why encoding returns a result
+//!
+//! The window vocabulary is non-exhaustive, so the match below must
+//! carry a wildcard arm and the compiler will never report a new variant
+//! as unhandled here. The wildcard therefore **refuses** rather than
+//! silently dropping: a recording that meets an event it cannot express
+//! fails, instead of writing a file that is quietly missing events and
+//! replays into a different world.
+//!
+//! The other half of that guarantee lives in the platform crate, which
+//! publishes one value of every shape and an exhaustive match over them.
+//! Adding a variant breaks the build there, and the test at the bottom of
+//! this file then fails until this translation learns the new shape.
+
+use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+use renew_trace::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+
+/// An event this build cannot write down.
+///
+/// Carries the shape index rather than the event, because the index is
+/// what a reader can act on: it names the arm that needs adding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unencodable {
+    pub shape: usize,
+}
+
+impl core::fmt::Display for Unencodable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "event shape {} has no trace encoding; recording would silently drop it",
+            self.shape
+        )
+    }
+}
+
+const fn key_to_trace(code: KeyCode) -> TraceKey {
+    match code {
+        KeyCode::Escape => TraceKey::Escape,
+        KeyCode::Space => TraceKey::Space,
+        KeyCode::Enter => TraceKey::Enter,
+        KeyCode::Tab => TraceKey::Tab,
+        KeyCode::ArrowUp => TraceKey::ArrowUp,
+        KeyCode::ArrowDown => TraceKey::ArrowDown,
+        KeyCode::ArrowLeft => TraceKey::ArrowLeft,
+        KeyCode::ArrowRight => TraceKey::ArrowRight,
+        KeyCode::KeyW => TraceKey::KeyW,
+        KeyCode::KeyA => TraceKey::KeyA,
+        KeyCode::KeyS => TraceKey::KeyS,
+        KeyCode::KeyD => TraceKey::KeyD,
+        // Every other physical key already arrived here unidentified;
+        // the trace records that faithfully rather than refusing, because
+        // a key this build does not name is still input that happened.
+        _ => TraceKey::Unidentified,
+    }
+}
+
+/// `None` for a button this build has no name for.
+///
+/// The wildcard is required because the vocabulary is non-exhaustive, and
+/// it **refuses** rather than folding an unknown button into `Other`. A
+/// silent fold would be the writer-side drop this whole module exists to
+/// prevent: every future button would record as the same one, and the
+/// recording would be wrong in a way nothing could detect.
+const fn button_to_trace(button: PointerButton) -> Option<TraceButton> {
+    Some(match button {
+        PointerButton::Left => TraceButton::Left,
+        PointerButton::Right => TraceButton::Right,
+        PointerButton::Middle => TraceButton::Middle,
+        PointerButton::Back => TraceButton::Back,
+        PointerButton::Forward => TraceButton::Forward,
+        PointerButton::Other(index) => TraceButton::Other(index),
+        _ => return None,
+    })
+}
+
+/// Encode one event, or refuse it by name.
+///
+/// # Errors
+///
+/// [`Unencodable`] when the event is a shape this translation does not
+/// know — which can only happen after a new variant is added to the
+/// window vocabulary and not added here.
+pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
+    // Taken once, up front, so every refusal below names the same
+    // shape the platform does and no arm carries a magic number.
+    let shape = renew_platform::window::shape_index(&event);
+    let encoded = match event {
+        WindowEvent::CloseRequested => TraceEvent::CloseRequested,
+        WindowEvent::RedrawRequested => TraceEvent::RedrawRequested,
+        WindowEvent::Focused(focused) => TraceEvent::Focused(focused),
+        WindowEvent::Resized { width, height } => TraceEvent::Resized { width, height },
+        WindowEvent::Key {
+            code,
+            pressed,
+            repeat,
+        } => TraceEvent::Key {
+            code: key_to_trace(code),
+            pressed,
+            repeat,
+        },
+        WindowEvent::PointerButton { button, pressed } => match button_to_trace(button) {
+            Some(button) => TraceEvent::PointerButton { button, pressed },
+            None => return Err(Unencodable { shape }),
+        },
+        // The float-bearing shapes are the only ones that can fail on
+        // their payload rather than their kind: the trace format holds
+        // finite values only, so a non-finite coordinate is refused here
+        // instead of becoming a bit pattern nothing can compare.
+        WindowEvent::PointerMoved { x, y } => match (FiniteF64::new(x), FiniteF64::new(y)) {
+            (Some(x), Some(y)) => TraceEvent::PointerMoved { x, y },
+            _ => return Err(Unencodable { shape }),
+        },
+        WindowEvent::Wheel { dx, dy } => match (FiniteF32::new(dx), FiniteF32::new(dy)) {
+            (Some(dx), Some(dy)) => TraceEvent::Wheel { dx, dy },
+            _ => return Err(Unencodable { shape }),
+        },
+        WindowEvent::ScaleFactorChanged { scale } => match FiniteF64::new(scale) {
+            Some(scale) => TraceEvent::ScaleFactorChanged { scale },
+            None => return Err(Unencodable { shape }),
+        },
+        // Never `=> {}`. A wildcard that drops is how a recording starts
+        // lying about what happened.
+        _ => return Err(Unencodable { shape }),
+    };
+    Ok(encoded)
+}
+
+const fn key_from_trace(code: TraceKey) -> KeyCode {
+    match code {
+        TraceKey::Escape => KeyCode::Escape,
+        TraceKey::Space => KeyCode::Space,
+        TraceKey::Enter => KeyCode::Enter,
+        TraceKey::Tab => KeyCode::Tab,
+        TraceKey::ArrowUp => KeyCode::ArrowUp,
+        TraceKey::ArrowDown => KeyCode::ArrowDown,
+        TraceKey::ArrowLeft => KeyCode::ArrowLeft,
+        TraceKey::ArrowRight => KeyCode::ArrowRight,
+        TraceKey::KeyW => KeyCode::KeyW,
+        TraceKey::KeyA => KeyCode::KeyA,
+        TraceKey::KeyS => KeyCode::KeyS,
+        TraceKey::KeyD => KeyCode::KeyD,
+        TraceKey::Unidentified => KeyCode::Unidentified,
+    }
+}
+
+const fn button_from_trace(button: TraceButton) -> PointerButton {
+    match button {
+        TraceButton::Left => PointerButton::Left,
+        TraceButton::Right => PointerButton::Right,
+        TraceButton::Middle => PointerButton::Middle,
+        TraceButton::Back => PointerButton::Back,
+        TraceButton::Forward => PointerButton::Forward,
+        TraceButton::Other(index) => PointerButton::Other(index),
+    }
+}
+
+/// Decode one event.
+///
+/// Total, and it needs no result: the trace vocabulary is this tree's own
+/// and every one of its shapes has a window event to become. That is the
+/// asymmetry the two directions are supposed to have — encoding can meet
+/// a window event the format has no word for, decoding cannot meet a word
+/// the format did not define.
+#[must_use]
+pub const fn from_trace(event: TraceEvent) -> WindowEvent {
+    match event {
+        TraceEvent::CloseRequested => WindowEvent::CloseRequested,
+        TraceEvent::RedrawRequested => WindowEvent::RedrawRequested,
+        TraceEvent::Focused(focused) => WindowEvent::Focused(focused),
+        TraceEvent::Resized { width, height } => WindowEvent::Resized { width, height },
+        TraceEvent::Key {
+            code,
+            pressed,
+            repeat,
+        } => WindowEvent::Key {
+            code: key_from_trace(code),
+            pressed,
+            repeat,
+        },
+        TraceEvent::PointerButton { button, pressed } => WindowEvent::PointerButton {
+            button: button_from_trace(button),
+            pressed,
+        },
+        TraceEvent::PointerMoved { x, y } => WindowEvent::PointerMoved {
+            x: x.value(),
+            y: y.value(),
+        },
+        TraceEvent::Wheel { dx, dy } => WindowEvent::Wheel {
+            dx: dx.value(),
+            dy: dy.value(),
+        },
+        TraceEvent::ScaleFactorChanged { scale } => WindowEvent::ScaleFactorChanged {
+            scale: scale.value(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Unencodable, to_trace};
+    use renew_platform::window::{
+        EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index,
+    };
+
+    /// Every shape the window seam can produce has an encoding.
+    ///
+    /// This is the test the shape list exists for. The compiler already
+    /// refuses to build the platform crate when a variant is added
+    /// without an index; this refuses to build a *recording* that would
+    /// have dropped it. Together they turn "did we remember?" into a
+    /// question the build answers.
+    #[test]
+    fn every_window_event_shape_can_be_written_down() {
+        for event in EVERY_EVENT_SHAPE {
+            assert!(to_trace(*event).is_ok(), "no encoding: {event:?}");
+        }
+    }
+
+    /// Every shape survives the round trip through the trace vocabulary.
+    ///
+    /// The shape test above proves each one can be written down. This
+    /// proves writing it down loses nothing — which is the property a
+    /// replay depends on and the one a rename would quietly break, since
+    /// two vocabularies that mirror each other are exactly the kind of
+    /// thing that drifts one arm at a time.
+    #[test]
+    fn every_shape_survives_the_round_trip_unchanged() {
+        for event in EVERY_EVENT_SHAPE {
+            let encoded = to_trace(*event).expect("every shape encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                *event,
+                "changed in the round trip: {event:?}"
+            );
+        }
+    }
+
+    /// Every key and every button survives the round trip.
+    ///
+    /// The shape list carries one key and one button, which is all it
+    /// needs to prove each *shape* is encodable — but it leaves twelve
+    /// key arms and five button arms unexercised, and a rename in either
+    /// of the two mirrored vocabularies would go unnoticed. Naming them
+    /// here is the only way to cover the mapping rather than the shape.
+    #[test]
+    fn every_key_and_button_name_maps_back_to_itself() {
+        const BUTTONS: [PointerButton; 6] = [
+            PointerButton::Left,
+            PointerButton::Right,
+            PointerButton::Middle,
+            PointerButton::Back,
+            PointerButton::Forward,
+            PointerButton::Other(9),
+        ];
+
+        const KEYS: [KeyCode; 13] = [
+            KeyCode::Escape,
+            KeyCode::Space,
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::Unidentified,
+        ];
+        for code in KEYS {
+            let event = WindowEvent::Key {
+                code,
+                pressed: true,
+                repeat: false,
+            };
+            let encoded = to_trace(event).expect("every named key encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                event,
+                "{code:?} did not survive"
+            );
+        }
+
+        for button in BUTTONS {
+            let event = WindowEvent::PointerButton {
+                button,
+                pressed: false,
+            };
+            let encoded = to_trace(event).expect("every named button encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                event,
+                "{button:?} did not survive"
+            );
+        }
+    }
+
+    /// A non-finite payload is refused rather than encoded, because the
+    /// format carries finite values only and a NaN written as a bit
+    /// pattern is a value nothing downstream can compare.
+    #[test]
+    fn a_non_finite_coordinate_is_refused_and_names_its_shape() {
+        let event = WindowEvent::PointerMoved {
+            x: f64::NAN,
+            y: 0.0,
+        };
+        assert_eq!(
+            to_trace(event),
+            Err(Unencodable {
+                shape: shape_index(&event)
+            })
+        );
+
+        let wheel = WindowEvent::Wheel {
+            dx: 0.0,
+            dy: f32::INFINITY,
+        };
+        assert_eq!(
+            to_trace(wheel),
+            Err(Unencodable {
+                shape: shape_index(&wheel)
+            })
+        );
+
+        // The third float-bearing shape, so every one of them is pinned.
+        let scale = WindowEvent::ScaleFactorChanged { scale: f64::NAN };
+        assert_eq!(
+            to_trace(scale),
+            Err(Unencodable {
+                shape: shape_index(&scale)
+            })
+        );
+    }
+
+    /// The refusal says what a reader can act on.
+    #[test]
+    fn the_refusal_names_the_shape_in_its_message() {
+        let shown = Unencodable { shape: 5 }.to_string();
+        assert!(shown.contains('5'), "{shown}");
+        assert!(shown.contains("drop"), "{shown}");
+    }
+}

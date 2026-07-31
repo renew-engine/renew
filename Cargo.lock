@@ -1484,6 +1484,7 @@ version = "0.1.0"
 dependencies = [
  "renew-frame",
  "renew-platform",
+ "renew-trace",
 ]
 
 [[package]]

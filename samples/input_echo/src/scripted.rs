@@ -5,10 +5,15 @@
 //! processes and machines. It is what makes a windowing sample provable
 //! in CI.
 
+use core::num::{NonZeroU32, NonZeroU64};
+
 use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
+use renew_trace::TraceHeader;
 
 use crate::cli::{Options, Report};
+use crate::convert;
 use crate::error::SampleError;
+use crate::record::Recorder;
 use crate::trace::{self, Trace};
 use crate::world::EchoWorld;
 
@@ -25,8 +30,33 @@ const FRAME_INTERVAL_NS: u64 = Timestep::HZ_60.nanos().get();
 /// [`SampleError::Usage`] when no trace goes by that name.
 pub fn run(options: &Options) -> Result<Report, SampleError> {
     let trace = trace::by_name(&options.trace)?;
-    Ok(replay(trace, options.seed, options.frames))
+    let Some(path) = &options.record_trace else {
+        return Ok(replay(trace, options.seed, options.frames));
+    };
+
+    let mut recorder = Recorder::default();
+    let report = replay_recording(trace, options.seed, options.frames, Some(&mut recorder));
+    // The header is written after the run, not before it, because two of
+    // its fields are facts about what happened: how many ticks the run
+    // actually reached, which the trace's own close request decides.
+    let header = TraceHeader::new(
+        SAMPLE_NAME,
+        report.world.ticks(),
+        FRAME_INTERVAL_NS,
+        StepBudget::DEFAULT.get().get(),
+    )
+    .and_then(|header| header.with_key("seed", &options.seed.to_string()))
+    .map_err(|error| SampleError::failed("describing the recording", &error))?;
+    let written = recorder
+        .finish(header)
+        .map_err(|error| SampleError::failed("closing the recording", &error))?;
+    renew_platform::fs::write(path, renew_trace::write(&written).as_bytes())
+        .map_err(|error| SampleError::failed("writing the trace file", &error))?;
+    Ok(report)
 }
+
+/// The name a recording carries so a replay can refuse the wrong sample.
+const SAMPLE_NAME: &str = "input_echo";
 
 /// Replay one trace for at most `frames` frames.
 ///
@@ -37,6 +67,23 @@ pub fn run(options: &Options) -> Result<Report, SampleError> {
 /// script or a person.
 #[must_use]
 pub fn replay(trace: &Trace, seed: u64, frames: u64) -> Report {
+    replay_recording(trace, seed, frames, None)
+}
+
+/// Replay a trace, optionally recording the events as they are delivered.
+///
+/// The recorder sees exactly what the world sees, at the tick the world
+/// sees it. That is why recording lives here rather than beside the trace
+/// table: a recording taken from the source data would be a copy of the
+/// input, not a record of what this run did with it, and the two stop
+/// agreeing the moment a driver changes.
+#[must_use]
+pub fn replay_recording(
+    trace: &Trace,
+    seed: u64,
+    frames: u64,
+    mut recorder: Option<&mut Recorder>,
+) -> Report {
     let mut world = EchoWorld::new(seed);
     let mut frame = FrameLoop::new(
         Timestep::HZ_60,
@@ -47,6 +94,12 @@ pub fn replay(trace: &Trace, seed: u64, frames: u64) -> Report {
     for index in 1..=frames {
         for (at, event) in trace.events {
             if *at == index {
+                // `index - 1` is the tick the next step will carry, which
+                // is what the format means by an event's tick: delivered
+                // before that step.
+                if let Some(recorder) = recorder.as_deref_mut() {
+                    recorder.event(index.saturating_sub(1), *event);
+                }
                 world.event(*event);
             }
         }
@@ -68,10 +121,85 @@ pub fn replay(trace: &Trace, seed: u64, frames: u64) -> Report {
     }
 }
 
+/// Drive a run from a recorded trace.
+///
+/// The header owns the run: its tick count is the length, its timestep
+/// and budget configure the loop, and its seed picks the world. Nothing
+/// on the command line may override them, because a replay that took its
+/// length from one place and its input from another would not be a replay
+/// of anything.
+///
+/// A close request inside the file does **not** end the run early. The
+/// recorded run's own length is already in the header, so honouring the
+/// event as well would shorten a replay that the recording says ran
+/// longer.
+///
+/// # Errors
+///
+/// [`SampleError::Usage`] when the file describes a different sample, or
+/// when a header field the frame loop cannot accept — a zero timestep or
+/// a zero budget — reaches it. The codec stores those numbers without
+/// interpreting them, so refusing them is this driver's job.
+pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleError> {
+    let header = recorded.header();
+    if header.sample() != SAMPLE_NAME {
+        return Err(SampleError::Usage(format!(
+            "this trace was recorded by `{}`, not `{SAMPLE_NAME}`",
+            header.sample()
+        )));
+    }
+    let timestep = NonZeroU64::new(header.timestep_ns())
+        .map(Timestep::from_nanos)
+        .ok_or_else(|| {
+            SampleError::Usage("a trace with a zero timestep cannot be replayed".into())
+        })?;
+    let budget = NonZeroU32::new(header.budget())
+        .map(StepBudget::new)
+        .ok_or_else(|| {
+            SampleError::Usage("a trace with a zero step budget cannot be replayed".into())
+        })?;
+    let seed = header
+        .value("seed")
+        .map_or(Ok(0), str::parse)
+        .map_err(|_| SampleError::Usage("the trace's seed is not a number".to_string()))?;
+
+    let interval = timestep.nanos().get();
+    let mut world = EchoWorld::new(seed);
+    let mut frame = FrameLoop::new(timestep, budget, Timestamp::from_nanos(0));
+    let mut stats = FrameStats::new();
+    let deliver = |world: &mut EchoWorld, tick: u64| {
+        for (at, event) in recorded.events() {
+            if *at == tick {
+                world.event(convert::from_trace(*event));
+            }
+        }
+    };
+    for tick in 0..header.ticks() {
+        deliver(&mut world, tick);
+        let plan = frame.begin_frame(Timestamp::from_nanos(interval.saturating_mul(tick + 1)));
+        for step in plan.steps() {
+            world.step(step);
+        }
+        stats.absorb(&plan);
+    }
+    // The trailing bucket: events recorded at the run's own tick count
+    // arrived after the final step, which is where a close request almost
+    // always lands.
+    deliver(&mut world, header.ticks());
+
+    Ok(Report {
+        seed,
+        source: "replay",
+        stats,
+        world,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{replay, run};
+    use super::{SAMPLE_NAME, replay, replay_recorded, run};
     use crate::cli::Options;
+    use crate::error::SampleError;
     use crate::trace;
 
     fn walk(frames: u64) -> crate::cli::Report {
@@ -150,5 +278,64 @@ mod tests {
             ..options
         };
         assert!(run(&unknown).is_err());
+    }
+
+    /// The driver refuses what the codec is not asked to judge.
+    ///
+    /// The codec stores the timestep and the budget without interpreting
+    /// them, so a zero reaches this driver intact — and the frame loop's
+    /// types cannot hold one. Refusing here is not defensive duplication;
+    /// it is the only place the check can live.
+    #[test]
+    fn a_header_the_frame_loop_cannot_accept_is_refused() {
+        let header = |sample: &str, timestep: u64, budget: u32| {
+            renew_trace::TraceHeader::new(sample, 1, timestep, budget)
+                .expect("a well-formed header")
+        };
+        let trace = |header| renew_trace::Trace::new(header, Vec::new()).expect("no events");
+
+        let wrong = replay_recorded(&trace(header("hello_triangle", 1, 1)));
+        assert!(
+            matches!(&wrong, Err(SampleError::Usage(message)) if message.contains("hello_triangle")),
+            "{wrong:?}"
+        );
+
+        let no_timestep = replay_recorded(&trace(header(SAMPLE_NAME, 0, 1)));
+        assert!(
+            matches!(&no_timestep, Err(SampleError::Usage(message)) if message.contains("timestep")),
+            "{no_timestep:?}"
+        );
+
+        let no_budget = replay_recorded(&trace(header(SAMPLE_NAME, 1, 0)));
+        assert!(
+            matches!(&no_budget, Err(SampleError::Usage(message)) if message.contains("budget")),
+            "{no_budget:?}"
+        );
+    }
+
+    /// A seed that is not a number is refused rather than silently zero.
+    #[test]
+    fn a_seed_that_is_not_a_number_is_refused() {
+        let header = renew_trace::TraceHeader::new(SAMPLE_NAME, 1, 1, 1)
+            .and_then(|header| header.with_key("seed", "later"))
+            .expect("a well-formed header");
+        let trace = renew_trace::Trace::new(header, Vec::new()).expect("no events");
+        let refused = replay_recorded(&trace);
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("seed")),
+            "{refused:?}"
+        );
+    }
+
+    /// With no seed key at all the run is seed zero, not an error: the
+    /// key is the caller's, and a trace that omits it is still a trace.
+    #[test]
+    fn a_trace_without_a_seed_replays_at_zero() {
+        let header =
+            renew_trace::TraceHeader::new(SAMPLE_NAME, 1, 16_666_667, 5).expect("a header");
+        let trace = renew_trace::Trace::new(header, Vec::new()).expect("no events");
+        let report = replay_recorded(&trace).expect("a seedless trace still replays");
+        assert_eq!(report.seed, 0);
+        assert_eq!(report.world.ticks(), 1);
     }
 }

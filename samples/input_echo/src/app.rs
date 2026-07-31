@@ -152,9 +152,23 @@ impl WindowApp for EchoApp {
     }
 
     fn update(&mut self, control: &mut LoopControl) {
-        // The one clock read on the path. Everything downstream of it is
-        // the same pure state machine the scripted trace drives.
+        // The one clock read on the path, and the whole of this method:
+        // everything downstream is `update_at`, which is handed the
+        // timestamp rather than reading one.
         let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
+        self.update_at(now, control);
+    }
+}
+
+impl EchoApp {
+    /// The update the seam asks for, as a pure function of the frame's
+    /// timestamp: the same state machine the scripted trace drives.
+    ///
+    /// Split from [`WindowApp::update`] so tests can say what time it is.
+    /// Driving it through the real clock made the number of simulation
+    /// steps a fact about how fast the machine was — at poll speed,
+    /// usually none — which left the step body exercised only by luck.
+    fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
         if let Some(frame) = &mut self.frame {
             let plan = frame.begin_frame(now);
             for step in plan.steps() {
@@ -196,15 +210,37 @@ mod tests {
         app
     }
 
+    /// Exactly one 60 Hz step past the anchor `fresh` sets, so an update
+    /// from here has exactly one step to run however fast the machine is.
+    /// Derived from the timestep rather than written out, so changing the
+    /// rate cannot silently turn this back into zero steps.
+    const ONE_STEP: Timestamp = Timestamp::from_nanos(Timestep::HZ_60.nanos().get());
+
     #[test]
     fn an_update_plans_a_frame_whether_or_not_a_step_is_due() {
         let mut app = fresh(1_000);
         let mut control = LoopControl::default();
-        app.update(&mut control);
-        app.update(&mut control);
-        // Two iterations, two plans. How many steps they carried is the
-        // clock's business — at poll speed, usually none.
+        // The anchor itself: a plan is made, but no step is due yet.
+        app.update_at(Timestamp::from_nanos(0), &mut control);
+        assert_eq!(app.world.ticks(), 0, "nothing is due at the anchor");
+        // One timestep later exactly one step is due, so the frame count
+        // and the step count move independently — which is the thing
+        // this test is named for.
+        app.update_at(ONE_STEP, &mut control);
         assert_eq!(app.stats.frames(), 2);
+        assert_eq!(app.world.ticks(), 1);
+        assert!(!app.done());
+    }
+
+    /// The seam's own callback, which reads the clock and hands the
+    /// result to `update_at`. What time it finds is the machine's
+    /// business, so this asserts only what holds at any speed.
+    #[test]
+    fn the_seam_callback_reads_the_clock_and_drives_the_update() {
+        let mut app = fresh(1_000);
+        let mut control = LoopControl::default();
+        app.update(&mut control);
+        assert_eq!(app.stats.frames(), 1);
         assert!(!app.done());
     }
 
@@ -236,7 +272,7 @@ mod tests {
         // How far the key moves the world is the schedule's business and
         // a real clock's; that the event arrived is this one's.
         assert_eq!(app.report().world.keys(), (1, 0, 0));
-        app.update(&mut LoopControl::default());
+        app.update_at(ONE_STEP, &mut LoopControl::default());
         assert!(!app.done());
         app.event(WindowEvent::CloseRequested);
         assert!(app.done(), "the close request is latched in the world");
@@ -245,7 +281,7 @@ mod tests {
     #[test]
     fn an_update_before_the_window_is_ready_plans_nothing() {
         let mut app = EchoApp::new(&Options::default());
-        app.update(&mut LoopControl::default());
+        app.update_at(ONE_STEP, &mut LoopControl::default());
         assert_eq!(app.stats.frames(), 0);
     }
 
