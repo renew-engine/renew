@@ -177,6 +177,18 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
           cargo build $sel
           cargo test $sel
+      # The trace codec removed entirely. Nothing reaches it yet — not
+      # the samples, not the bench suite — so the list is the crate and
+      # nothing else, and it is upward-closed for exactly that reason.
+      # The day a sample records or replays a trace, this cell fails
+      # first and names the crate that has to join the list, which is
+      # the point of running it while the list is still trivial.
+      - name: Build and test without the trace codec
+        run: |
+          sel="--workspace --exclude renew-trace"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-trace $sel
+          cargo build $sel
+          cargo test $sel
       # The rendering crate removed entirely. input_echo deliberately
       # survives this cell: a frame-loop sample that still builds and
       # runs with the GPU crate gone is the removability claim from the
@@ -194,7 +206,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-jobs renew-frame renew-rng; do
+          for optional in renew-rhi renew-jobs renew-frame renew-rng renew-trace; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
