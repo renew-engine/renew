@@ -236,6 +236,8 @@ mod tests {
     /// Derived from the timestep rather than written out, so changing the
     /// rate cannot silently turn this back into zero steps.
     const ONE_STEP: Timestamp = Timestamp::from_nanos(Timestep::HZ_60.nanos().get());
+    const TWO_STEPS: Timestamp = Timestamp::from_nanos(2 * Timestep::HZ_60.nanos().get());
+    const THREE_STEPS: Timestamp = Timestamp::from_nanos(3 * Timestep::HZ_60.nanos().get());
 
     #[test]
     fn an_update_plans_a_frame_whether_or_not_a_step_is_due() {
@@ -302,6 +304,37 @@ mod tests {
         assert!(!app.done());
         app.event(WindowEvent::CloseRequested);
         assert!(app.done(), "the close request is latched in the world");
+    }
+
+    /// Losing focus drops every held key. The OS stops delivering
+    /// key-up while another window has focus, so without this a player
+    /// who alt-tabs mid-move comes back still moving — and the world
+    /// would keep integrating a key nobody is pressing.
+    #[test]
+    fn losing_focus_stops_the_movement_it_cannot_see_released() {
+        let mut app = fresh(1_000);
+        app.event(WindowEvent::Key {
+            code: KeyCode::ArrowRight,
+            pressed: true,
+            repeat: false,
+        });
+        app.update_at(ONE_STEP, &mut LoopControl::default());
+        let moved = app.report().world.position();
+        assert_ne!(moved, (0, 0), "the key moved it at least once");
+
+        app.event(WindowEvent::Focused(false));
+        app.update_at(TWO_STEPS, &mut LoopControl::default());
+        assert_eq!(
+            app.report().world.position(),
+            moved,
+            "focus loss released the key, so nothing moved after it"
+        );
+
+        // Regaining focus does not resurrect the key: the player has to
+        // press it again, which is what actually happens.
+        app.event(WindowEvent::Focused(true));
+        app.update_at(THREE_STEPS, &mut LoopControl::default());
+        assert_eq!(app.report().world.position(), moved);
     }
 
     #[test]
