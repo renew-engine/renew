@@ -45,6 +45,10 @@
 //! assert!(input.held(Action::Jump));
 //! ```
 
+// This layer resolves state; it never reports. Diagnostics about input
+// belong to whoever is driving the loop.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
 
 /// One physical input that can be bound to an action.
