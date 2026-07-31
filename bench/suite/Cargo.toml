@@ -29,6 +29,8 @@ renew-memory = { path = "../../crates/core/memory" }
 # schedules nothing.
 renew-frame = { path = "../../crates/frame" }
 renew-rng = { path = "../../crates/rng" }
+# Bench-target-only: the clock is measured, not used, by this crate.
+renew-platform = { path = "../../crates/core/platform" }
 criterion = "0.8"
 # Bench-target-only: keeps the library's dependency graph free of the
 # job pool it never uses.
@@ -59,4 +61,8 @@ harness = false
 
 [[bench]]
 name = "rng"
+harness = false
+
+[[bench]]
+name = "clock"
 harness = false
