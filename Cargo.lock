@@ -1435,6 +1435,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-input"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-platform",
+]
+
+[[package]]
 name = "renew-jobs"
 version = "0.1.0"
 dependencies = [
