@@ -337,3 +337,73 @@ fn the_unsafe_surface_is_exactly_what_is_recorded() {
          scrutiny."
     );
 }
+
+// --- Simulation crates and their lint files -----------------------------
+
+/// Ambient sources a crate designated as simulation must not be able to
+/// reach: reading them makes a run depend on when it happened, which is
+/// the one thing such a crate promises not to do.
+///
+/// The manifest flag is a *declaration*. What actually stops the code
+/// calling a clock is the crate's own lint file. Nothing compared the
+/// two, so the declaration bought nothing on its own — a crate could
+/// claim the property and permit the calls that break it.
+const BANNED_IN_SIMULATION: &[&str] = &["std::time::Instant::now", "std::time::SystemTime::now"];
+
+/// Crates whose manifest sets `simulation = true`, with the text of the
+/// lint file sitting beside it.
+fn simulation_crates(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut found = Vec::new();
+    for member in workspace_members(root)? {
+        let dir = root.join(&member);
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml"))
+            .map_err(|error| format!("{member}/Cargo.toml unreadable: {error}"))?;
+        if !manifest
+            .lines()
+            .any(|line| line.trim() == "simulation = true")
+        {
+            continue;
+        }
+        let lints = std::fs::read_to_string(dir.join("clippy.toml")).map_err(|error| {
+            format!("{member} declares simulation but has no readable clippy.toml: {error}")
+        })?;
+        found.push((member, lints));
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// A crate that calls itself simulation must forbid reading a clock.
+///
+/// The designation exists so that a run is reproducible from its inputs.
+/// A wall-clock read breaks that silently: the code compiles, the tests
+/// pass, and two runs simply disagree. The lint file is what prevents
+/// it, and until now nothing checked that a crate claiming the property
+/// had the lint.
+///
+/// This does not prove such a crate is reproducible — no test here
+/// could. It proves the one mechanical guard it relies on is present.
+#[test]
+fn every_simulation_crate_forbids_reading_a_clock() {
+    let root = workspace_root();
+    let crates = simulation_crates(&root).expect("manifests and lint files should be readable");
+
+    assert!(
+        !crates.is_empty(),
+        "no crate declares `simulation = true`, so this test would pass vacuously"
+    );
+
+    let mut faults = Vec::new();
+    for (name, lints) in &crates {
+        for banned in BANNED_IN_SIMULATION {
+            if !lints.contains(banned) {
+                faults.push(format!("{name} does not disallow `{banned}`"));
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "these crates declare themselves simulation code but their lint files permit \
+         reading a clock, so the declaration is enforced by nothing: {faults:?}"
+    );
+}
