@@ -1,7 +1,7 @@
-﻿//! The scripted event traces headless mode replays.
+//! The scripted event traces headless mode replays.
 //!
 //! No runner supplies keystrokes, so a windowing sample that could only
-//! be driven by hand would be a sample CI can never execute â€” and an
+//! be driven by hand would be a sample CI can never execute — and an
 //! unexecuted binary is an untested one. These traces are the same
 //! events the OS would deliver, on a schedule the sample chooses, fed to
 //! the same state machine a window feeds.
@@ -10,7 +10,7 @@
 //!
 //! They used to be a table in this file, written in `WindowEvent`
 //! literals. That made the same fact exist twice: once as Rust, once as
-//! the text format the codec speaks â€” and a scripted run exercised only
+//! the text format the codec speaks — and a scripted run exercised only
 //! the first, so the format a recording is *stored* in was never on the
 //! default path. The traces are now committed files, read by the same
 //! parser that reads a recording and converted by the same translation a
@@ -24,8 +24,8 @@
 //!
 //! # The header is provenance, not configuration
 //!
-//! A trace file carries a header â€” `seed`, `ticks`, `budget`,
-//! `timestep_ns` â€” and on the `--replay-trace` path the header **owns**
+//! A trace file carries a header — `seed`, `ticks`, `budget`,
+//! `timestep_ns` — and on the `--replay-trace` path the header **owns**
 //! the run: it says how long the run was and how it was configured.
 //!
 //! On this path it does not. `--input-trace walk --seed 7` has to honour
@@ -35,14 +35,14 @@
 //! are read. The same bytes therefore mean two compatible things: a
 //! complete run to `replay`, and a reusable script to `--input-trace`.
 //! Keeping one format for both is worth the sentence it takes to say so
-//! â€” a second, headerless format would have cost a second parser.
+//! — a second, headerless format would have cost a second parser.
 //!
 //! # Frames here, ticks in the file
 //!
 //! The file indexes events by **tick**, counted from zero, because that
 //! is what the format means. The scripted driver indexes them by
 //! **frame**, counted from one. They differ by exactly one, and the
-//! conversion happens once, here, at load â€” see [`FIRST_FRAME`].
+//! conversion happens once, here, at load — see [`FIRST_FRAME`].
 
 use renew_platform::window::WindowEvent;
 
@@ -55,7 +55,7 @@ use crate::error::SampleError;
 /// before the frame whose index matches, while the format says tick *k*
 /// is delivered before the step whose tick is *k*, counted from zero. A
 /// headless run executes exactly one step per frame, so the two indexes
-/// describe the same instant offset by one â€” which is why the recorder
+/// describe the same instant offset by one — which is why the recorder
 /// writes `frame - 1`. Named rather than spelled as a bare `+ 1` so the
 /// inverse in `scripted.rs` has something to point at.
 const FIRST_FRAME: u64 = 1;
@@ -80,13 +80,13 @@ const SCRIPTED: &[Scripted] = &[
     },
     Scripted {
         name: "idle",
-        summary: "no input at all â€” the loop running on its own",
+        summary: "no input at all — the loop running on its own",
         text: include_str!("../traces/idle.trace"),
     },
 ];
 
 /// A loaded trace: a named sequence of events, each scheduled at a frame
-/// index counted from one â€” the same index the synthetic clock uses, so
+/// index counted from one — the same index the synthetic clock uses, so
 /// "frame 4" is the frame the event lands in.
 #[derive(Debug)]
 pub struct Trace {
@@ -99,7 +99,7 @@ pub struct Trace {
 ///
 /// # Errors
 ///
-/// [`SampleError::Usage`] naming every trace that does exist â€” a sample
+/// [`SampleError::Usage`] naming every trace that does exist — a sample
 /// that answers "no such trace" and stops is a sample nobody runs twice.
 ///
 /// [`SampleError::Failed`] if a committed trace file does not parse.
