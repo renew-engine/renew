@@ -1,0 +1,6 @@
+# Trace files are golden fixtures: tests compare what the recorder writes
+# against these bytes exactly. The writer emits LF on every platform, so a
+# checkout that converted them to CRLF would fail those comparisons on
+# Windows only — the least useful place to discover it. The reader itself
+# tolerates CRLF; byte equality does not.
+*.trace text eol=lf

@@ -178,3 +178,49 @@ fn the_recorded_file_reads_back_and_rewrites_identically() {
     // trace ends by asking to close, and that arrives after the last step.
     assert_eq!(parsed.header().ticks(), 20);
 }
+
+/// Each committed trace file is the fixed point of its own round trip:
+/// loading it, running it, and recording the result reproduces the file
+/// byte for byte.
+///
+/// **This is a guard, not an anchor, and the difference matters.** The
+/// loader shifts a file's tick to a frame and the recorder shifts it
+/// back, so a pair of shifts wrong in the same direction would satisfy
+/// this test perfectly. What it does catch is the committed file drifting
+/// away from what the code produces — a hand edit, a reordered event, a
+/// header nobody meant to change — which is the realistic failure for a
+/// checked-in fixture. The assertion that the shift itself is correct is
+/// the hand-typed expectation above, and the one anchored to the file's
+/// own text in `trace.rs`.
+#[test]
+fn every_committed_trace_is_the_fixed_point_of_its_own_recording() {
+    for (name, committed) in [
+        ("walk", include_str!("../traces/walk.trace")),
+        ("idle", include_str!("../traces/idle.trace")),
+    ] {
+        let path = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("{name}-fixed-point.trace"));
+        let _ = std::fs::remove_file(&path);
+        // No `--seed` and no `--frames`: the committed files were
+        // captured from the defaults, and naming them here would let the
+        // fixture and the test drift apart while both looked deliberate.
+        let code = renew_sample_input_echo::run_cli(
+            [
+                "--headless",
+                "--input-trace",
+                name,
+                "--record-trace",
+                &path.to_string_lossy(),
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        assert_eq!(code, 0, "`{name}` should run");
+
+        let recorded = std::fs::read_to_string(&path).expect("the recorded trace");
+        assert_eq!(
+            recorded, committed,
+            "`{name}.trace` is no longer what recording it produces"
+        );
+    }
+}

@@ -31,11 +31,11 @@ const FRAME_INTERVAL_NS: u64 = Timestep::HZ_60.nanos().get();
 pub fn run(options: &Options) -> Result<Report, SampleError> {
     let trace = trace::by_name(&options.trace)?;
     let Some(path) = &options.record_trace else {
-        return Ok(replay(trace, options.seed, options.frames));
+        return Ok(replay(&trace, options.seed, options.frames));
     };
 
     let mut recorder = Recorder::default();
-    let report = replay_recording(trace, options.seed, options.frames, Some(&mut recorder));
+    let report = replay_recording(&trace, options.seed, options.frames, Some(&mut recorder));
     // The header is written after the run, not before it, because two of
     // its fields are facts about what happened: how many ticks the run
     // actually reached, which the trace's own close request decides.
@@ -92,7 +92,7 @@ pub fn replay_recording(
     );
     let mut stats = FrameStats::new();
     for index in 1..=frames {
-        for (at, event) in trace.events {
+        for (at, event) in &trace.events {
             if *at == index {
                 // `index - 1` is the tick the next step will carry, which
                 // is what the format means by an event's tick: delivered
@@ -203,7 +203,7 @@ mod tests {
     use crate::trace;
 
     fn walk(frames: u64) -> crate::cli::Report {
-        replay(trace::by_name("walk").expect("the walk trace"), 0, frames)
+        replay(&trace::by_name("walk").expect("the walk trace"), 0, frames)
     }
 
     /// The whole sample in one assertion: the key held from frame two to
@@ -241,13 +241,13 @@ mod tests {
 
     #[test]
     fn an_empty_trace_runs_the_loop_and_nothing_else() {
-        let idle = replay(trace::by_name("idle").expect("the idle trace"), 0, 30);
+        let idle = replay(&trace::by_name("idle").expect("the idle trace"), 0, 30);
         assert_eq!(idle.stats.frames(), 30);
         assert_eq!(idle.stats.ticks(), 30);
         assert_eq!(idle.world.events(), 0);
         assert_eq!(idle.world.position(), (0, 0));
         // A frameless run is legal and reports an empty schedule.
-        let nothing = replay(trace::by_name("idle").expect("the idle trace"), 0, 0);
+        let nothing = replay(&trace::by_name("idle").expect("the idle trace"), 0, 0);
         assert_eq!(nothing.stats.frames(), 0);
     }
 
@@ -255,7 +255,7 @@ mod tests {
     fn two_replays_of_one_trace_agree_to_the_last_bit() {
         assert_eq!(walk(600).digest_line(), walk(600).digest_line());
         // The seed is an input like any other, and it shows.
-        let seeded = replay(trace::by_name("walk").expect("the walk trace"), 3, 600);
+        let seeded = replay(&trace::by_name("walk").expect("the walk trace"), 3, 600);
         assert_ne!(seeded.digest_line(), walk(600).digest_line());
         assert_eq!(seeded.world.position(), (48, 16), "speed four");
     }

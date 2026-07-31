@@ -47,7 +47,7 @@ pub use app::{EchoApp, describe};
 pub use cli::{DEFAULT_FRAMES, DEFAULT_TRACE, Options, Report, SAMPLE, USAGE, parse_args};
 pub use error::SampleError;
 pub use scripted::replay;
-pub use trace::{TRACES, Trace, by_name, names};
+pub use trace::{Trace, by_name, names};
 pub use world::EchoWorld;
 
 /// Setting this to `1` turns a skip into a failure: on a lane that
