@@ -246,6 +246,27 @@ writing the call and watching the lint fire.
 
 ## Key decisions
 
+- **The event types carry a `Trace` prefix on purpose, against the usual
+  advice.** House style says an item should not repeat its crate's name:
+  `renew_trace::Event`, not `renew_trace::TraceEvent`. The exception is
+  taken deliberately and for one concrete reason — **the only code that
+  imports these types imports the windowing vocabulary beside them**, to
+  translate between the two:
+
+  ```rust
+  use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+  use renew_trace::{TraceButton, TraceEvent, TraceKey};
+  ```
+
+  `WindowEvent` and `TraceEvent` name two vocabularies at a seam whose
+  whole job is converting one into the other. `WindowEvent` and a bare
+  `Event` would read as though one were the general case of the other,
+  which is exactly the confusion this crate's independence exists to
+  avoid. `Trace` itself keeps the short name, since a type sharing its
+  module's name reads cleanly; the prefix is only on its companions.
+  `TraceError` is a separate matter — error types are named for their
+  domain everywhere in this workspace.
+
 - **The vocabulary is this crate's own, not the windowing layer's.** That
   is what lets the crate depend on nothing. A codec naming the windowing
   crate's event enum would pull an entire windowing stack into every build
