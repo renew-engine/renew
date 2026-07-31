@@ -281,7 +281,8 @@ writing the call and watching the lint fire.
 - **No fuzz target.** The property suite hands the reader generated
   garbage with a fixed budget, which is a small fuzzer and not a
   substitute for one. A real target needs tooling this tree does not have
-  yet; the maturity level says `bootstrap` for reasons including this one.
+  yet, and one is required before this crate could be considered stable —
+  which is among the reasons it has not been promoted.
 - **Nothing here records or replays.** This crate is the codec: the
   recorder that produces a trace from a live session, the driver that
   feeds one back into a run, and the command-line face of both are
