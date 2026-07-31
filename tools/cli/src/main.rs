@@ -142,7 +142,16 @@ fn run_check(json_mode: bool) -> ExitCode {
 fn gather_findings() -> Result<Vec<structure::Finding>, String> {
     let root = workspace_root()
         .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
-    findings_from_metadata(&cargo_metadata(&root)?)
+    let metadata = cargo_metadata(&root)?;
+    let mut findings = findings_from_metadata(&metadata)?;
+    // The lint-file rule is the one rule that has to look at the disk, so
+    // it is applied here rather than inside the pure rule set, and it is
+    // handed a predicate rather than reaching for the filesystem itself.
+    let shapes = structure::shapes_from_metadata(&parsed_metadata(&metadata)?)?;
+    findings.extend(structure::lint_file_findings(&shapes, &|path| {
+        Path::new(path).exists()
+    }));
+    Ok(findings)
 }
 
 /// Ask cargo to describe this workspace. Split from its readers so the
