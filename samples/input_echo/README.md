@@ -96,9 +96,14 @@ dependencies are `renew-frame` and `renew-platform`, and nothing else.
 
 `tests/cli_determinism.rs` runs the real binary three times and compares
 the digest lines, checks that a different trace or seed moves them, and
-reads back the stats file. It needs no adapter and no compositor, so
-unlike its sibling it never skips: on every machine and every lane,
-those assertions actually run.
+reads back the stats file. It also runs a seed matrix: four seeds, three
+processes each, where every seed must reproduce itself exactly and no two
+seeds may hash alike. The second half is the one that catches a seed
+which is read and then ignored — a failure identity alone cannot see.
+`RENEW_DETERMINISM_RUNS` deepens the matrix without editing the file.
+
+It needs no adapter and no compositor, so unlike its sibling it never
+skips: on every machine and every lane, those assertions actually run.
 
 The unit tests beside the source drive the window callbacks directly —
 `event` and `update` with no window at all. Only `ready` needs one,
