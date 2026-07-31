@@ -1397,6 +1397,7 @@ dependencies = [
  "renew-jobs",
  "renew-math",
  "renew-memory",
+ "renew-rng",
 ]
 
 [[package]]
@@ -1483,6 +1484,13 @@ version = "0.1.0"
 dependencies = [
  "renew-frame",
  "renew-platform",
+]
+
+[[package]]
+name = "renew-trace"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

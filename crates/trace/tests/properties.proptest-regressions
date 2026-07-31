@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5ef7e1c76a99b5cef192ccded0bc735aceaf6d4286b289ca34d1b2eab81c0c66 # shrinks to trace = Trace { header: TraceHeader { sample: "=", ticks: 0, timestep_ns: 0, budget: 0, keys: [("A", "=")] }, events: [] }
+cc 5ef7e1c76a99b5cef192ccded0bc735aceaf6d4286b289ca34d1b2eab81c0c66 # shrinks to trace = Trace { header: TraceHeader { sample: "=", ticks: 0, timestep_ns: 0, budget: 0, keys: [("A", "=")] }, events: [] }

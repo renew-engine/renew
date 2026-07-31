@@ -1,0 +1,721 @@
+//! Every way a trace can be refused, one test per way.
+//!
+//! A parser of untrusted input is mostly its refusals, so they are tested
+//! the way the accepting paths are: separately, by what they *say*, not by
+//! the fact that something went wrong. Each test here pins one line of one
+//! malformed file to one refusal and one line number. A single test that
+//! asserted "these twenty files are all rejected" would still pass if
+//! nineteen of them started being rejected for the twentieth's reason.
+
+use renew_trace::{TraceError, TraceErrorKind, parse};
+
+const HEADER: &str = "renew-trace 0 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+
+/// The refusal a text produces. Every test goes through here, so a text
+/// that is unexpectedly *accepted* fails loudly rather than quietly
+/// passing some later assertion.
+// A test helper, called only from `#[test]` fns: the tests-only panic
+// allowance covers those, not their helpers, and this extends it in the
+// same spirit — an accepted file in a file of refusals is a test failure
+// and has to be reported as one.
+#[allow(clippy::panic)]
+fn refuse(text: &str) -> TraceError {
+    match parse(text) {
+        Ok(trace) => panic!("expected a refusal, read {} events", trace.events().len()),
+        Err(error) => error,
+    }
+}
+
+/// The refusal produced by one event line under the standard header.
+fn refuse_event(line: &str) -> TraceError {
+    refuse(&format!("{HEADER}\n{line}\n"))
+}
+
+#[test]
+fn an_empty_file_is_not_a_trace() {
+    let error = refuse("");
+    assert_eq!(error.line(), 1);
+    assert_eq!(error.kind(), &TraceErrorKind::Empty);
+    assert_eq!(
+        error.to_string(),
+        "line 1: the file is empty; a trace is a header line followed by one line per event"
+    );
+}
+
+/// The byte order mark is named rather than described, because it is
+/// invisible: the file looks correct on screen, and any other message
+/// would send a reader looking at the wrong thing.
+#[test]
+fn a_byte_order_mark_is_refused_by_name() {
+    let error = refuse(&format!("\u{feff}{HEADER}\n"));
+    assert_eq!(error.line(), 1);
+    assert_eq!(error.kind(), &TraceErrorKind::ByteOrderMark);
+    assert!(error.to_string().contains("byte order mark"), "{error}");
+}
+
+#[test]
+fn a_file_that_is_only_a_byte_order_mark_still_names_it() {
+    assert_eq!(refuse("\u{feff}").kind(), &TraceErrorKind::ByteOrderMark);
+}
+
+#[test]
+fn a_first_line_that_is_not_a_header_is_refused() {
+    let error = refuse("hello 0 sample=x\n");
+    assert_eq!(error.line(), 1);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::NotATrace {
+            found: "hello".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_file_of_one_blank_line_is_a_missing_header() {
+    assert_eq!(
+        refuse("\n").kind(),
+        &TraceErrorKind::NotATrace {
+            found: String::new()
+        }
+    );
+}
+
+#[test]
+fn a_version_newer_than_this_reader_is_refused() {
+    let error = refuse("renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=1\n");
+    assert_eq!(error.line(), 1);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnsupportedVersion {
+            found: 1,
+            supported: 0
+        }
+    );
+}
+
+#[test]
+fn a_version_that_is_not_a_number_is_refused() {
+    assert_eq!(
+        refuse("renew-trace v0 sample=x ticks=1 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the format version",
+            text: "v0".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_header_that_stops_before_its_version_is_refused() {
+    assert_eq!(
+        refuse("renew-trace\n").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the format version"
+        }
+    );
+}
+
+#[test]
+fn a_header_that_stops_before_a_field_names_the_field() {
+    assert_eq!(
+        refuse("renew-trace 0\n").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "`sample=<name>`"
+        }
+    );
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1\n").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "`budget=<u32>`"
+        }
+    );
+}
+
+/// The four fields the codec owns are positional, so a reader never has
+/// to guess which one it is holding.
+#[test]
+fn a_header_field_in_the_wrong_place_is_refused() {
+    let error = refuse("renew-trace 0 sample=x timestep_ns=1 ticks=1 budget=1\n");
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::HeaderFieldOutOfOrder {
+            expected: "`ticks=<u64>`",
+            found: "timestep_ns=1".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_header_field_that_is_not_a_pair_is_refused() {
+    assert_eq!(
+        refuse("renew-trace 0 sample ticks=1 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::NotAKeyValuePair {
+            field: "sample".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_caller_key_without_a_value_is_refused() {
+    assert_eq!(
+        refuse(&format!("{HEADER} seed\n")).kind(),
+        &TraceErrorKind::NotAKeyValuePair {
+            field: "seed".to_string()
+        }
+    );
+}
+
+#[test]
+fn the_same_caller_key_twice_is_refused() {
+    let error = refuse(&format!("{HEADER} seed=1 seed=2\n"));
+    assert_eq!(error.line(), 1);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::DuplicateHeaderKey {
+            key: "seed".to_string()
+        }
+    );
+}
+
+/// A caller key may not shadow one of the codec's own, which would leave
+/// two answers to one question in one file.
+#[test]
+fn a_caller_key_repeating_one_the_codec_owns_is_refused() {
+    assert_eq!(
+        refuse(&format!("{HEADER} ticks=9\n")).kind(),
+        &TraceErrorKind::DuplicateHeaderKey {
+            key: "ticks".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_caller_key_with_an_empty_value_is_refused() {
+    assert_eq!(
+        refuse(&format!("{HEADER} seed=\n")).kind(),
+        &TraceErrorKind::UnwritableText {
+            text: "seed=".to_string(),
+            reason: "a header key and a header value are each at least one character",
+        }
+    );
+}
+
+#[test]
+fn a_header_value_carrying_a_control_character_is_refused() {
+    assert_eq!(
+        refuse("renew-trace 0 sample=in\u{7}put ticks=1 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::UnwritableText {
+            text: "sample=in\u{7}put".to_string(),
+            reason: "a control character is invisible in a diff and in a log",
+        }
+    );
+}
+
+/// A tab is whitespace that survives a split on spaces, so it is the one
+/// way whitespace can reach a field, and it is refused there.
+#[test]
+fn a_header_value_carrying_a_tab_is_refused() {
+    assert_eq!(
+        refuse(&format!("{HEADER} extent=640\tx480\n")).kind(),
+        &TraceErrorKind::UnwritableText {
+            text: "extent=640\tx480".to_string(),
+            reason: "whitespace would split it into two fields",
+        }
+    );
+}
+
+#[test]
+fn two_spaces_in_the_header_are_refused() {
+    assert_eq!(
+        refuse("renew-trace 0  sample=x ticks=1 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::BlankField
+    );
+}
+
+#[test]
+fn a_trailing_space_on_the_header_is_refused() {
+    assert_eq!(
+        refuse(&format!("{HEADER} \n")).kind(),
+        &TraceErrorKind::BlankField
+    );
+}
+
+#[test]
+fn a_header_number_that_is_not_digits_is_refused() {
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=1_000 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "`ticks=<u64>`",
+            text: "1_000".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=+1 budget=1\n").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "`timestep_ns=<u64>`",
+            text: "+1".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_header_number_too_large_for_its_width_is_refused() {
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=99999999999999999999 timestep_ns=1 budget=1\n").kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "`ticks=<u64>`",
+            text: "99999999999999999999".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1 budget=4294967296\n").kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "`budget=<u32>`",
+            text: "4294967296".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1 budget=five\n").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "`budget=<u32>`",
+            text: "five".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_second_header_is_refused_where_it_stands() {
+    let error = refuse(&format!("{HEADER}\n{HEADER}\n"));
+    assert_eq!(error.line(), 2);
+    assert_eq!(error.kind(), &TraceErrorKind::HeaderAfterEvents);
+}
+
+#[test]
+fn an_unknown_line_keyword_is_refused_rather_than_skipped() {
+    let error = refuse_event("x 0 close");
+    assert_eq!(error.line(), 2);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnknownKeyword {
+            keyword: "x".to_string()
+        }
+    );
+    assert!(
+        error.to_string().contains("refused rather than skipped"),
+        "{error}"
+    );
+}
+
+/// A blank line is not nothing; it is a line this reader cannot read.
+#[test]
+fn a_blank_line_between_events_is_refused() {
+    let error = refuse(&format!("{HEADER}\n\ne 0 close\n"));
+    assert_eq!(error.line(), 2);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnknownKeyword {
+            keyword: String::new()
+        }
+    );
+}
+
+#[test]
+fn an_unknown_event_kind_is_refused_rather_than_skipped() {
+    let error = refuse_event("e 0 gamepad left down");
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnknownEventKind {
+            kind: "gamepad".to_string()
+        }
+    );
+    assert!(
+        error.to_string().contains("refused rather than skipped"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_event_line_that_stops_before_its_tick_is_refused() {
+    assert_eq!(
+        refuse_event("e").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the tick"
+        }
+    );
+}
+
+#[test]
+fn an_event_line_that_stops_before_its_kind_is_refused() {
+    assert_eq!(
+        refuse_event("e 0").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the kind of event"
+        }
+    );
+}
+
+#[test]
+fn a_tick_that_is_not_digits_is_refused() {
+    assert_eq!(
+        refuse_event("e -1 close").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the tick",
+            text: "-1".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_tick_too_large_for_its_width_is_refused() {
+    assert_eq!(
+        refuse_event("e 99999999999999999999 close").kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "the tick",
+            text: "99999999999999999999".to_string(),
+        }
+    );
+}
+
+/// Ticks never decrease. Equal ones are legal, so only a genuine
+/// decrease is refused, and it is refused against its own line.
+#[test]
+fn a_tick_earlier_than_the_one_before_it_is_refused() {
+    let error = refuse(&format!("{HEADER}\ne 7 redraw\ne 7 redraw\ne 3 close\n"));
+    assert_eq!(error.line(), 4);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::TickWentBackwards {
+            tick: 3,
+            previous: 7
+        }
+    );
+}
+
+/// One past the end is refused; the end itself is not, and the message
+/// says so rather than leaving someone to discover it.
+#[test]
+fn a_tick_past_the_end_of_the_run_is_refused() {
+    let error = refuse_event("e 31 close");
+    assert_eq!(error.line(), 2);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::TickBeyondHeader {
+            tick: 31,
+            ticks: 30
+        }
+    );
+    assert!(
+        error.to_string().contains("the last legal tick is 30"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unknown_key_name_is_refused() {
+    let error = refuse_event("e 0 key meta down");
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnknownKey {
+            name: "meta".to_string()
+        }
+    );
+    assert!(error.to_string().contains("arrow-right"), "{error}");
+}
+
+/// The same refusal serves keys and buttons, and says so: both are
+/// `down` or `up`, and a message naming only keys would be wrong on half
+/// the lines that can produce it.
+#[test]
+fn a_state_that_is_neither_down_nor_up_is_refused() {
+    let key = refuse_event("e 0 key space pressed");
+    assert_eq!(
+        key.kind(),
+        &TraceErrorKind::NotAPressedState {
+            text: "pressed".to_string()
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 button left sideways").kind(),
+        &TraceErrorKind::NotAPressedState {
+            text: "sideways".to_string()
+        }
+    );
+    assert!(key.to_string().contains("a key or a button"), "{key}");
+}
+
+#[test]
+fn a_line_that_stops_before_its_state_is_refused() {
+    for line in ["e 0 key space", "e 0 button left"] {
+        assert_eq!(
+            refuse_event(line).kind(),
+            &TraceErrorKind::LineEndsEarly {
+                expected: "`down` or `up`"
+            }
+        );
+    }
+}
+
+#[test]
+fn a_key_line_that_stops_before_its_name_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 key").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the key name"
+        }
+    );
+}
+
+#[test]
+fn a_wheel_line_that_stops_before_a_delta_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 wheel").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the wheel's horizontal delta"
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 wheel 0x00000000").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the wheel's vertical delta"
+        }
+    );
+}
+
+/// The repeat flag is present or absent. A word meaning "no" would be a
+/// second spelling of an absent flag.
+#[test]
+fn anything_but_the_repeat_flag_after_a_key_state_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 key space down norepeat").kind(),
+        &TraceErrorKind::NotTheRepeatFlag {
+            text: "norepeat".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_doubled_space_on_a_key_line_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 key space down  repeat").kind(),
+        &TraceErrorKind::BlankField
+    );
+}
+
+#[test]
+fn text_after_a_complete_line_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 close now").kind(),
+        &TraceErrorKind::TrailingText {
+            text: "now".to_string()
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 key space down repeat twice").kind(),
+        &TraceErrorKind::TrailingText {
+            text: "twice".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_trailing_space_on_an_event_line_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 close ").kind(),
+        &TraceErrorKind::BlankField
+    );
+}
+
+#[test]
+fn a_doubled_space_before_an_event_kind_is_refused() {
+    assert_eq!(
+        refuse_event("e 0  close").kind(),
+        &TraceErrorKind::BlankField
+    );
+}
+
+/// One spelling per file: an uppercase digit, or an uppercase prefix, is
+/// a second way to write a number that already has one.
+#[test]
+fn an_uppercase_bit_pattern_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 scale 0x400000000000000A").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the scale factor",
+            text: "0x400000000000000A".to_string(),
+            digits: 16,
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 scale 0X4000000000000000").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the scale factor",
+            text: "0X4000000000000000".to_string(),
+            digits: 16,
+        }
+    );
+}
+
+#[test]
+fn a_bit_pattern_of_the_wrong_width_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 scale 0x4").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the scale factor",
+            text: "0x4".to_string(),
+            digits: 16,
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 wheel 0x000000000 0x00000000").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the wheel's horizontal delta",
+            text: "0x000000000".to_string(),
+            digits: 8,
+        }
+    );
+}
+
+#[test]
+fn a_bit_pattern_without_its_prefix_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 pointer 4000000000000000 0x0000000000000000").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the pointer's x coordinate",
+            text: "4000000000000000".to_string(),
+            digits: 16,
+        }
+    );
+}
+
+#[test]
+fn a_pointer_line_that_stops_before_its_second_coordinate_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 pointer 0x0000000000000000").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the pointer's y coordinate"
+        }
+    );
+}
+
+/// A trace carries finite values only, in both widths.
+#[test]
+fn a_non_finite_bit_pattern_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 scale 0x7ff0000000000000").kind(),
+        &TraceErrorKind::NonFinite {
+            field: "the scale factor",
+            text: "0x7ff0000000000000".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 pointer 0x0000000000000000 0xfff8000000000000").kind(),
+        &TraceErrorKind::NonFinite {
+            field: "the pointer's y coordinate",
+            text: "0xfff8000000000000".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 wheel 0xff800000 0x00000000").kind(),
+        &TraceErrorKind::NonFinite {
+            field: "the wheel's horizontal delta",
+            text: "0xff800000".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 wheel 0x00000000 0x7f800001").kind(),
+        &TraceErrorKind::NonFinite {
+            field: "the wheel's vertical delta",
+            text: "0x7f800001".to_string(),
+        }
+    );
+}
+
+#[test]
+fn an_unknown_pointer_button_is_refused() {
+    let error = refuse_event("e 0 button thumb down");
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::UnknownButton {
+            name: "thumb".to_string()
+        }
+    );
+    assert!(error.to_string().contains("other:<index>"), "{error}");
+}
+
+#[test]
+fn a_native_button_index_that_is_not_digits_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 button other:x down").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the native button index (u16)",
+            text: "x".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 button other: down").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the native button index (u16)",
+            text: String::new(),
+        }
+    );
+}
+
+#[test]
+fn a_native_button_index_too_large_for_its_width_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 button other:65536 down").kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "the native button index (u16)",
+            text: "65536".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_button_line_that_stops_before_its_button_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 button").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the pointer button"
+        }
+    );
+}
+
+#[test]
+fn a_focus_state_that_is_neither_in_nor_out_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 focus yes").kind(),
+        &TraceErrorKind::NotAFocusState {
+            text: "yes".to_string()
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 focus").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "`in` or `out`"
+        }
+    );
+}
+
+#[test]
+fn a_resize_that_is_not_two_numbers_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 resize wide 720").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the width (u32)",
+            text: "wide".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 resize 1280").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the height (u32)"
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 resize 4294967296 720").kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "the width (u32)",
+            text: "4294967296".to_string(),
+        }
+    );
+}
