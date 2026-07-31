@@ -14,16 +14,20 @@ pub enum Command {
     Check,
     Coverage,
     Doctor,
+    Record,
+    Replay,
 }
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Configure,
         Self::Build,
         Self::Test,
         Self::Bench,
         Self::Run,
+        Self::Record,
+        Self::Replay,
         Self::Lint,
         Self::Check,
         Self::Coverage,
@@ -43,6 +47,31 @@ impl Command {
             Self::Check => "check",
             Self::Coverage => "coverage",
             Self::Doctor => "doctor",
+            Self::Record => "record",
+            Self::Replay => "replay",
+        }
+    }
+
+    /// Whether the subcommand names a sample and forwards the rest of
+    /// the line to it. These are the subcommands whose flags must come
+    /// *before* the sample name.
+    #[must_use]
+    pub const fn takes_sample(self) -> bool {
+        matches!(self, Self::Run | Self::Record | Self::Replay)
+    }
+
+    /// The sample-side flag this subcommand translates to, and the
+    /// `renew` flag whose value fills it.
+    ///
+    /// The pairing is a convention the tool cannot verify — a sample is
+    /// free not to honour it — which is why a rejection from the child
+    /// is rewritten to name the flag the caller actually typed.
+    #[must_use]
+    pub const fn trace_flags(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Record => Some(("--output", "--record-trace")),
+            Self::Replay => Some(("--input", "--replay-trace")),
+            _ => None,
         }
     }
 
@@ -59,6 +88,8 @@ impl Command {
             Self::Check => "verify workspace crate manifests and dependencies",
             Self::Coverage => "hold a coverage report against the exemption manifest",
             Self::Doctor => "check the development environment",
+            Self::Record => "run a sample, writing the input it saw to a file",
+            Self::Replay => "run a sample from a recorded input file",
         }
     }
 
@@ -80,11 +111,16 @@ pub struct Invocation {
     /// Coverage only (parse enforces, and requires): the `llvm-cov` JSON
     /// export to read.
     pub report: Option<String>,
-    /// Run only (parse enforces, and requires): the sample to start,
-    /// named by its binary.
+    /// Run, record and replay (parse enforces, and requires): the sample
+    /// to start, named by its binary.
     pub sample: Option<String>,
-    /// Run only: the sample's own command line, taken verbatim.
+    /// Run, record and replay: the sample's own command line, verbatim.
     pub sample_args: Vec<String>,
+    /// Record and replay only (parse enforces, and requires): the trace
+    /// file to write, or to read. One field for both because exactly one
+    /// subcommand can be in play, and two would let a caller construct an
+    /// invocation naming both.
+    pub trace: Option<String>,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -108,8 +144,10 @@ pub enum ParseError {
         command: &'static str,
         option: &'static str,
     },
-    /// `run` was given without naming a sample.
-    MissingSample,
+    /// A sample-taking subcommand was given without naming a sample.
+    /// Carries the subcommand, so the message names what the caller
+    /// typed rather than the first subcommand that ever needed one.
+    MissingSample(&'static str),
 }
 
 impl fmt::Display for ParseError {
@@ -124,7 +162,9 @@ impl fmt::Display for ParseError {
             Self::MissingOption { command, option } => {
                 write!(f, "`{command}` needs `{option} <path>`")
             }
-            Self::MissingSample => write!(f, "`run` needs a sample to run"),
+            Self::MissingSample(command) => {
+                write!(f, "`{command}` needs a sample to run")
+            }
         }
     }
 }
@@ -133,10 +173,13 @@ impl std::error::Error for ParseError {}
 
 /// Parse command-line arguments (excluding the program name).
 ///
-/// Everything after `run <sample>` is the sample's own command line and
-/// is taken verbatim, so a flag this binary also understands still
-/// reaches the sample. Flags meant for `renew` itself therefore go
-/// *before* the sample name. A single `--` may stand between the two
+/// Everything after `run <sample>` — or `record`'s or `replay`'s — is
+/// the sample's own command line and is taken verbatim, so a flag this
+/// binary also understands still reaches the sample. Flags meant for
+/// `renew` itself therefore go *before* the sample name; putting
+/// `--output` after it would forward the flag and produce an error
+/// naming something the caller never typed. A single `--` may stand
+/// between the two
 /// halves for readers; it is the marker, not an argument, so only the
 /// first one is dropped and a sample that wants a literal `--` gets it
 /// by writing two.
@@ -147,13 +190,17 @@ impl std::error::Error for ParseError {}
 /// unknown, or an argument other than the known flags is present —
 /// including `--smoke` with any subcommand other than `bench`, `--report`
 /// with any subcommand other than `coverage`, `--report` without a path,
-/// `coverage` without `--report`, and `run` without a sample.
+/// `coverage` without `--report`, a trace flag given to a subcommand that
+/// does not answer to it (including `record --input` and `replay
+/// --output`, each of which names the other's flag), `record` or `replay`
+/// without one, and any sample-taking subcommand without a sample.
 pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut command = None;
     let mut json = false;
     let mut smoke = false;
     let mut help = false;
     let mut report = None;
+    let mut trace: Option<(&'static str, String)> = None;
     let mut sample: Option<String> = None;
     let mut sample_args: Vec<String> = Vec::new();
     // The separator, if it comes at all, comes immediately after the
@@ -182,15 +229,25 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--report"))?;
                 report = Some(path.clone());
             }
+            // Same reason as `--report`: the value is consumed here so a
+            // path can never be mistaken for a subcommand or a sample.
+            "--output" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--output"))?;
+                trace = Some(("--output", path.clone()));
+            }
+            "--input" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--input"))?;
+                trace = Some(("--input", path.clone()));
+            }
             "help" | "--help" | "-h" => help = true,
             other => {
                 if help {
                     // Help short-circuits; ignore anything after it.
                     continue;
                 }
-                if command == Some(Command::Run) {
-                    // `run`'s first free argument names the sample; the
-                    // rest of the line is the sample's, taken above.
+                if command.is_some_and(Command::takes_sample) {
+                    // The first free argument names the sample; the rest
+                    // of the line is the sample's, taken above.
                     sample = Some(other.to_string());
                     separator_due = true;
                     continue;
@@ -208,6 +265,45 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     if help {
         return Ok(Parsed::Help { json });
     }
+    check_combination(
+        command,
+        smoke,
+        report.as_deref(),
+        trace.as_ref().map(|(flag, _)| *flag),
+        sample.as_deref(),
+    )?;
+    match command {
+        Some(command) => Ok(Parsed::Run(Invocation {
+            command,
+            json,
+            smoke,
+            report,
+            sample,
+            sample_args,
+            trace: trace.map(|(_, path)| path),
+        })),
+        None => Err(ParseError::NoCommand),
+    }
+}
+
+/// The rules that can only be decided once the whole line has been read:
+/// which subcommand a flag belongs to, and which subcommands require one.
+///
+/// Split out of [`parse`] so the scan and the cross-argument rules can
+/// each be read on their own — the scan says what was typed, this says
+/// whether the combination means anything.
+///
+/// Order matters and is deliberate. Every "this flag is not yours" rule
+/// comes before every "you are missing a flag" rule, so a caller who
+/// typed a flag hears about the flag they typed rather than about a
+/// different one they did not. `coverage --smoke` set that precedent.
+fn check_combination(
+    command: Option<Command>,
+    smoke: bool,
+    report: Option<&str>,
+    trace: Option<&'static str>,
+    sample: Option<&str>,
+) -> Result<(), ParseError> {
     if smoke && command != Some(Command::Bench) {
         // The flag belongs to exactly one subcommand; anywhere else it is
         // as unexpected as any stray argument.
@@ -215,6 +311,17 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     }
     if report.is_some() && command != Some(Command::Coverage) {
         return Err(ParseError::UnexpectedArgument("--report".to_string()));
+    }
+    // A trace flag the subcommand does not answer to, which covers three
+    // cases at once: any subcommand that takes neither, no subcommand at
+    // all, and each of record and replay handed the other's flag —
+    // `record --input` names a real flag, but reading it as `--output`
+    // would write over the file the caller meant to read.
+    if let Some(given) = trace {
+        let answers_to = command.and_then(Command::trace_flags);
+        if answers_to.map(|(flag, _)| flag) != Some(given) {
+            return Err(ParseError::UnexpectedArgument(given.to_string()));
+        }
     }
     if command == Some(Command::Coverage) && report.is_none() {
         // The report is the whole input: coverage has nothing to read
@@ -224,22 +331,26 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             option: "--report",
         });
     }
-    if command == Some(Command::Run) && sample.is_none() {
+    // The path is the whole input for these two, exactly as `--report`
+    // is for coverage: there is nothing to record to, or replay from.
+    if let Some(named) = command
+        && let Some((expected, _)) = named.trace_flags()
+        && trace.is_none()
+    {
+        return Err(ParseError::MissingOption {
+            command: named.name(),
+            option: expected,
+        });
+    }
+    if let Some(named) = command
+        && named.takes_sample()
+        && sample.is_none()
+    {
         // Guessing a sample would be worse than refusing: which one runs
         // is the entire content of the command.
-        return Err(ParseError::MissingSample);
+        return Err(ParseError::MissingSample(named.name()));
     }
-    match command {
-        Some(command) => Ok(Parsed::Run(Invocation {
-            command,
-            json,
-            smoke,
-            report,
-            sample,
-            sample_args,
-        })),
-        None => Err(ParseError::NoCommand),
-    }
+    Ok(())
 }
 
 /// The usage text printed for `help` and for usage errors.
@@ -250,6 +361,8 @@ pub fn usage() -> String {
     let mut text = String::from(concat!(
         "usage: renew <command> [options]\n",
         "       renew [options] run <sample> [--] [sample arguments...]\n",
+        "       renew record --output <path> <sample> [--] [sample arguments...]\n",
+        "       renew replay --input <path> <sample> [--] [sample arguments...]\n",
         "\ncommands:\n",
     ));
     for command in Command::ALL {
@@ -262,10 +375,17 @@ pub fn usage() -> String {
         "  --json            emit one machine-readable JSON document on stdout\n",
         "  --report <path>   (coverage only, required) the llvm-cov JSON export to read\n",
         "  --smoke           (bench only) run each benchmark once, without statistics\n",
+        "  --output <path>   (record only, required) the trace file to write\n",
+        "  --input <path>    (replay only, required) the trace file to read\n",
         "\nEverything after `run <sample>` goes to the sample untouched, including\n",
         "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
         "`--json`, while `renew --json run hello_triangle` gives it to renew. One `--`\n",
         "after the sample name is an optional separator and is not passed on.\n",
+        "\n`record` and `replay` are `run` with a trace file: their flag goes before\n",
+        "the sample name for the same reason, and reaches the sample as\n",
+        "`--record-trace <path>` or `--replay-trace <path>` at the front of its line.\n",
+        "Replaying is a headless run — pass `--headless` to the sample; it is not\n",
+        "assumed, because a windowed replay is a live run wearing a replay's name.\n",
     ));
     text
 }
@@ -287,7 +407,15 @@ mod tests {
             report: None,
             sample: None,
             sample_args: Vec::new(),
+            trace: None,
         }
+    }
+
+    /// Every subcommand except the one a flag belongs to. Derived from
+    /// `Command::ALL` rather than written out, so a subcommand added
+    /// later cannot quietly escape the rejection tests below.
+    fn all_except(owner: Command) -> impl Iterator<Item = Command> {
+        Command::ALL.into_iter().filter(move |c| *c != owner)
     }
 
     /// What `run <sample>` with a given tail must parse to.
@@ -303,9 +431,9 @@ mod tests {
     fn every_command_parses_by_name() {
         for command in Command::ALL {
             let name = command.name();
-            // Two subcommands need more than their name: coverage takes a
-            // required option, run takes the sample. Both still have to
-            // round-trip by name.
+            // Four subcommands need more than their name: coverage takes
+            // a required option, run takes the sample, and record and
+            // replay take both. All still have to round-trip by name.
             let (line, expected) = match command {
                 Command::Coverage => (
                     vec![name, "--report", "cov.json"],
@@ -321,6 +449,21 @@ mod tests {
                         ..plain(command)
                     },
                 ),
+                Command::Record | Command::Replay => {
+                    // Whichever flag this one owns, taken from the same
+                    // table the parser consults, so the two cannot drift.
+                    let (flag, _) = command
+                        .trace_flags()
+                        .expect("record and replay carry flags");
+                    (
+                        vec![name, flag, "walk.trace", "input_echo"],
+                        Invocation {
+                            sample: Some("input_echo".to_string()),
+                            trace: Some("walk.trace".to_string()),
+                            ..plain(command)
+                        },
+                    )
+                }
                 _ => (vec![name], plain(command)),
             };
             assert_eq!(
@@ -363,15 +506,8 @@ mod tests {
 
     #[test]
     fn smoke_with_any_other_subcommand_is_rejected() {
-        for name in [
-            "configure",
-            "build",
-            "test",
-            "run",
-            "lint",
-            "check",
-            "doctor",
-        ] {
+        for command in all_except(Command::Bench) {
+            let name = command.name();
             assert_eq!(
                 parse(&arguments(&[name, "--smoke"])),
                 Err(ParseError::UnexpectedArgument("--smoke".to_string())),
@@ -410,15 +546,8 @@ mod tests {
 
     #[test]
     fn report_with_any_other_subcommand_is_rejected() {
-        for name in [
-            "configure",
-            "build",
-            "test",
-            "bench",
-            "run",
-            "lint",
-            "check",
-        ] {
+        for command in all_except(Command::Coverage) {
+            let name = command.name();
             assert_eq!(
                 parse(&arguments(&[name, "--report", "cov.json"])),
                 Err(ParseError::UnexpectedArgument("--report".to_string())),
@@ -463,13 +592,143 @@ mod tests {
         );
     }
 
+    /// Each of the two owns exactly one flag, and each must refuse the
+    /// other's: they differ only in direction, so a swap that parsed
+    /// would read the file the caller asked to write.
     #[test]
-    fn run_without_a_sample_is_rejected() {
-        assert_eq!(parse(&arguments(&["run"])), Err(ParseError::MissingSample));
+    fn record_and_replay_take_their_own_flag_and_refuse_the_others() {
+        for command in [Command::Record, Command::Replay] {
+            let name = command.name();
+            let (mine, _) = command.trace_flags().expect("both carry a flag");
+            assert_eq!(
+                parse(&arguments(&[name, mine, "walk.trace", "input_echo"])),
+                Ok(Parsed::Run(Invocation {
+                    sample: Some("input_echo".to_string()),
+                    trace: Some("walk.trace".to_string()),
+                    ..plain(command)
+                })),
+                "`{name} {mine}` must parse"
+            );
+            // The flag before the subcommand name, as `--report` allows.
+            assert_eq!(
+                parse(&arguments(&[mine, "walk.trace", name, "input_echo"])),
+                Ok(Parsed::Run(Invocation {
+                    sample: Some("input_echo".to_string()),
+                    trace: Some("walk.trace".to_string()),
+                    ..plain(command)
+                })),
+                "`{mine} … {name}` must parse"
+            );
+            let (theirs, _) = all_except(command)
+                .find_map(Command::trace_flags)
+                .expect("the other subcommand carries the other flag");
+            assert_eq!(
+                parse(&arguments(&[name, theirs, "walk.trace", "input_echo"])),
+                Err(ParseError::UnexpectedArgument(theirs.to_string())),
+                "`{name} {theirs}` must be rejected"
+            );
+        }
+    }
+
+    /// The mirror of the `--smoke` and `--report` rejections: a trace
+    /// flag anywhere it is not owned, derived from `ALL` so a subcommand
+    /// added later cannot escape it.
+    #[test]
+    fn a_trace_flag_with_any_other_subcommand_is_rejected() {
+        for owner in [Command::Record, Command::Replay] {
+            let (flag, _) = owner.trace_flags().expect("both carry a flag");
+            for command in all_except(owner) {
+                let name = command.name();
+                assert_eq!(
+                    parse(&arguments(&[name, flag, "walk.trace"])),
+                    Err(ParseError::UnexpectedArgument(flag.to_string())),
+                    "`{name} {flag}` must be rejected"
+                );
+            }
+            // And with no subcommand at all, rather than `NoCommand`.
+            assert_eq!(
+                parse(&arguments(&[flag, "walk.trace"])),
+                Err(ParseError::UnexpectedArgument(flag.to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn a_trace_subcommand_without_its_flag_is_rejected() {
+        for command in [Command::Record, Command::Replay] {
+            let name = command.name();
+            let (flag, _) = command.trace_flags().expect("both carry a flag");
+            assert_eq!(
+                parse(&arguments(&[name, "input_echo"])),
+                Err(ParseError::MissingOption {
+                    command: name,
+                    option: flag,
+                }),
+                "`{name}` without {flag} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trace_flag_without_a_path_is_rejected() {
+        for command in [Command::Record, Command::Replay] {
+            let (flag, _) = command.trace_flags().expect("both carry a flag");
+            assert_eq!(
+                parse(&arguments(&[command.name(), flag])),
+                Err(ParseError::MissingValue(flag))
+            );
+        }
+    }
+
+    /// The ordering rule these subcommands exist to respect: past the
+    /// sample name, a flag `renew` knows is the sample's. Written out
+    /// because it is the failure the design named — `--output` after the
+    /// sample would be forwarded, and the sample would reject a flag the
+    /// caller did type, blaming the wrong tool.
+    #[test]
+    fn a_trace_flag_after_the_sample_name_belongs_to_the_sample() {
         assert_eq!(
-            parse(&arguments(&["--json", "run"])),
-            Err(ParseError::MissingSample)
+            parse(&arguments(&[
+                "record",
+                "--output",
+                "a.trace",
+                "input_echo",
+                "--output",
+                "b.trace",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                sample: Some("input_echo".to_string()),
+                sample_args: vec!["--output".to_string(), "b.trace".to_string()],
+                trace: Some("a.trace".to_string()),
+                ..plain(Command::Record)
+            }))
         );
+    }
+
+    #[test]
+    fn a_sample_taking_subcommand_without_a_sample_is_rejected() {
+        // Derived from `takes_sample` rather than listed, so a fourth
+        // sample-taking subcommand cannot be added without an answer
+        // here. Record and replay need their flag first, or they fail on
+        // that instead and never reach the question being asked.
+        for command in Command::ALL.into_iter().filter(|c| c.takes_sample()) {
+            let name = command.name();
+            let mut line = vec![name];
+            if let Some((flag, _)) = command.trace_flags() {
+                line.extend_from_slice(&[flag, "walk.trace"]);
+            }
+            assert_eq!(
+                parse(&arguments(&line)),
+                Err(ParseError::MissingSample(name)),
+                "`{name}` without a sample must be rejected, naming itself"
+            );
+            line.insert(0, "--json");
+            assert_eq!(
+                parse(&arguments(&line)),
+                Err(ParseError::MissingSample(name)),
+                "`--json {name}` must be rejected the same way"
+            );
+        }
     }
 
     #[test]
@@ -665,7 +924,7 @@ mod tests {
                 command: "coverage",
                 option: "--report",
             },
-            ParseError::MissingSample,
+            ParseError::MissingSample("record"),
         ] {
             assert!(!error.to_string().is_empty(), "{error:?}");
         }
