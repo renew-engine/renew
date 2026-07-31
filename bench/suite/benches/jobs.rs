@@ -303,5 +303,62 @@ fn batching_benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, jobs_benches, skew_benches, batching_benches);
+/// Worker counts swept when pricing the wakeup. Zero is the inline
+/// control. Seven (plus the calling thread makes eight) is the widest
+/// point; it is deliberately **not** an oversubscription test, because
+/// the machine this was first run on has sixteen cores and eight threads
+/// does not oversubscribe it. What the sweep measures is how the cost
+/// grows with threads woken, within a pool that fits.
+const WAKEUP_WORKERS: [usize; 5] = [0, 1, 2, 3, 7];
+
+/// Dispatches per iteration. Sixteen is where the batching sweep showed
+/// the per-dispatch cost most clearly, so the signal here is largest.
+const WAKEUP_DISPATCHES: usize = 16;
+
+/// Does a dispatch's cost scale with the number of threads woken, or is
+/// it a fixed protocol charge?
+///
+/// The batching group established that ~99% of a dispatch is the wakeup.
+/// That number alone does not say which fix would help. If the cost
+/// grows with worker count, the broadcast is the problem and waking only
+/// as many threads as there is work for would pay. If it is flat, the
+/// charge is the lock-and-barrier protocol itself and thread-count
+/// tuning buys nothing -- a different design, and a different amount of
+/// effort.
+///
+/// Work, chunking and dispatch count are identical across the sweep;
+/// only the pool's worker count changes. Zero workers is the inline
+/// control, and it should be flat and cheap because nothing is woken.
+fn wakeup_scaling_benches(c: &mut Criterion) {
+    let grain = NonZeroUsize::MIN.saturating_add(BATCH_GRAIN - 1);
+    let span = BATCH_ELEMENTS / WAKEUP_DISPATCHES;
+    let mut output = vec![0_u64; BATCH_ELEMENTS];
+
+    for workers in WAKEUP_WORKERS {
+        let Ok(mut pool) = JobPool::new(&PoolConfig::new(workers)) else {
+            continue;
+        };
+        let name = format!("jobs_wakeup_scaling_{workers}_workers");
+        c.bench_function(&name, |b| {
+            b.iter(|| {
+                for slice in output.chunks_mut(span) {
+                    pool.parallel_for_slice_mut(black_box(slice), grain, |offset, chunk| {
+                        for (index, slot) in chunk.iter_mut().enumerate() {
+                            *slot = burn((offset + index) as u64, BATCH_ROUNDS);
+                        }
+                    });
+                }
+                black_box(output[BATCH_ELEMENTS - 1]);
+            });
+        });
+    }
+}
+
+criterion_group!(
+    benches,
+    jobs_benches,
+    skew_benches,
+    batching_benches,
+    wakeup_scaling_benches
+);
 criterion_main!(benches);
