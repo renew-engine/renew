@@ -52,6 +52,11 @@
 //! assert_eq!(both, vec![hero.index()]);
 //! ```
 
+// Storage answers questions; it never reports. A print from inside a
+// query would be output no caller asked for, on a path that runs once
+// per entity per frame.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 mod entity;
 mod store;
 

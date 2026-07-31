@@ -511,3 +511,84 @@ fn the_position_matcher_reads_whole_words_only() {
     assert!(cited("a multi-line refusal").is_none(), "no number follows");
     assert!(cited("the line above").is_none(), "no number follows");
 }
+
+/// The lints every engine crate is expected to carry itself.
+///
+/// Held as a list rather than one string so the message can say which of
+/// them is missing, and so adding a third is a one-line change.
+const ENGINE_CRATE_DENIES: &[&str] = &["clippy::print_stdout", "clippy::print_stderr"];
+
+/// Every crate under the engine module root denies printing, at the crate
+/// root, in its own source.
+///
+/// The workspace lint table cannot carry this: two non-engine crates —
+/// the CLI and the samples — print by design, and a workspace-wide deny
+/// would need an `allow` escape in each of them. So it is per crate, by
+/// hand, which is exactly the arrangement that rots.
+///
+/// **And it did.** The convention held for nine crates and then three
+/// landed on one day without it. Nothing noticed: the structure check
+/// requires each crate's `clippy.toml` to exist but says nothing about
+/// its contents or about crate-root attributes, and clippy cannot warn
+/// about a deny that was never written. This was the predicted failure —
+/// the convention holds until the crate that forgets, and nothing says
+/// so — and it came true three times before this test existed.
+#[test]
+fn every_engine_crate_denies_printing_at_its_root() {
+    let root = workspace_root();
+    let engine = root.join("crates");
+    let mut checked = Vec::new();
+    let mut faults = Vec::new();
+
+    let mut pending = vec![engine];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml") {
+                continue;
+            }
+            let Some(crate_dir) = path.parent() else {
+                continue;
+            };
+            let lib = crate_dir.join("src").join("lib.rs");
+            let shown = crate_dir
+                .strip_prefix(&root)
+                .unwrap_or(crate_dir)
+                .display()
+                .to_string();
+            let Ok(source) = std::fs::read_to_string(&lib) else {
+                // A crate under `crates/` with no lib.rs is a shape this
+                // rule has no opinion about; reported rather than skipped
+                // so a binary-only engine crate is a decision someone
+                // makes rather than a silent exemption.
+                faults.push(format!("{shown} has no src/lib.rs to carry the denies"));
+                continue;
+            };
+            checked.push(shown.clone());
+            for deny in ENGINE_CRATE_DENIES {
+                if !source.contains(deny) {
+                    faults.push(format!("{shown} does not deny `{deny}` at its crate root"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked.len() >= 9,
+        "only {} engine crates were found; the walk is not reaching the tree and this would pass \
+         vacuously",
+        checked.len()
+    );
+    assert!(
+        faults.is_empty(),
+        "these engine crates are missing a crate-root print deny, which the workspace lint table \
+         cannot supply because the CLI and the samples print by design: {faults:?}"
+    );
+}
