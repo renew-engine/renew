@@ -36,12 +36,18 @@ the bytes.
   swapchain — recoverable results. Mixing objects across devices or a
   wrong-sized readback buffer — contract violations (the readback
   length check is retained in release builds; it guards memory safety).
-- **Validation is evidence.** The test suites bring devices up with
-  `Validation::Required` and mechanically assert zero validation
-  errors at teardown; golden tests pin exact bytes on the CI-pinned
-  software rasterizer.
+- **Validation is evidence, and the lanes are uneven.** The device
+  suite brings devices up with `Validation::Required` and mechanically
+  asserts zero validation errors at teardown; the fault suite runs
+  `IfAvailable` with one `Required` scenario, and the golden and
+  present suites run `IfAvailable`. **No `Required` lane constructs a
+  window target**, so the strict validation oracle covers the offscreen
+  path only. Golden tests pin exact bytes on the CI-pinned software
+  rasterizer.
 - **Steady-state frames allocate nothing** on the engine side — pinned
-  by an allocation-counting integration test. Driver host allocations
+  by an allocation-counting integration test **that builds an offscreen
+  target only**. The window render path has no allocation gate; the
+  contract covers it, the test does not. Driver host allocations
   are instrumented separately through `VkAllocationCallbacks` into a
   per-device ledger (`host_allocation_stats`), diagnostics only.
 
