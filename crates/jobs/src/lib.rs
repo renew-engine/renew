@@ -873,6 +873,36 @@ mod tests {
         );
     }
 
+    /// Fewer chunks than workers still completes every chunk exactly once.
+    ///
+    /// The dispatch wakes `chunks - 1` workers, so with a pool wider than
+    /// the plan most of it is never notified at all. What must hold is
+    /// that no chunk is stranded by a worker that stayed asleep: the
+    /// caller drains, and every awake participant re-enters the claim
+    /// loop after each chunk.
+    ///
+    /// Asserting *which* thread ran a chunk, or how many woke, would
+    /// assert something `parallel_for` explicitly refuses to promise.
+    /// The claim here is the one the contract does make — each element
+    /// visited once — over a spread of plans narrower than the pool.
+    #[test]
+    fn a_plan_narrower_than_the_pool_still_runs_every_chunk() {
+        let mut pool = JobPool::new(&PoolConfig::new(7)).expect("pool");
+        for chunks in 1..=6 {
+            let mut data = vec![0_u32; chunks];
+            pool.parallel_for_slice_mut(&mut data, grain(1), |offset, slice| {
+                for (index, slot) in slice.iter_mut().enumerate() {
+                    *slot = u32::try_from(offset + index).unwrap_or(u32::MAX) + 1;
+                }
+            });
+            let expected: Vec<u32> = (1..=u32::try_from(chunks).unwrap_or(u32::MAX)).collect();
+            assert_eq!(
+                data, expected,
+                "a {chunks}-chunk plan on a 7-worker pool left an element unvisited"
+            );
+        }
+    }
+
     #[test]
     fn nul_prefix_fails_before_spawning_anything() {
         let error = JobPool::new(&PoolConfig::new(3).thread_name_prefix("bad\0prefix"))
