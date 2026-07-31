@@ -132,6 +132,28 @@ fn a_zero_limit_admits_only_an_empty_file() {
     ));
 }
 
+/// An oversized file is reported as oversized even when the limit cuts a
+/// character in half.
+///
+/// The bound reads one byte past the limit and then decodes, so a cut
+/// landing inside a multi-byte character makes the decode fail before the
+/// size check is reached. The file is refused either way — nothing unsafe
+/// — but "this file is not valid text" sends a reader hunting for an
+/// encoding problem in a file whose only fault is being too big. Size is
+/// the more fundamental fact, so it has to win.
+#[test]
+fn an_oversized_file_is_too_large_even_when_the_cut_splits_a_character() {
+    let file = scratch("bounded-split-char.txt");
+    // Four ASCII bytes, then a two-byte character, then more: with a
+    // limit of four, the byte read one past the limit is the first half
+    // of that character.
+    fs::write(&file.0, "aaaa\u{e9}bbbb".as_bytes()).expect("write succeeds");
+    match fs::read_to_string_bounded(&file.0, 4) {
+        Err(fs::FsError::TooLarge { limit, .. }) => assert_eq!(limit, 4),
+        other => panic!("expected TooLarge, got {other:?}"),
+    }
+}
+
 /// Bounding does not weaken the other classifications: a missing file
 /// and non-UTF-8 content report what they always did.
 #[test]
