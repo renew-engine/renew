@@ -1,0 +1,33 @@
+[package]
+name = "renew-trace"
+description = "The input-trace codec: a line-oriented text format for recorded input, with a reader and a writer that are exact inverses"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The input-trace codec: a line-oriented text format for recorded input, a reader that refuses everything it does not understand, and a writer that is its exact inverse."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# Deliberately empty, and load-bearing. The event vocabulary is this
+# crate's own, so a trace reader drags no windowing stack — no winit, no
+# x11, no wayland — into a headless build that only wants to read a file.
+# It also makes the crate byte-identical in every removability
+# configuration: there is no edge to remove.
+[dependencies]
+
+[dev-dependencies]
+# Test-only, and only for the counting global allocator: one test asks
+# whether refusing a huge file holds any of it, and that question has no
+# answer without an allocator that can be read.
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[lints]
+workspace = true

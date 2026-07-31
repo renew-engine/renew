@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# Provenance, so nobody reads this as a released defect: the case below
+# was found while deliberately mutating the reader to split a header
+# field at its LAST separator instead of its first. It has never failed
+# against unmutated code. It is kept because it is the most valuable
+# seed in the file -- an input that actually distinguishes the correct
+# split from the wrong one, which the generator could not produce until
+# its alphabet was widened to include the separator character.
+cc 5ef7e1c76a99b5cef192ccded0bc735aceaf6d4286b289ca34d1b2eab81c0c66 # shrinks to trace = Trace { header: TraceHeader { sample: "=", ticks: 0, timestep_ns: 0, budget: 0, keys: [("A", "=")] }, events: [] }

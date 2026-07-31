@@ -1,0 +1,57 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# The entries that matter most here are the filesystem ones. This crate is
+# a codec and nothing else: it takes text and returns a trace, or takes a
+# trace and returns text. It never opens a file and never accepts a path.
+# That is what makes it fuzzable and testable with no filesystem at all,
+# and it is what puts the memory bound on a whole-file read where it
+# belongs — at the seam that does the reading, which can refuse a file too
+# large to hold before a single byte reaches a parser. One `fs::read`
+# added here for convenience would move an untrusted-input bound into a
+# crate that has no way to enforce it.
+#
+# What this list is, precisely: a tripwire across the roads someone
+# actually takes, not a proof. A ban on `File::open` alone was exactly
+# that mistake — `OpenOptions::new().read(true).open(…)` plus
+# `Read::read_to_string` is the same unbounded read of the same untrusted
+# file, spelled in two lines, and it compiled clean. The types are banned
+# now as well as the calls, which closes that road and the ones beside
+# it, and every entry below was checked by writing the call and watching
+# the lint fire. A determined author can still reach the filesystem by a
+# name nobody thought to list. The point is that nobody arrives there by
+# accident, and that anyone who does has to delete a line with a reason
+# written on it.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "this crate never touches the filesystem: it parses text a caller already holds" },
+    { path = "std::fs::read_to_string", reason = "an unbounded whole-file read of untrusted input belongs at the I/O seam, which can refuse an oversized file; this crate never does I/O" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road: a handle plus this method is `fs::read_to_string` spelled in two lines" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem: it returns text for a caller to write" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem, and asking about a file is one line away from opening it" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a codec is a pure function of its argument; a value from the environment would make one run differ from the next with nothing in the input to explain it" },
+    { path = "std::time::Instant::now", reason = "a codec reads no clock; nothing it produces may depend on when it ran" },
+    { path = "std::time::SystemTime::now", reason = "a codec reads no clock; nothing it produces may depend on when it ran" },
+    { path = "std::thread::spawn", reason = "a codec spawns nothing; it is a pure function of its input" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle, which banning `File::open` alone does not" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on `File::open` misses" },
+    { path = "std::path::Path", reason = "the codec takes text, never a path: a function that can name a file will eventually open one" },
+    { path = "std::path::PathBuf", reason = "the codec takes text, never a path: a function that can name a file will eventually open one" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs; header keys keep the order they were written in, which a map would destroy" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs" },
+]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
