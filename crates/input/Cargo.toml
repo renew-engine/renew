@@ -1,0 +1,28 @@
+[package]
+name = "renew-input"
+description = "Raw window events to named actions: bindings, per-tick edges, and no clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Maps physical keys and pointer buttons to caller-named actions, with press and release edges that live on the tick rather than on the event."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+# The one dependency is the event vocabulary this crate translates from.
+# Taking a copy of it instead would mean every caller converting at the
+# seam, and two enums that must be kept in step by hand.
+[dependencies]
+renew-platform = { path = "../core/platform" }
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true
