@@ -263,7 +263,7 @@ pub fn lint_file_findings(shapes: &[CrateShape], exists: &dyn Fn(&str) -> bool) 
             findings.push(Finding {
                 rule: "lint-files",
                 message: format!(
-                    "engine crate {} has no clippy.toml; every engine crate carries one,                      so its zoning tripwires are enforced by the compiler rather than by review",
+                    "engine crate {} has no clippy.toml, so its zoning tripwires are enforced by review rather than by the compiler",
                     shape.name
                 ),
             });
