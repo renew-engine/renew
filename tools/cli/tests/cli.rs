@@ -643,6 +643,10 @@ fn a_run_outside_any_workspace_fails_in_both_modes() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "replaces PATH, which under ASan on Windows also hides the sanitizer runtime DLL"
+)]
 fn a_step_that_cannot_be_spawned_fails_in_both_modes() {
     let empty = scratch_directory("nopath").expect("scratch directory should be creatable");
     // `configure`'s first step is `rustup`; an empty search path makes it
@@ -677,6 +681,10 @@ fn a_step_that_cannot_be_spawned_fails_in_both_modes() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "replaces PATH, which under ASan on Windows also hides the sanitizer runtime DLL"
+)]
 fn check_fails_loudly_when_cargo_metadata_cannot_be_read() {
     let directory = broken_workspace("metadata").expect("scratch workspace should be creatable");
     // Pin the search path to the cargo that built this test, so the child
@@ -1084,6 +1092,10 @@ fn an_unknown_sample_is_a_usage_error_naming_the_samples_that_exist() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "replaces PATH, which under ASan on Windows also hides the sanitizer runtime DLL"
+)]
 fn a_run_that_cannot_read_the_sample_list_refuses_instead_of_denying_it() {
     // No workspace at all: the same refusal every other subcommand gives.
     let empty = scratch_directory("run-noroot").expect("scratch directory should be creatable");
@@ -1364,6 +1376,10 @@ fn doctor_check<'a>(envelope: &'a Value, name: &str) -> Option<&'a Value> {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "replaces PATH, which under ASan on Windows also hides the sanitizer runtime DLL"
+)]
 fn doctor_fails_when_no_tool_is_on_the_search_path() {
     let empty = scratch_directory("doctor-bare").expect("scratch directory should be creatable");
     let output =
@@ -1387,6 +1403,10 @@ fn doctor_fails_when_no_tool_is_on_the_search_path() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "replaces PATH, which under ASan on Windows also hides the sanitizer runtime DLL"
+)]
 fn a_rustup_that_cannot_name_its_toolchain_still_counts_as_found() {
     let directory =
         scratch_directory("doctor-rustup").expect("scratch directory should be creatable");

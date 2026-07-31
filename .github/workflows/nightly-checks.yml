@@ -2,7 +2,11 @@ name: Nightly checks
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    # Daily, not weekly. It was weekly, and that is why two failures sat
+    # on main unseen: the job last ran nine hours before the crate that
+    # breaks it landed, so every green run in its history was green
+    # about code that no longer existed.
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 env:
@@ -43,6 +47,11 @@ jobs:
       - name: Run tests under ${{ matrix.sanitizer }} sanitizer
         env:
           RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+          # Read only by the thread sanitizer; harmless where the file's
+          # contents mean nothing. Every line in it is a place this job
+          # has been told not to look, so it is short and each entry
+          # carries its own reasoning.
+          TSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/tsan-suppressions.txt"
         # Doctests are compiled without sanitizer instrumentation and fail the
         # ABI-mismatch check; they run in the regular CI workflow instead.
         # The sanitized feature marks allocation-counting tests ignored:
@@ -56,7 +65,7 @@ jobs:
         # and once for the hello_triangle sample. Neither was caught by a
         # gate. To check it by hand:
         #   grep -rl '^sanitized = ' --include=Cargo.toml .
-        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized,renew-rng/sanitized,renew-frame/sanitized,renew-sample-hello-triangle/sanitized -Zbuild-std --target ${{ matrix.target }}
+        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized,renew-rng/sanitized,renew-frame/sanitized,renew-sample-hello-triangle/sanitized,renew-cli/sanitized -Zbuild-std --target ${{ matrix.target }}
       # The jobs crate's long stress tier is #[ignore]d in ordinary runs;
       # under the sanitizers it runs in full — the interleaving depth is
       # the point of this job.
