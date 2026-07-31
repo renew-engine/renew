@@ -30,7 +30,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Parsed::Help { json: true }) => {
-            let document = json::result_envelope("help", "ok", 0, 0, &cli::usage(), "");
+            let document = json::result_envelope("help", "ok", 0, 0, &cli::usage(), "", Vec::new());
             emit_stdout_line(&document.render());
             ExitCode::SUCCESS
         }
@@ -52,7 +52,7 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.report.as_deref().unwrap_or_default(),
             invocation.json,
         ),
-        Command::Run => run_sample(invocation),
+        Command::Run | Command::Record | Command::Replay => run_sample(invocation),
         _ => run_steps(invocation),
     }
 }
@@ -452,17 +452,32 @@ impl<'a> Runner<'a> {
 
     /// Every child succeeded.
     fn finish(&self) -> ExitCode {
+        self.finish_with(Vec::new())
+    }
+
+    /// Every child succeeded, with subcommand-specific fields folded into
+    /// the envelope after the shared ones. Ignored outside `--json`,
+    /// where the child's own output already reached the caller.
+    fn finish_with(&self, extra: Vec<(String, Value)>) -> ExitCode {
         if self.json {
-            return finish_json(
+            return finish_json_with(
                 self.name,
                 "ok",
                 0,
                 self.started,
                 &self.stdout_all,
                 &self.stderr_all,
+                extra,
             );
         }
         ExitCode::SUCCESS
+    }
+
+    /// What the children wrote to stdout, as captured. Empty outside
+    /// `--json`, where children inherit this process's stdout and nothing
+    /// passes through here.
+    fn captured_stdout(&self) -> &str {
+        &self.stdout_all
     }
 }
 
@@ -536,8 +551,32 @@ fn run_sample(invocation: &Invocation) -> ExitCode {
         );
         return ExitCode::from(2);
     };
-    let args = plan::sample_step(&sample.package, &sample.name, &invocation.sample_args);
+    // Parsing guarantees the path whenever the subcommand carries a
+    // flag, so the pair is either wholly present or wholly absent.
+    let lead = invocation
+        .command
+        .trace_flags()
+        .zip(invocation.trace.as_deref())
+        .map(|((_, child_flag), path)| (child_flag, path));
+    let args = plan::sample_step(&sample.package, &sample.name, lead, &invocation.sample_args);
     match runner.execute("cargo", &args) {
+        // A replay's whole result is the digest the child printed, and in
+        // JSON mode this process captured the child's stdout rather than
+        // letting it through — so without lifting the line into the
+        // envelope the caller would have to parse it back out of a string
+        // field, or in plain mode would simply have seen it already.
+        Ok(()) if invocation.command == Command::Replay => {
+            runner.finish_with(vec![(
+                "digest".to_string(),
+                match samples::digest_line(runner.captured_stdout()) {
+                    Some(line) => Value::String(line.to_string()),
+                    // Null rather than an empty string: a replay that
+                    // printed no digest did not produce one, which is a
+                    // different fact from producing an empty one.
+                    None => Value::Null,
+                },
+            )])
+        }
         Ok(()) => runner.finish(),
         Err(exit) => exit,
     }
@@ -551,6 +590,28 @@ fn finish_json(
     stdout: &str,
     stderr: &str,
 ) -> ExitCode {
+    finish_json_with(
+        command,
+        status,
+        child_code,
+        started,
+        stdout,
+        stderr,
+        Vec::new(),
+    )
+}
+
+/// The same envelope with subcommand-specific fields appended, so a
+/// reader finds the shared keys in the same order whatever ran.
+fn finish_json_with(
+    command: &str,
+    status: &str,
+    child_code: i32,
+    started: Instant,
+    stdout: &str,
+    stderr: &str,
+    extra: Vec<(String, Value)>,
+) -> ExitCode {
     let document = json::result_envelope(
         command,
         status,
@@ -558,6 +619,7 @@ fn finish_json(
         duration_ms(started),
         stdout,
         stderr,
+        extra,
     );
     emit_stdout_line(&document.render());
     if status == "ok" {

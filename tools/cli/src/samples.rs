@@ -111,9 +111,85 @@ pub fn unknown(name: &str, known: &[Sample]) -> String {
     )
 }
 
+/// The marker a sample's digest line begins with. A convention, not a
+/// contract the tool can enforce — the same weakness the trace flags
+/// have, and it resolves the same way, by the manifest eventually
+/// declaring what a sample emits.
+const DIGEST_MARKER: &str = "renew-frame ";
+
+/// The digest line in a sample's output, if it printed one.
+///
+/// The **last** match, not the first: a run that somehow reported twice
+/// is described by where it ended up, and taking the first would report a
+/// digest the sample itself superseded. Trailing whitespace is trimmed
+/// because the line crosses a pipe and a `\r` would otherwise ride into
+/// the envelope.
+#[must_use]
+pub fn digest_line(stdout: &str) -> Option<&str> {
+    stdout
+        .lines()
+        .map(str::trim_end)
+        .rfind(|line| line.starts_with(DIGEST_MARKER))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Realistic shape: the sample prints its own chatter, then the
+    /// digest last. Written out rather than built from the sample’s own
+    /// formatter, because a shared formatter would let both sides drift
+    /// together and still agree.
+    const RUN_OUTPUT: &str = concat!(
+        "started input_echo\n",
+        "renew-frame sample=input_echo seed=3 source=trace frames=20 ticks=20 ",
+        "dropped=0 schedule_hash=0x0000000000000001 state_hash=0x00000000000000ff\n",
+    );
+
+    #[test]
+    fn the_digest_line_is_found_among_the_samples_other_output() {
+        let found = digest_line(RUN_OUTPUT).expect("the run printed a digest");
+        assert!(found.starts_with("renew-frame sample=input_echo seed=3"));
+        assert!(found.ends_with("state_hash=0x00000000000000ff"));
+    }
+
+    #[test]
+    fn output_without_a_digest_has_none() {
+        assert_eq!(digest_line(""), None);
+        assert_eq!(digest_line("started input_echo\nfinished\n"), None);
+        // The marker has to begin the line: a sample quoting it mid-
+        // sentence is talking about a digest, not printing one.
+        assert_eq!(digest_line("about to print renew-frame sample=x"), None);
+    }
+
+    #[test]
+    fn the_last_digest_wins_when_a_run_printed_more_than_one() {
+        let twice = concat!(
+            "renew-frame sample=a state_hash=0x1\n",
+            "renew-frame sample=a state_hash=0x2\n",
+        );
+        assert_eq!(
+            digest_line(twice),
+            Some("renew-frame sample=a state_hash=0x2")
+        );
+    }
+
+    /// The line crosses a pipe, and a child on Windows ends it with a
+    /// carriage return before the newline. That byte must not ride into
+    /// the envelope, where it would make two identical digests compare
+    /// unequal depending on which platform recorded them.
+    #[test]
+    fn a_carriage_return_does_not_reach_the_caller() {
+        let windows = "renew-frame sample=a state_hash=0x1\r\n";
+        assert!(
+            windows.contains('\r'),
+            "the input must carry the byte under test"
+        );
+        assert_eq!(
+            digest_line(windows),
+            Some("renew-frame sample=a state_hash=0x1")
+        );
+    }
 
     /// Two sample packages and one crate that is not one, in the shape
     /// `cargo metadata --format-version 1 --no-deps` emits: a sample

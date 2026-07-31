@@ -272,6 +272,13 @@ fn sample_workspace(tag: &str) -> std::io::Result<PathBuf> {
             "fn main() {\n",
             "    let args: Vec<String> = std::env::args().skip(1).collect();\n",
             "    println!(\"echo_sample saw [{}]\", args.join(\" \"));\n",
+            // A real sample ends a replay by printing its digest. This
+            // one imitates that when it is replaying, so `replay`'s
+            // envelope has a line to lift and `record`'s has none.
+            "    let quiet = args.iter().any(|argument| argument == \"--quiet\");\n",
+            "    if !quiet && args.iter().any(|argument| argument == \"--replay-trace\") {\n",
+            "        println!(\"renew-frame sample=echo_sample state_hash=0x00000000000000ab\");\n",
+            "    }\n",
             "    if args.iter().any(|argument| argument == \"--fail\") {\n",
             "        std::process::exit(3);\n",
             "    }\n",
@@ -1106,6 +1113,170 @@ fn a_run_that_cannot_read_the_sample_list_refuses_instead_of_denying_it() {
 
     let _ = fs::remove_dir_all(&broken);
     let _ = fs::remove_dir_all(&empty);
+}
+
+/// The whole translation chain, end to end: `renew`'s flag becomes the
+/// sample's flag, in front of the caller's own arguments, and only a
+/// replay's envelope grows a digest.
+#[test]
+fn record_and_replay_translate_their_flag_and_lead_the_samples_line() {
+    let directory = sample_workspace("trace").expect("scratch workspace should be creatable");
+
+    for (subcommand, renew_flag, sample_flag) in [
+        ("record", "--output", "--record-trace"),
+        ("replay", "--input", "--replay-trace"),
+    ] {
+        // The caller's own `--output` comes after the sample name and so
+        // is the sample's, while renew's identically-spelled flag before
+        // it is renew's. Both must appear, in that order, with renew's
+        // first — which is the failure the ordering rule exists to stop.
+        let output = run_building_in(
+            &directory,
+            &[
+                subcommand,
+                renew_flag,
+                "renew.trace",
+                "echo_sample",
+                "--output",
+                "callers.txt",
+            ],
+        )
+        .expect("binary should spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stdout: {stdout}
+stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected = format!("echo_sample saw [{sample_flag} renew.trace --output callers.txt]");
+        assert!(stdout.contains(&expected), "stdout was: {stdout}");
+    }
+
+    // A replay's result is its digest, and in JSON mode the child's
+    // stdout is captured — so the line has to be lifted out as a field
+    // or a caller would have to parse it back out of a string.
+    let output = run_building_in(
+        &directory,
+        &["--json", "replay", "--input", "walk.trace", "echo_sample"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "replay")
+        .unwrap_or_else(|reason| panic!("replay --json: {reason}"));
+    assert_eq!(
+        envelope.get("digest").and_then(Value::as_str),
+        Some("renew-frame sample=echo_sample state_hash=0x00000000000000ab"),
+        "stdout was: {stdout}"
+    );
+
+    // Recording produces a file, not a digest, so the field is absent
+    // rather than present and empty.
+    let output = run_building_in(
+        &directory,
+        &["--json", "record", "--output", "walk.trace", "echo_sample"],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "record")
+        .unwrap_or_else(|reason| panic!("record --json: {reason}"));
+    assert_eq!(envelope.get("digest"), None, "stdout was: {stdout}");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// A replay whose sample printed no digest. The field is present and
+/// null, not absent: the run happened and produced nothing to report,
+/// which is a different fact from a subcommand that never carries one.
+#[test]
+fn a_replay_that_produced_no_digest_reports_null_rather_than_nothing() {
+    let directory = sample_workspace("nodigest").expect("scratch workspace should be creatable");
+    let output = run_building_in(
+        &directory,
+        &[
+            "--json",
+            "replay",
+            "--input",
+            "walk.trace",
+            "echo_sample",
+            "--quiet",
+        ],
+    )
+    .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "replay")
+        .unwrap_or_else(|reason| panic!("quiet replay --json: {reason}"));
+    // The sample really did stay quiet, or this asserts nothing.
+    assert!(
+        envelope
+            .get("stdout")
+            .and_then(Value::as_str)
+            .is_some_and(|captured| !captured.contains("renew-frame")),
+        "the sample must not have printed a digest: {stdout}"
+    );
+    assert_eq!(
+        envelope.get("digest"),
+        Some(&Value::Null),
+        "stdout was: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn the_trace_subcommands_refuse_a_command_line_that_cannot_work() {
+    // Neither of these reaches a workspace or a build: parsing refuses
+    // first, which is why they are cheap enough to drive through the
+    // real binary.
+    for (line, named) in [
+        (vec!["record", "echo_sample"], "--output"),
+        (vec!["replay", "echo_sample"], "--input"),
+        (
+            vec!["record", "--input", "t.trace", "echo_sample"],
+            "--input",
+        ),
+        (
+            vec!["replay", "--output", "t.trace", "echo_sample"],
+            "--output",
+        ),
+        (vec!["record", "--output", "t.trace"], "record"),
+        (vec!["replay", "--input", "t.trace"], "replay"),
+    ] {
+        let output = run(&line).expect("binary should spawn");
+        assert_eq!(output.status.code(), Some(2), "`{line:?}` must be refused");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(named),
+            "`{line:?}` should have named `{named}`; stderr was: {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "usage errors never emit an envelope"
+        );
+    }
+}
+
+#[test]
+fn usage_documents_the_trace_subcommands_and_their_flags() {
+    let output = run(&["help"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "record",
+        "replay",
+        "--output",
+        "--input",
+        "--record-trace",
+        "--replay-trace",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "usage omits {expected}: {stdout}"
+        );
+    }
 }
 
 #[test]
