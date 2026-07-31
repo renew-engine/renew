@@ -6,6 +6,7 @@
 //! exits 0, 1, or 2.
 
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use renew_cli::coverage::{self, Outcome};
 use renew_cli::doctor::{self, Facts};
 use renew_cli::json::{self, Value};
 use renew_cli::plan;
+use renew_cli::samples;
 use renew_cli::structure;
 use renew_cli::workspace;
 
@@ -50,6 +52,7 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.report.as_deref().unwrap_or_default(),
             invocation.json,
         ),
+        Command::Run => run_sample(invocation),
         _ => run_steps(invocation),
     }
 }
@@ -139,9 +142,16 @@ fn run_check(json_mode: bool) -> ExitCode {
 fn gather_findings() -> Result<Vec<structure::Finding>, String> {
     let root = workspace_root()
         .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
+    findings_from_metadata(&cargo_metadata(&root)?)
+}
+
+/// Ask cargo to describe this workspace. Split from its readers so the
+/// spawn — and both ways it can fail — happen in one place, whether the
+/// caller wants the structure rules or the list of samples.
+fn cargo_metadata(root: &Path) -> Result<String, String> {
     let output = Process::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
-        .current_dir(&root)
+        .current_dir(root)
         .output()
         .map_err(|error| format!("failed to run cargo metadata: {error}"))?;
     if !output.status.success() {
@@ -150,17 +160,25 @@ fn gather_findings() -> Result<Vec<structure::Finding>, String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    findings_from_metadata(&String::from_utf8_lossy(&output.stdout))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Run the structure rules over `cargo metadata` output. Split out from the
-/// spawning half so the rejection of output that is not metadata at all is
-/// exercisable without a child process.
+/// Read cargo's answer, naming output that is not metadata at all rather
+/// than letting it pass for an empty workspace. Split from the spawning
+/// half so that rejection is exercisable without a child process.
+fn parsed_metadata(text: &str) -> Result<Value, String> {
+    json::parse(text).map_err(|error| format!("unreadable cargo metadata output: {error}"))
+}
+
+/// Run the structure rules over `cargo metadata` output.
 fn findings_from_metadata(text: &str) -> Result<Vec<structure::Finding>, String> {
-    let document =
-        json::parse(text).map_err(|error| format!("unreadable cargo metadata output: {error}"))?;
-    let shapes = structure::shapes_from_metadata(&document)?;
+    let shapes = structure::shapes_from_metadata(&parsed_metadata(text)?)?;
     Ok(structure::evaluate(&shapes))
+}
+
+/// Read the runnable samples out of `cargo metadata` output.
+fn samples_from_metadata(text: &str) -> Result<Vec<samples::Sample>, String> {
+    samples::from_metadata(&parsed_metadata(text)?)
 }
 
 fn run_coverage(report_path: &str, json_mode: bool) -> ExitCode {
@@ -320,71 +338,199 @@ fn site_fields(site: &coverage::Site) -> Value {
     Value::Object(site_pairs(site))
 }
 
-fn run_steps(invocation: &Invocation) -> ExitCode {
-    let started = Instant::now();
-    let name = invocation.command.name();
-    let Some(root) = workspace_root() else {
-        let message = "no workspace root found above the current directory\n";
-        if invocation.json {
-            return finish_json(name, "error", 1, started, "", message);
-        }
-        eprint!("error: {message}");
-        return ExitCode::FAILURE;
-    };
+/// The child processes of one invocation: the context every child shares,
+/// plus the output `--json` accumulates across them.
+///
+/// One road for every subcommand that spawns something, so a command
+/// built from the fixed table and a command built from the command line
+/// reach their children the same way and fail in the same words.
+struct Runner<'a> {
+    /// The subcommand name the envelope reports.
+    name: &'a str,
+    /// Children run from the workspace root, never the caller's directory.
+    root: PathBuf,
+    json: bool,
+    started: Instant,
+    stdout_all: String,
+    stderr_all: String,
+}
 
-    let mut stdout_all = String::new();
-    let mut stderr_all = String::new();
-    for step in plan::steps(invocation.command, invocation.smoke) {
-        if invocation.json {
-            match Process::new(step.program)
-                .args(step.args)
-                .current_dir(&root)
-                .output()
-            {
+impl<'a> Runner<'a> {
+    /// Anchor a runner at the enclosing workspace. `Err` carries the exit
+    /// code of an invocation that has no tree to run in — a refusal,
+    /// because a command that never found its workspace has not passed.
+    fn anchored(name: &'a str, json: bool) -> Result<Self, ExitCode> {
+        let started = Instant::now();
+        let Some(root) = workspace_root() else {
+            return Err(report_error(
+                name,
+                json,
+                started,
+                "",
+                "",
+                "no workspace root found above the current directory",
+            ));
+        };
+        Ok(Self {
+            name,
+            root,
+            json,
+            started,
+            stdout_all: String::new(),
+            stderr_all: String::new(),
+        })
+    }
+
+    /// Run one child from the workspace root. `Ok(())` means it succeeded
+    /// and the invocation may go on; `Err(code)` means the invocation is
+    /// over, with its envelope already emitted in JSON mode.
+    ///
+    /// In plain mode the child inherits this process's stdout and stderr,
+    /// so its output reaches the caller as it is written, in its own
+    /// order — which is what lets a downstream reader grep a line the
+    /// child printed. `--json` captures instead, because that mode
+    /// promises exactly one document on stdout.
+    fn execute<A: AsRef<OsStr>>(&mut self, program: &str, args: &[A]) -> Result<(), ExitCode> {
+        let mut process = Process::new(program);
+        process.args(args).current_dir(&self.root);
+        if self.json {
+            match process.output() {
                 Ok(output) => {
-                    stdout_all.push_str(&String::from_utf8_lossy(&output.stdout));
-                    stderr_all.push_str(&String::from_utf8_lossy(&output.stderr));
-                    if !output.status.success() {
-                        // Raw child code in the envelope (-1 for signal
-                        // deaths); the process exit stays within 0/1/2.
-                        let code = output.status.code().unwrap_or(-1);
-                        return finish_json(
-                            name,
-                            "failed",
-                            code,
-                            started,
-                            &stdout_all,
-                            &stderr_all,
-                        );
+                    self.stdout_all
+                        .push_str(&String::from_utf8_lossy(&output.stdout));
+                    self.stderr_all
+                        .push_str(&String::from_utf8_lossy(&output.stderr));
+                    if output.status.success() {
+                        return Ok(());
                     }
+                    // Raw child code in the envelope (-1 for signal
+                    // deaths); the process exit stays within 0/1/2.
+                    let code = output.status.code().unwrap_or(-1);
+                    Err(finish_json(
+                        self.name,
+                        "failed",
+                        code,
+                        self.started,
+                        &self.stdout_all,
+                        &self.stderr_all,
+                    ))
                 }
-                Err(error) => {
-                    let _ = writeln!(stderr_all, "failed to run {}: {error}", step.program);
-                    return finish_json(name, "error", 1, started, &stdout_all, &stderr_all);
-                }
+                Err(error) => Err(self.fail(&format!("failed to run {program}: {error}"))),
             }
         } else {
-            match Process::new(step.program)
-                .args(step.args)
-                .current_dir(&root)
-                .status()
-            {
-                Ok(status) if status.success() => {}
+            match process.status() {
+                Ok(status) if status.success() => Ok(()),
                 // The child streamed its own output; the contract maps any
                 // child failure to exit 1.
-                Ok(_) => return ExitCode::FAILURE,
-                Err(error) => {
-                    eprintln!("error: failed to run {}: {error}", step.program);
-                    return ExitCode::FAILURE;
-                }
+                Ok(_) => Err(ExitCode::FAILURE),
+                Err(error) => Err(self.fail(&format!("failed to run {program}: {error}"))),
             }
         }
     }
 
-    if invocation.json {
-        finish_json(name, "ok", 0, started, &stdout_all, &stderr_all)
-    } else {
+    /// The invocation is over without a child having finished — nothing
+    /// ran, or nothing could.
+    fn fail(&self, message: &str) -> ExitCode {
+        report_error(
+            self.name,
+            self.json,
+            self.started,
+            &self.stdout_all,
+            &self.stderr_all,
+            message,
+        )
+    }
+
+    /// Every child succeeded.
+    fn finish(&self) -> ExitCode {
+        if self.json {
+            return finish_json(
+                self.name,
+                "ok",
+                0,
+                self.started,
+                &self.stdout_all,
+                &self.stderr_all,
+            );
+        }
         ExitCode::SUCCESS
+    }
+}
+
+/// Say why an invocation could not run, the way the running mode says it.
+/// `stdout`/`stderr` are whatever earlier children produced; `message`
+/// joins the reported stderr, because in JSON mode the envelope is the
+/// only place a reader can find it.
+fn report_error(
+    command: &str,
+    json_mode: bool,
+    started: Instant,
+    stdout: &str,
+    stderr: &str,
+    message: &str,
+) -> ExitCode {
+    if json_mode {
+        return finish_json(
+            command,
+            "error",
+            1,
+            started,
+            stdout,
+            &format!("{stderr}{message}\n"),
+        );
+    }
+    eprintln!("error: {message}");
+    ExitCode::FAILURE
+}
+
+fn run_steps(invocation: &Invocation) -> ExitCode {
+    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json) {
+        Ok(runner) => runner,
+        Err(exit) => return exit,
+    };
+    for step in plan::steps(invocation.command, invocation.smoke) {
+        if let Err(exit) = runner.execute(step.program, step.args) {
+            return exit;
+        }
+    }
+    runner.finish()
+}
+
+/// Build and run one sample, then hand it the rest of the command line.
+///
+/// Which samples exist is discovered from the workspace on every
+/// invocation rather than listed in this binary: a table here would be a
+/// second place to edit whenever a sample is added or renamed, and the
+/// copy nobody runs is the copy that goes stale.
+fn run_sample(invocation: &Invocation) -> ExitCode {
+    // Parsing guarantees the name; an empty one would simply match no
+    // sample, which is the same answer by a shorter road.
+    let requested = invocation.sample.as_deref().unwrap_or_default();
+    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json) {
+        Ok(runner) => runner,
+        Err(exit) => return exit,
+    };
+    let known = match cargo_metadata(&runner.root).and_then(|text| samples_from_metadata(&text)) {
+        Ok(known) => known,
+        // A list that cannot be read is not an empty list: refuse, rather
+        // than tell the caller their sample does not exist.
+        Err(message) => return runner.fail(&message),
+    };
+    let Some(sample) = samples::find(&known, requested) else {
+        // A name matching nothing is an unreadable command line, and is
+        // reported like every other one: stderr, usage text, exit 2, and
+        // no envelope, because no run happened to report on.
+        eprint!(
+            "error: {}\n\n{}",
+            samples::unknown(requested, &known),
+            cli::usage()
+        );
+        return ExitCode::from(2);
+    };
+    let args = plan::sample_step(&sample.package, &sample.name, &invocation.sample_args);
+    match runner.execute("cargo", &args) {
+        Ok(()) => runner.finish(),
+        Err(exit) => exit,
     }
 }
 

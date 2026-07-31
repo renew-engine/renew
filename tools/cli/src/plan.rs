@@ -64,11 +64,36 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
                 ],
             },
         ],
-        // Internal subcommands: their work happens in-process (check spawns
-        // `cargo metadata` itself; coverage reads the export it is handed),
-        // not through this table.
-        Command::Check | Command::Coverage | Command::Doctor => &[],
+        // Subcommands whose child cannot be a fixed table entry: check
+        // spawns `cargo metadata` itself, coverage reads the export it is
+        // handed, doctor's probes are gathered separately, and `run`'s
+        // child is built by `sample_step` out of the command line.
+        Command::Check | Command::Coverage | Command::Doctor | Command::Run => &[],
     }
+}
+
+/// The cargo arguments `run` spawns for one sample: build and start that
+/// binary, then hand it the rest of the command line.
+///
+/// Owned rather than a table entry, because which sample runs and what it
+/// is told are not knowable until the command line is read — that is the
+/// whole point of the subcommand. `--package` as well as `--bin` because
+/// a bare `--bin` does not select a package in a virtual workspace.
+///
+/// The trailing `--` is always present, so a sample argument that looks
+/// like a cargo flag reaches the sample instead of cargo.
+#[must_use]
+pub fn sample_step(package: &str, binary: &str, sample_args: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "--package".to_string(),
+        package.to_string(),
+        "--bin".to_string(),
+        binary.to_string(),
+        "--".to_string(),
+    ];
+    args.extend(sample_args.iter().cloned());
+    args
 }
 
 #[cfg(test)]
@@ -128,9 +153,50 @@ mod tests {
     }
 
     #[test]
-    fn internal_subcommands_run_no_external_steps() {
+    fn subcommands_outside_the_table_run_no_step_from_it() {
         assert!(steps(Command::Doctor, false).is_empty());
         assert!(steps(Command::Check, false).is_empty());
         assert!(steps(Command::Coverage, false).is_empty());
+        assert!(steps(Command::Run, false).is_empty());
+    }
+
+    #[test]
+    fn a_sample_step_names_its_package_and_binary_then_hands_over() {
+        let args = sample_step(
+            "renew-sample-hello-triangle",
+            "hello_triangle",
+            &["--headless".to_string(), "--frames".to_string()],
+        );
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--package",
+                "renew-sample-hello-triangle",
+                "--bin",
+                "hello_triangle",
+                "--",
+                "--headless",
+                "--frames",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sample_step_with_nothing_to_hand_over_still_ends_in_the_separator() {
+        // Uniform shape: the separator is not conditional, so nothing
+        // downstream has to know whether the sample was given arguments.
+        let args = sample_step("renew-sample-input-echo", "input_echo", &[]);
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--package",
+                "renew-sample-input-echo",
+                "--bin",
+                "input_echo",
+                "--",
+            ]
+        );
     }
 }
