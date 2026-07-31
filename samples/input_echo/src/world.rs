@@ -242,11 +242,21 @@ impl EchoWorld {
     }
 
     /// The run's fingerprint: every step absorbed in order, closed with
-    /// the seed and the final state.
+    /// the final state.
+    ///
+    /// The seed is deliberately NOT absorbed, though it is the obvious
+    /// thing to close with. A digest that absorbs an input cannot be
+    /// used to prove that input had an effect: every seed would produce
+    /// its own digest even if the seed were parsed, printed, and then
+    /// ignored by the simulation entirely. Leaving it out makes the
+    /// digest a fingerprint of BEHAVIOUR, so two seeds that move the
+    /// world differently are told apart on the evidence, and two that
+    /// move it identically are honestly reported as identical. The run's
+    /// configuration is not lost — the digest line and the stats
+    /// document both print the seed beside this number.
     #[must_use]
     pub const fn state_hash(&self) -> u64 {
         self.trace
-            .absorb_u64(self.seed)
             .absorb_u64(self.ticks)
             .absorb_u64(self.events)
             .absorb_bytes(&self.position.0.to_le_bytes())

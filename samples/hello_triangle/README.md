@@ -11,7 +11,7 @@ cargo run -p renew-sample-hello-triangle --bin hello_triangle -- --headless --fr
 
 ```console
 $ cargo run -p renew-sample-hello-triangle --bin hello_triangle -- --headless --frames 600
-renew-frame sample=hello_triangle seed=0 frames=600 ticks=600 dropped=0 schedule_hash=0xefc2181bbc0d588d state_hash=0x00f10d96fc295d99
+renew-frame sample=hello_triangle seed=0 frames=600 ticks=600 dropped=0 schedule_hash=0xefc2181bbc0d588d state_hash=0x5d3ec02c32278af9
 ```
 
 That line is the same on every run, in every process, and in a build
@@ -62,7 +62,11 @@ ritual: run one step too many and the bytes change.
 Two output channels, on purpose. Stdout carries exactly one line — the
 digest line above, which the cross-process determinism gate
 string-compares, needing no JSON parser and staying readable in a CI
-log. `--dump-stats` carries the machine-readable document:
+log. The state hash in that line fingerprints behaviour only — the
+seed is deliberately not folded in, so two seeds hash alike exactly
+when they move the world alike, and the matrix comparing them is
+measuring the simulation rather than the arithmetic of the hash.
+ `--dump-stats` carries the machine-readable document:
 
 ```json
 {"schema_version":1,"sample":"hello_triangle","seed":0,
@@ -170,7 +174,7 @@ why.
 | File | What it proves |
 |---|---|
 | `tests/headless_frame.rs` | The readback holds the colour the world computed for the last tick; one more step is a different image; the triangle covers the middle and one tick drawn twice is the same bytes. |
-| `tests/cli_determinism.rs` | Three separate processes print one digest line; a different frame count or seed prints a different one; the stats file agrees with it. |
+| `tests/cli_determinism.rs` | Three separate processes print one digest line; a different frame count or seed prints a different one; four seeds each reproduce themselves and none of them hash alike; the stats file agrees with the line. |
 | `tests/zero_alloc.rs` | The steady-state frame path performs no heap allocation, and neither does the title readout. |
 
 The unit tests beside the source drive the window callbacks directly —

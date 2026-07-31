@@ -80,19 +80,12 @@ fn a_different_run_is_a_different_line() {
     assert_ne!(walk, seeded, "another seed must move the digest");
 }
 
-/// The final position the run reported, read out of its stats document.
-///
-/// This, not the state digest, is what distinguishes one seed's world
-/// from another's. The digest absorbs the seed itself, so two seeds
-/// produce two digests whether or not the seed ever reached the
-/// simulation — comparing digests across seeds proves arithmetic, not
-/// behaviour. The position is behaviour: the seed picks a speed, and the
-/// speed is how far the world moved.
-fn reported_position(json: &str) -> String {
-    json.split("\"position\":")
+/// The state digest, the part of the line that is about the world
+/// rather than about the schedule.
+fn state_digest(line: &str) -> &str {
+    line.split("state_hash=")
         .nth(1)
-        .and_then(|rest| rest.split(']').next())
-        .map(|value| format!("{value}]"))
+        .map(|rest| rest.split_whitespace().next().unwrap_or_default())
         .unwrap_or_default()
 }
 
@@ -110,39 +103,32 @@ fn runs_per_seed() -> usize {
 /// The seed matrix: every seed reproduces itself across processes, and
 /// no two seeds move the world the same way.
 ///
-/// Both halves earn their place, and the second one is the reason this
-/// test exists at all. Identity within a seed is the determinism claim.
-/// Distinctness across seeds is what proves the seed REACHES the
-/// simulation: a seed that is parsed, printed, hashed and then ignored
-/// would satisfy identity perfectly, and would still yield a different
-/// digest for every seed, because the digest absorbs the seed. Only an
-/// observable the seed has to travel through catches that — here, how
-/// far the world actually moved.
+/// Both halves earn their place, and the second is the reason this test
+/// exists. Identity within a seed is the determinism claim. Distinctness
+/// across seeds is what proves the seed REACHES the simulation — a seed
+/// that is parsed, printed and then ignored satisfies identity
+/// perfectly.
+///
+/// That second half only means something because the digest does not
+/// absorb the seed (see `World::state_hash`). If it did, every seed
+/// would carry its own digest whether or not it changed anything, and
+/// this loop would be comparing arithmetic to arithmetic. Because it
+/// does not, two digests differ here only when two worlds differ.
 ///
 /// The seeds are 0 to 3 rather than an arbitrary scatter because this
-/// sample derives one speed from the seed modulo four. Five arbitrary
-/// seeds would collide by pigeonhole and fail an assertion the engine
-/// never made. When a real random-number service widens the space, the
-/// matrix widens with it.
+/// sample derives one of four speeds from the seed. Five arbitrary seeds
+/// would collide by pigeonhole and fail an assertion the engine never
+/// made — and correctly so, since two seeds that walk at the same speed
+/// SHOULD hash alike. When a real random-number service widens the
+/// space, the matrix widens with it.
 #[test]
 fn every_seed_reproduces_itself_and_no_two_seeds_move_the_world_alike() {
     const SEEDS: [&str; 4] = ["0", "1", "2", "3"];
     let runs = runs_per_seed();
-    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let mut behaviours: Vec<(&str, String)> = Vec::with_capacity(SEEDS.len());
+    let mut digests: Vec<(&str, String)> = Vec::with_capacity(SEEDS.len());
 
     for seed in SEEDS {
-        let path = directory.join(format!("input_echo-seed-{seed}.json"));
-        let text = path.to_string_lossy().to_string();
-        let arguments = [
-            "--headless",
-            "--input-trace",
-            "walk",
-            "--seed",
-            seed,
-            "--dump-stats",
-            &text,
-        ];
+        let arguments = ["--headless", "--input-trace", "walk", "--seed", seed];
         let first = digest_line(&arguments);
         for attempt in 1..runs {
             assert_eq!(
@@ -151,18 +137,16 @@ fn every_seed_reproduces_itself_and_no_two_seeds_move_the_world_alike() {
                 "seed {seed} did not reproduce on run {attempt}"
             );
         }
-        let json = std::fs::read_to_string(&path).expect("the stats file the run was asked for");
-        let position = reported_position(&json);
-        assert!(!position.is_empty(), "no position in {json}");
-        behaviours.push((seed, position));
+        let digest = state_digest(&first);
+        assert!(!digest.is_empty(), "no state digest in {first}");
+        digests.push((seed, digest.to_string()));
     }
 
-    for (index, (seed, position)) in behaviours.iter().enumerate() {
-        for (other_seed, other_position) in &behaviours[index + 1..] {
+    for (index, (seed, digest)) in digests.iter().enumerate() {
+        for (other_seed, other_digest) in &digests[index + 1..] {
             assert_ne!(
-                position, other_position,
-                "seeds {seed} and {other_seed} moved the world identically, \
-                 so the seed is not reaching the simulation"
+                digest, other_digest,
+                "seeds {seed} and {other_seed} moved the world identically"
             );
         }
     }

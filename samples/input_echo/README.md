@@ -10,7 +10,7 @@ cargo run -p renew-sample-input-echo --bin input_echo -- --headless --input-trac
 
 ```console
 $ cargo run -p renew-sample-input-echo --bin input_echo -- --headless --input-trace walk
-renew-frame sample=input_echo seed=0 source=walk frames=20 ticks=20 dropped=0 schedule_hash=0xcaa0947bf9fa1305 state_hash=0x85e3ded788429392
+renew-frame sample=input_echo seed=0 source=walk frames=20 ticks=20 dropped=0 schedule_hash=0xcaa0947bf9fa1305 state_hash=0x833e49c9dd637b92
 ```
 
 ## What it does
@@ -67,6 +67,13 @@ for a command line this sample cannot honour.
   machines.
 - **Events change what the next step does, never the state.** The world
   is advanced by `step` and by nothing else.
+- **The state hash is a fingerprint of behaviour, not of configuration.**
+  The seed is deliberately not folded into it. A digest that absorbs an
+  input cannot show that input had an effect — every seed would produce
+  its own number even if the seed never reached the simulation. Leaving
+  it out means two digests differ only when two worlds differ, which is
+  what lets the seed matrix assert something real. The configuration is
+  still printed: the seed appears beside the hash on the same line.
 - **The simulation is integer-only.** Positions are whole units and
   pointer coordinates are truncated on arrival: a state hash that
   absorbed float arithmetic would quietly become a cross-platform
