@@ -19,7 +19,10 @@ simulation = true
 # Taking a copy of it instead would mean every caller converting at the
 # seam, and two enums that must be kept in step by hand.
 [dependencies]
-renew-platform = { path = "../core/platform" }
+# default-features = false: this crate needs the event vocabulary, not
+# the OS event loop. An input layer must be buildable — and testable —
+# without compiling a windowing library.
+renew-platform = { path = "../core/platform", default-features = false }
 
 [dev-dependencies]
 proptest = "1.11"

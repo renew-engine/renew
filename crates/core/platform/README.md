@@ -18,6 +18,13 @@ seam.
   carries a name, and a *joined* thread's panic surfaces as an error
   naming it. Dropping the handle detaches the thread — deliberate, and
   the handle is `#[must_use]` so detaching is always a visible choice.
+- `event` (always available) — the event vocabulary itself: `WindowEvent`,
+  `KeyCode`, `PointerButton`, and the shape table that forces a new
+  variant to be handled. **Not behind the `window` feature, deliberately.**
+  Naming a key is not the same as opening a window, and a consumer that
+  only speaks the vocabulary — an input layer, a replay harness, a
+  headless server — should not compile a windowing library to do it.
+  `window` re-exports all of it, so either path works.
 - `window` (default-on feature) — one OS window, its event loop, and
   keyboard/mouse input behind an engine-only vocabulary: the OS owns
   the loop, a `WindowApp` receives translated events and drives exit
@@ -26,7 +33,8 @@ seam.
   window's title can be changed after creation, which is how a sample
   puts a live number where a person can see it without a text renderer.
   Headless builds disable default features and compile the entire
-  windowing stack out; headless environments at runtime get a
+  windowing stack out — the vocabulary in `event` survives that, which is
+  the point of the split; headless environments at runtime get a
   recoverable `LoopUnavailable`. The loop runs on the main thread only
   (every desktop platform requires it).
 
