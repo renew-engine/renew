@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bench/suite", "crates/asset", "crates/core/diag", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/frame", "crates/jobs", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
+members = ["bench/suite", "crates/asset", "crates/core/diag", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/frame", "crates/input", "crates/jobs", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
 
 [workspace.package]
 version = "0.1.0"

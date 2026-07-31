@@ -74,7 +74,12 @@ pub enum WindowEvent {
 /// Physical keys, the subset current consumers need — grows additively.
 /// Unmapped keys arrive as [`KeyCode::Unidentified`]; nothing is lost
 /// silently, nothing panics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Ord` so a consumer can keep these in a sorted table and binary
+// search it. The order is declaration order, which is arbitrary but
+// stable within a build — which is all a lookup key needs, and is
+// what a hash map cannot offer, since its iteration order varies
+// between runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum KeyCode {
     Escape,
@@ -92,7 +97,7 @@ pub enum KeyCode {
     Unidentified,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum PointerButton {
     Left,
