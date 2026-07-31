@@ -40,6 +40,7 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "a codec reads no clock; nothing it produces may depend on when it ran" },
     { path = "std::time::SystemTime::now", reason = "a codec reads no clock; nothing it produces may depend on when it ran" },
     { path = "std::thread::spawn", reason = "a codec spawns nothing; it is a pure function of its input" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; a codec spawns nothing; it is a pure function of its input" },
 ]
 
 disallowed-types = [

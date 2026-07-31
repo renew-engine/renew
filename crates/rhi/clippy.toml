@@ -9,10 +9,18 @@ allow-panic-in-tests = true
 
 disallowed-methods = [
     { path = "std::thread::spawn", reason = "the RHI is single-threaded by contract; parallelism belongs to the job pool" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; the RHI is single-threaded by contract; parallelism belongs to the job pool" },
     { path = "std::time::Instant::now", reason = "this crate never reads a clock; timing belongs to callers via renew-platform" },
     { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
     { path = "std::fs::read", reason = "this crate never touches the filesystem; shader bytes arrive embedded or from callers" },
     { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    # The three below were missing while the README claimed filesystem
+    # access was rejected outright. `read` and `write` are the convenience
+    # wrappers; opening a handle is the way a real shader-from-disk would
+    # actually get written, and it was the one route left open.
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
 ]
 
 # The SAFETY-comment lint accepts the comment above an attribute or

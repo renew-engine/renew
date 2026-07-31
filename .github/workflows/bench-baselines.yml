@@ -100,10 +100,10 @@ jobs:
       - name: Install the pinned software Vulkan stack
         if: runner.os == 'Linux'
         uses: ./.github/actions/software-vulkan
-      # The budget's actual number: the sample's own frame time,
-      # measured end to end through the command documented for it rather
-      # than through a harness built for this workflow. What CI runs and
-      # what a human runs stay the same thing.
+      # The target's actual number: the sample's own frame time, measured
+      # end to end through the command the project defines rather than
+      # through a harness built for this workflow. What CI runs and what a
+      # human runs stay the same thing.
       #
       # These are dev-profile numbers. Starting a sample through the
       # workspace runner is the canonical path and it has no release
