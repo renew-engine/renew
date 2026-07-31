@@ -214,5 +214,64 @@ fn skew_benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, jobs_benches, skew_benches);
+// --- Batching: what many small dispatches cost -------------------------
+//
+// Two costs have long been suspected of this pool. The skew group above
+// measures the first: how badly a single dispatch can balance. This
+// measures the second, which no benchmark had touched -- *many small
+// batches each pay one wakeup* -- and answers whether splitting the same
+// work across more dispatches costs anything worth avoiding.
+//
+// The design is one fixed quantity of work, split four ways. Total
+// elements, grain, and the per-element body are identical in all four
+// cases; only the number of `parallel_for` calls changes. **Any
+// difference between them is dispatch overhead and nothing else** --
+// which is the only way to price a wakeup without guessing at it.
+//
+// One case is not like the others and is included deliberately: at 64
+// dispatches each covers a single chunk, and the pool documents that a
+// single-chunk dispatch runs inline on the caller with no workers woken
+// at all. So that row prices the *absence* of the herd, and the spread
+// between it and the middle rows is what a wakeup actually costs.
+
+/// Elements processed in every batching case, so the total work is a
+/// constant and only the dispatch count varies.
+const BATCH_ELEMENTS: usize = 4096;
+
+/// Chunk size, fixed across the group: 64 chunks in total, however they
+/// are divided between dispatches.
+const BATCH_GRAIN: usize = 64;
+
+/// Rounds per element. Deliberately small -- the complaint being priced
+/// is about batches whose work is slight enough that per-dispatch cost
+/// could dominate, and a heavy body would bury exactly the effect under
+/// measurement.
+const BATCH_ROUNDS: u32 = 8;
+
+fn batching_benches(c: &mut Criterion) {
+    let Ok(mut pool) = JobPool::new(&PoolConfig::new(3)) else {
+        return;
+    };
+    let grain = NonZeroUsize::MIN.saturating_add(BATCH_GRAIN - 1);
+    let mut output = vec![0_u64; BATCH_ELEMENTS];
+
+    for dispatches in [1_usize, 4, 16, 64] {
+        let span = BATCH_ELEMENTS / dispatches;
+        let name = format!("jobs_batching_{dispatches}_dispatches_3_workers");
+        c.bench_function(&name, |b| {
+            b.iter(|| {
+                for slice in output.chunks_mut(span) {
+                    pool.parallel_for_slice_mut(black_box(slice), grain, |offset, chunk| {
+                        for (index, slot) in chunk.iter_mut().enumerate() {
+                            *slot = burn((offset + index) as u64, BATCH_ROUNDS);
+                        }
+                    });
+                }
+                black_box(output[BATCH_ELEMENTS - 1]);
+            });
+        });
+    }
+}
+
+criterion_group!(benches, jobs_benches, skew_benches, batching_benches);
 criterion_main!(benches);
