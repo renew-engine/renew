@@ -28,13 +28,17 @@ const SEED: Seed = Seed::from_u64(0x1234_5678_9abc_def0);
 /// A bound that never rejects. Any power of two divides the output range
 /// exactly, so the rejection threshold is zero and every draw is taken on
 /// the first attempt — the floor for a bounded draw.
-const BOUND_NEVER_REJECTS: u32 = 1 << 16;
+///
+/// Built by adding to one rather than by unwrapping an `Option`, so the
+/// non-zero-ness is a fact about the construction instead of a claim the
+/// benchmark makes and the compiler has to take on trust.
+const BOUND_NEVER_REJECTS: NonZeroU32 = NonZeroU32::MIN.saturating_add((1 << 16) - 1);
 
 /// The bound that rejects most often. Just over half the range means
 /// almost half of all words are refused, so this is the worst expected
 /// case rather than a typical one, and it is here to bound the cost from
 /// above rather than to describe ordinary use.
-const BOUND_WORST_CASE: u32 = (1u32 << 31) + 1;
+const BOUND_WORST_CASE: NonZeroU32 = NonZeroU32::MIN.saturating_add(1 << 31);
 
 fn generator(c: &mut Criterion) {
     let stream = StreamId::from_name("bench");
@@ -51,14 +55,12 @@ fn generator(c: &mut Criterion) {
 
     c.bench_function("rng_below_u32_no_rejection", |b| {
         let mut rng = Rng::new(SEED, stream);
-        let bound = NonZeroU32::new(BOUND_NEVER_REJECTS).expect("non-zero by construction");
-        b.iter(|| black_box(rng.below_u32(black_box(bound))));
+        b.iter(|| black_box(rng.below_u32(black_box(BOUND_NEVER_REJECTS))));
     });
 
     c.bench_function("rng_below_u32_worst_case_rejection", |b| {
         let mut rng = Rng::new(SEED, stream);
-        let bound = NonZeroU32::new(BOUND_WORST_CASE).expect("non-zero by construction");
-        b.iter(|| black_box(rng.below_u32(black_box(bound))));
+        b.iter(|| black_box(rng.below_u32(black_box(BOUND_WORST_CASE))));
     });
 }
 
