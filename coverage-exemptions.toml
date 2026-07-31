@@ -29,6 +29,15 @@
 # Line numbers move when the text above them moves. Editing an exempt file
 # means re-checking its entry here — and if it is forgotten, the gate says
 # so, in whichever direction the mistake went.
+#
+# A `reason` must never cite a line number, and must name the code it
+# describes — "the keyboard arm", not "line 390". The gate reads `lines`
+# and never reads this prose, so a number written here has no guard at all
+# and goes stale silently the first time the file grows. That happened
+# once: a note said "line 390" long after the arm it meant had moved to
+# 483, and by then 390 was error handling in an unrelated function. The
+# `lines` array had been kept correct the whole time, which is exactly why
+# nobody noticed the sentence beside it was not.
 
 [[exempt]]
 file = "crates/core/memory/src/arena.rs"
@@ -48,7 +57,7 @@ reason = "A release-mode refusal guarded by a debug assertion on the same condit
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
 lines = [482, 483]
-reason = "Translates a windowing event whose payload type has no public constructor in the pinned windowing crate, so the input cannot be built outside it. The translation logic itself is covered directly through the helper it delegates to. Note for local runs: on a machine with a live desktop, a stray keyboard event can reach the window smoke test's real window and cover line 390, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
+reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"

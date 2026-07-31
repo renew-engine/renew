@@ -407,3 +407,107 @@ fn every_simulation_crate_forbids_reading_a_clock() {
          reading a clock, so the declaration is enforced by nothing: {faults:?}"
     );
 }
+
+/// Words a `reason` may not be followed by a number after. A reason that
+/// cites a position rather than naming the code goes stale the first time
+/// the file grows, and nothing notices.
+const POSITION_WORDS: &[&str] = &["line", "lines"];
+
+/// The number a `reason` cites, if it cites one.
+///
+/// Deliberately not a regex: the crate has no regex dependency and this
+/// needs no backtracking. Scans a lowercased copy so `Line 12` is caught
+/// as readily as `line 12`.
+fn cited_position(reason: &str) -> Option<String> {
+    let lowered = reason.to_ascii_lowercase();
+    for word in POSITION_WORDS {
+        let mut from = 0;
+        while let Some(offset) = lowered[from..].find(word) {
+            let start = from + offset;
+            let after = start + word.len();
+            let rest = &lowered[after..];
+            let digits: String = rest
+                .chars()
+                .skip(1)
+                .take_while(char::is_ascii_digit)
+                .collect();
+            // Both boundaries are checked. Without the left one `outlines
+            // 7` matches on its tail; without the right one `linear` does.
+            // Whole words only, and a single space before the number.
+            let word_start = lowered[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|previous| !previous.is_alphanumeric());
+            if word_start && rest.starts_with(' ') && !digits.is_empty() {
+                return Some(format!("{word} {digits}"));
+            }
+            from = after;
+        }
+    }
+    None
+}
+
+/// No exemption explains itself by citing a line number.
+///
+/// The gate reads each entry's `lines` array and never reads its `reason`,
+/// so a number written into that prose has no guard at all. The array gets
+/// corrected whenever the file moves, because the ratchet fails loudly in
+/// both directions if it does not — and the sentence beside it silently
+/// does not, which is precisely why the two drift apart.
+///
+/// This is not hypothetical. One reason said "line 390" long after the arm
+/// it described had moved to 483, by which time 390 was error handling in
+/// an unrelated function. A note telling a reader where to look, pointing
+/// at the wrong place, is worse than no note.
+///
+/// The remedy the rule enforces is to name the code — "the keyboard arm" —
+/// which cannot go stale when the file grows.
+#[test]
+fn no_coverage_exemption_explains_itself_with_a_line_number() {
+    let root = workspace_root();
+    let manifest = root.join(renew_cli::coverage::MANIFEST);
+    let text = std::fs::read_to_string(&manifest).expect("the exemption manifest should be read");
+    let exemptions = renew_cli::coverage::parse_manifest(&text).expect("it should parse");
+
+    assert!(
+        !exemptions.is_empty(),
+        "no exemptions parsed, so this test would pass vacuously"
+    );
+
+    let mut faults = Vec::new();
+    for exemption in &exemptions {
+        if let Some(cited) = cited_position(&exemption.reason) {
+            faults.push(format!(
+                "{} {:?} cites `{cited}`",
+                exemption.file, exemption.lines
+            ));
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "these exemption reasons cite a position instead of naming the code, and nothing \
+         updates them when the file moves: {faults:?}"
+    );
+}
+
+/// The matcher's own boundaries, because a guard whose detector is wrong
+/// fails in whichever direction nobody checked. Both were wrong in the
+/// first draft: without the right-hand boundary `linear` matched, and
+/// without the left-hand one `outlines` did.
+#[test]
+fn the_position_matcher_reads_whole_words_only() {
+    let cited = |text: &str| cited_position(text);
+
+    assert_eq!(cited("cover line 390, which then"), Some("line 390".into()));
+    assert_eq!(cited("Line 12 of the header"), Some("line 12".into()));
+    assert_eq!(cited("lines 3 and 4 of the table"), Some("lines 3".into()));
+
+    assert!(
+        cited("the keyboard arm").is_none(),
+        "names code, not a place"
+    );
+    assert!(cited("outlines 7 cases").is_none(), "left boundary");
+    assert!(cited("a linear 3-way split").is_none(), "right boundary");
+    assert!(cited("a multi-line refusal").is_none(), "no number follows");
+    assert!(cited("the line above").is_none(), "no number follows");
+}
