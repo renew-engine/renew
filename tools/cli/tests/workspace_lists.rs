@@ -348,7 +348,29 @@ fn the_unsafe_surface_is_exactly_what_is_recorded() {
 /// calling a clock is the crate's own lint file. Nothing compared the
 /// two, so the declaration bought nothing on its own — a crate could
 /// claim the property and permit the calls that break it.
-const BANNED_IN_SIMULATION: &[&str] = &["std::time::Instant::now", "std::time::SystemTime::now"];
+/// What a `simulation = true` crate's lint file must forbid.
+///
+/// **Two of I3's three applicable clauses, and it used to be one.** I3
+/// bans wall-clock reads, unseeded randomness, and iteration-order
+/// dependent state (fast-math has no stable-Rust equivalent). Until
+/// 2026-08-01 this list held only the clocks, so a crate could declare
+/// itself simulation code and iterate a `HashMap` freely — which is
+/// precisely the non-determinism the third clause exists to prevent.
+///
+/// All four declaring crates already banned the collections when this
+/// grew, so it locks in a convention rather than demanding a change.
+/// **That is the argument for adding it now**: a list that costs nothing
+/// to satisfy today costs a rewrite once a crate forgets.
+///
+/// The randomness clause stays unlisted deliberately: `std` ships no
+/// generator, so reaching one means taking a dependency, and that is
+/// caught at the `docs/deps/` gate rather than by a lint.
+const BANNED_IN_SIMULATION: &[&str] = &[
+    "std::time::Instant::now",
+    "std::time::SystemTime::now",
+    "std::collections::HashMap",
+    "std::collections::HashSet",
+];
 
 /// Crates whose manifest sets `simulation = true`, with the text of the
 /// lint file sitting beside it.
@@ -384,7 +406,7 @@ fn simulation_crates(root: &Path) -> Result<Vec<(String, String)>, String> {
 /// This does not prove such a crate is reproducible — no test here
 /// could. It proves the one mechanical guard it relies on is present.
 #[test]
-fn every_simulation_crate_forbids_reading_a_clock() {
+fn every_simulation_crate_forbids_the_nondeterminism_i3_names() {
     let root = workspace_root();
     let crates = simulation_crates(&root).expect("manifests and lint files should be readable");
 
@@ -404,7 +426,7 @@ fn every_simulation_crate_forbids_reading_a_clock() {
     assert!(
         faults.is_empty(),
         "these crates declare themselves simulation code but their lint files permit \
-         reading a clock, so the declaration is enforced by nothing: {faults:?}"
+         a source of non-determinism, so the declaration is enforced by nothing: {faults:?}"
     );
 }
 
