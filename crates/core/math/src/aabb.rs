@@ -28,18 +28,28 @@ impl Aabb3 {
     /// The tightest box around a set of points; `None` for no points
     /// (an empty set has no bounds — a normal, cause-free absence).
     ///
-    /// Caller contract: coordinates are finite — NaN corrupts min/max
-    /// ordering (debug assertion; in release, garbage in, garbage out).
+    /// Caller contract: coordinates are finite (debug assertion; in
+    /// release, garbage in, garbage out).
+    ///
+    /// **A NaN coordinate is silently dropped, not order-corrupting.**
+    /// `f32::min` and `f32::max` return the non-NaN operand, so a NaN
+    /// point loses every comparison and the resulting box is the box of
+    /// the *other* points — a plausible answer computed from an input
+    /// the caller never meant. That is worse than a corrupted ordering,
+    /// which at least looks wrong, and it is why the check is on the
+    /// inputs rather than on the folded result.
     #[must_use]
     pub fn from_points(points: &[Vec3]) -> Option<Self> {
+        debug_assert!(
+            points
+                .iter()
+                .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()),
+            "from_points requires finite coordinates"
+        );
         let (&first, rest) = points.split_first()?;
         let (min, max) = rest.iter().fold((first, first), |(low, high), &point| {
             (low.min(point), high.max(point))
         });
-        debug_assert!(
-            min.x <= max.x && min.y <= max.y && min.z <= max.z,
-            "from_points requires finite coordinates"
-        );
         Some(Self { min, max })
     }
 
@@ -166,6 +176,38 @@ mod tests {
         let b = Aabb3::new(Vec3::new(-1.0, 0.0, 2.0), Vec3::new(3.0, 4.0, 6.0));
         assert_eq!(b.center(), Vec3::new(1.0, 2.0, 4.0));
         assert_eq!(b.extents(), Vec3::new(4.0, 4.0, 4.0));
+    }
+
+    /// The case the old assertion missed, and the reason it was wrong
+    /// rather than merely untested.
+    ///
+    /// It checked `min <= max` on the *folded* result and reported that
+    /// as "requires finite coordinates". For a single all-NaN point the
+    /// fold stays NaN and `NaN <= NaN` is false, so that case did fire —
+    /// which is what made the assertion look like it worked. Mix one NaN
+    /// with one finite point and `f32::min`/`max` discard the NaN, the
+    /// folded box is finite and well-ordered, and the violation passed
+    /// silently.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite coordinates")]
+    fn a_nan_among_finite_points_is_a_contract_violation() {
+        let _ = Aabb3::from_points(&[Vec3::splat(1.0), Vec3::splat(f32::NAN)]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite coordinates")]
+    fn an_all_nan_input_is_a_contract_violation() {
+        let _ = Aabb3::from_points(&[Vec3::splat(f32::NAN)]);
+    }
+
+    /// Infinity is not finite either, and the contract says finite.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite coordinates")]
+    fn an_infinite_coordinate_is_a_contract_violation() {
+        let _ = Aabb3::from_points(&[Vec3::splat(f32::INFINITY)]);
     }
 
     #[test]
