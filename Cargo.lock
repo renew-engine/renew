@@ -1397,6 +1397,7 @@ dependencies = [
  "renew-jobs",
  "renew-math",
  "renew-memory",
+ "renew-platform",
  "renew-rng",
 ]
 
