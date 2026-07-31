@@ -13,6 +13,7 @@ use renew_trace::TraceHeader;
 use crate::cli::{Options, Report};
 use crate::convert;
 use crate::error::SampleError;
+use crate::input::Input;
 use crate::record::Recorder;
 use crate::trace::{self, Trace};
 use crate::world::EchoWorld;
@@ -105,6 +106,7 @@ fn replay_at_interval(
     mut recorder: Option<&mut Recorder>,
 ) -> Report {
     let mut world = EchoWorld::new(seed);
+    let mut input = Input::new();
     let mut frame = FrameLoop::new(
         Timestep::HZ_60,
         StepBudget::DEFAULT,
@@ -129,13 +131,16 @@ fn replay_at_interval(
                     recorder.event(world.ticks(), *event);
                 }
                 world.event(*event);
+                input.handle(*event);
             }
         }
         let now = Timestamp::from_nanos(interval_ns.saturating_mul(index));
         let plan = frame.begin_frame(now);
+        let intent = input.intent();
         for step in plan.steps() {
-            world.step(step);
+            world.step(step, intent);
         }
+        input.advance();
         stats.absorb(&plan);
         if world.close_requested() {
             break;
@@ -193,27 +198,32 @@ pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleEr
 
     let interval = timestep.nanos().get();
     let mut world = EchoWorld::new(seed);
+    let mut input = Input::new();
     let mut frame = FrameLoop::new(timestep, budget, Timestamp::from_nanos(0));
     let mut stats = FrameStats::new();
-    let deliver = |world: &mut EchoWorld, tick: u64| {
+    let deliver = |world: &mut EchoWorld, input: &mut Input, tick: u64| {
         for (at, event) in recorded.events() {
             if *at == tick {
-                world.event(convert::from_trace(*event));
+                let event = convert::from_trace(*event);
+                world.event(event);
+                input.handle(event);
             }
         }
     };
     for tick in 0..header.ticks() {
-        deliver(&mut world, tick);
+        deliver(&mut world, &mut input, tick);
         let plan = frame.begin_frame(Timestamp::from_nanos(interval.saturating_mul(tick + 1)));
+        let intent = input.intent();
         for step in plan.steps() {
-            world.step(step);
+            world.step(step, intent);
         }
+        input.advance();
         stats.absorb(&plan);
     }
     // The trailing bucket: events recorded at the run's own tick count
     // arrived after the final step, which is where a close request almost
     // always lands.
-    deliver(&mut world, header.ticks());
+    deliver(&mut world, &mut input, header.ticks());
 
     Ok(Report {
         seed,

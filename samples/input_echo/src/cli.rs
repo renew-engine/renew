@@ -220,6 +220,7 @@ impl Report {
 mod tests {
     use super::{DEFAULT_FRAMES, DEFAULT_TRACE, Options, Report, parse_args};
     use crate::error::SampleError;
+    use crate::input::Input;
     use crate::world::EchoWorld;
     use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
     use renew_platform::window::{KeyCode, WindowEvent};
@@ -308,16 +309,23 @@ mod tests {
         );
         let mut stats = FrameStats::new();
         let mut world = EchoWorld::new(0);
-        world.event(WindowEvent::Key {
+        // Driven the way a real driver drives it: the event goes to both,
+        // and the world moves on the intent the map resolves.
+        let mut input = Input::new();
+        let event = WindowEvent::Key {
             code: KeyCode::ArrowRight,
             pressed: true,
             repeat: false,
-        });
+        };
+        world.event(event);
+        input.handle(event);
         for k in 1..=4u64 {
             let plan = frame.begin_frame(Timestamp::from_nanos(k * 16_666_667));
+            let intent = input.intent();
             for step in plan.steps() {
-                world.step(step);
+                world.step(step, intent);
             }
+            input.advance();
             stats.absorb(&plan);
         }
         Report {
