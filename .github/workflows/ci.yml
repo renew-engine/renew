@@ -219,7 +219,7 @@ jobs:
       # turns forgetting that into a red cell rather than a green one.
       - name: Build and test without the entity storage
         run: |
-          sel="--workspace --exclude renew-ecs"
+          sel="--workspace --exclude renew-ecs --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
           cargo build $sel
           cargo test $sel
