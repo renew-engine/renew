@@ -34,7 +34,7 @@ pub const EXTENT: Extent = Extent {
 /// what makes a wrong one obvious.
 const FRAME_INTERVAL_NS: u64 = Timestep::HZ_60.nanos().get();
 
-/// Frames whose cost is not part of the steady state (§10): a driver's
+/// Frames whose cost is not part of the steady state: a driver's
 /// lazy initialization lands in the first frames it renders. Everything
 /// that allocates — device, target, pipeline, the readback buffer —
 /// happens before frame zero, so the steady state is frames

@@ -37,6 +37,7 @@ stats.absorb(&plan);
   it is the only place a live window exists), then `event` and `update`
   every iteration. The one clock read on the path is at the top of
   `update`; rendering happens on `RedrawRequested` and nowhere else.
+  The title bar carries the frame-time readout (below).
 - **Headless** (`--headless`): no window, no clock in the schedule. Time
   is synthetic — frame *k* happens at exactly `k × 16 666 667 ns` — so
   one step runs per frame and the whole run is a pure function of
@@ -76,6 +77,43 @@ lives in `timing` and is recorded, never gated.
 Exit codes: `0` for a completed run or a skip, `1` for a failure, `2`
 for a command line this build cannot honour.
 
+## The frame-time readout
+
+A windowed run shows its own cost in the title bar:
+
+```console
+renew — hello triangle — 16.67 ms (60.0 fps)
+```
+
+The engine renders no text yet, and a text renderer is a long way off,
+so the title bar is the honest first version of "on
+screen" — a real and conventional place for a sample to show a
+measurement, and one that is visible in the task switcher too.
+
+- **The number is a mean over the last quarter second**, not over the
+  run and not the last frame alone. A run average stops moving after a
+  few seconds, which is exactly when a hitch starts being interesting;
+  a single frame is noise. Four relabels a second is as fast as a
+  changing number can still be read, and it keeps the OS call down to
+  roughly one frame in fifteen instead of one per frame.
+- **The first frame is labelled immediately**, so a short run still
+  shows a number and a window does not sit blank for a quarter second
+  looking broken.
+- **It reads no clock of its own.** The interval is measured with the
+  instant `update` already took for the frame loop; there is one time
+  source in this sample and the readout is not a second one.
+- **It allocates nothing.** The text is written into a fixed-capacity
+  buffer the readout owns and handed to the window seam borrowed — a
+  `format!` per frame would break the steady-state allocation gate.
+- Both numbers round to nearest rather than down, because 60 Hz is
+  16 666 667 ns and truncation would report it as 16.66 ms at 59.9 fps.
+  A frame too fast for the clock to resolve reads `-- fps`: no rate
+  divides out of no elapsed time, and inventing one would put the only
+  lie on the window.
+
+Headless runs have no window and no readout; their frame times live in
+the `timing` section of `--dump-stats` and nowhere else.
+
 ## Contract
 
 - **`--headless` implies a synthetic time source.** Nothing measured
@@ -89,11 +127,12 @@ for a command line this build cannot honour.
   hash a cross-platform promise the engine does not make. If the
   triangle ever spins, the angle is a tick count and the trig happens in
   the shader — render, not simulation.
-- **Steady state is frames `[3, N)` of a headless run** (§10).
-  Everything that allocates happens before frame zero: device, target,
-  pipeline, and the readback buffer. Inside the boundary there is no
-  file I/O, no logging, no formatting and no serialization —
-  `--dump-stats` writes after the loop exits.
+- **Steady state is frames `[3, N)` of a headless run, and it allocates
+  nothing.** Everything that allocates happens before frame zero:
+  device, target, pipeline, and the readback buffer. Inside the boundary
+  there is no file I/O, no logging and no serialization —
+  `--dump-stats` writes after the loop exits — and the one thing that
+  formats text, the title readout, formats into a buffer it owns.
 - **An environment that cannot host the run is a skip, not a failure.**
   No GPU runtime and no display server are ordinary answers on ordinary
   machines: the binary prints `SKIP:` and exits zero. Set
@@ -132,8 +171,11 @@ why.
 |---|---|
 | `tests/headless_frame.rs` | The readback holds the colour the world computed for the last tick; one more step is a different image; the triangle covers the middle and one tick drawn twice is the same bytes. |
 | `tests/cli_determinism.rs` | Three separate processes print one digest line; a different frame count or seed prints a different one; the stats file agrees with it. |
-| `tests/zero_alloc.rs` | The steady-state frame path performs no heap allocation. |
+| `tests/zero_alloc.rs` | The steady-state frame path performs no heap allocation, and neither does the title readout. |
 
 The unit tests beside the source drive the window callbacks directly —
 `event`, `update`, the draw and stall verdicts — with no window at all.
-Only `ready` needs one, because it borrows a live OS window.
+Only `ready` needs one, because it borrows a live OS window. The
+readout's text is a pure function of two numbers, so it is tested
+directly at both ends of the range: a frame too fast for the clock to
+resolve, and one of `u64::MAX` nanoseconds.
