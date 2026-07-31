@@ -11,10 +11,19 @@ consequence of the layout.
   removed in. That is the point of the whole design: it makes the
   determinism invariant structural, rather than a rule every future
   contributor has to remember and every reviewer has to catch.
-- **A stale handle is dead, not dangerous.** An entity is a slot plus a
-  generation. Reusing a slot bumps its generation, so a handle to a
-  despawned entity reports as not alive instead of quietly naming whoever
-  took its place.
+- **A stale handle is dead, not dangerous — within two stated limits.** An
+  entity is a slot plus a generation. Reusing a slot bumps its generation,
+  so a handle to a despawned entity reports as not alive instead of
+  quietly naming whoever took its place. Two cases it does not cover, both
+  deliberate:
+  - **A handle from a different `Entities` cannot be detected.** Same
+    slot, same generation, different world: it reports alive. There is a
+    test asserting exactly that, so the limit is pinned rather than
+    latent.
+  - **A generation wraps after 2^32 reuses of one slot**, at which point a
+    handle from the first pass could alias. Wrapping is the honest choice
+    — a saturating counter would silently stop detecting staleness at the
+    same point while looking safe.
 - **Ordered iteration costs the gaps.** It walks slots, so it is
   proportional to the highest occupied slot rather than to the number of
   components. The allocator reuses low slots first to keep that range
