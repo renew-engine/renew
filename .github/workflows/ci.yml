@@ -177,15 +177,16 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
           cargo build $sel
           cargo test $sel
-      # The trace codec removed entirely. Nothing reaches it yet — not
-      # the samples, not the bench suite — so the list is the crate and
-      # nothing else, and it is upward-closed for exactly that reason.
-      # The day a sample records or replays a trace, this cell fails
-      # first and names the crate that has to join the list, which is
-      # the point of running it while the list is still trivial.
+      # The trace codec removed entirely, and with it the sample that
+      # records traces. The comment here used to say the list was the
+      # crate alone and would fail first the day a sample reached it.
+      # That is precisely what happened, in the very next change: the
+      # guard reported the crate still in the graph and named
+      # input_echo as the reason. Kept as written evidence that the
+      # guard catches this rather than passing vacuously.
       - name: Build and test without the trace codec
         run: |
-          sel="--workspace --exclude renew-trace"
+          sel="--workspace --exclude renew-trace --exclude renew-sample-input-echo"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-trace $sel
           cargo build $sel
           cargo test $sel

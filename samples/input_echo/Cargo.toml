@@ -30,6 +30,7 @@ path = "src/main.rs"
 # opens no window.
 renew-frame = { path = "../../crates/frame" }
 renew-platform = { path = "../../crates/core/platform" }
+renew-trace = { path = "../../crates/trace" }
 
 [lints]
 workspace = true
