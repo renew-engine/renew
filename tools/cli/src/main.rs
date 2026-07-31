@@ -378,7 +378,16 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
         for name in &bad {
             let _ = writeln!(report, "MISMATCH {name}");
         }
-        let checked = if verify { ", verified" } else { "" };
+        // The suffix reports the *outcome*, not the request. It used to
+        // read `if verify { ", verified" }`, so a pack with a corrupt
+        // payload printed `MISMATCH b.txt` and then `2 entries, verified`
+        // two lines later. The exit code was right and the JSON was
+        // right; only the line a person reads contradicted itself.
+        let checked = match (verify, bad.len()) {
+            (false, _) => String::new(),
+            (true, 0) => ", verified".to_string(),
+            (true, failed) => format!(", {failed} FAILED verification"),
+        };
         let _ = writeln!(report, "{} entries{checked}", pack.len());
         emit_stdout(&report);
     }
