@@ -10,6 +10,9 @@ pub const MIN_CARGO: (u64, u64) = (1, 97);
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub rustup_found: bool,
+    /// Why the rustup probe could not run, when it could not. Absent
+    /// means it ran; the report then never has to guess at a cause.
+    pub rustup_unavailable: Option<String>,
     pub active_toolchain: Option<String>,
     pub cargo_version: Option<(u64, u64)>,
     pub toolchain_file_channel: Option<String>,
@@ -17,6 +20,24 @@ pub struct Facts {
     pub required_cargo: Option<(u64, u64)>,
     pub workspace_root_found: bool,
     pub git_found: bool,
+    /// Why the git probe could not run, when it could not.
+    pub git_unavailable: Option<String>,
+}
+
+/// How to describe a probe that would not run.
+///
+/// "Not found on PATH" is the common cause and was, until this existed,
+/// the only thing the report could say — including when the program was
+/// plainly there and the failure was something else entirely. A tool that
+/// names the wrong cause sends its reader to fix the wrong thing, so an
+/// unexpected kind is now reported as itself.
+#[must_use]
+pub fn probe_failure(kind: std::io::ErrorKind) -> String {
+    if kind == std::io::ErrorKind::NotFound {
+        String::from("not found on PATH")
+    } else {
+        format!("on PATH but would not run ({kind})")
+    }
 }
 
 /// One evaluated check.
@@ -58,7 +79,10 @@ pub fn evaluate(facts: &Facts) -> Vec<Check> {
             detail: if facts.rustup_found {
                 String::from("found")
             } else {
-                String::from("not found on PATH")
+                facts
+                    .rustup_unavailable
+                    .clone()
+                    .unwrap_or_else(|| String::from("not found on PATH"))
             },
         },
         Check {
@@ -99,7 +123,10 @@ pub fn evaluate(facts: &Facts) -> Vec<Check> {
             detail: if facts.git_found {
                 String::from("found")
             } else {
-                String::from("not found on PATH")
+                facts
+                    .git_unavailable
+                    .clone()
+                    .unwrap_or_else(|| String::from("not found on PATH"))
             },
         },
     ]
@@ -167,15 +194,33 @@ pub fn first_token(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A probe that could not run says which way it could not. Reporting
+    /// "not found on PATH" for a program that is plainly on PATH sends the
+    /// reader to fix the wrong thing, which is the failure this exists to
+    /// prevent.
+    #[test]
+    fn a_probe_failure_names_the_kind_unless_it_really_is_missing() {
+        assert_eq!(
+            probe_failure(std::io::ErrorKind::NotFound),
+            "not found on PATH"
+        );
+        let denied = probe_failure(std::io::ErrorKind::PermissionDenied);
+        assert!(denied.contains("would not run"), "{denied}");
+        assert!(denied.starts_with("on PATH"), "{denied}");
+        assert_ne!(denied, probe_failure(std::io::ErrorKind::NotFound));
+    }
+
     fn healthy() -> Facts {
         Facts {
             rustup_found: true,
+            rustup_unavailable: None,
             active_toolchain: Some(String::from("stable-x86_64-pc-windows-msvc")),
             cargo_version: Some((1, 97)),
             toolchain_file_channel: Some(String::from("stable")),
             required_cargo: Some((1, 97)),
             workspace_root_found: true,
             git_found: true,
+            git_unavailable: None,
         }
     }
 

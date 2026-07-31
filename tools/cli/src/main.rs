@@ -627,17 +627,20 @@ fn run_doctor(json_mode: bool) -> ExitCode {
 
 fn gather_facts() -> Facts {
     let root = workspace_root();
-    let (rustup_found, active_toolchain) =
+    let (rustup_found, active_toolchain, rustup_unavailable) =
         match probe("rustup", &["show", "active-toolchain"], root.as_deref()) {
-            Some((true, stdout)) => (true, doctor::first_token(&stdout)),
-            Some((false, _)) => (true, None),
-            None => (false, None),
+            Ok((true, stdout)) => (true, doctor::first_token(&stdout), None),
+            Ok((false, _)) => (true, None, None),
+            Err(error) => (false, None, Some(doctor::probe_failure(error.kind()))),
         };
     let cargo_version = probe("cargo", &["--version"], root.as_deref())
+        .ok()
         .filter(|(success, _)| *success)
         .and_then(|(_, stdout)| doctor::parse_cargo_version(&stdout));
-    let git_found =
-        probe("git", &["--version"], root.as_deref()).is_some_and(|(success, _)| success);
+    let (git_found, git_unavailable) = match probe("git", &["--version"], root.as_deref()) {
+        Ok((success, _)) => (success, None),
+        Err(error) => (false, Some(doctor::probe_failure(error.kind()))),
+    };
     let toolchain_file_channel = root
         .as_ref()
         .and_then(|path| std::fs::read_to_string(path.join("rust-toolchain.toml")).ok())
@@ -649,25 +652,34 @@ fn gather_facts() -> Facts {
 
     Facts {
         rustup_found,
+        rustup_unavailable,
         active_toolchain,
         cargo_version,
         toolchain_file_channel,
         required_cargo,
         workspace_root_found: root.is_some(),
         git_found,
+        git_unavailable,
     }
 }
 
 /// Run a probe command, from the workspace root when one exists so toolchain
-/// overrides resolve consistently with the build steps. `None` = could not
-/// spawn; `Some((success, stdout))` otherwise.
-fn probe(program: &str, args: &[&str], root: Option<&Path>) -> Option<(bool, String)> {
+/// overrides resolve consistently with the build steps.
+///
+/// The spawn error is returned rather than discarded: "could not run" and
+/// "is not installed" are different answers, and a report that cannot tell
+/// them apart sends its reader to fix the wrong thing.
+fn probe(
+    program: &str,
+    args: &[&str],
+    root: Option<&Path>,
+) -> Result<(bool, String), std::io::Error> {
     let mut process = Process::new(program);
     process.args(args);
     if let Some(directory) = root {
         process.current_dir(directory);
     }
-    process.output().ok().map(|output| {
+    process.output().map(|output| {
         (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
