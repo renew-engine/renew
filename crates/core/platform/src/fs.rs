@@ -218,6 +218,24 @@ mod tests {
         }
     }
 
+    /// No two variants collapse onto the same classification. The
+    /// classifier tests below only ever see errors the classifier itself
+    /// builds, so a variant constructed elsewhere — as the size refusal
+    /// is — would otherwise never be mapped by anything, and an arm
+    /// returning the wrong answer would sit unnoticed.
+    #[test]
+    fn every_variant_maps_to_a_classification_of_its_own() {
+        let path = Path::new("p");
+        let seen: Vec<Variant> = all_variants(path).iter().map(variant).collect();
+        assert_eq!(seen.len(), all_variants(path).len());
+        for (index, one) in seen.iter().enumerate() {
+            for other in &seen[index + 1..] {
+                assert_ne!(one, other, "two variants share a classification");
+            }
+        }
+        assert!(seen.contains(&Variant::TooLarge), "{seen:?}");
+    }
+
     #[test]
     fn every_error_variant_carries_its_path_in_the_field_and_the_message() {
         let path = PathBuf::from("some/asset.bin");
