@@ -2,7 +2,7 @@
 //! having a layer here at all rather than reading keys directly.
 
 use renew_input::{ActionState, Binding, InputMap};
-use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+use renew_platform::event::{KeyCode, PointerButton, WindowEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
