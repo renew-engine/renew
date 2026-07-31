@@ -9,6 +9,7 @@ pub enum Command {
     Build,
     Test,
     Bench,
+    Run,
     Lint,
     Check,
     Coverage,
@@ -17,11 +18,12 @@ pub enum Command {
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Configure,
         Self::Build,
         Self::Test,
         Self::Bench,
+        Self::Run,
         Self::Lint,
         Self::Check,
         Self::Coverage,
@@ -36,6 +38,7 @@ impl Command {
             Self::Build => "build",
             Self::Test => "test",
             Self::Bench => "bench",
+            Self::Run => "run",
             Self::Lint => "lint",
             Self::Check => "check",
             Self::Coverage => "coverage",
@@ -51,6 +54,7 @@ impl Command {
             Self::Build => "build the workspace",
             Self::Test => "run the workspace test suite",
             Self::Bench => "run the workspace benchmarks",
+            Self::Run => "build and run a workspace sample",
             Self::Lint => "check formatting, then run clippy with warnings denied",
             Self::Check => "verify workspace crate manifests and dependencies",
             Self::Coverage => "hold a coverage report against the exemption manifest",
@@ -76,6 +80,11 @@ pub struct Invocation {
     /// Coverage only (parse enforces, and requires): the `llvm-cov` JSON
     /// export to read.
     pub report: Option<String>,
+    /// Run only (parse enforces, and requires): the sample to start,
+    /// named by its binary.
+    pub sample: Option<String>,
+    /// Run only: the sample's own command line, taken verbatim.
+    pub sample_args: Vec<String>,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -99,6 +108,8 @@ pub enum ParseError {
         command: &'static str,
         option: &'static str,
     },
+    /// `run` was given without naming a sample.
+    MissingSample,
 }
 
 impl fmt::Display for ParseError {
@@ -113,6 +124,7 @@ impl fmt::Display for ParseError {
             Self::MissingOption { command, option } => {
                 write!(f, "`{command}` needs `{option} <path>`")
             }
+            Self::MissingSample => write!(f, "`run` needs a sample to run"),
         }
     }
 }
@@ -121,21 +133,46 @@ impl std::error::Error for ParseError {}
 
 /// Parse command-line arguments (excluding the program name).
 ///
+/// Everything after `run <sample>` is the sample's own command line and
+/// is taken verbatim, so a flag this binary also understands still
+/// reaches the sample. Flags meant for `renew` itself therefore go
+/// *before* the sample name. A single `--` may stand between the two
+/// halves for readers; it is the marker, not an argument, so only the
+/// first one is dropped and a sample that wants a literal `--` gets it
+/// by writing two.
+///
 /// # Errors
 ///
 /// Returns a [`ParseError`] when no subcommand is given, the subcommand is
 /// unknown, or an argument other than the known flags is present —
 /// including `--smoke` with any subcommand other than `bench`, `--report`
 /// with any subcommand other than `coverage`, `--report` without a path,
-/// and `coverage` without `--report`.
+/// `coverage` without `--report`, and `run` without a sample.
 pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut command = None;
     let mut json = false;
     let mut smoke = false;
     let mut help = false;
     let mut report = None;
+    let mut sample: Option<String> = None;
+    let mut sample_args: Vec<String> = Vec::new();
+    // The separator, if it comes at all, comes immediately after the
+    // sample name. Tracked rather than inferred from an empty tail, so
+    // that a second `--` is an argument even when the first was consumed.
+    let mut separator_due = false;
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
+        // Past the sample name nothing is this binary's business, so this
+        // arm comes before every flag the binary knows.
+        if sample.is_some() {
+            let was_due = separator_due;
+            separator_due = false;
+            if was_due && argument == "--" {
+                continue;
+            }
+            sample_args.push(argument.clone());
+            continue;
+        }
         match argument.as_str() {
             "--json" => json = true,
             "--smoke" => smoke = true,
@@ -149,6 +186,13 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             other => {
                 if help {
                     // Help short-circuits; ignore anything after it.
+                    continue;
+                }
+                if command == Some(Command::Run) {
+                    // `run`'s first free argument names the sample; the
+                    // rest of the line is the sample's, taken above.
+                    sample = Some(other.to_string());
+                    separator_due = true;
                     continue;
                 }
                 if command.is_some() {
@@ -180,12 +224,19 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             option: "--report",
         });
     }
+    if command == Some(Command::Run) && sample.is_none() {
+        // Guessing a sample would be worse than refusing: which one runs
+        // is the entire content of the command.
+        return Err(ParseError::MissingSample);
+    }
     match command {
         Some(command) => Ok(Parsed::Run(Invocation {
             command,
             json,
             smoke,
             report,
+            sample,
+            sample_args,
         })),
         None => Err(ParseError::NoCommand),
     }
@@ -196,7 +247,11 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
 pub fn usage() -> String {
     use core::fmt::Write as _;
 
-    let mut text = String::from("usage: renew <command> [options]\n\ncommands:\n");
+    let mut text = String::from(concat!(
+        "usage: renew <command> [options]\n",
+        "       renew [options] run <sample> [--] [sample arguments...]\n",
+        "\ncommands:\n",
+    ));
     for command in Command::ALL {
         let name = command.name();
         let summary = command.summary();
@@ -207,6 +262,10 @@ pub fn usage() -> String {
         "  --json            emit one machine-readable JSON document on stdout\n",
         "  --report <path>   (coverage only, required) the llvm-cov JSON export to read\n",
         "  --smoke           (bench only) run each benchmark once, without statistics\n",
+        "\nEverything after `run <sample>` goes to the sample untouched, including\n",
+        "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
+        "`--json`, while `renew --json run hello_triangle` gives it to renew. One `--`\n",
+        "after the sample name is an optional separator and is not passed on.\n",
     ));
     text
 }
@@ -226,25 +285,43 @@ mod tests {
             json: false,
             smoke: false,
             report: None,
+            sample: None,
+            sample_args: Vec::new(),
         }
+    }
+
+    /// What `run <sample>` with a given tail must parse to.
+    fn running(sample: &str, sample_args: &[&str]) -> Parsed {
+        Parsed::Run(Invocation {
+            sample: Some(sample.to_string()),
+            sample_args: sample_args.iter().map(ToString::to_string).collect(),
+            ..plain(Command::Run)
+        })
     }
 
     #[test]
     fn every_command_parses_by_name() {
         for command in Command::ALL {
             let name = command.name();
-            // Coverage is the one subcommand with a required option; it
-            // still has to round-trip by name.
-            let (line, expected) = if command == Command::Coverage {
-                (
+            // Two subcommands need more than their name: coverage takes a
+            // required option, run takes the sample. Both still have to
+            // round-trip by name.
+            let (line, expected) = match command {
+                Command::Coverage => (
                     vec![name, "--report", "cov.json"],
                     Invocation {
                         report: Some("cov.json".to_string()),
                         ..plain(command)
                     },
-                )
-            } else {
-                (vec![name], plain(command))
+                ),
+                Command::Run => (
+                    vec![name, "hello_triangle"],
+                    Invocation {
+                        sample: Some("hello_triangle".to_string()),
+                        ..plain(command)
+                    },
+                ),
+                _ => (vec![name], plain(command)),
             };
             assert_eq!(
                 parse(&arguments(&line)),
@@ -286,7 +363,15 @@ mod tests {
 
     #[test]
     fn smoke_with_any_other_subcommand_is_rejected() {
-        for name in ["configure", "build", "test", "lint", "check", "doctor"] {
+        for name in [
+            "configure",
+            "build",
+            "test",
+            "run",
+            "lint",
+            "check",
+            "doctor",
+        ] {
             assert_eq!(
                 parse(&arguments(&[name, "--smoke"])),
                 Err(ParseError::UnexpectedArgument("--smoke".to_string())),
@@ -325,7 +410,15 @@ mod tests {
 
     #[test]
     fn report_with_any_other_subcommand_is_rejected() {
-        for name in ["configure", "build", "test", "bench", "lint", "check"] {
+        for name in [
+            "configure",
+            "build",
+            "test",
+            "bench",
+            "run",
+            "lint",
+            "check",
+        ] {
             assert_eq!(
                 parse(&arguments(&[name, "--report", "cov.json"])),
                 Err(ParseError::UnexpectedArgument("--report".to_string())),
@@ -366,6 +459,114 @@ mod tests {
             Ok(Parsed::Run(Invocation {
                 report: Some("build".to_string()),
                 ..plain(Command::Coverage)
+            }))
+        );
+    }
+
+    #[test]
+    fn run_without_a_sample_is_rejected() {
+        assert_eq!(parse(&arguments(&["run"])), Err(ParseError::MissingSample));
+        assert_eq!(
+            parse(&arguments(&["--json", "run"])),
+            Err(ParseError::MissingSample)
+        );
+    }
+
+    #[test]
+    fn the_sample_command_line_is_taken_verbatim_with_or_without_a_separator() {
+        // The two spellings CI and a person respectively use; the sample
+        // must not be able to tell them apart.
+        let expected = Ok(running(
+            "hello_triangle",
+            &["--headless", "--frames", "600"],
+        ));
+        assert_eq!(
+            parse(&arguments(&[
+                "run",
+                "hello_triangle",
+                "--headless",
+                "--frames",
+                "600"
+            ])),
+            expected
+        );
+        assert_eq!(
+            parse(&arguments(&[
+                "run",
+                "hello_triangle",
+                "--",
+                "--headless",
+                "--frames",
+                "600"
+            ])),
+            expected
+        );
+    }
+
+    #[test]
+    fn flags_this_binary_knows_still_reach_the_sample() {
+        // Nothing after the sample name is claimed here — otherwise a
+        // sample could never own a flag whose name renew also uses.
+        assert_eq!(
+            parse(&arguments(&[
+                "run",
+                "hello_triangle",
+                "--json",
+                "--smoke",
+                "help"
+            ])),
+            Ok(running("hello_triangle", &["--json", "--smoke", "help"]))
+        );
+        // Before the sample name, the same flag is renew's.
+        assert_eq!(
+            parse(&arguments(&[
+                "run",
+                "--json",
+                "hello_triangle",
+                "--headless"
+            ])),
+            Ok(Parsed::Run(Invocation {
+                json: true,
+                sample: Some("hello_triangle".to_string()),
+                sample_args: vec!["--headless".to_string()],
+                ..plain(Command::Run)
+            }))
+        );
+    }
+
+    #[test]
+    fn only_the_first_separator_is_the_separator() {
+        // A sample wanting a literal `--` writes two, exactly as it would
+        // through `cargo run`.
+        assert_eq!(
+            parse(&arguments(&["run", "sample", "--", "--", "x"])),
+            Ok(running("sample", &["--", "x"]))
+        );
+        // Later ones are ordinary arguments, in place.
+        assert_eq!(
+            parse(&arguments(&["run", "sample", "-a", "--", "b"])),
+            Ok(running("sample", &["-a", "--", "b"]))
+        );
+        // A sample can also be run with nothing at all.
+        assert_eq!(
+            parse(&arguments(&["run", "sample"])),
+            Ok(running("sample", &[]))
+        );
+        assert_eq!(
+            parse(&arguments(&["run", "sample", "--"])),
+            Ok(running("sample", &[]))
+        );
+    }
+
+    #[test]
+    fn a_sample_name_is_never_read_as_a_subcommand() {
+        // A sample called `build` is still the sample, because the first
+        // free argument after `run` is a name, not a command.
+        assert_eq!(
+            parse(&arguments(&["run", "build"])),
+            Ok(Parsed::Run(Invocation {
+                sample: Some("build".to_string()),
+                ..plain(Command::Run)
             }))
         );
     }
@@ -441,6 +642,16 @@ mod tests {
         for option in ["--json", "--report", "--smoke"] {
             assert!(text.contains(option), "usage text is missing `{option}`");
         }
+        // The pass-through rule is the one thing about this command line
+        // a reader cannot guess, so it is spelled out rather than implied.
+        assert!(
+            text.contains("run <sample> [--] [sample arguments...]"),
+            "usage text does not show run's shape"
+        );
+        assert!(
+            text.contains("goes to the sample untouched"),
+            "usage text does not explain the pass-through"
+        );
     }
 
     #[test]
@@ -454,6 +665,7 @@ mod tests {
                 command: "coverage",
                 option: "--report",
             },
+            ParseError::MissingSample,
         ] {
             assert!(!error.to_string().is_empty(), "{error:?}");
         }

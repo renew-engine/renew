@@ -25,6 +25,9 @@ renew-math = { path = "../../crates/core/math" }
 renew-memory = { path = "../../crates/core/memory" }
 
 [dev-dependencies]
+# Bench-target-only, like the job pool above: the library itself
+# schedules nothing.
+renew-frame = { path = "../../crates/frame" }
 criterion = "0.8"
 # Bench-target-only: keeps the library's dependency graph free of the
 # job pool it never uses.
@@ -47,4 +50,8 @@ harness = false
 
 [[bench]]
 name = "jobs"
+harness = false
+
+[[bench]]
+name = "frame"
 harness = false

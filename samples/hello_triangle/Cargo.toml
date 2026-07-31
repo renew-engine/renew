@@ -1,0 +1,42 @@
+[package]
+name = "renew-sample-hello-triangle"
+description = "Sample: the fixed-timestep frame loop driving the renderer, on a window or headless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Sample: the fixed-timestep frame loop driving the renderer — a window and swapchain by default, an offscreen image on a synthetic clock headless."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[features]
+default = ["window"]
+# The windowed configuration: the OS window seam plus the presentation
+# path. Off = the headless sample, with no windowing library and no
+# window-system integration anywhere in its graph — the configuration
+# that proves the loop needs neither.
+window = ["renew-platform/window", "renew-rhi/present"]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+[[bin]]
+name = "hello_triangle"
+path = "src/main.rs"
+
+[dependencies]
+renew-frame = { path = "../../crates/frame" }
+renew-platform = { path = "../../crates/core/platform", default-features = false }
+renew-rhi = { path = "../../crates/rhi", default-features = false }
+
+[dev-dependencies]
+renew-memory = { path = "../../crates/core/memory" }
+
+[lints]
+workspace = true

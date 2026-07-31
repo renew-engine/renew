@@ -18,9 +18,5 @@ simulation = false
 [lints]
 workspace = true
 
-[dev-dependencies]
-criterion = "0.8"
-
-[[bench]]
-name = "accumulator"
-harness = false
+[dependencies]
+renew-frame = { path = "../crates/frame" }

@@ -1,0 +1,35 @@
+[package]
+name = "renew-sample-input-echo"
+description = "Sample: window input feeding a fixed-timestep world, with a scripted headless trace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Sample: OS input events feeding a fixed-timestep world — driven by a window, or headless by a scripted event trace."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[[bin]]
+name = "input_echo"
+path = "src/main.rs"
+
+[dependencies]
+# No rendering crate, deliberately: a running frame-loop sample in a
+# workspace with the GPU crate removed is the other half of the proof
+# that the loop depends on neither.
+#
+# The windowing feature is not a knob here — this is the windowing
+# sample, and a feature that can never be off would be a lie in the
+# manifest. Headless mode compiles the same window vocabulary and simply
+# opens no window.
+renew-frame = { path = "../../crates/frame" }
+renew-platform = { path = "../../crates/core/platform" }
+
+[lints]
+workspace = true

@@ -1,0 +1,32 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). This crate is the
+# tree's first `simulation = true` crate, and these are the mechanical
+# half of that designation: the obligations the language standard puts on
+# simulation code, made unwritable rather than merely documented. One
+# `Instant::now` inside `begin_frame` would destroy determinism for every
+# consumer with no test failing anywhere until a replay diverged months
+# later.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "simulation code reads no wall clock; the caller passes the one Timestamp in" },
+    { path = "std::time::SystemTime::now", reason = "simulation code reads no wall clock; the caller passes the one Timestamp in" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded until a deterministic parallel-scheduling contract exists" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
