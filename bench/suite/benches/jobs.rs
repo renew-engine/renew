@@ -255,6 +255,36 @@ fn batching_benches(c: &mut Criterion) {
     let grain = NonZeroUsize::MIN.saturating_add(BATCH_GRAIN - 1);
     let mut output = vec![0_u64; BATCH_ELEMENTS];
 
+    // The same sweep on a zero-worker pool, which the pool documents as
+    // running every dispatch inline on the caller: no threads woken, no
+    // waiting, one uncontended poison check. Identical work, identical
+    // chunking, identical call count -- **the only thing removed is the
+    // wakeup**.
+    //
+    // Subtracting one curve from the other therefore splits a dispatch's
+    // cost into the part a better wakeup protocol could reclaim and the
+    // part that is dispatch bookkeeping regardless. That distinction is
+    // the whole question facing anyone who would optimise this, and it
+    // is not answerable from the three-worker numbers alone.
+    if let Ok(mut inline) = JobPool::new(&PoolConfig::new(0)) {
+        for dispatches in [1_usize, 4, 16, 64] {
+            let span = BATCH_ELEMENTS / dispatches;
+            let name = format!("jobs_batching_{dispatches}_dispatches_inline_pool");
+            c.bench_function(&name, |b| {
+                b.iter(|| {
+                    for slice in output.chunks_mut(span) {
+                        inline.parallel_for_slice_mut(black_box(slice), grain, |offset, chunk| {
+                            for (index, slot) in chunk.iter_mut().enumerate() {
+                                *slot = burn((offset + index) as u64, BATCH_ROUNDS);
+                            }
+                        });
+                    }
+                    black_box(output[BATCH_ELEMENTS - 1]);
+                });
+            });
+        }
+    }
+
     for dispatches in [1_usize, 4, 16, 64] {
         let span = BATCH_ELEMENTS / dispatches;
         let name = format!("jobs_batching_{dispatches}_dispatches_3_workers");
