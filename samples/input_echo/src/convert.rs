@@ -128,6 +128,76 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
     Ok(encoded)
 }
 
+const fn key_from_trace(code: TraceKey) -> KeyCode {
+    match code {
+        TraceKey::Escape => KeyCode::Escape,
+        TraceKey::Space => KeyCode::Space,
+        TraceKey::Enter => KeyCode::Enter,
+        TraceKey::Tab => KeyCode::Tab,
+        TraceKey::ArrowUp => KeyCode::ArrowUp,
+        TraceKey::ArrowDown => KeyCode::ArrowDown,
+        TraceKey::ArrowLeft => KeyCode::ArrowLeft,
+        TraceKey::ArrowRight => KeyCode::ArrowRight,
+        TraceKey::KeyW => KeyCode::KeyW,
+        TraceKey::KeyA => KeyCode::KeyA,
+        TraceKey::KeyS => KeyCode::KeyS,
+        TraceKey::KeyD => KeyCode::KeyD,
+        TraceKey::Unidentified => KeyCode::Unidentified,
+    }
+}
+
+const fn button_from_trace(button: TraceButton) -> PointerButton {
+    match button {
+        TraceButton::Left => PointerButton::Left,
+        TraceButton::Right => PointerButton::Right,
+        TraceButton::Middle => PointerButton::Middle,
+        TraceButton::Back => PointerButton::Back,
+        TraceButton::Forward => PointerButton::Forward,
+        TraceButton::Other(index) => PointerButton::Other(index),
+    }
+}
+
+/// Decode one event.
+///
+/// Total, and it needs no result: the trace vocabulary is this tree's own
+/// and every one of its shapes has a window event to become. That is the
+/// asymmetry the two directions are supposed to have — encoding can meet
+/// a window event the format has no word for, decoding cannot meet a word
+/// the format did not define.
+#[must_use]
+pub const fn from_trace(event: TraceEvent) -> WindowEvent {
+    match event {
+        TraceEvent::CloseRequested => WindowEvent::CloseRequested,
+        TraceEvent::RedrawRequested => WindowEvent::RedrawRequested,
+        TraceEvent::Focused(focused) => WindowEvent::Focused(focused),
+        TraceEvent::Resized { width, height } => WindowEvent::Resized { width, height },
+        TraceEvent::Key {
+            code,
+            pressed,
+            repeat,
+        } => WindowEvent::Key {
+            code: key_from_trace(code),
+            pressed,
+            repeat,
+        },
+        TraceEvent::PointerButton { button, pressed } => WindowEvent::PointerButton {
+            button: button_from_trace(button),
+            pressed,
+        },
+        TraceEvent::PointerMoved { x, y } => WindowEvent::PointerMoved {
+            x: x.value(),
+            y: y.value(),
+        },
+        TraceEvent::Wheel { dx, dy } => WindowEvent::Wheel {
+            dx: dx.value(),
+            dy: dy.value(),
+        },
+        TraceEvent::ScaleFactorChanged { scale } => WindowEvent::ScaleFactorChanged {
+            scale: scale.value(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Unencodable, to_trace};
@@ -146,6 +216,26 @@ mod tests {
             assert!(
                 to_trace(*event).is_ok(),
                 "shape {} has no encoding: {event:?}",
+                shape_index(event)
+            );
+        }
+    }
+
+    /// Every shape survives the round trip through the trace vocabulary.
+    ///
+    /// The shape test above proves each one can be written down. This
+    /// proves writing it down loses nothing — which is the property a
+    /// replay depends on and the one a rename would quietly break, since
+    /// two vocabularies that mirror each other are exactly the kind of
+    /// thing that drifts one arm at a time.
+    #[test]
+    fn every_shape_survives_the_round_trip_unchanged() {
+        for event in EVERY_EVENT_SHAPE {
+            let encoded = to_trace(*event).expect("every shape encodes");
+            assert_eq!(
+                super::from_trace(encoded),
+                *event,
+                "shape {} changed in the round trip",
                 shape_index(event)
             );
         }

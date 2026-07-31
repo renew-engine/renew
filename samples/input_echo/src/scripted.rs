@@ -5,10 +5,13 @@
 //! processes and machines. It is what makes a windowing sample provable
 //! in CI.
 
+use core::num::{NonZeroU32, NonZeroU64};
+
 use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
 use renew_trace::TraceHeader;
 
 use crate::cli::{Options, Report};
+use crate::convert;
 use crate::error::SampleError;
 use crate::record::Recorder;
 use crate::trace::{self, Trace};
@@ -116,6 +119,80 @@ pub fn replay_recording(
         stats,
         world,
     }
+}
+
+/// Drive a run from a recorded trace.
+///
+/// The header owns the run: its tick count is the length, its timestep
+/// and budget configure the loop, and its seed picks the world. Nothing
+/// on the command line may override them, because a replay that took its
+/// length from one place and its input from another would not be a replay
+/// of anything.
+///
+/// A close request inside the file does **not** end the run early. The
+/// recorded run's own length is already in the header, so honouring the
+/// event as well would shorten a replay that the recording says ran
+/// longer.
+///
+/// # Errors
+///
+/// [`SampleError::Usage`] when the file describes a different sample, or
+/// when a header field the frame loop cannot accept — a zero timestep or
+/// a zero budget — reaches it. The codec stores those numbers without
+/// interpreting them, so refusing them is this driver's job.
+pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleError> {
+    let header = recorded.header();
+    if header.sample() != SAMPLE_NAME {
+        return Err(SampleError::Usage(format!(
+            "this trace was recorded by `{}`, not `{SAMPLE_NAME}`",
+            header.sample()
+        )));
+    }
+    let timestep = NonZeroU64::new(header.timestep_ns())
+        .map(Timestep::from_nanos)
+        .ok_or_else(|| {
+            SampleError::Usage("a trace with a zero timestep cannot be replayed".into())
+        })?;
+    let budget = NonZeroU32::new(header.budget())
+        .map(StepBudget::new)
+        .ok_or_else(|| {
+            SampleError::Usage("a trace with a zero step budget cannot be replayed".into())
+        })?;
+    let seed = header
+        .value("seed")
+        .map_or(Ok(0), str::parse)
+        .map_err(|_| SampleError::Usage("the trace's seed is not a number".to_string()))?;
+
+    let interval = timestep.nanos().get();
+    let mut world = EchoWorld::new(seed);
+    let mut frame = FrameLoop::new(timestep, budget, Timestamp::from_nanos(0));
+    let mut stats = FrameStats::new();
+    let deliver = |world: &mut EchoWorld, tick: u64| {
+        for (at, event) in recorded.events() {
+            if *at == tick {
+                world.event(convert::from_trace(*event));
+            }
+        }
+    };
+    for tick in 0..header.ticks() {
+        deliver(&mut world, tick);
+        let plan = frame.begin_frame(Timestamp::from_nanos(interval.saturating_mul(tick + 1)));
+        for step in plan.steps() {
+            world.step(step);
+        }
+        stats.absorb(&plan);
+    }
+    // The trailing bucket: events recorded at the run's own tick count
+    // arrived after the final step, which is where a close request almost
+    // always lands.
+    deliver(&mut world, header.ticks());
+
+    Ok(Report {
+        seed,
+        source: "replay",
+        stats,
+        world,
+    })
 }
 
 #[cfg(test)]
