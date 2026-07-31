@@ -27,15 +27,26 @@ steps. The two drivers differ only in where the events come from:
 
 - **Windowed** (default): real input, the real clock, one clock read per
   iteration at the top of `update`.
-- **Headless** (`--headless --input-trace NAME`): a built-in table of
-  `(frame index, event)` pairs replayed against the same state machine,
-  on a synthetic clock that reads no clock at all. No CI runner supplies
-  keystrokes, so without this the binary could never be executed by a
-  test — and an unexecuted binary is an untested one.
+- **Headless** (`--headless --input-trace NAME`): a recorded trace
+  replayed against the same state machine, on a synthetic clock that
+  reads no clock at all. No CI runner supplies keystrokes, so without
+  this the binary could never be executed by a test — and an unexecuted
+  binary is an untested one.
+
+The scripted traces are files, in `traces/`, embedded at compile time
+and read by the same parser that reads anything this sample records.
+They are plain text and meant to be read: `walk.trace` is a header and
+fourteen events. Each one is also exactly what recording it produces, so editing
+one and re-recording is how you check you got what you meant.
 
 Traces: `walk` (keys, pointer, wheel, focus and resize, ending in a
-close request at frame twenty) and `idle` (no input at all — the shape a
-dedicated server or a determinism harness has).
+close request) and `idle` (no input at all — the shape a dedicated
+server or a determinism harness has).
+
+A trace file's header carries the run it was captured from — seed, tick
+count, timestep. On `--replay-trace` that header **owns** the run. On
+`--input-trace` it is provenance only, and the command line decides:
+that is what lets one trace be replayed across many seeds.
 
 ## Command line
 
@@ -46,6 +57,8 @@ dedicated server or a determinism harness has).
 | `--frames N` | Frames of simulation to run (default 600, ten seconds at 60 Hz). Headless, one frame is exactly one step; windowed, the run ends once the simulation has advanced this many steps. A close request ends it sooner. |
 | `--seed N` | Selects the movement speed. The seed axis is a placeholder until there is a random-number service; it feeds the world so the shape of the flag survives. |
 | `--dump-stats PATH` | Write the JSON report there, after the run. |
+| `--record-trace PATH` | Write the input this run saw to a trace file. |
+| `--replay-trace PATH` | Run the input in that file instead. The header owns the run, so `--input-trace`, `--frames` and `--seed` are refused alongside it. Requires `--headless`: replaying against a live window would mix recorded input with real input. |
 
 The last line on stdout is always the digest line — the string the
 cross-process determinism test compares. `--dump-stats` writes the
@@ -58,6 +71,21 @@ would be a measurement of nothing.
 
 Exit codes: `0` for a completed run or a skip, `1` for a failure, `2`
 for a command line this sample cannot honour.
+
+The two trace flags also have a front door that does not require
+remembering them:
+
+```
+renew record --output run.trace input_echo --headless --input-trace walk
+renew replay --input  run.trace input_echo --headless
+```
+
+The two digest lines are not identical — the replay reports
+`source=replay` where the recording reported `source=walk`, which is how
+you can tell it read the file rather than re-running the script. Every
+field that determinism depends on **is** identical, `state_hash` and
+`schedule_hash` included. That is the whole claim: a replay of a
+recording reproduces the run that made it.
 
 ## Contract
 
