@@ -316,8 +316,16 @@ impl<'a> Parser<'a> {
             Some(b't') => self.literal("true", Value::Bool(true)),
             Some(b'f') => self.literal("false", Value::Bool(false)),
             Some(b'n') => self.literal("null", Value::Null),
-            Some(_) => self.number(),
-            None => Err(self.err("a value")),
+            // Only a byte that could begin a number goes to the number
+            // parser. Everything else is not a malformed number — it is
+            // not the start of any value — and reporting "expected a
+            // finite number" for a `]` sends the reader hunting a numeric
+            // typo that was never there. The end-of-input arm below
+            // already had the right word.
+            Some(b'-' | b'0'..=b'9') => self.number(),
+            // A byte that starts nothing, and running out of bytes, are
+            // the same answer: no value begins here.
+            _ => Err(self.err("a value")),
         }
     }
 
@@ -656,6 +664,31 @@ mod tests {
         assert!(value.as_array().is_none());
         assert!(value.as_object().is_none());
         assert_eq!(Value::Bool(true).as_bool(), Some(true));
+    }
+
+    #[test]
+    fn an_error_names_the_right_byte_and_the_right_expectation() {
+        // Both halves, pinned. The test below checks the message mentions
+        // a byte and nothing checked WHICH byte, so a parser that always
+        // reported zero would have passed it — and nothing anywhere
+        // checked the expectation, which was wrong for every non-numeric
+        // byte standing where a value belongs.
+        for (text, at, expected) in [
+            ("[1,]", 3, "a value"),
+            ("{\"a\":}", 5, "a value"),
+            ("[1 2]", 3, "`,` or `]`"),
+            ("{\"a\" 1}", 5, "`:`"),
+            ("  tru", 2, "a literal"),
+            ("1.2.3", 0, "a finite number"),
+            ("", 0, "a value"),
+        ] {
+            let JsonError::Syntax {
+                at: got_at,
+                expected: got_expected,
+            } = parse(text).expect_err("must fail");
+            assert_eq!(got_at, at, "byte position for {text:?}");
+            assert_eq!(got_expected, expected, "expectation for {text:?}");
+        }
     }
 
     #[test]
