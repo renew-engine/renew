@@ -46,6 +46,7 @@ fn run(invocation: &Invocation) -> ExitCode {
     match invocation.command {
         Command::Doctor => run_doctor(invocation.json),
         Command::Check => run_check(invocation.json),
+        Command::Modules => run_modules(invocation.json),
         // Parsing guarantees the path; an empty one would simply fail to
         // open, which is the same answer by a shorter road.
         Command::Coverage => run_coverage(
@@ -188,6 +189,168 @@ fn findings_from_metadata(text: &str) -> Result<Vec<structure::Finding>, String>
 /// Read the runnable samples out of `cargo metadata` output.
 fn samples_from_metadata(text: &str) -> Result<Vec<samples::Sample>, String> {
     samples::from_metadata(&parsed_metadata(text)?)
+}
+
+/// One row of the module table, already reduced to what is printed.
+///
+/// A crate whose metadata does not parse still gets a row, carrying the
+/// reason instead of its fields. Dropping it would make an inventory
+/// quietly shorter than the workspace, and an inventory that omits what
+/// it could not read is the kind that gets believed.
+struct ModuleRow {
+    name: String,
+    maturity: String,
+    core: Option<bool>,
+    problem: Option<String>,
+}
+
+/// Every workspace crate with its declared maturity, from the manifests.
+///
+/// Sorted by maturity then name rather than alphabetically: the question
+/// this answers is "what does this release promise", and that is read off
+/// the maturity groups, not the alphabet.
+fn module_rows(text: &str) -> Result<Vec<ModuleRow>, String> {
+    let shapes = structure::shapes_from_metadata(&parsed_metadata(text)?)?;
+    let mut rows: Vec<ModuleRow> = shapes
+        .iter()
+        .map(|shape| match &shape.meta {
+            Ok(meta) => ModuleRow {
+                name: shape.name.clone(),
+                maturity: meta.maturity.clone(),
+                core: Some(meta.core),
+                problem: None,
+            },
+            Err(problems) => ModuleRow {
+                name: shape.name.clone(),
+                maturity: "unreadable".to_string(),
+                core: None,
+                problem: Some(problems.join("; ")),
+            },
+        })
+        .collect();
+    let rank = |maturity: &str| match maturity {
+        "stable" => 0,
+        "internal" => 1,
+        "bootstrap" => 2,
+        _ => 3,
+    };
+    rows.sort_by(|a, b| {
+        rank(&a.maturity)
+            .cmp(&rank(&b.maturity))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(rows)
+}
+
+/// `renew modules` — the module inventory, for people and for releases.
+///
+/// This exists because the maturity of a module is declared in exactly one
+/// place, its manifest, and until now nothing could read that place out
+/// loud. Anyone needing the table — a release note stating what a version
+/// promises, a document listing the optional crates — had to retype it,
+/// and a retyped table is a second home for a fact that goes stale without
+/// telling anyone.
+///
+/// It reports rather than gates: no finding, no failure, exit zero unless
+/// the workspace cannot be read at all.
+fn run_modules(json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    let outcome = workspace_root()
+        .ok_or_else(|| "no workspace root found above the current directory".to_string())
+        .and_then(|root| cargo_metadata(&root))
+        .and_then(|text| module_rows(&text));
+
+    let rows = match outcome {
+        Ok(rows) => rows,
+        Err(message) => {
+            if json_mode {
+                let document = Value::Object(vec![
+                    ("schema_version".to_string(), Value::Number(1)),
+                    ("command".to_string(), Value::String("modules".to_string())),
+                    ("status".to_string(), Value::String("error".to_string())),
+                    ("exit_code".to_string(), Value::Number(1)),
+                    (
+                        "duration_ms".to_string(),
+                        Value::Number(duration_ms(started)),
+                    ),
+                    ("stdout".to_string(), Value::String(String::new())),
+                    ("stderr".to_string(), Value::String(message)),
+                    // Always present, never conditional: a consumer that
+                    // reads `modules` must not have to test for the key.
+                    ("modules".to_string(), Value::Array(Vec::new())),
+                ]);
+                emit_stdout_line(&document.render());
+            } else {
+                eprintln!("error: {message}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json_mode {
+        let items: Vec<Value> = rows
+            .iter()
+            .map(|row| {
+                let mut fields = vec![
+                    ("name".to_string(), Value::String(row.name.clone())),
+                    ("maturity".to_string(), Value::String(row.maturity.clone())),
+                ];
+                fields.push((
+                    "core".to_string(),
+                    row.core.map_or(Value::Null, Value::Bool),
+                ));
+                fields.push((
+                    "problem".to_string(),
+                    row.problem
+                        .as_ref()
+                        .map_or(Value::Null, |text| Value::String(text.clone())),
+                ));
+                Value::Object(fields)
+            })
+            .collect();
+        let document = Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1)),
+            ("command".to_string(), Value::String("modules".to_string())),
+            ("status".to_string(), Value::String("ok".to_string())),
+            ("exit_code".to_string(), Value::Number(0)),
+            (
+                "duration_ms".to_string(),
+                Value::Number(duration_ms(started)),
+            ),
+            ("stdout".to_string(), Value::String(String::new())),
+            ("stderr".to_string(), Value::String(String::new())),
+            ("modules".to_string(), Value::Array(items)),
+        ]);
+        emit_stdout_line(&document.render());
+        return ExitCode::SUCCESS;
+    }
+
+    let widest = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
+    let mut report = String::new();
+    for row in &rows {
+        let core = match row.core {
+            Some(true) => "core",
+            Some(false) => "optional",
+            None => "?",
+        };
+        let _ = writeln!(
+            report,
+            "{:<width$}  {:<10}  {core}",
+            row.name,
+            row.maturity,
+            width = widest
+        );
+        if let Some(problem) = &row.problem {
+            let _ = writeln!(report, "{:<width$}  {problem}", "", width = widest);
+        }
+    }
+    let stable = rows.iter().filter(|row| row.maturity == "stable").count();
+    // The count is the point, not decoration: a version's compatibility
+    // promise covers `stable` modules, so a reader needs to see at a
+    // glance how much of the tree that is.
+    let _ = writeln!(report, "{} module(s), {stable} stable", rows.len());
+    emit_stdout(&report);
+    ExitCode::SUCCESS
 }
 
 fn run_coverage(report_path: &str, json_mode: bool) -> ExitCode {
