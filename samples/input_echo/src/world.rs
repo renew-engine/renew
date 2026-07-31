@@ -8,13 +8,28 @@
 use renew_frame::{StateHash, Step};
 use renew_platform::window::{KeyCode, WindowEvent};
 
-/// The direction keys, as a bitmask. Two of them held at once is a legal
-/// state, and the two cancel — expressing that as a mask rather than an
-/// enum is why.
-const UP: u8 = 1 << 0;
-const DOWN: u8 = 1 << 1;
-const LEFT: u8 = 1 << 2;
-const RIGHT: u8 = 1 << 3;
+/// The eight movement keys, one bit each.
+///
+/// **Keys, not directions, and the distinction is a bug fix.** The mask
+/// used to hold four direction bits, so releasing either key bound to a
+/// direction cleared it: press Up, press W, release Up, and the sample
+/// stopped moving up while W was still down. A direction is held while
+/// *any* of its keys is, which is an OR over the keys — and that can only
+/// be expressed by tracking the keys.
+const K_ARROW_UP: u8 = 1 << 0;
+const K_W: u8 = 1 << 1;
+const K_ARROW_DOWN: u8 = 1 << 2;
+const K_S: u8 = 1 << 3;
+const K_ARROW_LEFT: u8 = 1 << 4;
+const K_A: u8 = 1 << 5;
+const K_ARROW_RIGHT: u8 = 1 << 6;
+const K_D: u8 = 1 << 7;
+
+/// A direction is held while any of its keys is.
+const UP: u8 = K_ARROW_UP | K_W;
+const DOWN: u8 = K_ARROW_DOWN | K_S;
+const LEFT: u8 = K_ARROW_LEFT | K_A;
+const RIGHT: u8 = K_ARROW_RIGHT | K_D;
 
 /// How many speeds a seed can select.
 const SPEEDS: u64 = 4;
@@ -51,6 +66,7 @@ pub struct EchoWorld {
     /// Units per tick, selected by the seed.
     speed: i64,
     position: (i64, i64),
+    /// Which movement keys are physically down, one bit each.
     held: u8,
     ticks: u64,
     events: u64,
@@ -142,11 +158,15 @@ impl EchoWorld {
         } else {
             self.keys_released = self.keys_released.saturating_add(1);
         }
-        let direction = match code {
-            KeyCode::ArrowUp | KeyCode::KeyW => UP,
-            KeyCode::ArrowDown | KeyCode::KeyS => DOWN,
-            KeyCode::ArrowLeft | KeyCode::KeyA => LEFT,
-            KeyCode::ArrowRight | KeyCode::KeyD => RIGHT,
+        let key = match code {
+            KeyCode::ArrowUp => K_ARROW_UP,
+            KeyCode::KeyW => K_W,
+            KeyCode::ArrowDown => K_ARROW_DOWN,
+            KeyCode::KeyS => K_S,
+            KeyCode::ArrowLeft => K_ARROW_LEFT,
+            KeyCode::KeyA => K_A,
+            KeyCode::ArrowRight => K_ARROW_RIGHT,
+            KeyCode::KeyD => K_D,
             // Escape asks to quit, exactly as the window's own close
             // button does; every other key is counted and ignored.
             KeyCode::Escape => {
@@ -156,9 +176,9 @@ impl EchoWorld {
             _ => 0,
         };
         if pressed {
-            self.held |= direction;
+            self.held |= key;
         } else {
-            self.held &= !direction;
+            self.held &= !key;
         }
     }
 
@@ -177,7 +197,10 @@ impl EchoWorld {
             .absorb_bytes(&self.position.1.to_le_bytes());
     }
 
-    /// One axis of movement: opposite keys held together cancel.
+    /// One axis of movement: opposite directions held together cancel.
+    ///
+    /// Each argument is the set of keys meaning that direction, so a
+    /// direction counts as held while any one of them is down.
     fn axis(&self, positive: u8, negative: u8) -> i64 {
         let forward = i64::from(self.held & positive != 0);
         let back = i64::from(self.held & negative != 0);
@@ -348,6 +371,30 @@ mod tests {
         world.event(release(KeyCode::ArrowDown));
         tick(&mut world, 2);
         assert_eq!(world.position(), (2, -2));
+    }
+
+    /// Both keys for one direction, released one at a time. Releasing
+    /// either used to clear the direction outright, so the sample stopped
+    /// moving while a key meaning "up" was still physically down.
+    #[test]
+    fn releasing_one_of_two_keys_for_a_direction_keeps_it_held() {
+        let mut world = EchoWorld::new(0);
+        world.event(press(KeyCode::ArrowUp));
+        world.event(press(KeyCode::KeyW));
+        tick(&mut world, 1);
+        assert_eq!(
+            world.position(),
+            (0, -1),
+            "two keys for one direction is not two units"
+        );
+
+        world.event(release(KeyCode::ArrowUp));
+        tick(&mut world, 1);
+        assert_eq!(world.position(), (0, -2), "W is still down");
+
+        world.event(release(KeyCode::KeyW));
+        tick(&mut world, 3);
+        assert_eq!(world.position(), (0, -2), "and now nothing is");
     }
 
     #[test]
