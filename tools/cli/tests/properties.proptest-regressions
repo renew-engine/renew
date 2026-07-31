@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# The case below passes today. It is kept because it is the one the
+# round-trip property caught before the writer was fixed: a whole float
+# rendered without a fractional part and read back as an integer.
+# Negative zero is the shrunk form, and it is a better witness than the
+# `2.0` a person would write by hand -- whole, signed, and it prints as
+# `-0`.
+cc 40b2fb1554cb7a0db066302315f7ce93b1ed72f9a5a7f81ac78ba9b8cd58b5cb # shrinks to document = Object([("", Object([("", Float(-0.0))]))])
