@@ -250,13 +250,21 @@ writing the call and watching the lint fire.
   advice.** House style says an item should not repeat its crate's name:
   `renew_trace::Event`, not `renew_trace::TraceEvent`. The exception is
   taken deliberately and for one concrete reason — **the only code that
-  imports these types imports the windowing vocabulary beside them**, to
-  translate between the two:
+  imports these types imports the platform's event vocabulary beside
+  them**, to translate between the two:
 
   ```rust
-  use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+  use renew_platform::event::{KeyCode, PointerButton, WindowEvent};
   use renew_trace::{TraceButton, TraceEvent, TraceKey};
   ```
+
+  **`event`, not `window`.** Both paths resolve — `window` re-exports the
+  same items — but `window` is behind a default-on feature and `event` is
+  not, so the second form is the one that also compiles for a consumer
+  that disabled default features. That is not a hypothetical consumer:
+  a replay harness reading traces has no reason to link a windowing
+  stack, and this crate depends on nothing precisely so it never forces
+  one.
 
   `WindowEvent` and `TraceEvent` name two vocabularies at a seam whose
   whole job is converting one into the other. `WindowEvent` and a bare
