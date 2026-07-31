@@ -14,7 +14,8 @@ allow-panic-in-tests = true
 disallowed-methods = [
     { path = "std::time::Instant::now", reason = "simulation code reads no wall clock; the caller passes the one Timestamp in" },
     { path = "std::time::SystemTime::now", reason = "simulation code reads no wall clock; the caller passes the one Timestamp in" },
-    { path = "std::thread::spawn", reason = "simulation is single-threaded until the deterministic parallel-scheduling ADR exists" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded; no deterministic parallel-scheduling contract exists yet" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; simulation is single-threaded; no deterministic parallel-scheduling contract exists yet" },
     { path = "std::fs::read", reason = "this crate never touches the filesystem" },
     { path = "std::fs::write", reason = "this crate never touches the filesystem" },
     { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },

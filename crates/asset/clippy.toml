@@ -36,6 +36,7 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "packing reads no clock: a pack built twice from the same inputs must be byte-identical, and a timestamp in the output would destroy that" },
     { path = "std::time::SystemTime::now", reason = "packing reads no clock: a timestamp is the classic reason two builds of identical inputs differ" },
     { path = "std::thread::spawn", reason = "the crate spawns nothing; it is a pure function of its input" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; the crate spawns nothing; it is a pure function of its input" },
 ]
 
 disallowed-types = [

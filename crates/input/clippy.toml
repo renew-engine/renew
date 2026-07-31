@@ -31,6 +31,7 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "simulation state reads no clock: the same inputs must produce the same state, and a timestamp would destroy that" },
     { path = "std::time::SystemTime::now", reason = "simulation state reads no clock" },
     { path = "std::thread::spawn", reason = "storage spawns nothing; parallelism over components belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; storage spawns nothing; parallelism over components belongs to the job system" },
 ]
 
 disallowed-types = [

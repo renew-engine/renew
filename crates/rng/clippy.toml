@@ -20,6 +20,7 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "simulation code reads no wall clock; the seed comes from the caller" },
     { path = "std::time::SystemTime::now", reason = "simulation code reads no wall clock; the seed comes from the caller" },
     { path = "std::thread::spawn", reason = "simulation is single-threaded until the deterministic parallel-scheduling decision exists" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; simulation is single-threaded until the deterministic parallel-scheduling decision exists" },
     { path = "std::fs::read", reason = "this crate never touches the filesystem" },
     { path = "std::fs::write", reason = "this crate never touches the filesystem" },
     { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
