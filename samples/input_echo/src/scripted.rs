@@ -82,6 +82,26 @@ pub fn replay_recording(
     trace: &Trace,
     seed: u64,
     frames: u64,
+    recorder: Option<&mut Recorder>,
+) -> Report {
+    replay_at_interval(trace, seed, frames, FRAME_INTERVAL_NS, recorder)
+}
+
+/// The same driver, with the frame interval left to the caller.
+///
+/// Private, and it exists for one test. Every shipping path uses
+/// [`FRAME_INTERVAL_NS`], where a frame is always exactly one step — and
+/// that is precisely why the shipping path cannot show that a recorded
+/// tick is the world's step count rather than the frame number. The two
+/// are equal there. An interval that is not a whole number of timesteps
+/// makes frames carry one step and two by turns, which is the only shape
+/// that tells those numbers apart.
+#[must_use]
+fn replay_at_interval(
+    trace: &Trace,
+    seed: u64,
+    frames: u64,
+    interval_ns: u64,
     mut recorder: Option<&mut Recorder>,
 ) -> Report {
     let mut world = EchoWorld::new(seed);
@@ -94,16 +114,24 @@ pub fn replay_recording(
     for index in 1..=frames {
         for (at, event) in &trace.events {
             if *at == index {
-                // `index - 1` is the tick the next step will carry, which
-                // is what the format means by an event's tick: delivered
-                // before that step.
+                // The tick the next step will carry is however many steps
+                // the world has already run, which is what the format
+                // means by an event's tick: delivered before that step.
+                //
+                // Deliberately NOT `index - 1`. That is the same number
+                // only while every frame carries exactly one step — true
+                // of this driver by construction, and not a property of
+                // the format or of the loop. Asking the world removes the
+                // assumption rather than documenting it: a frame that
+                // banks no step, or runs two, still records the tick its
+                // event actually precedes.
                 if let Some(recorder) = recorder.as_deref_mut() {
-                    recorder.event(index.saturating_sub(1), *event);
+                    recorder.event(world.ticks(), *event);
                 }
                 world.event(*event);
             }
         }
-        let now = Timestamp::from_nanos(FRAME_INTERVAL_NS.saturating_mul(index));
+        let now = Timestamp::from_nanos(interval_ns.saturating_mul(index));
         let plan = frame.begin_frame(now);
         for step in plan.steps() {
             world.step(step);
@@ -197,10 +225,91 @@ pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleEr
 
 #[cfg(test)]
 mod tests {
-    use super::{SAMPLE_NAME, replay, replay_recorded, run};
+    use super::{
+        FRAME_INTERVAL_NS, SAMPLE_NAME, StepBudget, Timestep, TraceHeader, replay,
+        replay_at_interval, replay_recorded, run,
+    };
     use crate::cli::Options;
     use crate::error::SampleError;
+    use crate::record::Recorder;
     use crate::trace;
+
+    /// A recorded tick is the number of steps that had already run, which
+    /// is what the format means and what `record.rs` promises — **not**
+    /// the frame the event arrived in.
+    ///
+    /// Under the shipping driver those are the same number, so no amount
+    /// of recording through it can tell them apart: the committed traces
+    /// are byte-identical either way, which is exactly how the frame
+    /// number survived here unnoticed. Driving at one and a half
+    /// timesteps makes frames carry one step and two by turns and the
+    /// two numbers come apart — by five ticks over twelve frames.
+    ///
+    /// The `assert_ne!` is the load-bearing line. Without it this test
+    /// would keep passing if the interval were ever "simplified" back to
+    /// a whole timestep, and would then be asserting that a number equals
+    /// itself. A test whose premise can quietly evaporate is worse than
+    /// no test, because it still reports success.
+    #[test]
+    fn a_recorded_tick_counts_steps_that_ran_not_frames_that_passed() {
+        let source = trace::by_name("walk").expect("the walk trace");
+        let timestep = Timestep::HZ_60.nanos().get();
+        let interval = timestep * 3 / 2;
+        let frames = 12;
+
+        let mut recorder = Recorder::default();
+        let report = replay_at_interval(&source, 0, frames, interval, Some(&mut recorder));
+        let header = TraceHeader::new(
+            SAMPLE_NAME,
+            report.world.ticks(),
+            timestep,
+            StepBudget::DEFAULT.get().get(),
+        )
+        .expect("the header describes a legal run");
+        let written = recorder
+            .finish(header)
+            .expect("the recording is well formed");
+
+        let delivered: Vec<u64> = source
+            .events
+            .iter()
+            .filter(|(at, _)| *at <= frames)
+            .map(|(at, _)| *at)
+            .collect();
+        // Message deliberately literal: a formatted one would put the
+        // only code on this assertion's failure path, which never runs,
+        // and the coverage gate would have to exempt a line whose whole
+        // purpose is to never execute.
+        assert!(
+            delivered.len() > 3,
+            "too few of the walk trace's events land in the first frames to prove anything"
+        );
+
+        // Steps completed before frame N is floor((N-1) * interval / timestep).
+        let by_steps: Vec<u64> = delivered
+            .iter()
+            .map(|at| (at - 1) * interval / timestep)
+            .collect();
+        let by_frames: Vec<u64> = delivered.iter().map(|at| at - 1).collect();
+        assert_ne!(
+            by_steps, by_frames,
+            "this interval makes steps and frames agree, so the test proves nothing"
+        );
+
+        let actual: Vec<u64> = written.events().iter().map(|(at, _)| *at).collect();
+        assert_eq!(
+            actual, by_steps,
+            "recorded ticks must follow the steps that ran, not the frames that passed"
+        );
+    }
+
+    /// The shipping interval really is one step per frame — the premise
+    /// every other expectation in this file rests on, including the one
+    /// above that deliberately breaks it.
+    #[test]
+    fn the_shipping_interval_is_exactly_one_timestep() {
+        assert_eq!(FRAME_INTERVAL_NS, Timestep::HZ_60.nanos().get());
+    }
 
     fn walk(frames: u64) -> crate::cli::Report {
         replay(&trace::by_name("walk").expect("the walk trace"), 0, frames)
