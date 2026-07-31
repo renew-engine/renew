@@ -83,7 +83,28 @@ impl Value {
             }
             Self::Null => out.push_str("null"),
             Self::Number(number) => out.push_str(&number.to_string()),
-            Self::Float(number) => out.push_str(&number.to_string()),
+            Self::Float(number) => {
+                let text = number.to_string();
+                out.push_str(&text);
+                // `2.0f64.to_string()` is `"2"`, which the parser reads
+                // back as `Number(2)` because the integer branch takes any
+                // lexeme without `.`/`e`. The value survives that trip but
+                // its type does not, so a parsed float re-emitted once
+                // comes back as an integer. Nothing renders a parsed float
+                // today -- the parser is the only thing that builds one --
+                // which is why this never showed up in output. It still
+                // makes `parse(render(v)) == v` false for a value the
+                // parser itself can produce, so the suffix goes on here
+                // rather than the property being weakened to match.
+                //
+                // Finite only: the parser refuses non-finite numbers (JSON
+                // cannot spell them), so a non-finite `Float` is already
+                // unconstructible from input and `"inf.0"` would be no
+                // more valid than `"inf"`.
+                if number.is_finite() && !text.contains(['.', 'e', 'E']) {
+                    out.push_str(".0");
+                }
+            }
             Self::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
             Self::Array(items) => {
                 out.push('[');
@@ -295,8 +316,16 @@ impl<'a> Parser<'a> {
             Some(b't') => self.literal("true", Value::Bool(true)),
             Some(b'f') => self.literal("false", Value::Bool(false)),
             Some(b'n') => self.literal("null", Value::Null),
-            Some(_) => self.number(),
-            None => Err(self.err("a value")),
+            // Only a byte that could begin a number goes to the number
+            // parser. Everything else is not a malformed number — it is
+            // not the start of any value — and reporting "expected a
+            // finite number" for a `]` sends the reader hunting a numeric
+            // typo that was never there. The end-of-input arm below
+            // already had the right word.
+            Some(b'-' | b'0'..=b'9') => self.number(),
+            // A byte that starts nothing, and running out of bytes, are
+            // the same answer: no value begins here.
+            _ => Err(self.err("a value")),
         }
     }
 
@@ -635,6 +664,31 @@ mod tests {
         assert!(value.as_array().is_none());
         assert!(value.as_object().is_none());
         assert_eq!(Value::Bool(true).as_bool(), Some(true));
+    }
+
+    #[test]
+    fn an_error_names_the_right_byte_and_the_right_expectation() {
+        // Both halves, pinned. The test below checks the message mentions
+        // a byte and nothing checked WHICH byte, so a parser that always
+        // reported zero would have passed it — and nothing anywhere
+        // checked the expectation, which was wrong for every non-numeric
+        // byte standing where a value belongs.
+        for (text, at, expected) in [
+            ("[1,]", 3, "a value"),
+            ("{\"a\":}", 5, "a value"),
+            ("[1 2]", 3, "`,` or `]`"),
+            ("{\"a\" 1}", 5, "`:`"),
+            ("  tru", 2, "a literal"),
+            ("1.2.3", 0, "a finite number"),
+            ("", 0, "a value"),
+        ] {
+            let JsonError::Syntax {
+                at: got_at,
+                expected: got_expected,
+            } = parse(text).expect_err("must fail");
+            assert_eq!(got_at, at, "byte position for {text:?}");
+            assert_eq!(got_expected, expected, "expectation for {text:?}");
+        }
     }
 
     #[test]
