@@ -135,6 +135,28 @@ proptest! {
     }
 }
 
+/// The read side of the name-length boundary.
+///
+/// The writer now pins both ends of the limit, but the reader validates
+/// name length independently — it has to, since a pack can arrive from
+/// anywhere — and its guard had the same untested edge. A pack whose
+/// name is exactly the longest legal one must be read back, not refused.
+#[test]
+fn a_name_at_exactly_the_limit_survives_a_round_trip() {
+    let name = "n".repeat(renew_asset::MAX_NAME_BYTES);
+    let mut builder = PackBuilder::new();
+    builder
+        .insert(&name, b"payload")
+        .expect("insert at the limit");
+    let bytes = builder.finish().expect("pack");
+
+    let pack = Pack::read(&bytes).expect("a name at the limit is legal on read");
+    assert_eq!(pack.len(), 1);
+    let found = pack.get(&name).expect("the entry is present");
+    assert_eq!(found.name, name);
+    assert_eq!(found.bytes, b"payload");
+}
+
 /// The format, asserted by hand.
 ///
 /// The property tests above prove the writer and reader agree with each

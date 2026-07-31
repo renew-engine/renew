@@ -238,6 +238,21 @@ mod tests {
         assert!(matches!(error, BuildError::NameTooLong { .. }));
     }
 
+    /// The other side of the same boundary, and the side that was
+    /// missing. The test above pins `MAX_NAME_BYTES + 1`; a limit is two
+    /// claims and only one of them was checked, so relaxing the guard
+    /// from `>` to `>=` — which rejects the longest name the format
+    /// actually permits — passed the suite.
+    #[test]
+    fn a_name_at_exactly_the_limit_is_accepted() {
+        let mut b = PackBuilder::new();
+        let name = "n".repeat(MAX_NAME_BYTES);
+        b.insert(&name, b"x")
+            .expect("a name of exactly MAX_NAME_BYTES is legal");
+        let bytes = b.finish().expect("pack");
+        assert_eq!(bytes.len(), HEADER_BYTES + ENTRY_BYTES + MAX_NAME_BYTES + 1);
+    }
+
     /// A zero-length blob is a real entry, not an absence.
     #[test]
     fn an_entry_may_hold_no_bytes() {
