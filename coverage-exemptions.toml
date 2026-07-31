@@ -47,10 +47,10 @@ reason = "A release-mode refusal guarded by a debug assertion on the same condit
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [474, 475]
+lines = [482, 483]
 reason = "Translates a windowing event whose payload type has no public constructor in the pinned windowing crate, so the input cannot be built outside it. The translation logic itself is covered directly through the helper it delegates to. Note for local runs: on a machine with a live desktop, a stray keyboard event can reach the window smoke test's real window and cover line 390, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [792]
+lines = [800]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
