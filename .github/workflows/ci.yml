@@ -184,7 +184,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-jobs renew-frame; do
+          for optional in renew-rhi renew-jobs renew-frame renew-rng; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

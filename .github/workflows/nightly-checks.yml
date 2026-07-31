@@ -48,7 +48,7 @@ jobs:
         # The sanitized feature marks allocation-counting tests ignored:
         # instrumented runtimes allocate on their own, so those counts are
         # meaningless here (the regular CI workflow measures them).
-        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized -Zbuild-std --target ${{ matrix.target }}
+        run: cargo +nightly test --workspace --lib --bins --tests --features renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized,renew-rng/sanitized,renew-frame/sanitized -Zbuild-std --target ${{ matrix.target }}
       # The jobs crate's long stress tier is #[ignore]d in ordinary runs;
       # under the sanitizers it runs in full — the interleaving depth is
       # the point of this job.
