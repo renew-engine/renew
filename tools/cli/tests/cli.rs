@@ -209,6 +209,78 @@ fn broken_workspace(tag: &str) -> std::io::Result<PathBuf> {
     Ok(directory)
 }
 
+/// Run `renew` in `directory` with a build environment of its own.
+///
+/// Both parts matter for a test that makes the binary build something.
+/// A target directory of its own, so the child cargo cannot contend for
+/// the lock the outer cargo holds on this workspace's. And no inherited
+/// compiler flags, so a throwaway crate compiled here is not built with
+/// the outer run's coverage instrumentation and does not drop counters
+/// into its profile. The profile *destination* is deliberately left
+/// alone: the binary under test is instrumented, and its own counters
+/// have to keep landing where the run collecting them expects.
+fn run_building_in(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_renew"));
+    command
+        .args(arguments)
+        .current_dir(directory)
+        .env("CARGO_TARGET_DIR", directory.join("target"));
+    for inherited in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTDOCFLAGS",
+        "CARGO_ENCODED_RUSTDOCFLAGS",
+    ] {
+        command.env_remove(inherited);
+    }
+    command.output()
+}
+
+/// A scratch workspace holding one trivial sample: it echoes the command
+/// line it was handed, and exits 3 when told to fail. Enough to prove
+/// the pass-through and the exit-code contract in a compile this test
+/// can afford, which building a real sample here would not be.
+///
+/// Its package name and its binary name differ, as the real samples'
+/// do, so the lookup has to go through the binary target rather than
+/// guessing that the two are the same word.
+fn sample_workspace(tag: &str) -> std::io::Result<PathBuf> {
+    let directory = scratch_directory(&format!("run-{tag}"))?;
+    let sample = directory.join("samples").join("echo");
+    fs::create_dir_all(sample.join("src"))?;
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[workspace]\nresolver = \"3\"\nmembers = [\"samples/echo\"]\n",
+    )?;
+    // A tree in the temp directory inherits none of this repository's
+    // configuration, so the toolchain is pinned here explicitly rather
+    // than left to whatever the machine's default happens to be.
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rust-toolchain.toml"),
+        directory.join("rust-toolchain.toml"),
+    )?;
+    fs::write(
+        sample.join("Cargo.toml"),
+        concat!(
+            "[package]\nname = \"scratch-sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n",
+            "[[bin]]\nname = \"echo_sample\"\npath = \"src/main.rs\"\n",
+        ),
+    )?;
+    fs::write(
+        sample.join("src").join("main.rs"),
+        concat!(
+            "fn main() {\n",
+            "    let args: Vec<String> = std::env::args().skip(1).collect();\n",
+            "    println!(\"echo_sample saw [{}]\", args.join(\" \"));\n",
+            "    if args.iter().any(|argument| argument == \"--fail\") {\n",
+            "        std::process::exit(3);\n",
+            "    }\n",
+            "}\n",
+        ),
+    )?;
+    Ok(directory)
+}
+
 #[test]
 fn no_arguments_is_a_usage_error() {
     let output = run(&[]).expect("binary should spawn");
@@ -948,6 +1020,167 @@ fn coverage_without_a_report_is_a_usage_error() {
         stderr.contains("`--report` needs a value"),
         "stderr was: {stderr}"
     );
+}
+
+// --- Running a sample ----------------------------------------------------
+
+#[test]
+fn run_without_a_sample_is_a_usage_error() {
+    let output = run(&["run"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("needs a sample"), "stderr was: {stderr}");
+    assert!(stderr.contains("usage:"), "stderr was: {stderr}");
+}
+
+#[test]
+fn usage_documents_how_run_hands_the_command_line_over() {
+    let output = run(&["help"]).expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("run <sample> [--] [sample arguments...]"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("goes to the sample untouched"),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn an_unknown_sample_is_a_usage_error_naming_the_samples_that_exist() {
+    // Run against this workspace, so the list is discovered rather than
+    // read out of a fixture: these are the samples that really are here.
+    let output = run(&["run", "helo_triangle"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "usage errors never emit an envelope"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown sample `helo_triangle`"),
+        "stderr was: {stderr}"
+    );
+    for name in ["hello_triangle", "input_echo"] {
+        assert!(stderr.contains(name), "missing `{name}` in: {stderr}");
+    }
+
+    // Machine mode changes nothing: a command line that cannot be read
+    // produced no run, so there is no envelope to report one.
+    let output = run(&["--json", "run", "helo_triangle"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "usage errors never emit an envelope"
+    );
+}
+
+#[test]
+fn a_run_that_cannot_read_the_sample_list_refuses_instead_of_denying_it() {
+    // No workspace at all: the same refusal every other subcommand gives.
+    let empty = scratch_directory("run-noroot").expect("scratch directory should be creatable");
+    assert!(
+        renew_cli::workspace::find_root(&empty).is_none(),
+        "precondition: no workspace manifest may sit above {}",
+        empty.display()
+    );
+    let output = run_in(&empty, &["run", "hello_triangle"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no workspace root"), "stderr was: {stderr}");
+
+    // A workspace cargo itself cannot describe. An unreadable list is
+    // not an empty one: this must not come back as "unknown sample",
+    // which would send the caller off to check their spelling.
+    let broken = broken_workspace("run").expect("scratch workspace should be creatable");
+    let cargo_directory = Path::new(env!("CARGO"))
+        .parent()
+        .expect("cargo lives in a directory");
+    let output =
+        run_with_path(&broken, cargo_directory, &["run", "hello_triangle"]).expect("binary spawns");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cargo metadata"), "stderr was: {stderr}");
+    assert!(!stderr.contains("unknown sample"), "stderr was: {stderr}");
+
+    let _ = fs::remove_dir_all(&broken);
+    let _ = fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn a_sample_gets_its_command_line_verbatim_and_its_exit_code_comes_back() {
+    let directory = sample_workspace("echo").expect("scratch workspace should be creatable");
+
+    // With the separator, and without it: the sample cannot tell which
+    // spelling the caller used.
+    for line in [
+        vec!["run", "echo_sample", "--", "--headless", "--frames", "8"],
+        vec!["run", "echo_sample", "--headless", "--frames", "8"],
+    ] {
+        let output = run_building_in(&directory, &line).expect("binary should spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The sample's own line reaches this caller's stdout intact —
+        // the property a downstream grep depends on.
+        assert!(
+            stdout.contains("echo_sample saw [--headless --frames 8]"),
+            "stdout was: {stdout}"
+        );
+    }
+
+    // A flag renew itself knows still belongs to the sample once the
+    // sample has been named.
+    let output = run_building_in(&directory, &["run", "echo_sample", "--json"])
+        .expect("binary should spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("echo_sample saw [--json]"),
+        "the sample, not renew, must have been given --json: {stdout}"
+    );
+
+    // Before the sample name, the same flag is renew's, and the sample's
+    // output travels inside the envelope rather than beside it.
+    let output = run_building_in(&directory, &["--json", "run", "echo_sample", "--", "-q"])
+        .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "run")
+        .unwrap_or_else(|reason| panic!("run --json: {reason}"));
+    assert_eq!(envelope.get("status").and_then(Value::as_str), Some("ok"));
+    assert!(
+        envelope
+            .get("stdout")
+            .and_then(Value::as_str)
+            .is_some_and(|captured| captured.contains("echo_sample saw [-q]")),
+        "stdout was: {stdout}"
+    );
+
+    // A failing sample: the process exit is normalized to 1 like any
+    // other failing child, and the raw code survives in the envelope.
+    let output = run_building_in(&directory, &["run", "echo_sample", "--fail"])
+        .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+
+    let output = run_building_in(&directory, &["--json", "run", "echo_sample", "--fail"])
+        .expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = validated_envelope(stdout.trim(), "run")
+        .unwrap_or_else(|reason| panic!("failing run --json: {reason}"));
+    assert_eq!(
+        envelope.get("status").and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(envelope.get("exit_code"), Some(&Value::Number(3)));
+
+    let _ = fs::remove_dir_all(&directory);
 }
 
 /// One named check out of a doctor envelope.
