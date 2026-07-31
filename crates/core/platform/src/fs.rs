@@ -16,6 +16,12 @@ pub enum FsError {
     PermissionDenied {
         path: PathBuf,
     },
+    /// A bounded read was asked for and the file is larger than the
+    /// caller allowed (only [`read_to_string_bounded`] produces this).
+    TooLarge {
+        path: PathBuf,
+        limit: usize,
+    },
     /// Text was requested and the content is not UTF-8
     /// (only [`read_to_string`] produces this).
     InvalidUtf8 {
@@ -33,6 +39,9 @@ impl fmt::Display for FsError {
             Self::NotFound { path } => write!(f, "not found: {}", path.display()),
             Self::PermissionDenied { path } => {
                 write!(f, "permission denied: {}", path.display())
+            }
+            Self::TooLarge { path, limit } => {
+                write!(f, "larger than the {limit}-byte limit: {}", path.display())
             }
             Self::InvalidUtf8 { path } => {
                 write!(f, "not valid UTF-8: {}", path.display())
@@ -86,6 +95,45 @@ pub fn read_to_string(path: &Path) -> Result<String, FsError> {
     std::fs::read_to_string(path).map_err(|error| classify_text(path, &error))
 }
 
+/// Read a whole file as UTF-8 text, refusing anything past `limit`
+/// bytes.
+///
+/// [`read_to_string`] allocates whatever the file holds, which is fine
+/// for content the engine wrote and wrong for content it did not. A
+/// parser can validate a hostile file only once it is in memory, so the
+/// only place a size limit can actually be enforced is here, before the
+/// allocation happens; a bound declared inside a parser is decorative.
+///
+/// The limit is applied to the bytes actually read, not to the size the
+/// filesystem reports. Reported sizes can be stale, absent, or a lie
+/// about a growing or synthetic file, so this reads at most one byte
+/// past the limit and refuses if that byte exists — which costs nothing
+/// and cannot be fooled.
+///
+/// # Errors
+///
+/// [`FsError::TooLarge`] naming the limit when the file exceeds it;
+/// otherwise as [`read_to_string`].
+pub fn read_to_string_bounded(path: &Path, limit: usize) -> Result<String, FsError> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path).map_err(|error| classify(path, &error))?;
+    // One byte past the limit is enough to tell "at the limit" from
+    // "over it" without reading a byte more than that.
+    let mut text = String::new();
+    let read = file
+        .take(limit as u64 + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| classify_text(path, &error))?;
+    if read > limit {
+        return Err(FsError::TooLarge {
+            path: path.to_path_buf(),
+            limit,
+        });
+    }
+    Ok(text)
+}
+
 /// Write a whole file, replacing any existing content.
 ///
 /// # Errors
@@ -112,7 +160,7 @@ mod tests {
     use super::*;
 
     /// One error of every variant, all naming the same path.
-    fn all_variants(path: &Path) -> [FsError; 4] {
+    fn all_variants(path: &Path) -> [FsError; 5] {
         [
             FsError::NotFound {
                 path: path.to_path_buf(),
@@ -122,6 +170,10 @@ mod tests {
             },
             FsError::InvalidUtf8 {
                 path: path.to_path_buf(),
+            },
+            FsError::TooLarge {
+                path: path.to_path_buf(),
+                limit: 16,
             },
             FsError::Io {
                 path: path.to_path_buf(),
@@ -137,6 +189,7 @@ mod tests {
         let (FsError::NotFound { path }
         | FsError::PermissionDenied { path }
         | FsError::InvalidUtf8 { path }
+        | FsError::TooLarge { path, .. }
         | FsError::Io { path, .. }) = error;
         path
     }
@@ -151,6 +204,7 @@ mod tests {
         NotFound,
         PermissionDenied,
         InvalidUtf8,
+        TooLarge,
         Io(ErrorKind),
     }
 
@@ -159,8 +213,27 @@ mod tests {
             FsError::NotFound { .. } => Variant::NotFound,
             FsError::PermissionDenied { .. } => Variant::PermissionDenied,
             FsError::InvalidUtf8 { .. } => Variant::InvalidUtf8,
+            FsError::TooLarge { .. } => Variant::TooLarge,
             FsError::Io { kind, .. } => Variant::Io(*kind),
         }
+    }
+
+    /// No two variants collapse onto the same classification. The
+    /// classifier tests below only ever see errors the classifier itself
+    /// builds, so a variant constructed elsewhere — as the size refusal
+    /// is — would otherwise never be mapped by anything, and an arm
+    /// returning the wrong answer would sit unnoticed.
+    #[test]
+    fn every_variant_maps_to_a_classification_of_its_own() {
+        let path = Path::new("p");
+        let seen: Vec<Variant> = all_variants(path).iter().map(variant).collect();
+        assert_eq!(seen.len(), all_variants(path).len());
+        for (index, one) in seen.iter().enumerate() {
+            for other in &seen[index + 1..] {
+                assert_ne!(one, other, "two variants share a classification");
+            }
+        }
+        assert!(seen.contains(&Variant::TooLarge), "{seen:?}");
     }
 
     #[test]
