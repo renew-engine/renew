@@ -18,6 +18,8 @@ commands:
   check      verify workspace crate manifests and dependencies
   coverage   hold a coverage report against the exemption manifest
   modules    list every module with its maturity, from the manifests
+  asset-pack     build an asset pack from a directory of files
+  asset-inspect  list an asset pack's entries, optionally verifying them
   doctor     check the development environment
 
 options:
@@ -79,6 +81,31 @@ caller knows what it invoked, and the envelope shape stays uniform.
 A failing sample follows the same contract as any other failing child:
 the `renew` process exits `1`, and the sample's raw exit code survives in
 the envelope's `exit_code`.
+
+## Asset packs
+
+A pack is one file holding many named blobs, each with a digest of its own
+contents. `asset-pack` builds one from a directory; `asset-inspect` reads
+one back.
+
+```
+renew asset-pack --from assets/ --pack game.rpk
+renew asset-inspect --pack game.rpk --verify
+```
+
+Entries are named by their forward-slashed path relative to `--from`, on
+every platform, and the pack is sorted by name before it is written. Those
+two together are what make the output **byte-identical for the same
+inputs**: neither the order a directory happened to be walked in nor the
+separator a filesystem happens to use reaches the bytes.
+
+`--verify` re-hashes every payload and exits non-zero if any disagrees with
+its recorded digest. It is off by default because listing reads only the
+table while verifying reads every byte — a distinction that matters once a
+pack is large.
+
+There is no `import` subcommand. A real importer needs an image or audio
+decoder, and one that only copied bytes would be worse than its absence.
 
 ## The module inventory
 
