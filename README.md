@@ -82,6 +82,7 @@ windowing feature compiled away.
 | Module | What it does | Maturity |
 |---|---|---|
 | **`renew-diag`** | Log records, severity levels, and the sink interface the engine reports through | `internal` · core |
+| **`renew-event`** | The event vocabulary — key codes, pointer buttons, event shapes — as plain data with no dependencies | `internal` · core |
 | **`renew-math`** | `Vec2/3/4`, `Mat4`, `Quat`, `Aabb3` — plain data, documented layout, branchless kernels | `internal` · core |
 | **`renew-memory`** | `LinearArena`, a generation-checked `Pool<T>`, and a counting global allocator | `internal` · core |
 | **`renew-platform`** | The engine's only doorway to the OS: clock, files, named threads, window | `internal` · core |
