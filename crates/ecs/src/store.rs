@@ -146,6 +146,19 @@ impl<T> Store<T> {
             })
     }
 
+    /// How far [`Store::iter`] has to walk: slots scanned, not components
+    /// found.
+    ///
+    /// `sparse` grows to the highest slot ever inserted and never shrinks,
+    /// so this is a high-water mark rather than a live measurement. It is
+    /// the cost model, which is why it is crate-private: the only caller
+    /// that should care is [`crate::join`], choosing which side to walk.
+    /// Exposing it publicly would invite callers to branch on a number
+    /// that says nothing about the data they are about to see.
+    pub(crate) fn scan_len(&self) -> usize {
+        self.sparse.len()
+    }
+
     /// Every component in slot order, mutably.
     ///
     /// Collects the visit order first, because handing out `&mut` while

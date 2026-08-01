@@ -65,10 +65,19 @@ pub use store::Store;
 
 /// Every entity present in both stores, in ascending slot order.
 ///
-/// Walks the smaller store and probes the larger, which is the whole
-/// reason a sparse set is worth having: membership is a array lookup, so
-/// a join costs the smaller side rather than the product. The order is
+/// Walks whichever side is cheaper to scan and probes the other, which is
+/// the whole reason a sparse set is worth having: membership is an array
+/// lookup, so a join costs one scan rather than the product. The order is
 /// the same promise the stores make on their own.
+///
+/// **Cheaper means the slot span, not the component count.** [`Store::iter`]
+/// walks `sparse`, so its cost is the highest slot ever occupied — a store
+/// holding three components scattered across a million slots is expensive
+/// to walk and still O(1) to probe. Choosing by component count would pick
+/// the wrong side exactly when the difference is worth having.
+///
+/// Both directions yield identical sequences, so which one runs is
+/// invisible to callers and cannot reach the state digest.
 ///
 /// Deliberately a free function rather than a method: it belongs to
 /// neither store, and making it one store's method would suggest an
@@ -77,11 +86,57 @@ pub fn join<'a, A, B>(
     left: &'a Store<A>,
     right: &'a Store<B>,
 ) -> impl Iterator<Item = (u32, &'a A, &'a B)> {
-    // Iterate whichever side has fewer components; probing is O(1) either
-    // way, so the cost is the walk. `iter` is already slot-ordered, and
-    // filtering preserves that.
-    left.iter()
-        .filter_map(move |(slot, value)| Some((slot, value, right.get(slot)?)))
+    // `iter` is already slot-ordered and filtering preserves that, so both
+    // arms emit ascending slots over the same intersection.
+    if walks_left(left, right) {
+        Join::FromLeft(
+            left.iter()
+                .filter_map(move |(slot, value)| Some((slot, value, right.get(slot)?))),
+        )
+    } else {
+        Join::FromRight(
+            right
+                .iter()
+                .filter_map(move |(slot, value)| Some((slot, left.get(slot)?, value))),
+        )
+    }
+}
+
+/// Whether [`join`] will walk `left` rather than `right`.
+///
+/// Split out and tested directly because the choice is a cost decision
+/// with no observable effect on results: both arms emit the identical
+/// sequence, so no test over the output can tell which one ran. Asserting
+/// the predicate is the only guard that would have caught the original
+/// defect, where the doc promised a choice the code never made.
+fn walks_left<A, B>(left: &Store<A>, right: &Store<B>) -> bool {
+    left.scan_len() <= right.scan_len()
+}
+
+/// A join walked from one side or the other.
+///
+/// An enum rather than a boxed iterator because the steady-state frame
+/// loop allocates nothing, and rather than always walking one side because
+/// that is the choice being made. Both variants carry the same item type,
+/// so the branch is a cost decision and never a behavioural one.
+enum Join<L, R> {
+    FromLeft(L),
+    FromRight(R),
+}
+
+impl<'a, A: 'a, B: 'a, L, R> Iterator for Join<L, R>
+where
+    L: Iterator<Item = (u32, &'a A, &'a B)>,
+    R: Iterator<Item = (u32, &'a A, &'a B)>,
+{
+    type Item = (u32, &'a A, &'a B);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::FromLeft(iter) => iter.next(),
+            Self::FromRight(iter) => iter.next(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +187,59 @@ mod tests {
 
         let slots: Vec<u32> = join(&left, &right).map(|(slot, _, _)| slot).collect();
         assert_eq!(slots, vec![1, 2, 3, 7]);
+    }
+
+    /// Regression: the doc promised the join walks the cheaper side and
+    /// the code walked `left` unconditionally, so a wide-span left store
+    /// paid for every empty slot while a one-slot right store sat unused.
+    /// Both directions must produce the identical sequence, or the choice
+    /// would be observable — and a cost decision that changes results is
+    /// not a cost decision.
+    #[test]
+    fn a_join_yields_the_same_sequence_from_either_side() {
+        let mut wide: Store<u32> = Store::new();
+        let mut narrow: Store<u32> = Store::new();
+        // `wide` spans far more slots than it holds components; `narrow`
+        // is dense and low. The join must pick `narrow` to walk.
+        for slot in [0u32, 3, 40_000] {
+            wide.insert(slot, slot);
+        }
+        for slot in [0u32, 3] {
+            narrow.insert(slot, slot * 10);
+        }
+        assert!(narrow.scan_len() < wide.scan_len());
+        // The guard that actually bites: results agree either way, so only
+        // the choice itself distinguishes the fix from the defect.
+        assert!(!walks_left(&wide, &narrow));
+        assert!(walks_left(&narrow, &wide));
+
+        let forward: Vec<(u32, u32, u32)> = join(&wide, &narrow)
+            .map(|(slot, a, b)| (slot, *a, *b))
+            .collect();
+        let backward: Vec<(u32, u32, u32)> = join(&narrow, &wide)
+            .map(|(slot, a, b)| (slot, *b, *a))
+            .collect();
+
+        assert_eq!(forward, vec![(0, 0, 0), (3, 3, 30)]);
+        assert_eq!(forward, backward);
+    }
+
+    /// The walk cost is the slot span, not the component count, so a store
+    /// with fewer components can still be the expensive side. This is the
+    /// distinction that made the original comment wrong even in intent.
+    #[test]
+    fn scan_cost_follows_slot_span_not_component_count() {
+        let mut few_but_scattered: Store<u32> = Store::new();
+        few_but_scattered.insert(0, 0);
+        few_but_scattered.insert(50_000, 1);
+
+        let mut many_but_packed: Store<u32> = Store::new();
+        for slot in 0..1_000u32 {
+            many_but_packed.insert(slot, slot);
+        }
+
+        assert!(few_but_scattered.len() < many_but_packed.len());
+        assert!(few_but_scattered.scan_len() > many_but_packed.scan_len());
     }
 
     /// Entities and stores agree about who is alive, which is the join a
