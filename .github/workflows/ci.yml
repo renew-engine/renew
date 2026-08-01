@@ -434,6 +434,10 @@ jobs:
           # skip that passes prints nothing at all.
           RENEW_GOLDEN=1 xvfb-run -a cargo test --package renew-rhi --test present_smoke
           xvfb-run -a cargo test --package renew-rhi --test fault_present
+          # The allocation contract on the window path. Named here as well
+          # as declared in the manifest: a suite absent from this list runs
+          # nowhere and passes vacuously, which has happened once already.
+          RENEW_GOLDEN=1 xvfb-run -a cargo test --package renew-rhi --test present_zero_alloc
 
   deny:
     name: Licenses and advisories
