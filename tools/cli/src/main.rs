@@ -680,6 +680,47 @@ fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
     ])
 }
 
+/// The unexempted gaps in one file, rendered as the parenthetical a
+/// drifted exemption needs.
+///
+/// Line numbers move when the text above them moves. The gate then reports
+/// the old line as covered — which is true, and reads as "delete this",
+/// which is wrong when the code has merely moved down. Both halves of that
+/// fact are already computed on every run; only the correlation was
+/// missing, so a developer had to delete the entry, watch the next run
+/// fail on the new line, and re-add it there.
+///
+/// The wording names the adjacent gaps and stops. A file can hold an
+/// unrelated new gap beside a genuinely dead exemption, so this is a fact
+/// offered to a reader, never an inference about what happened.
+///
+/// Capped: a collection that failed wholesale would otherwise print
+/// hundreds of line numbers into a single finding.
+fn drift_hint(outcome: &Outcome, file: &str) -> Option<String> {
+    const SHOWN: usize = 6;
+    let lines: Vec<u32> = outcome
+        .gaps
+        .iter()
+        .filter(|site| site.file == file)
+        .map(|site| site.line)
+        .collect();
+    let (shown, rest) = lines.split_at(lines.len().min(SHOWN));
+    let listed = shown
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<String>>()
+        .join(", ");
+    match (shown.len(), rest.len()) {
+        (0, _) => None,
+        (_, 0) => Some(format!(
+            " (unless the code moved: this file is uncovered and unexempted at {listed})"
+        )),
+        (_, more) => Some(format!(
+            " (unless the code moved: this file is uncovered and unexempted at {listed}, and {more} more)"
+        )),
+    }
+}
+
 /// One line per finding, in `check`'s shape, then a summary.
 fn coverage_report(outcome: &Outcome) -> String {
     let mut report = String::new();
@@ -691,12 +732,20 @@ fn coverage_report(outcome: &Outcome) -> String {
         );
     }
     for stale in &outcome.stale {
+        // Only the covered-now direction can be a drift: `FileAbsent` means
+        // the report does not measure the file at all, so it has no gaps to
+        // name and a hint would be incoherent.
+        let hint = match stale.kind {
+            coverage::StaleKind::NowCovered => drift_hint(outcome, &stale.site.file),
+            coverage::StaleKind::FileAbsent => None,
+        };
         let _ = writeln!(
             report,
-            "FAIL {:<17} {} {}",
+            "FAIL {:<17} {} {}{}",
             "stale-exemption",
             stale.site,
-            stale.kind.explanation()
+            stale.kind.explanation(),
+            hint.as_deref().unwrap_or_default()
         );
     }
     let summary = if outcome.passes() {
