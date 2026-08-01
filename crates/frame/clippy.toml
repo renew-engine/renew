@@ -23,6 +23,8 @@ disallowed-methods = [
 ]
 
 disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so a value derived from it differs between runs of the same binary on the same inputs — unseeded randomness, which simulation code may not contain" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same road to the same entropy: it is built from RandomState, and stable Rust ships no other self-seeding source that needs no dependency" },
     { path = "std::collections::HashMap", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs of the same binary" },
     { path = "std::collections::HashSet", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs of the same binary" },
 ]
