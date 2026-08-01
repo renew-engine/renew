@@ -35,8 +35,8 @@ criterion = "0.8"
 # Bench-target-only: keeps the library's dependency graph free of the
 # job pool it never uses.
 renew-jobs = { path = "../../crates/jobs" }
-# The storage decision was settled on spikes that live outside the tree;
-# nothing committed could detect a regression in what actually shipped.
+# The storage decision was settled on measurements that were never
+# committed, so nothing here could detect a regression in what shipped.
 renew-ecs = { path = "../../crates/ecs" }
 
 [lints]

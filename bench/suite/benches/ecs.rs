@@ -1,9 +1,9 @@
 //! Entity and component-store timings: the four shapes a system asks for.
 //!
-//! `M3`'s exit criteria call for recorded ECS baselines and there were
-//! none — the storage decision was settled on spike measurements that
-//! live outside the tree, so nothing committed here could detect the day
-//! the shipped implementation regressed.
+//! Recorded baselines for the entity and component stores were missing:
+//! the storage decision was settled on measurements that were never
+//! committed, so nothing here could detect the day the shipped
+//! implementation regressed.
 //!
 //! What is measured, and why each one rather than a round number of
 //! operations:
