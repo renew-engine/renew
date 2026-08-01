@@ -15,6 +15,18 @@ use crate::world::World;
 /// engine chose; inventing a second one in another crate — with exactly
 /// one implementation behind it — would be an interface built to dodge a
 /// dependency.
+///
+/// **Not boxed, deliberately.** The window variant is the larger of the
+/// two and grew when the target gained a frame ring — 320 bytes against
+/// 96. Boxing would trade 224 bytes of stack, on a value held exactly
+/// once for the lifetime of the sample, for a heap allocation at creation
+/// and a pointer chase on **every frame**. That is the wrong direction on
+/// the one path this crate is here to measure, and the allocation gate on
+/// the window path now watches it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one long-lived value; indirection would cost a pointer chase per frame to save stack               bytes that are never duplicated"
+)]
 pub enum Surface {
     Offscreen(OffscreenTarget),
     #[cfg(feature = "window")]
