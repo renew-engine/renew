@@ -533,7 +533,7 @@ mod tests {
         assert!((alpha - 0.5).abs() < 1e-6, "alpha was {alpha}");
     }
 
-    /// The rounding table from the interpolation contract, as a test. A naive
+    /// The rounding table the interpolation contract fixes, as a test. A naive
     /// `rem as f32 / dt as f32` returns exactly 1.0 for the 30 Hz row, and
     /// the `f64` intermediate alone still returns 1.0 for the 1 Hz row —
     /// so the explicit bound is mandatory, not defensive.

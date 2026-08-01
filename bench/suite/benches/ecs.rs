@@ -1,9 +1,9 @@
 //! Entity and component-store timings: the four shapes a system asks for.
 //!
-//! Recorded ECS baselines were called for and there were
-//! none — the storage decision was settled on measurements that
-//! were never committed, so nothing committed here could detect the day
-//! the shipped implementation regressed.
+//! Recorded baselines for the entity and component stores were missing:
+//! the storage decision was settled on measurements that were never
+//! committed, so nothing here could detect the day the shipped
+//! implementation regressed.
 //!
 //! What is measured, and why each one rather than a round number of
 //! operations:
