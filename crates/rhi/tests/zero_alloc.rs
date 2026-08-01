@@ -13,11 +13,12 @@
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc, TargetFormat,
-    Validation, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc, SamplerDesc,
+    TargetFormat, TextureDesc, Validation, builtin,
 };
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -80,12 +81,44 @@ fn steady_state_frames_allocate_nothing() {
             height: 64,
         })
         .expect("offscreen target");
+    // **A textured pipeline, deliberately, and it is the stronger
+    // measurement rather than a different one.** Inside the measured
+    // window the textured path does everything the untextured path does
+    // — bind pipeline, viewport, scissor, draw — and then one thing
+    // more: it binds a descriptor set. So a textured frame allocating
+    // nothing implies an untextured frame allocating nothing, while the
+    // reverse says nothing at all. Measuring the triangle left the bind
+    // covered by reading the code rather than by the gate written to
+    // judge it.
+    //
+    // The texture and sampler are built here, outside the window: their
+    // creation allocates freely, and only the per-frame path is under
+    // test.
+    let texels: [u8; 16] = [
+        10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+    ];
+    let texture = Rc::new(
+        device
+            .create_texture(&TextureDesc::new(
+                Extent {
+                    width: 2,
+                    height: 2,
+                },
+                &texels,
+            ))
+            .expect("atlas upload"),
+    );
+    let sampler = Rc::new(
+        device
+            .create_sampler(&SamplerDesc::atlas())
+            .expect("sampler"),
+    );
     let pipeline = device
-        .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE,
-            TargetFormat::Rgba8Unorm,
-        ))
-        .expect("triangle pipeline");
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
+                .texture(texture, sampler),
+        )
+        .expect("textured pipeline");
     let clear = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
