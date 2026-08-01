@@ -164,7 +164,8 @@ the `timing` section of `--dump-stats` and nowhere else.
 `renew-frame` has no dependency on the renderer, and this sample is
 where the two meet. Built with `--no-default-features` there is no
 windowing library and no window-system integration anywhere in its
-graph — `renew-frame`, `renew-platform` and `renew-rhi` only — and the
+graph — `renew-frame`, `renew-platform`, `renew-event` and `renew-rhi`
+only — and the
 same binary produces the same digest line as the windowed build's
 headless mode. Asking that build for a window exits non-zero and says
 why.
