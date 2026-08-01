@@ -232,6 +232,15 @@ const LADDER: &[(&str, &str, Shape)] = &[
         Shape::BuildFails(Expect::Creation("vkCreateFence")),
     ),
     (
+        // The fence ring is built one at a time, so a failure part-way
+        // must destroy the ones already made. Failing the FIRST call
+        // leaves nothing to clean up and never runs that path -- this
+        // fails the second, which is the only ordinal that exercises it.
+        "Q5b fence-ring-partial",
+        "vkCreateFence=ERROR_OUT_OF_HOST_MEMORY@2",
+        Shape::BuildFails(Expect::Creation("vkCreateFence")),
+    ),
+    (
         "Q6 surface-capabilities",
         "vkGetPhysicalDeviceSurfaceCapabilitiesKHR=ERROR_OUT_OF_HOST_MEMORY",
         Shape::BuildFails(Expect::Creation(
@@ -264,8 +273,23 @@ const LADDER: &[(&str, &str, Shape)] = &[
         Shape::BuildFails(Expect::Creation("vkCreateImageView")),
     ),
     (
-        "Q12 per-image-semaphore",
+        // RETARGETED 2026-08-01. This was named per-image and aimed at
+        // ordinal 2, which was the second per-image semaphore while the
+        // chain made exactly one acquire semaphore. The acquire ring is
+        // created first and is FRAMES_IN_FLIGHT long, so ordinal 2 is
+        // now the second acquire semaphore -- the scenario kept passing
+        // while testing a different call, which is what a process-global
+        // ordinal does when new calls appear ahead of it.
+        "Q12 acquire-ring-semaphore",
         "vkCreateSemaphore=ERROR_OUT_OF_HOST_MEMORY@2",
+        Shape::BuildFails(Expect::Creation("vkCreateSemaphore")),
+    ),
+    (
+        // The first PER-IMAGE semaphore, which now sits after the
+        // acquire ring. Kept as its own scenario rather than moving the
+        // one above, so both sides of that boundary stay covered.
+        "Q12b per-image-semaphore",
+        "vkCreateSemaphore=ERROR_OUT_OF_HOST_MEMORY@3",
         Shape::BuildFails(Expect::Creation("vkCreateSemaphore")),
     ),
     // ---- the frame: failures the chain survives --------------------
