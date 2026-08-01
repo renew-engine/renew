@@ -6,10 +6,10 @@ use std::rc::Rc;
 
 use ash::vk;
 
-use crate::config::{Color, Extent};
+use crate::config::Extent;
 use crate::error::TargetError;
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
-use crate::vk::pipeline::{RenderPipeline, TargetFormat};
+use crate::vk::pipeline::{RenderDesc, TargetFormat};
 
 /// Bytes per pixel of the fixed RGBA8 format.
 const BPP: u64 = 4;
@@ -410,11 +410,10 @@ impl OffscreenTarget {
         clippy::too_many_lines,
         reason = "one recorded command stream; the barrier ordering reads top to bottom"
     )]
-    pub fn render(
-        &mut self,
-        clear: Color,
-        pipeline: Option<&RenderPipeline>,
-    ) -> Result<(), TargetError> {
+    pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<(), TargetError> {
+        let RenderDesc {
+            clear, pipeline, ..
+        } = *desc;
         if self.wedged {
             return Err(TargetError::Timeout {
                 call: "target wedged by an earlier incomplete frame",

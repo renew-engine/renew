@@ -12,7 +12,8 @@ use renew_frame::{
 };
 use renew_platform::Clock;
 use renew_rhi::{
-    AdapterInfo, Device, DeviceDesc, Extent, PipelineDesc, RenderPipeline, Validation, builtin,
+    AdapterInfo, Device, DeviceDesc, Extent, PipelineDesc, RenderDesc, RenderPipeline, Validation,
+    builtin,
 };
 
 use crate::cli::{Options, Report};
@@ -148,10 +149,11 @@ impl HeadlessRun {
             self.world.step(step);
         }
         let clear = clear_color(&self.world, plan.alpha());
-        let drawn = self
-            .surface
-            .render(clear, self.pipeline.as_ref())
-            .map_err(render_error)?;
+        let mut desc = RenderDesc::new(clear);
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            desc = desc.pipeline(pipeline);
+        }
+        let drawn = self.surface.render(&desc).map_err(render_error)?;
         self.stats.absorb(&plan);
         let cpu = self.clock.elapsed_nanos().saturating_sub(started);
         self.timing.record(Nanos::from_nanos(cpu), drawn);
@@ -172,9 +174,11 @@ impl HeadlessRun {
     /// [`SampleError::Failed`] if the renderer could not draw.
     pub fn redraw(&mut self) -> Result<(), SampleError> {
         let clear = clear_color(&self.world, Alpha::ZERO);
-        self.surface
-            .render(clear, self.pipeline.as_ref())
-            .map_err(render_error)?;
+        let mut desc = RenderDesc::new(clear);
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            desc = desc.pipeline(pipeline);
+        }
+        self.surface.render(&desc).map_err(render_error)?;
         Ok(())
     }
 
