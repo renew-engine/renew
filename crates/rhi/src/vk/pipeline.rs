@@ -1,5 +1,6 @@
-//! The v0 graphics pipeline: two SPIR-V stages, no vertex buffers, no
-//! descriptors, dynamic rendering into one color attachment.
+//! The v0 graphics pipeline: two SPIR-V stages, no vertex buffers,
+//! dynamic rendering into one color attachment, and optionally one
+//! sampled texture.
 
 use std::fmt;
 use std::rc::Rc;
@@ -9,6 +10,7 @@ use ash::vk;
 use crate::config::Color;
 use crate::error::PipelineError;
 use crate::vk::device::{Device, DeviceShared};
+use crate::vk::texture::Texture;
 
 /// The color format a pipeline renders into. Must match the target it
 /// is used with (checked as a contract in dev builds).
@@ -52,27 +54,92 @@ pub struct PipelineDesc<'a> {
     pub vertex_spirv: &'a [u8],
     pub fragment_spirv: &'a [u8],
     pub target_format: TargetFormat,
+    /// How many vertices the vertex stage generates for one draw.
+    ///
+    /// With no vertex buffers, the vertex list is written into the
+    /// shader, so its length is a property of the shader and not of the
+    /// frame -- which is why it is set here and the caller never passes
+    /// a count to a draw. Asking a stage for more vertices than it has
+    /// indexes past the end of its own constant array.
+    pub vertex_count: u32,
+    /// The texture this pipeline samples, and how.
+    ///
+    /// **Bound here rather than after creation, and that is the whole
+    /// design.** The descriptor set is written once, before the pipeline
+    /// can be used, so it can never be rewritten while a submit that
+    /// reads it is still running -- the rule a post-creation setter
+    /// would need is not merely satisfied but unstatable. The cost is
+    /// that two textures mean two pipelines over identical shaders,
+    /// which is free for one atlas and is not free for a material
+    /// system.
+    ///
+    /// Shared ownership because the pipeline must keep both alive for
+    /// as long as the set points at them, without the caller having to
+    /// sequence drops correctly.
+    pub texture: Option<(Rc<Texture>, Rc<Sampler>)>,
+}
+
+/// A vertex/fragment pair and the number of vertices its vertex stage
+/// generates.
+///
+/// **The three travel together because they are only correct together.**
+/// With no vertex buffers, the vertex list is written into the shader,
+/// so the count belongs to that shader and to no other. Passed
+/// separately they are two safe values that compile in any combination:
+/// too low and the draw renders part of the geometry, too high and the
+/// stage indexes past the end of its own constant array. Bundled, the
+/// mismatch cannot be spelled.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Shaders<'a> {
+    /// Vertex stage SPIR-V.
+    pub vertex: &'a [u8],
+    /// Fragment stage SPIR-V.
+    pub fragment: &'a [u8],
+    /// How many vertices [`Self::vertex`] generates for one draw.
+    pub vertex_count: u32,
+}
+
+impl<'a> Shaders<'a> {
+    /// A stage pair and its vertex count.
+    #[must_use]
+    pub fn new(vertex: &'a [u8], fragment: &'a [u8], vertex_count: u32) -> Self {
+        Self {
+            vertex,
+            fragment,
+            vertex_count,
+        }
+    }
 }
 
 impl<'a> PipelineDesc<'a> {
-    /// The three parameters a pipeline cannot be built without.
+    /// The two things a pipeline cannot be built without.
     ///
-    /// Positional rather than a builder chain because none of these has
-    /// a meaningful default: a pipeline with no vertex stage, no
-    /// fragment stage, or no target format is not a partially-configured
-    /// pipeline, it is not a pipeline. Optional state arrives later as
-    /// builder methods on top of this.
+    /// Positional rather than a builder chain because neither has a
+    /// meaningful default: a pipeline with no shaders, or with no target
+    /// format, is not a partially-configured pipeline, it is not a
+    /// pipeline. Optional state arrives later as builder methods on top
+    /// of this.
     #[must_use]
-    pub fn new(
-        vertex_spirv: &'a [u8],
-        fragment_spirv: &'a [u8],
-        target_format: TargetFormat,
-    ) -> Self {
+    pub fn new(shaders: Shaders<'a>, target_format: TargetFormat) -> Self {
         Self {
-            vertex_spirv,
-            fragment_spirv,
+            vertex_spirv: shaders.vertex,
+            fragment_spirv: shaders.fragment,
             target_format,
+            vertex_count: shaders.vertex_count,
+            texture: None,
         }
+    }
+
+    /// Sample `texture` through `sampler`, at set 0 binding 0.
+    ///
+    /// The fragment stage must declare a matching combined image
+    /// sampler; a pipeline given a texture its shader does not sample
+    /// is not an error, merely a set nothing reads.
+    #[must_use]
+    pub fn texture(mut self, texture: Rc<Texture>, sampler: Rc<Sampler>) -> Self {
+        self.texture = Some((texture, sampler));
+        self
     }
 }
 
@@ -142,6 +209,155 @@ impl<'a> RenderDesc<'a> {
     }
 }
 
+/// How a sampled image is filtered and addressed.
+///
+/// **`#[non_exhaustive]` with a constructor, per the descriptor pattern
+/// this crate now uses everywhere** -- filter and address mode are the
+/// two a sprite atlas needs, and mip mode, anisotropy and border colour
+/// arrive as builders touching no caller.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct SamplerDesc {
+    /// How texels are chosen when the sample lands between them.
+    pub filter: Filter,
+    /// What happens outside `[0, 1]`.
+    pub address: AddressMode,
+}
+
+impl SamplerDesc {
+    /// The atlas default: nearest, clamped.
+    ///
+    /// **Nearest rather than linear, and this is a decision rather than
+    /// an omission.** It is the single parameter deciding whether a
+    /// sprite atlas comes out crisp or blurred. Nearest keeps it exact,
+    /// and keeps reference-image comparisons meaningful: those compare
+    /// bytes, and linear filtering makes the bytes depend on how a
+    /// particular adapter interpolates rather than on the engine.
+    /// Clamped because an atlas has no meaning outside its own edges --
+    /// a wrapped sample reads a neighbouring sprite, which is a bug that
+    /// looks like a rendering artifact.
+    #[must_use]
+    pub fn atlas() -> Self {
+        Self {
+            filter: Filter::Nearest,
+            address: AddressMode::ClampToEdge,
+        }
+    }
+}
+
+/// Texel selection between sample points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Filter {
+    /// The nearest texel. Exact, and what a sprite atlas wants.
+    Nearest,
+    /// Bilinear blend of the four surrounding texels.
+    Linear,
+}
+
+/// What a sample outside `[0, 1]` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AddressMode {
+    /// The edge texel, repeated.
+    ClampToEdge,
+    /// The image, tiled.
+    Repeat,
+}
+
+impl Filter {
+    fn to_vk(self) -> vk::Filter {
+        match self {
+            Self::Nearest => vk::Filter::NEAREST,
+            Self::Linear => vk::Filter::LINEAR,
+        }
+    }
+}
+
+impl AddressMode {
+    fn to_vk(self) -> vk::SamplerAddressMode {
+        match self {
+            Self::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            Self::Repeat => vk::SamplerAddressMode::REPEAT,
+        }
+    }
+}
+
+/// A sampler. Holds its device alive; destroyed on drop.
+///
+/// # Contract
+///
+/// A sampler must outlive every descriptor set that references it.
+///
+/// **The caller cannot violate that, because they do not hold the
+/// obligation.** [`PipelineDesc::texture`] takes shared ownership, and
+/// the [`RenderPipeline`] keeps its clone for as long as the descriptor
+/// set exists — so a caller who drops their own handle mid-frame takes
+/// nothing away from the set. `Drop` therefore needs no quiesce: it can
+/// only run once the pipeline has released its clone, which happens
+/// inside `RenderPipeline`'s own `Drop`, after that has waited for the
+/// device to go idle and destroyed the pool.
+pub struct Sampler {
+    pub(crate) shared: Rc<DeviceShared>,
+    pub(crate) sampler: vk::Sampler,
+}
+
+impl fmt::Debug for Sampler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sampler").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        // SAFETY: category 2 (ash dispatch): device live via the spine
+        // Rc; the handle was created with these callbacks; the owner of
+        // any descriptor set referencing it has already quiesced.
+        unsafe {
+            self.shared
+                .device
+                .destroy_sampler(self.sampler, Some(&self.shared.alloc_cbs()));
+        }
+    }
+}
+
+/// The descriptor state of a textured pipeline: one layout, one pool
+/// sized for exactly one set, and that set.
+///
+/// **A pool per pipeline rather than one shared across the crate.** With
+/// the set written once at creation and never reallocated, the pool has
+/// no churn to amortise, and a pool whose lifetime is exactly that of
+/// its single set needs no free list, no fragmentation story and no
+/// rule about who may allocate from it when. That reasoning stops
+/// holding the moment sets are allocated per frame.
+#[derive(Clone, Copy)]
+struct Descriptors {
+    set_layout: vk::DescriptorSetLayout,
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
+}
+
+impl Descriptors {
+    /// Destroy the pool and the layout. The set is freed with the pool
+    /// and must not be freed separately.
+    ///
+    /// # Safety
+    ///
+    /// No submit referencing the set may still be running.
+    unsafe fn destroy(self, shared: &DeviceShared) {
+        // SAFETY: forwarded to the caller; both handles were created by
+        // `create_descriptors` with these callbacks.
+        unsafe {
+            shared
+                .device
+                .destroy_descriptor_pool(self.pool, Some(&shared.alloc_cbs()));
+            shared
+                .device
+                .destroy_descriptor_set_layout(self.set_layout, Some(&shared.alloc_cbs()));
+        }
+    }
+}
+
 /// A compiled draw pipeline. Holds its device alive; destroyed on
 /// drop (after a best-effort quiesce — v0 accepts a wait-idle in cold
 /// teardown paths for unconditional correctness).
@@ -150,13 +366,22 @@ pub struct RenderPipeline {
     pub(crate) pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     pub(crate) format: TargetFormat,
+    pub(crate) vertex_count: u32,
+    descriptors: Option<Descriptors>,
+    /// Kept alive because the descriptor set points at them. Never read
+    /// through — the set holds the handles the GPU uses, and these hold
+    /// the right to keep those handles valid.
+    _bound: Option<(Rc<Texture>, Rc<Sampler>)>,
 }
 
 impl Drop for RenderPipeline {
     fn drop(&mut self) {
         // SAFETY: category 2 (ash dispatch): device live via the spine
         // Rc; wait-idle guarantees no submitted work still references
-        // the pipeline; handles were created with these callbacks.
+        // the pipeline or its descriptor set; handles were created with
+        // these callbacks. The set is destroyed before the texture and
+        // sampler it points at, which `_bound` releases after this
+        // returns.
         unsafe {
             let _ = self.shared.device.device_wait_idle();
             self.shared
@@ -165,8 +390,154 @@ impl Drop for RenderPipeline {
             self.shared
                 .device
                 .destroy_pipeline_layout(self.layout, Some(&self.shared.alloc_cbs()));
+            if let Some(descriptors) = self.descriptors {
+                descriptors.destroy(&self.shared);
+            }
         }
     }
+}
+
+impl RenderPipeline {
+    /// Bind this pipeline's descriptor set, if it has one.
+    ///
+    /// **One implementation, called by both targets.** The two record
+    /// paths are otherwise independent, and a bind duplicated across
+    /// them is a correctness rule maintained in two places — the set
+    /// index and bind point have to agree with the pipeline layout
+    /// built here, not with whichever target is being read.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording, and its command pool must belong to
+    /// this pipeline's device.
+    pub(crate) unsafe fn bind_descriptors(&self, cmd: vk::CommandBuffer) {
+        let Some(descriptors) = self.descriptors else {
+            return;
+        };
+        // SAFETY: forwarded to the caller for the command buffer; the
+        // layout and set were created together by `create_pipeline` and
+        // are live for as long as `self` is; set 0 is the only set the
+        // layout declares.
+        unsafe {
+            self.shared.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[descriptors.set],
+                &[],
+            );
+        }
+    }
+}
+
+/// Create the layout, pool and set for one combined image sampler, and
+/// write it to point at `texture` through `sampler`.
+fn create_descriptors(
+    shared: &DeviceShared,
+    texture: &Texture,
+    sampler: &Sampler,
+) -> Result<Descriptors, PipelineError> {
+    // Handles from another device would be written into this device's
+    // set and used by it — undefined behaviour that no return value can
+    // report, so it asserts, as the two targets already do for a
+    // pipeline built on a foreign device.
+    debug_assert!(
+        core::ptr::eq(shared, Rc::as_ptr(texture.shared())),
+        "texture and pipeline come from different devices"
+    );
+    debug_assert!(
+        core::ptr::eq(shared, Rc::as_ptr(&sampler.shared)),
+        "sampler and pipeline come from different devices"
+    );
+    let bindings = [vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+    // SAFETY: category 2 (ash dispatch): device live via the spine; the
+    // binding array is a local outliving the call. (The same argument
+    // covers every dispatch call in this function.)
+    let set_layout = unsafe {
+        shared
+            .device
+            .create_descriptor_set_layout(&layout_info, Some(&shared.alloc_cbs()))
+    }
+    .map_err(|code| creation("vkCreateDescriptorSetLayout", code))?;
+
+    let sizes = [vk::DescriptorPoolSize::default()
+        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1)];
+    let pool_info = vk::DescriptorPoolCreateInfo::default()
+        .max_sets(1)
+        .pool_sizes(&sizes);
+    // SAFETY: device live; the size array is a local.
+    let pool = match unsafe {
+        shared
+            .device
+            .create_descriptor_pool(&pool_info, Some(&shared.alloc_cbs()))
+    } {
+        Ok(pool) => pool,
+        Err(code) => {
+            // SAFETY: layout live, nothing retained it.
+            unsafe {
+                shared
+                    .device
+                    .destroy_descriptor_set_layout(set_layout, Some(&shared.alloc_cbs()));
+            }
+            return Err(creation("vkCreateDescriptorPool", code));
+        }
+    };
+
+    let set_layouts = [set_layout];
+    let alloc_info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(&set_layouts);
+    // SAFETY: pool and layout live; the layout array is a local.
+    let allocated = unsafe { shared.device.allocate_descriptor_sets(&alloc_info) };
+    // One layout in, one set out is the driver contract, and ash sizes
+    // the result from the layout count — so the empty case is
+    // unreachable rather than unlikely. Folded into the failure path to
+    // keep it diagnosable instead of asserted, at no cost.
+    let (set, code) = match allocated {
+        Ok(sets) => (sets.into_iter().next(), vk::Result::ERROR_UNKNOWN),
+        Err(code) => (None, code),
+    };
+    let Some(set) = set else {
+        let partial = Descriptors {
+            set_layout,
+            pool,
+            set: vk::DescriptorSet::null(),
+        };
+        // SAFETY: nothing was allocated from the pool, so no submit can
+        // reference it.
+        unsafe { partial.destroy(shared) };
+        return Err(creation("vkAllocateDescriptorSets", code));
+    };
+
+    let image_info = [vk::DescriptorImageInfo::default()
+        .sampler(sampler.sampler)
+        .image_view(texture.view)
+        // The upload left the image in this layout and nothing changes
+        // it afterwards, immutability being the texture contract.
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+    let writes = [vk::WriteDescriptorSet::default()
+        .dst_set(set)
+        .dst_binding(0)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&image_info)];
+    // SAFETY: the set is live and not in use by any submit — nothing can
+    // have been recorded against a pipeline that does not exist yet. The
+    // write array and the image info it points at are locals outliving
+    // the call.
+    unsafe { shared.device.update_descriptor_sets(&writes, &[]) };
+
+    Ok(Descriptors {
+        set_layout,
+        pool,
+        set,
+    })
 }
 
 fn creation(call: &'static str, code: vk::Result) -> PipelineError {
@@ -177,6 +548,45 @@ fn creation(call: &'static str, code: vk::Result) -> PipelineError {
 }
 
 impl Device {
+    /// Create a sampler.
+    ///
+    /// # Errors
+    ///
+    /// [`PipelineError::Creation`] if the driver refuses the sampler.
+    pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler, PipelineError> {
+        let shared = &self.shared;
+        let address = desc.address.to_vk();
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(desc.filter.to_vk())
+            .min_filter(desc.filter.to_vk())
+            // NEAREST rather than LINEAR: with no mip levels created,
+            // the mode only decides how a single level is selected, and
+            // nearest keeps the choice from mattering at all.
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(address)
+            .address_mode_v(address)
+            .address_mode_w(address)
+            // No anisotropy: it is a device feature that must be enabled
+            // at device creation, and this crate enables none. Asking
+            // for it here without that is a validation error.
+            .anisotropy_enable(false)
+            .unnormalized_coordinates(false);
+        // SAFETY: category 2 (ash dispatch): device live via the spine
+        // Rc; the info struct is a local outliving this call; the crate
+        // is structurally `!Send + !Sync`, so external synchronisation
+        // holds.
+        let sampler = unsafe {
+            shared
+                .device
+                .create_sampler(&info, Some(&shared.alloc_cbs()))
+        }
+        .map_err(|code| creation("vkCreateSampler", code))?;
+        Ok(Sampler {
+            shared: Rc::clone(shared),
+            sampler,
+        })
+    }
+
     /// Build a draw pipeline for a target of `desc.target_format`.
     ///
     /// # Errors
@@ -240,17 +650,39 @@ impl Device {
             }
         };
 
-        // SAFETY: category 2: device live; the default (empty) layout
-        // info borrows nothing.
+        let descriptors = match &desc.texture {
+            Some((texture, sampler)) => match create_descriptors(shared, texture, sampler) {
+                Ok(descriptors) => Some(descriptors),
+                Err(error) => {
+                    destroy_modules();
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+
+        // An untextured pipeline keeps the empty layout it has always
+        // had; a textured one declares the single set the crate defines.
+        let set_layouts: &[vk::DescriptorSetLayout] = match &descriptors {
+            Some(descriptors) => core::slice::from_ref(&descriptors.set_layout),
+            None => &[],
+        };
+        let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(set_layouts);
+        // SAFETY: category 2: device live; the layout array is a local
+        // outliving the call.
         let layout = match unsafe {
-            shared.device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default(),
-                Some(&shared.alloc_cbs()),
-            )
+            shared
+                .device
+                .create_pipeline_layout(&layout_info, Some(&shared.alloc_cbs()))
         } {
             Ok(layout) => layout,
             Err(code) => {
                 destroy_modules();
+                if let Some(descriptors) = descriptors {
+                    // SAFETY: no pipeline exists, so no submit can
+                    // reference the set.
+                    unsafe { descriptors.destroy(shared) };
+                }
                 return Err(creation("vkCreatePipelineLayout", code));
             }
         };
@@ -322,11 +754,15 @@ impl Device {
             Err((_partial, code)) => (None, code),
         };
         let Some(pipeline) = built else {
-            // SAFETY: layout live, no pipeline retained it.
+            // SAFETY: layout live, no pipeline retained it; and no
+            // pipeline exists to have referenced the descriptor set.
             unsafe {
                 shared
                     .device
                     .destroy_pipeline_layout(layout, Some(&shared.alloc_cbs()));
+                if let Some(descriptors) = descriptors {
+                    descriptors.destroy(shared);
+                }
             }
             return Err(creation("vkCreateGraphicsPipelines", code));
         };
@@ -336,6 +772,9 @@ impl Device {
             pipeline,
             layout,
             format: desc.target_format,
+            vertex_count: desc.vertex_count,
+            descriptors,
+            _bound: desc.texture.clone(),
         })
     }
 }
@@ -343,6 +782,36 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The converters, both arms of each, with no device involved.
+    ///
+    /// **These live here rather than in the device suite deliberately.**
+    /// That suite demands `Validation::Required` and skips wherever the
+    /// validation layer is absent, which is most environments. A
+    /// conversion whose only exercise sits behind a skipped test is an
+    /// untested conversion on every machine but the few that happen to
+    /// have the layer installed.
+    #[test]
+    fn every_filter_and_address_mode_maps_to_its_vulkan_spelling() {
+        assert_eq!(Filter::Nearest.to_vk(), vk::Filter::NEAREST);
+        assert_eq!(Filter::Linear.to_vk(), vk::Filter::LINEAR);
+        assert_eq!(
+            AddressMode::ClampToEdge.to_vk(),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(AddressMode::Repeat.to_vk(), vk::SamplerAddressMode::REPEAT);
+    }
+
+    /// The atlas preset is a decision, so it is asserted rather than
+    /// assumed: linear filtering would make a sampled golden's bytes
+    /// depend on how an adapter interpolates, and the golden lane
+    /// compares bytes.
+    #[test]
+    fn the_atlas_preset_is_nearest_and_clamped() {
+        let desc = SamplerDesc::atlas();
+        assert_eq!(desc.filter, Filter::Nearest);
+        assert_eq!(desc.address, AddressMode::ClampToEdge);
+    }
 
     /// The unbound case, asserted on its content rather than merely run.
     ///

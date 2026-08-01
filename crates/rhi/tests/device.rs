@@ -7,8 +7,8 @@
 //! layer skip: correctness is proven where the oracle exists.
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    TargetFormat, Validation, builtin,
+    AddressMode, Color, Device, DeviceDesc, DeviceError, Extent, Filter, PipelineDesc,
+    PipelineError, RenderDesc, SamplerDesc, Shaders, TargetFormat, Validation, builtin,
 };
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
@@ -96,8 +96,7 @@ fn full_frame_cycle_clear_then_triangle() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
         ))
         .expect("triangle pipeline");
@@ -181,8 +180,7 @@ fn resources_keep_the_device_alive_past_the_handle() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
         ))
         .expect("pipeline");
@@ -202,8 +200,7 @@ fn invalid_spirv_is_rejected_per_stage() {
     };
     let bad = [0xDEu8, 0xAD, 0xBE, 0xEF];
     match device.create_pipeline(&PipelineDesc::new(
-        &bad,
-        builtin::TRIANGLE_FS_SPV,
+        Shaders::new(&bad, builtin::TRIANGLE_FS_SPV, 3),
         TargetFormat::Rgba8Unorm,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "vertex"),
@@ -211,8 +208,7 @@ fn invalid_spirv_is_rejected_per_stage() {
         Ok(_) => panic!("expected vertex rejection, got a pipeline"),
     }
     match device.create_pipeline(&PipelineDesc::new(
-        builtin::TRIANGLE_VS_SPV,
-        &[],
+        Shaders::new(builtin::TRIANGLE_VS_SPV, &[], 3),
         TargetFormat::Rgba8Unorm,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "fragment"),
@@ -254,8 +250,7 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         .expect("offscreen target");
     let foreign = device_b
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
         ))
         .expect("pipeline on the other device");
@@ -284,4 +279,24 @@ fn wrong_readback_length_is_a_retained_contract_check() {
         target.read_back_into(&mut wrong);
     }));
     assert!(outcome.is_err(), "short readback buffer must be rejected");
+}
+
+#[test]
+fn samplers_are_created_and_dropped_without_validation_complaint() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    // Every combination the descriptor can express, not just the
+    // preset: `atlas()` picks one corner of a two-by-two space, and a
+    // filter or address mode that no test ever hands to the driver is
+    // an untested conversion however well-covered its line is.
+    for filter in [Filter::Nearest, Filter::Linear] {
+        for address in [AddressMode::ClampToEdge, AddressMode::Repeat] {
+            let mut desc = SamplerDesc::atlas();
+            desc.filter = filter;
+            desc.address = address;
+            drop(device.create_sampler(&desc).expect("sampler"));
+        }
+    }
+    assert_no_validation_errors(&device);
 }

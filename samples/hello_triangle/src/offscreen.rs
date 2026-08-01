@@ -101,11 +101,7 @@ impl HeadlessRun {
             Draw::ClearOnly => None,
             Draw::Triangle => Some(
                 device
-                    .create_pipeline(&PipelineDesc::new(
-                        builtin::TRIANGLE_VS_SPV,
-                        builtin::TRIANGLE_FS_SPV,
-                        surface.format(),
-                    ))
+                    .create_pipeline(&PipelineDesc::new(builtin::TRIANGLE, surface.format()))
                     .map_err(pipeline_error)?,
             ),
         };

@@ -19,11 +19,13 @@
 #![allow(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    TargetError, TargetFormat, Validation, builtin,
+    Sampler, SamplerDesc, Shaders, TargetError, TargetFormat, Texture, TextureDesc, Validation,
+    builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -136,12 +138,40 @@ fn new_device() -> Result<Device, DeviceError> {
     })
 }
 
+/// A two-by-two atlas: the smallest thing a real upload can carry, and
+/// large enough that a row-stride error would show.
+const TEXEL_SIZE: Extent = Extent {
+    width: 2,
+    height: 2,
+};
+const TEXELS: [u8; 16] = [
+    10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+];
+
+/// The texture and sampler a textured pipeline needs, built with no
+/// fault armed against them — the descriptor ladder arms calls that
+/// only `create_pipeline` makes, so these must succeed first.
+fn textured_inputs(device: &Device) -> Result<(Rc<Texture>, Rc<Sampler>), String> {
+    let texture = Rc::new(
+        device
+            .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+            .map_err(|error| format!("texture: {error}"))?,
+    );
+    let sampler = Rc::new(
+        device
+            .create_sampler(&SamplerDesc::atlas())
+            .map_err(|error| format!("sampler: {error}"))?,
+    );
+    Ok((texture, sampler))
+}
+
+fn textured_desc<'a>(texture: &Rc<Texture>, sampler: &Rc<Sampler>) -> PipelineDesc<'a> {
+    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
+        .texture(Rc::clone(texture), Rc::clone(sampler))
+}
+
 fn pipeline_desc() -> PipelineDesc<'static> {
-    PipelineDesc::new(
-        builtin::TRIANGLE_VS_SPV,
-        builtin::TRIANGLE_FS_SPV,
-        TargetFormat::Rgba8Unorm,
-    )
+    PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm)
 }
 
 /// A scenario failure, carrying its own name.
@@ -491,6 +521,282 @@ fn every_driver_failure_ladder_behaves() {
         }));
     }
 
+    // C5 sits outside the loop above because it exercises a different
+    // constructor: the ladder's body builds a pipeline, and a sampler
+    // is built by its own call. Recovery is asserted the same way --
+    // an armed fault fires once, so the second attempt must succeed.
+    verdicts.push(device_case(
+        "C5",
+        "vkCreateSampler=ERROR_OUT_OF_HOST_MEMORY",
+        |device| {
+            match device.create_sampler(&SamplerDesc::atlas()) {
+                Err(PipelineError::Creation {
+                    call: "vkCreateSampler",
+                    ..
+                }) => {}
+                Err(other) => return Err(wrong("C5", "Creation(vkCreateSampler)", &other)),
+                Ok(_) => return Err("C5: the sampler was created despite the fault".to_owned()),
+            }
+            let recovered = device
+                .create_sampler(&SamplerDesc::atlas())
+                .map_err(|error| format!("C5: recovery sampler failed: {error}"))?;
+            // `Debug` is asserted here rather than in the device
+            // suite: that suite skips wherever the validation layer is
+            // absent, which is most environments.
+            let shown = format!("{recovered:?}");
+            if !shown.starts_with("Sampler") {
+                return Err(format!("C5: unexpected Debug form: {shown}"));
+            }
+            Ok(())
+        },
+    ));
+
+    // ---- C6-C8 · descriptor ladder ---------------------------------
+    // A textured pipeline is the only thing that allocates descriptors,
+    // so these arm the fault and then build one. Each is a distinct
+    // creation call inside `create_pipeline`, and each must leave the
+    // device able to build the same pipeline on a second attempt.
+    let descriptor_ladder: &[(&str, &str, &str)] = &[
+        (
+            "C6",
+            "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateDescriptorSetLayout",
+        ),
+        (
+            "C7",
+            "vkCreateDescriptorPool=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateDescriptorPool",
+        ),
+        (
+            "C8",
+            "vkAllocateDescriptorSets=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateDescriptorSets",
+        ),
+        // C9 and C10 fail *after* the descriptor set exists, which is
+        // the case that has to unwind it again. Nothing else reaches
+        // that cleanup: the untextured ladder above takes the same two
+        // failures with no set to destroy.
+        (
+            "C9",
+            "vkCreatePipelineLayout=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreatePipelineLayout",
+        ),
+        (
+            "C10",
+            "vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateGraphicsPipelines",
+        ),
+    ];
+    for &(name, fault, call) in descriptor_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            let (texture, sampler) = textured_inputs(device)
+                .map_err(|error| format!("{name}: textured inputs: {error}"))?;
+            match device.create_pipeline(&textured_desc(&texture, &sampler)) {
+                Err(PipelineError::Creation { call: got, .. }) if got == call => {}
+                Err(other) => return Err(wrong(name, &format!("Creation({call})"), &other)),
+                Ok(_) => return Err(format!("{name}: the build succeeded despite the fault")),
+            }
+            device
+                .create_pipeline(&textured_desc(&texture, &sampler))
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery build failed: {error}"))
+        }));
+    }
+
+    // ---- E · texture upload ladder ---------------------------------
+    // Every fallible call `create_texture` makes, in the order it makes
+    // them. The upload is synchronous and owns transient staging state,
+    // so each failure must both surface the right call and leave
+    // nothing behind — which the validation layer, consulted after each
+    // case by `device_case`, is what actually proves.
+    let texture_ladder: &[(&str, &str, &str, bool)] = &[
+        (
+            "E1",
+            "vkCreateImage=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImage",
+            false,
+        ),
+        (
+            "E2",
+            "vkAllocateMemory=ERROR_OUT_OF_DEVICE_MEMORY",
+            "vkAllocateMemory(texture)",
+            true,
+        ),
+        (
+            "E3",
+            "vkBindImageMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindImageMemory",
+            false,
+        ),
+        (
+            "E4",
+            "vkCreateImageView=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImageView",
+            false,
+        ),
+        (
+            "E5",
+            "vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateBuffer",
+            false,
+        ),
+        (
+            "E6",
+            "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY@2",
+            "vkAllocateMemory(staging)",
+            false,
+        ),
+        (
+            "E7",
+            "vkBindBufferMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindBufferMemory",
+            false,
+        ),
+        (
+            "E8",
+            "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkMapMemory",
+            false,
+        ),
+        (
+            "E9",
+            "vkCreateCommandPool=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateCommandPool",
+            false,
+        ),
+        (
+            "E10",
+            "vkAllocateCommandBuffers=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateCommandBuffers",
+            false,
+        ),
+        (
+            "E11",
+            "vkCreateFence=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateFence",
+            false,
+        ),
+        (
+            "E12",
+            "vkBeginCommandBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBeginCommandBuffer",
+            false,
+        ),
+        (
+            "E13",
+            "vkEndCommandBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkEndCommandBuffer",
+            false,
+        ),
+        (
+            "E14",
+            "vkQueueSubmit2=ERROR_OUT_OF_HOST_MEMORY",
+            "vkQueueSubmit2",
+            false,
+        ),
+        (
+            "E15",
+            "vkWaitForFences=ERROR_OUT_OF_HOST_MEMORY",
+            "vkWaitForFences(texture upload)",
+            false,
+        ),
+    ];
+    // E16 is the same call reporting the one non-error outcome that is
+    // still a failure for us: the upload did not finish in time. It sits
+    // outside the table because its verdict is a different variant — a
+    // timeout is not a creation error, and folding it in would hide the
+    // case where a driver merely needs longer.
+    verdicts.push(device_case("E16", "vkWaitForFences=TIMEOUT", |device| {
+        match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+            Err(TargetError::Timeout {
+                call: "vkWaitForFences(texture upload)",
+            }) => {}
+            Err(other) => {
+                return Err(wrong(
+                    "E16",
+                    "Timeout(vkWaitForFences(texture upload))",
+                    &other,
+                ));
+            }
+            Ok(_) => {
+                return Err("E16: the upload reported success despite timing out".to_owned());
+            }
+        }
+        device
+            .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+            .map(|_| ())
+            .map_err(|error| format!("E16: recovery upload failed: {error}"))
+    }));
+
+    // E17 is the one submit failure that must do more than report: a
+    // lost device has to be recorded on the shared spine, or every
+    // later render passes its own guard and submits to a dead device.
+    // Asserted through a second call, because the poison flag is not
+    // public and its whole purpose is what the *next* call does.
+    verdicts.push(device_case(
+        "E17",
+        "vkQueueSubmit2=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("E17", "DeviceLost", &other)),
+                Ok(_) => return Err("E17: the upload survived a lost device".to_owned()),
+            }
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("E17", "DeviceLost on the next call", &other)),
+                Ok(_) => {
+                    Err("E17: the device was not poisoned, so the next upload proceeded".to_owned())
+                }
+            }
+        },
+    ));
+
+    // E18 is the same loss reported one call later. The submit succeeds
+    // and the *wait* discovers the device is gone, which is a separate
+    // arm with its own quiesce — E17 cannot reach it, and a loss that
+    // only surfaces at the fence is the ordinary way a GPU hang is
+    // reported.
+    verdicts.push(device_case(
+        "E18",
+        "vkWaitForFences=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("E18", "DeviceLost", &other)),
+                Ok(_) => return Err("E18: the upload survived a lost device".to_owned()),
+            }
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("E18", "DeviceLost on the next call", &other)),
+                Ok(_) => {
+                    Err("E18: the device was not poisoned, so the next upload proceeded".to_owned())
+                }
+            }
+        },
+    ));
+    for &(name, fault, call, device_memory) in texture_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(error) => {
+                    let matched = if device_memory {
+                        matches!(&error, TargetError::OutOfDeviceMemory { call: got } if *got == call)
+                    } else {
+                        matches!(&error, TargetError::Creation { call: got, .. } if *got == call)
+                    };
+                    if !matched {
+                        return Err(wrong(name, call, &error));
+                    }
+                }
+                Ok(_) => return Err(format!("{name}: the upload succeeded despite the fault")),
+            }
+            device
+                .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery upload failed: {error}"))
+        }));
+    }
+
     // ---- D · offscreen render ladder -------------------------------
     // D1-D3: the frame fails before submission, so nothing is in
     // flight: the target stays usable and the next frame succeeds.
@@ -780,8 +1086,7 @@ fn every_driver_failure_ladder_behaves() {
         // destruction lands in exactly that window.
         verdicts.push(teardown_case("E7 teardown/validation-report", |device| {
             match device.create_pipeline(&PipelineDesc::new(
-                &IMPLAUSIBLE_SPIRV,
-                builtin::TRIANGLE_FS_SPV,
+                Shaders::new(&IMPLAUSIBLE_SPIRV, builtin::TRIANGLE_FS_SPV, 3),
                 TargetFormat::Rgba8Unorm,
             )) {
                 Err(PipelineError::Creation { .. }) => {}
