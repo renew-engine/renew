@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The engine's only doorway to the GPU: device bring-up, window and offscreen render targets, and the clear-and-triangle draw path."
+purpose = "The engine's only doorway to the GPU: device bring-up, window and offscreen render targets, and the draw path from a clear through a sampled texture."
 maturity = "bootstrap"
 core = false
 extension_points = []
