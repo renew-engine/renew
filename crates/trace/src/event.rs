@@ -1,13 +1,20 @@
 //! The event vocabulary: what a trace can say happened, spelled in this
 //! crate's own words.
 //!
-//! The vocabulary is owned here rather than borrowed from the windowing
-//! layer, and that is the whole reason this crate depends on nothing. A
-//! codec that named the windowing crate's event enum would pull that
-//! crate — and everything it links, an entire windowing stack — into
-//! every build that merely wants to read a file, headless ones included.
-//! It would also make the meaning of a recorded file hostage to that
-//! enum's growth: a variant added upstream would quietly change what an
+//! The vocabulary is owned here rather than borrowed, and one of the two
+//! reasons that used to be given for it is no longer true.
+//!
+//! **The dead half:** naming the engine's event enum once meant pulling
+//! in a crate that linked an entire windowing stack, in every build that
+//! merely wanted to read a file. That vocabulary now lives in a crate of
+//! its own with no dependencies at all, so borrowing it would cost
+//! nothing. Recorded rather than quietly dropped, because an argument
+//! resting on a premise that has been deleted is the kind of thing a
+//! later reader treats as still load-bearing.
+//!
+//! **The half that survives, and it was always the stronger one:**
+//! borrowing would make the meaning of a recorded file hostage to that
+//! enum's growth. A variant added upstream would quietly change what an
 //! already-written trace means. Owning the words means a new upstream
 //! variant changes only what the *conversion* in the application must
 //! handle, which is one compile error in one place.
