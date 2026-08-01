@@ -41,8 +41,18 @@ struct Header {
 /// multiple of `align` that fits the header. Returns `None` when the
 /// request cannot be represented — the callbacks translate that into
 /// an allocation failure, never a panic.
+///
+/// **A zero-size request is planned, not refused, and the distinction
+/// is load-bearing.** `NULL` is how a host allocator reports *failure*,
+/// so refusing a zero-size request tells the driver it is out of
+/// memory. Drivers do make them: one that records commands into a
+/// deferred queue allocates a trailing array per command, and an array
+/// of zero dynamic offsets is a zero-byte request. The total is never
+/// zero anyway — the header sits below every allocation — so a unique,
+/// freeable pointer costs nothing, which is also what `malloc` returns
+/// for `malloc(0)` and what drivers are written against.
 fn plan(size: usize, align: usize) -> Option<(Layout, usize)> {
-    if size == 0 || !align.is_power_of_two() {
+    if !align.is_power_of_two() {
         return None;
     }
     let align = align.max(core::mem::align_of::<Header>());
@@ -239,9 +249,40 @@ mod tests {
         core::ptr::from_ref(ledger).cast_mut().cast()
     }
 
+    /// A zero-size request must produce a real pointer, because `NULL`
+    /// means *failure* to a driver rather than *nothing*.
+    ///
+    /// This is not hypothetical tidiness: a driver that records commands
+    /// into a deferred queue allocates one trailing array per command,
+    /// and binding a descriptor set with no dynamic offsets asks for an
+    /// array of zero of them. Refusing it makes the driver believe the
+    /// host is out of memory, and it reports that at the end of
+    /// recording — nowhere near the call that caused it.
+    #[test]
+    fn a_zero_size_request_is_served_rather_than_refused() {
+        let ledger = AllocLedger::default();
+        let first = allocate(&ledger, 0, 8);
+        let second = allocate(&ledger, 0, 8);
+        assert!(!first.is_null(), "zero size must not read as failure");
+        assert!(!second.is_null());
+        assert_ne!(first, second, "each request owns a distinct address");
+        assert_eq!(ledger.allocations.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            ledger.bytes_in_use.load(Ordering::Relaxed),
+            0,
+            "zero bytes were asked for, so zero are in use"
+        );
+        // SAFETY: both pointers came from `allocate` and are unfreed.
+        unsafe {
+            deallocate(&ledger, first);
+            deallocate(&ledger, second);
+        }
+        assert_eq!(ledger.deallocations.load(Ordering::Relaxed), 2);
+        assert_eq!(ledger.bytes_in_use.load(Ordering::Relaxed), 0);
+    }
+
     #[test]
     fn plan_rejects_the_unplannable() {
-        assert!(plan(0, 8).is_none(), "zero size");
         assert!(plan(16, 3).is_none(), "non-power-of-two align");
         assert!(plan(usize::MAX, 8).is_none(), "overflow");
         // Adding the header does not overflow here, but the total is
@@ -255,7 +296,6 @@ mod tests {
     #[test]
     fn an_unplannable_request_is_a_null_return_not_a_panic() {
         let ledger = AllocLedger::default();
-        assert!(allocate(&ledger, 0, 8).is_null(), "zero size");
         assert!(allocate(&ledger, 16, 3).is_null(), "non-power-of-two align");
         assert!(allocate(&ledger, usize::MAX, 8).is_null(), "overflow");
         assert_eq!(
