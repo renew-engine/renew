@@ -1,42 +1,41 @@
 # ThreadSanitizer suppressions.
 #
-# One entry. Adding a second is a decision, not a maintenance step: every
-# line here is a place the only tool in the matrix that can see a data
-# race has been told not to look.
+# NO ENTRIES. Adding one is a decision, not a maintenance step: every line
+# here is a place the only tool in the matrix that can see a data race has
+# been told not to look. The file is kept, empty, because the job points
+# TSAN_OPTIONS at it and because the history below is worth more than the
+# entry it used to hold.
 #
-# --- libvulkan loader teardown -------------------------------------------
+# --- retired: called_from_lib:libvulkan.so -------------------------------
 #
-# What is reported: a write to a pthread mutex during pthread_mutex_destroy
-# inside libvulkan.so.1, reached from `<libloading::Library as Drop>::drop`
-# -> drop glue for `ash::entry::Entry`. Two warnings, at process exit,
-# from renew-rhi's device tests.
+# What it suppressed: a write to a pthread mutex during
+# pthread_mutex_destroy inside libvulkan.so.1, reached from
+# `<libloading::Library as Drop>::drop` -> drop glue for
+# `ash::entry::Entry`. Two warnings at process exit, from renew-rhi's
+# device tests.
 #
-# Why it happens here and not in the rendering lane: this job has no Vulkan
-# runtime installed, so every one of those tests calls `Device::new`, which
-# dlopens the loader, fails to find a device, and drops the Entry on the
-# way out -- dlclose. The tests then skip and pass. Nine of them run on
-# parallel harness threads, so the binary opens and closes libvulkan nine
-# times over, concurrently. On the success path the Entry is moved into
-# `DeviceShared` and lives as long as the device, so none of this happens
-# where a device actually exists.
+# Why it existed: this job had no Vulkan runtime, so every device test
+# called `Device::new`, dlopened the loader, failed to find a device, and
+# dlclosed on the way out. Nine ran on parallel harness threads, so the
+# binary opened and closed libvulkan nine times over, concurrently.
 #
-# Why suppressing rather than fixing: neither libvulkan nor the dynamic
-# loader is instrumented, so TSan cannot see their internal
-# synchronization and reports the teardown as a race it cannot prove
-# ordered. The engine frames in the stack are the ones *dropping* the
-# library; no engine state is involved on either side of the reported
-# access.
+# Why it is gone: the job now installs the same pinned software rasterizer
+# the rendering lane uses, so those tests do real work instead of skipping,
+# and the pattern the entry described no longer arises the way it did.
+# Keeping a blanket `called_from_lib` pattern over a real driver in a real
+# code path would be strictly worse than the skips it replaced -- it would
+# hide engine-frame races along with driver-internal ones. That trade was
+# named in advance as the one this change must not make.
 #
-# What this suppression does NOT establish, and the reason it is written
-# down: it is not proof the report is a false positive. dlclose of a
-# graphics driver while other threads hold it open is a genuinely
-# questionable pattern, and "third-party" is not a synonym for "harmless".
-# What is established is that no engine data races here, and that the
-# scenario only arises on a skip path in an environment with no driver.
+# What the retired entry's own analysis got wrong, recorded because it was
+# careful reasoning that still missed: it said the dlopen/dlclose churn
+# happens only on the skip path, and that with a device present the Entry
+# lives as long as the device "so none of this happens". The first half is
+# right. The second is not -- `DeviceShared::drop` itself reaches
+# `loader_clear_scanned_icd_list`, so the loader is still torn down at
+# device drop, just later. Installing a driver did not remove that
+# teardown; it moved it.
 #
-# The better fix, when someone has the appetite: install a software Vulkan
-# runtime in this job the way the rendering lane does. Then these tests do
-# real work instead of skipping, the Entry is retained, the churn stops --
-# and the sanitizer would start covering renew-rhi, which today it does
-# not cover at all.
-called_from_lib:libvulkan.so
+# If entries return, each carries its own reasoning at this length, and a
+# driver-internal race gets a pattern scoped to the driver -- never a
+# blanket one.
