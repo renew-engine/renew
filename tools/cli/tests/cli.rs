@@ -1115,6 +1115,57 @@ fn coverage_fails_on_an_exemption_whose_line_is_covered_now() {
     let _ = fs::remove_dir_all(&directory);
 }
 
+/// Lines 1 to 7 never ran; line 20 did. Enough gaps to overflow the hint.
+const SEVEN_GAPS: &str = "[1,1,7,9,0,0,0,0],[20,1,20,9,3,0,0,0]";
+
+#[test]
+fn coverage_names_the_files_other_gaps_when_an_exemption_may_have_drifted() {
+    // Drift, in the shape it actually takes: text is inserted above an
+    // exempt line, so the entry now points at covered code while the line
+    // it was written for has moved and become an unexempted gap. Both
+    // findings are true, and "delete this exemption" is the wrong
+    // instruction for them -- the entry is still earned, at a new number.
+    //
+    // Here the manifest exempts line 20, which ran; line 10, which did
+    // not, is left unexempted to stand for the moved code.
+    let directory = coverage_workspace("drift", &exempting("crates/a.rs", "[20]"), ONE_GAP)
+        .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "crates/a.rs:20 is covered now — delete this exemption (unless the code moved: \
+             this file is uncovered and unexempted at 10)"
+        ),
+        "the stale finding must name the file's remaining gaps: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn the_drift_hint_is_capped_so_one_finding_cannot_print_every_gap() {
+    // A collection that failed wholesale leaves hundreds of gaps in one
+    // file. The hint exists to be read at a glance, so it names the first
+    // few and counts the rest rather than becoming the failure output.
+    let directory = coverage_workspace("drift-cap", &exempting("crates/a.rs", "[20]"), SEVEN_GAPS)
+        .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("unexempted at 1, 2, 3, 4, 5, 6, and 1 more)"),
+        "the hint must be capped and count the remainder: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
 #[test]
 fn coverage_fails_on_an_exemption_the_report_never_measured() {
     let directory = coverage_workspace(

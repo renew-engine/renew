@@ -154,6 +154,12 @@ The ratchet runs both ways, and both fail:
   a hole in the gate on exactly the line someone once proved could not be
   closed.
 
+An entry left behind by code that moved shows up as the second of those,
+because the old number now points at whatever took its place. Deleting it
+would be wrong — the exemption is still earned, at a new line — so a
+covered-now finding also names any lines of the same file that are
+uncovered and unexempted. That is where the code most likely went.
+
 The subcommand does not run the collection: CI produces the export and
 hands it over. That keeps the command pure and fast, keeps the rule itself
 under unit test, and keeps the ignore filter in one place (the collection),
