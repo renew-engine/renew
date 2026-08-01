@@ -1485,6 +1485,7 @@ dependencies = [
  "proptest",
  "raw-window-handle",
  "renew-diag",
+ "renew-memory",
  "renew-platform",
 ]
 
