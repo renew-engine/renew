@@ -1,0 +1,49 @@
+# Crate-local lint configuration.
+#
+# **Having no dependencies is not the reason this file exists — it is the
+# reason it is not enough.** `Instant::now`, `HashMap`'s default hasher
+# and `env::var` all live in the standard library and need no dependency
+# at all, so a crate with an empty `[dependencies]` can still reach a
+# clock, unseeded randomness and the environment. The bans below are what
+# actually prevent that.
+#
+# This crate sits inside the dependency closure of a crate that declares
+# `simulation = true`, so anything it can do, that crate inherits. The
+# list is therefore the union of the pure-computation bans and the
+# non-determinism bans the marker requires — deliberately stricter than a
+# leaf crate would need on its own.
+#
+# (A crate-local file fully replaces the workspace one, so the test
+# allowances are repeated.)
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "this crate is plain data and never reads a clock" },
+    { path = "std::time::SystemTime::now", reason = "this crate is plain data and never reads a clock" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "the environment is an input this crate must not read" },
+    { path = "std::env::var_os", reason = "the environment is an input this crate must not read" },
+    { path = "std::thread::spawn", reason = "plain data spawns nothing" },
+]
+
+# Unseeded randomness, which needs no dependency and would be inherited by
+# every crate downstream that promises determinism.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is unseeded; use a deterministic map" },
+    { path = "std::collections::HashSet", reason = "iteration order is unseeded; use a deterministic set" },
+    { path = "std::hash::RandomState", reason = "seeds itself from the operating system" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "seeds itself from the operating system" },
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

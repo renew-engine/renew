@@ -23,6 +23,12 @@ default = ["window"]
 window = ["dep:winit", "dep:raw-window-handle"]
 
 [dependencies]
+# The event vocabulary this crate re-exports as its `event` module.
+# Unconditional, not behind the `window` feature: a headless build still
+# needs to name a key, and the whole point of the extraction is that
+# taking the vocabulary does not mean taking a clock.
+renew-event = { path = "../event" }
+
 # Explicit feature selection: both Linux backends and the window-handle
 # interop. Wayland client-side decorations are deliberately OFF — the
 # fallback decoration stack pulls an unmaintained font parser (caught by

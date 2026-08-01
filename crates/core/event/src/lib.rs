@@ -1,14 +1,39 @@
-//! The event vocabulary — plain data, no windowing library.
+//! The engine's event vocabulary: what happened, as plain data.
 //!
-//! **Deliberately not behind the `window` feature.** These types are what
-//! a consumer speaks: a key code, a pointer button, an event shape. The
-//! code that *produces* them from the OS lives in [`crate::window`] and
-//! does need a windowing library; the vocabulary itself does not, and a
-//! headless build — a server, a replay harness, an input layer under
-//! test — should not compile one to name a key.
+//! Three enums, the list of every event shape, and the index function
+//! over it. No dependencies, no operating system, nothing that can make
+//! anything happen — a set of types describing an event, and only that.
 //!
-//! [`crate::window`] re-exports everything here, so the paths consumers
-//! already use keep working.
+//! # Contract
+//!
+//! **This crate must never acquire a way to observe the outside world**,
+//! and that obligation is the reason it exists as a crate rather than a
+//! module. A crate promising its output depends only on build, seed and
+//! input may depend on this one; adding a dependency here would defeat
+//! that for every such crate at once, which is why the manifest declares
+//! none and must keep declaring none.
+//!
+//! **How much of this is enforced, stated exactly.** The reverse edge —
+//! this crate depending on the platform crate — is impossible: the
+//! platform crate depends on this one, and a dependency cycle is
+//! rejected. That is a real check. **What is not yet checked is the
+//! forward direction**: nothing today stops a crate that promises
+//! determinism from adding its own edge back to the platform crate and
+//! reaching a clock that way. Keeping this crate dependency-free is
+//! therefore a maintained obligation, not a guaranteed one, until that
+//! rule exists.
+//!
+//! **The vocabulary used to live inside the platform crate**, beside the
+//! clock, the filesystem and thread spawning, marked "deliberately not
+//! behind the `window` feature". A feature gate is a convention the
+//! dependency graph cannot see; a crate boundary is one it can.
+//!
+//! `renew-platform` re-exports this crate as its `event` module, so
+//! every path a consumer already uses keeps working.
+
+// Diagnostics are not this crate's job; the standard output macros are
+// banned by construction, not convention.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
 /// The engine's event vocabulary, translated from the OS.
 #[derive(Debug, Clone, Copy, PartialEq)]

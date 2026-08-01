@@ -48,12 +48,21 @@ error rather than an action that silently never fires. The bound is
 
 ## What it compiles against
 
-`renew-platform` with default features **off**: this crate needs the
-event vocabulary in `renew_platform::event`, not the OS event loop, so no
-windowing library enters its dependency graph. A build guard asserts that
-absence rather than trusting it — an input layer that dragged in a window
-system would be a strange thing to discover later, and the vocabulary was
-moved out from behind the `window` feature precisely so it cannot.
+`renew-event`, and nothing else. That crate is the event vocabulary as
+plain data and has no dependencies of its own, so no windowing library —
+and no clock, filesystem or thread spawning — can enter this crate's
+dependency graph at all.
+
+**This used to be the platform crate with default features off**, which
+expressed the same intent and could not enforce it. Feature selection is
+invisible to the dependency graph; the crate on the other end still owned
+the OS capabilities whether or not this one named them; and in a
+workspace build the windowing library compiled anyway, merely unlinked
+here. A build guard asserted the absence, and was asserting something
+weaker than it appeared to.
+
+The vocabulary now has its own crate, so the isolation is a property of
+the graph rather than of a manifest flag someone must remember to set.
 
 ## Thread safety and ownership
 
