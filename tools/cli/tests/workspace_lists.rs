@@ -679,3 +679,115 @@ mod tests",
         "the parser accepts {missing:?} and the usage text never mentions them;          a flag a user cannot discover may as well not exist"
     );
 }
+
+/// No Vulkan type reaches `renew-rhi`'s public API.
+///
+/// **The rule is documented intent with no enforcement, which is why this
+/// exists.** `renew-rhi` wraps `ash` so that nothing above it names a
+/// Vulkan type; the whole vocabulary argument for crate-owned enums —
+/// `TargetFormat` listing two variants rather than re-exporting
+/// `vk::Format` — rests on that boundary holding. Until now it held by
+/// review alone, and the resource model is about to add several new
+/// enums that each present the same temptation.
+///
+/// **A naive scan does not work and the shape of its failure is the
+/// point.** Grepping the crate for `pub fn … vk::` finds two hits today,
+/// `alloc::callbacks` and `debug::messenger_info` — both `pub` inside
+/// private modules, neither reachable from outside. Every module in
+/// `lib.rs` is private, so an item is public only if its owning type is
+/// re-exported. The check therefore derives the exported set from the
+/// `pub use` lines and looks only inside those types' own definitions
+/// and impl blocks.
+#[test]
+fn no_vulkan_type_appears_in_the_rhi_public_api() {
+    let root = workspace_root();
+    let lib = std::fs::read_to_string(root.join("crates/rhi/src/lib.rs"))
+        .expect("the rhi crate root is readable");
+
+    let mut exported: Vec<String> = Vec::new();
+    for line in lib.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub use ") else {
+            continue;
+        };
+        let rest = rest.trim_end_matches(';');
+        let names = match (rest.find('{'), rest.rfind('}')) {
+            (Some(open), Some(close)) if open < close => rest[open + 1..close].to_string(),
+            _ => rest.rsplit("::").next().unwrap_or_default().to_string(),
+        };
+        for name in names.split(',') {
+            let name = name.trim();
+            if !name.is_empty() && name.chars().next().is_some_and(char::is_uppercase) {
+                exported.push(name.to_string());
+            }
+        }
+    }
+    assert!(
+        exported.len() >= 10,
+        "only {exported:?} parsed out of lib.rs; the scan stopped matching the re-export form"
+    );
+
+    let vulkan = |text: &str| text.contains("ash::") || text.contains("vk::");
+    let mut faults = Vec::new();
+    let mut files = Vec::new();
+    collect_rust_files(&root.join("crates/rhi/src"), &mut files).expect("rhi sources readable");
+
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let shown = path.display().to_string();
+        let mut owner: Option<String> = None;
+        let mut depth = 0usize;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if owner.is_none() {
+                owner = exported
+                    .iter()
+                    .find(|name| {
+                        let n = name.as_str();
+                        trimmed.starts_with(&format!("impl {n} "))
+                            || trimmed.starts_with(&format!("impl {n}<"))
+                            || trimmed.starts_with(&format!("impl {n} {{"))
+                            || trimmed.ends_with(&format!("for {n} {{"))
+                            || trimmed.starts_with(&format!("pub struct {n}"))
+                            || trimmed.starts_with(&format!("pub enum {n}"))
+                    })
+                    .cloned();
+            }
+            if owner.is_some() {
+                depth += line.matches('{').count();
+                depth = depth.saturating_sub(line.matches('}').count());
+                let public_item = trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("pub const fn ")
+                    || (trimmed.starts_with("pub ") && trimmed.contains(':'));
+                if public_item && vulkan(trimmed) {
+                    faults.push(format!(
+                        "{shown}: `{}` exposes a Vulkan type on the public type `{}`",
+                        trimmed.trim_end_matches('{').trim(),
+                        owner.clone().unwrap_or_default()
+                    ));
+                }
+                if depth == 0 {
+                    owner = None;
+                }
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "the rhi crate wraps Vulkan so nothing above it names a Vulkan type; these leak it: {faults:#?}"
+    );
+}
+
+/// Every `.rs` under a directory, recursively.
+fn collect_rust_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.is_dir() {
+            collect_rust_files(&path, found)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
