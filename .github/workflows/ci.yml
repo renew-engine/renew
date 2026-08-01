@@ -82,6 +82,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # FIRST, before any other cargo command. Every other invocation in
+      # this file resolves dependencies and rewrites Cargo.lock in place
+      # if it disagrees with the manifests -- so a --locked check placed
+      # after one of them would pass on a lock the previous step had just
+      # silently repaired, and would report success about nothing.
+      #
+      # Why this exists: a change added a dev-dependency without
+      # committing the lockfile update. Thirteen checks went green and
+      # `cargo --locked` failed outright on the merged result. No lane
+      # asked, so nothing failed. This asks.
+      #
+      # `metadata` rather than `build`: it resolves the whole graph and
+      # refuses, costs seconds, and needs nothing compiled.
+      - name: Check the lockfile still describes the manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Check workspace structure
         run: cargo run --package renew-cli --bin renew -- check
 
