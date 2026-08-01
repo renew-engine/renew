@@ -10,9 +10,11 @@
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
+use std::rc::Rc;
+
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, RenderDesc,
-    TargetError, Validation, WindowTarget, builtin,
+    SamplerDesc, TargetError, TextureDesc, Validation, WindowTarget, builtin,
 };
 
 const FRAMES_WANTED: u32 = 10;
@@ -103,14 +105,50 @@ impl WindowApp for SmokeApp {
                 return;
             }
         };
-        let pipeline =
-            match device.create_pipeline(&PipelineDesc::new(builtin::TRIANGLE, target.format())) {
-                Ok(pipeline) => pipeline,
-                Err(error) => {
-                    self.failure = Some(format!("pipeline failed: {error}"));
-                    return;
-                }
-            };
+        // **Textured, so that the window record path actually binds a
+        // descriptor set.** The bind is one method shared by both
+        // targets, and until now only the offscreen target ever reached
+        // its body — on this path it always took the early return, so a
+        // bind recorded outside the render pass, or after the draw,
+        // would have passed every check. Validation is `Required` here
+        // and the run asserts zero errors, which is what makes that
+        // reachable at all.
+        //
+        // The pipeline takes shared ownership of both, so neither needs
+        // a field on this struct: the keep-alive is the point of the
+        // design and letting them drop here exercises it.
+        let texels: [u8; 16] = [
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
+        let texture = match device.create_texture(&TextureDesc::new(
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &texels,
+        )) {
+            Ok(texture) => Rc::new(texture),
+            Err(error) => {
+                self.failure = Some(format!("atlas upload failed: {error}"));
+                return;
+            }
+        };
+        let sampler = match device.create_sampler(&SamplerDesc::atlas()) {
+            Ok(sampler) => Rc::new(sampler),
+            Err(error) => {
+                self.failure = Some(format!("sampler failed: {error}"));
+                return;
+            }
+        };
+        let pipeline = match device.create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, target.format()).texture(texture, sampler),
+        ) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                self.failure = Some(format!("pipeline failed: {error}"));
+                return;
+            }
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
