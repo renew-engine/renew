@@ -56,13 +56,30 @@ impl SmokeApp {
 
 impl WindowApp for SmokeApp {
     fn ready(&mut self, window: &WindowRef<'_>) {
+        // `Required`, not `IfAvailable`: this is the only suite that
+        // builds a `WindowTarget`, so it is the only place the present
+        // path can be watched by the validation layer at all. Under
+        // `IfAvailable` a lane with no layer installed still passed, and
+        // every "no validation errors" claim about presenting was a claim
+        // about nothing.
+        //
+        // A missing layer is a skip rather than a failure so a developer
+        // without the SDK is not blocked -- and `RENEW_GOLDEN=1` turns
+        // that skip back into a failure where the lane exists to run it,
+        // which is what stops the skip being invisible. Same shape the
+        // device suite already uses.
+        let strict = std::env::var_os("RENEW_GOLDEN").is_some_and(|value| value == "1");
         let device = match Device::new(&DeviceDesc {
             app_name: "renew-present-smoke",
-            validation: Validation::IfAvailable,
+            validation: Validation::Required,
         }) {
             Ok(device) => device,
             Err(DeviceError::LoaderUnavailable { message }) => {
                 self.skip = Some(format!("no Vulkan runtime: {message}"));
+                return;
+            }
+            Err(DeviceError::ValidationUnavailable) if !strict => {
+                self.skip = Some("validation layer not installed".to_string());
                 return;
             }
             Err(error) => {
