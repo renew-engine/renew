@@ -738,6 +738,29 @@ impl WindowTarget {
     /// The other half of what a double-buffering consumer needs: knowing
     /// how many copies to keep is useless without knowing which one this
     /// frame belongs to. Advances after each successful submit.
+    ///
+    /// # Ordering — read this before writing the copy this names
+    ///
+    /// **Knowing the slot is not permission to write it yet.** The slot
+    /// returned here may still have a submit in flight: its fence is
+    /// waited at the *start* of the [`render`](Self::render) that uses
+    /// it, and the slot advances at the *end* of the previous one. So
+    /// between two calls, the slot this names is generally the one whose
+    /// submit has not been waited for — at a depth of two, the first two
+    /// frames are clear and every frame after that is not.
+    ///
+    /// A consumer that writes its copy for this slot between frames is
+    /// therefore writing memory the GPU may be reading. **Keeping
+    /// [`frames_in_flight`](Self::frames_in_flight) copies is necessary
+    /// and it is not sufficient**; nothing in this API currently reports
+    /// when a slot's previous submit has completed, so per-frame data
+    /// that a draw reads has no safe write point through these two
+    /// accessors alone.
+    ///
+    /// They remain correct for anything that does not race a submit —
+    /// choosing which of N caller-owned resources to *create* or label,
+    /// or reading back after a frame the caller has otherwise
+    /// synchronised.
     #[must_use]
     pub fn frame_slot(&self) -> usize {
         self.frame
