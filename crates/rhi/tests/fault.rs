@@ -137,11 +137,11 @@ fn new_device() -> Result<Device, DeviceError> {
 }
 
 fn pipeline_desc() -> PipelineDesc<'static> {
-    PipelineDesc {
-        vertex_spirv: builtin::TRIANGLE_VS_SPV,
-        fragment_spirv: builtin::TRIANGLE_FS_SPV,
-        target_format: TargetFormat::Rgba8Unorm,
-    }
+    PipelineDesc::new(
+        builtin::TRIANGLE_VS_SPV,
+        builtin::TRIANGLE_FS_SPV,
+        TargetFormat::Rgba8Unorm,
+    )
 }
 
 /// A scenario failure, carrying its own name.
@@ -779,11 +779,11 @@ fn every_driver_failure_ladder_behaves() {
         // caller is gone — the layer's own leak check at instance
         // destruction lands in exactly that window.
         verdicts.push(teardown_case("E7 teardown/validation-report", |device| {
-            match device.create_pipeline(&PipelineDesc {
-                vertex_spirv: &IMPLAUSIBLE_SPIRV,
-                fragment_spirv: builtin::TRIANGLE_FS_SPV,
-                target_format: TargetFormat::Rgba8Unorm,
-            }) {
+            match device.create_pipeline(&PipelineDesc::new(
+                &IMPLAUSIBLE_SPIRV,
+                builtin::TRIANGLE_FS_SPV,
+                TargetFormat::Rgba8Unorm,
+            )) {
                 Err(PipelineError::Creation { .. }) => {}
                 Err(other) => return Err(wrong("", "Creation(vkCreateShaderModule)", &other)),
                 Ok(_) => return Err("the layer accepted implausible SPIR-V".to_string()),
