@@ -776,12 +776,36 @@ mod tests {
             .filter(|f| f.rule == "simulation-closure")
             .collect();
         assert_eq!(closure.len(), 1, "{findings:?}");
+        // Bound first: an argument that is only evaluated when the
+        // assertion fails is a line the coverage gate never sees run.
+        let message = &closure[0].message;
         assert!(
-            closure[0]
-                .message
-                .starts_with("world declares simulation = true and reaches"),
-            "{:?}",
-            closure[0]
+            message.starts_with("world declares simulation = true and reaches"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn simulation_closure_reports_a_shared_dependency_once() {
+        // Two paths to the same capability crate is one defect, not two.
+        // The walk therefore remembers where it has been -- and without a
+        // diamond in the graph that memory is never exercised, which is
+        // how this test earned its place rather than duplicating the one
+        // above.
+        let shapes = [
+            sim("world", &["left", "right"], true),
+            sim("left", &[PLATFORM_CRATE], false),
+            sim("right", &[PLATFORM_CRATE], false),
+            sim(PLATFORM_CRATE, &[], false),
+        ];
+        let findings = evaluate(&shapes);
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|f| f.rule == "simulation-closure")
+                .count(),
+            1,
+            "{findings:?}"
         );
     }
 
