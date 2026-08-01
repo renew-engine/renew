@@ -387,7 +387,37 @@ const BANNED_IN_SIMULATION: &[&str] = &[
 
 /// Crates whose manifest sets `simulation = true`, with the text of the
 /// lint file sitting beside it.
-fn simulation_crates(root: &Path) -> Result<Vec<(String, String)>, String> {
+/// Every path a lint file actually bans, read as structure rather than text.
+///
+/// The check over these used to be `file.contains(banned)` across the raw
+/// bytes, which passes on a commented-out entry and on a banned path
+/// quoted inside another entry's `reason` prose. No file has that shape
+/// today, so the guard was passing for the right reason -- but it was one
+/// explanatory sentence away from passing for the wrong one, and the
+/// reasons in these files do quote paths at each other.
+///
+/// Comment lines are dropped first, then each `path = "..."` value is
+/// taken. That is the only position clippy reads, so it is the only
+/// position this should accept.
+fn declared_paths(lints: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in lints.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("path = \"") {
+            rest = &rest[at + "path = \"".len()..];
+            let Some(end) = rest.find('"') else { break };
+            paths.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+    }
+    paths
+}
+
+fn simulation_crates(root: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut found = Vec::new();
     for member in workspace_members(root)? {
         let dir = root.join(&member);
@@ -402,7 +432,7 @@ fn simulation_crates(root: &Path) -> Result<Vec<(String, String)>, String> {
         let lints = std::fs::read_to_string(dir.join("clippy.toml")).map_err(|error| {
             format!("{member} declares simulation but has no readable clippy.toml: {error}")
         })?;
-        found.push((member, lints));
+        found.push((member, declared_paths(&lints)));
     }
     found.sort();
     Ok(found)
@@ -429,9 +459,9 @@ fn every_simulation_crate_forbids_the_nondeterminism_i3_names() {
     );
 
     let mut faults = Vec::new();
-    for (name, lints) in &crates {
+    for (name, paths) in &crates {
         for banned in BANNED_IN_SIMULATION {
-            if !lints.contains(banned) {
+            if !paths.iter().any(|declared| declared == banned) {
                 faults.push(format!("{name} does not disallow `{banned}`"));
             }
         }
