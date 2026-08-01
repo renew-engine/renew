@@ -50,18 +50,55 @@ struct Chain {
     extent: Extent,
     views: Vec<vk::ImageView>,
     images: Vec<vk::Image>,
-    /// The acquire semaphore. Chain-owned so a teardown after a
-    /// mid-frame failure also retires any pending signal operation with
-    /// it — the next chain starts with a fresh, unsignaled semaphore.
-    image_available: vk::Semaphore,
+    /// One acquire semaphore **per frame in flight**, not per image.
+    ///
+    /// `vkAcquireNextImageKHR` signals this *before* the image index is
+    /// known, so indexing it by image would be circular: it belongs to
+    /// the frame slot.
+    ///
+    /// Chain-owned, as the single semaphore was and for the same
+    /// reason: a teardown after a mid-frame failure retires every
+    /// pending signal operation along with it, and the next chain starts
+    /// with fresh unsignaled semaphores. Moving the ring onto the target
+    /// so it survives a rebuild reopens that question — a semaphore
+    /// signalled against a destroyed swapchain is not simply reusable.
+    image_available: [vk::Semaphore; FRAMES_IN_FLIGHT],
     /// One per swapchain image: the present engine may still wait on
     /// the semaphore for image N after our fence signals, so per-image
     /// signaling is the simplest correct scheme.
     render_finished: Vec<vk::Semaphore>,
 }
 
-/// A window-backed render target. One frame in flight; presentation is
-/// FIFO (vsync) — the guaranteed-available mode.
+/// How many frames the CPU may have submitted and not yet waited for.
+///
+/// **Not the swapchain image count.** That is chosen by the driver and
+/// the surface; this is chosen by us, and the two are different numbers
+/// that happen to be small. Every per-frame resource below multiplies by
+/// this one; `render_finished` multiplies by the other.
+///
+/// Two rather than three: presentation is FIFO, so a third frame buys
+/// queueing depth that shows up as latency rather than throughput at this
+/// scale. A capability claim, not a measured one — no frame-time budget
+/// exists to justify a specific number yet.
+const FRAMES_IN_FLIGHT: usize = 2;
+
+/// The same count as Vulkan wants it. Derived rather than written twice,
+/// and checked where a mistake costs nothing: a second literal is a
+/// hand-maintained pair, and a runtime conversion would put a panic on
+/// the creation path for a question the compiler can answer.
+const FRAMES_IN_FLIGHT_U32: u32 = {
+    assert!(FRAMES_IN_FLIGHT <= u32::MAX as usize);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the assertion above rejects any value that would truncate, at compile time"
+    )]
+    {
+        FRAMES_IN_FLIGHT as u32
+    }
+};
+
+/// A window-backed render target. `FRAMES_IN_FLIGHT` frames in flight;
+/// presentation is FIFO (vsync) — the guaranteed-available mode.
 pub struct WindowTarget {
     shared: Rc<DeviceShared>,
     /// Keep-alive for the platform window backing `surface`.
@@ -74,13 +111,24 @@ pub struct WindowTarget {
     color_space: vk::ColorSpaceKHR,
     chain: Option<Chain>,
     pool: vk::CommandPool,
-    cmd: vk::CommandBuffer,
-    /// Created unsignaled; `fence_pending` tracks whether a submit is
-    /// outstanding on it. The invariant at every public-call boundary:
-    /// `fence_pending == false` implies the fence is unsignaled with
-    /// nothing outstanding.
-    fence: vk::Fence,
-    fence_pending: bool,
+    /// One recording per frame slot: a buffer must not be re-recorded
+    /// while a submit reading it is still outstanding.
+    cmds: [vk::CommandBuffer; FRAMES_IN_FLIGHT],
+    /// Created unsignaled; `pending[i]` tracks whether a submit is
+    /// outstanding on fence `i`. The invariant at every public-call
+    /// boundary, now per slot: **`pending[i] == false` implies fence `i`
+    /// is unsignaled with nothing outstanding.**
+    ///
+    /// Two distinct questions come off this, and they were one question
+    /// when there was one fence. *"May I record into slot i?"* is
+    /// `!pending[i]`, and it is the frame path. *"Is anything
+    /// outstanding at all?"* is `pending.iter().any(..)`, and it is the
+    /// teardown path — retiring one fence where several may be pending
+    /// is the defect this split exists to prevent.
+    fences: [vk::Fence; FRAMES_IN_FLIGHT],
+    pending: [bool; FRAMES_IN_FLIGHT],
+    /// The slot the next frame records into; advances after each submit.
+    frame: usize,
 }
 
 impl Device {
@@ -231,34 +279,54 @@ impl Device {
         let cmd_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
+            .command_buffer_count(FRAMES_IN_FLIGHT_U32);
         // SAFETY: category 2: pool live; info local.
         // ash sizes the vector it returns from the create info's own
         // `command_buffer_count`, so a success always carries exactly
-        // the one buffer asked for; an empty success would be a broken
-        // ash rather than a broken driver, and it reports through the
-        // same return as a driver failure rather than costing a branch
-        // of its own.
-        let allocated = unsafe { shared.device.allocate_command_buffers(&cmd_info) }
-            .and_then(|buffers| buffers.into_iter().next().ok_or(vk::Result::ERROR_UNKNOWN));
-        let cmd = match allocated {
-            Ok(cmd) => cmd,
+        // the buffers asked for; a short success would be a broken ash
+        // rather than a broken driver, and it reports through the same
+        // return as a driver failure rather than costing a branch of its
+        // own.
+        let allocated =
+            unsafe { shared.device.allocate_command_buffers(&cmd_info) }.and_then(|buffers| {
+                <[vk::CommandBuffer; FRAMES_IN_FLIGHT]>::try_from(buffers)
+                    .map_err(|_| vk::Result::ERROR_UNKNOWN)
+            });
+        let cmds = match allocated {
+            Ok(cmds) => cmds,
             Err(code) => {
                 return Err(fail_pool(self, creation("vkAllocateCommandBuffers", code)));
             }
         };
 
-        // Unsignaled: `fence_pending` starts false, and the protocol
-        // only waits when a submit is actually outstanding.
-        // SAFETY: category 2: device live; default info local.
-        let fence = match unsafe {
-            shared
-                .device
-                .create_fence(&vk::FenceCreateInfo::default(), Some(&shared.alloc_cbs()))
-        } {
-            Ok(fence) => fence,
-            Err(code) => return Err(fail_pool(self, creation("vkCreateFence", code))),
-        };
+        // Unsignaled: every `pending` entry starts false, and the
+        // protocol only waits when a submit is actually outstanding.
+        // Built one at a time so a failure part-way destroys the ones
+        // already made -- `Partial` cannot express a half-built ring.
+        let mut fences = [vk::Fence::null(); FRAMES_IN_FLIGHT];
+        for slot in 0..FRAMES_IN_FLIGHT {
+            // SAFETY: category 2: device live; default info local.
+            match unsafe {
+                shared
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), Some(&shared.alloc_cbs()))
+            } {
+                Ok(fence) => fences[slot] = fence,
+                Err(code) => {
+                    for made in &fences[..slot] {
+                        // SAFETY: category 2: device live; each handle
+                        // was created just above with these callbacks
+                        // and nothing has been submitted against it.
+                        unsafe {
+                            shared
+                                .device
+                                .destroy_fence(*made, Some(&shared.alloc_cbs()));
+                        }
+                    }
+                    return Err(fail_pool(self, creation("vkCreateFence", code)));
+                }
+            }
+        }
 
         let mut target = WindowTarget {
             shared: Rc::clone(shared),
@@ -271,9 +339,10 @@ impl Device {
             color_space: surface_format.color_space,
             chain: None,
             pool,
-            cmd,
-            fence,
-            fence_pending: false,
+            cmds,
+            fences,
+            pending: [false; FRAMES_IN_FLIGHT],
+            frame: 0,
         };
         // Build the initial chain; zero extents stay dormant. From here
         // the target's Drop owns cleanup on failure.
@@ -380,12 +449,13 @@ impl WindowTarget {
         // single-threaded by the crate contract; every info struct is a
         // local outliving its call.
         unsafe {
-            if self.fence_pending {
-                match self
-                    .shared
-                    .device
-                    .wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS)
-                {
+            let frame = self.frame;
+            if self.pending[frame] {
+                match self.shared.device.wait_for_fences(
+                    &[self.fences[frame]],
+                    true,
+                    FENCE_TIMEOUT_NS,
+                ) {
                     Ok(()) => {}
                     Err(vk::Result::TIMEOUT) => {
                         return Err(TargetError::Timeout {
@@ -401,10 +471,10 @@ impl WindowTarget {
                         });
                     }
                 }
-                if let Err(code) = self.shared.device.reset_fences(&[self.fence]) {
+                if let Err(code) = self.shared.device.reset_fences(&[self.fences[frame]]) {
                     return Err(creation("vkResetFences", code));
                 }
-                self.fence_pending = false;
+                self.pending[frame] = false;
             }
 
             let Some(chain) = self.chain.as_ref() else {
@@ -413,7 +483,7 @@ impl WindowTarget {
             let acquired = self.swapchain_loader.acquire_next_image(
                 chain.swapchain,
                 FENCE_TIMEOUT_NS,
-                chain.image_available,
+                chain.image_available[frame],
                 vk::Fence::null(),
             );
             let (index, suboptimal) = match acquired {
@@ -441,29 +511,36 @@ impl WindowTarget {
             // pending signal that only the submit will retire: any
             // failure must tear the chain down (which quiesces first),
             // never merely return.
-            let slot = index as usize;
+            // The SWAPCHAIN IMAGE index -- not the frame slot, and not
+            // bounded by `FRAMES_IN_FLIGHT`. It was called `slot` until
+            // 2026-08-01, when introducing the frame ring let it shadow
+            // the frame's own slot and index frame-sized arrays by
+            // image: three images into two slots, caught by the present
+            // suites. Both names now say which they are.
+            let image_index = index as usize;
             let (Some(&image), Some(&view), Some(&finished)) = (
-                chain.images.get(slot),
-                chain.views.get(slot),
-                chain.render_finished.get(slot),
+                chain.images.get(image_index),
+                chain.views.get(image_index),
+                chain.render_finished.get(image_index),
             ) else {
                 return Err(self.abort_frame(TargetError::Creation {
                     call: "vkAcquireNextImageKHR(index)",
                     code: 0,
                 }));
             };
-            let image_available = chain.image_available;
+            let image_available = chain.image_available[frame];
+            let cmd = self.cmds[frame];
             let swapchain = chain.swapchain;
             let chain_extent = chain.extent;
             let device = &self.shared.device;
 
             if let Err(code) =
-                device.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty())
+                device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
             {
                 return Err(self.abort_frame(creation("vkResetCommandBuffer", code)));
             }
             if let Err(code) = device.begin_command_buffer(
-                self.cmd,
+                cmd,
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             ) {
@@ -487,7 +564,7 @@ impl WindowTarget {
                 .subresource_range(color_range());
             let barriers = [to_color];
             device.cmd_pipeline_barrier2(
-                self.cmd,
+                cmd,
                 &vk::DependencyInfo::default().image_memory_barriers(&barriers),
             );
 
@@ -511,18 +588,14 @@ impl WindowTarget {
                 },
             };
             device.cmd_begin_rendering(
-                self.cmd,
+                cmd,
                 &vk::RenderingInfo::default()
                     .render_area(area)
                     .layer_count(1)
                     .color_attachments(&attachments),
             );
             if let Some(pipeline) = pipeline {
-                device.cmd_bind_pipeline(
-                    self.cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline.pipeline,
-                );
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
                 // Extents are far below f32's exact-integer range; the
                 // casts are lossless in practice.
                 #[allow(clippy::cast_precision_loss)]
@@ -534,11 +607,11 @@ impl WindowTarget {
                     min_depth: 0.0,
                     max_depth: 1.0,
                 };
-                device.cmd_set_viewport(self.cmd, 0, &[viewport]);
-                device.cmd_set_scissor(self.cmd, 0, &[area]);
-                device.cmd_draw(self.cmd, 3, 1, 0, 0);
+                device.cmd_set_viewport(cmd, 0, &[viewport]);
+                device.cmd_set_scissor(cmd, 0, &[area]);
+                device.cmd_draw(cmd, 3, 1, 0, 0);
             }
-            device.cmd_end_rendering(self.cmd);
+            device.cmd_end_rendering(cmd);
 
             // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC; the signal
             // semaphore orders presentation, so no destination stage.
@@ -553,18 +626,18 @@ impl WindowTarget {
                 .subresource_range(color_range());
             let barriers = [to_present];
             device.cmd_pipeline_barrier2(
-                self.cmd,
+                cmd,
                 &vk::DependencyInfo::default().image_memory_barriers(&barriers),
             );
 
-            if let Err(code) = device.end_command_buffer(self.cmd) {
+            if let Err(code) = device.end_command_buffer(cmd) {
                 return Err(self.abort_frame(creation("vkEndCommandBuffer", code)));
             }
 
             let wait_infos = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(image_available)
                 .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)];
-            let cmd_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(self.cmd)];
+            let cmd_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(cmd)];
             let signal_infos = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(finished)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
@@ -572,7 +645,9 @@ impl WindowTarget {
                 .wait_semaphore_infos(&wait_infos)
                 .command_buffer_infos(&cmd_infos)
                 .signal_semaphore_infos(&signal_infos);
-            if let Err(code) = device.queue_submit2(self.shared.queue, &[submit], self.fence) {
+            if let Err(code) =
+                device.queue_submit2(self.shared.queue, &[submit], self.fences[frame])
+            {
                 self.shared.note_result(code);
                 let error = if code == vk::Result::ERROR_DEVICE_LOST {
                     TargetError::DeviceLost
@@ -581,7 +656,11 @@ impl WindowTarget {
                 };
                 return Err(self.abort_frame(error));
             }
-            self.fence_pending = true;
+            self.pending[frame] = true;
+            // Advance only after a successful submit: a frame that failed
+            // to submit left its slot unused, and skipping it would leak a
+            // slot per failure.
+            self.frame = (self.frame + 1) % FRAMES_IN_FLIGHT;
 
             let swapchains = [swapchain];
             let indices = [index];
@@ -628,14 +707,39 @@ impl WindowTarget {
     /// is signaled: reset it so the unsignaled-when-not-pending
     /// invariant holds.
     fn retire_fence_after_idle(&mut self) {
-        if self.fence_pending {
-            // SAFETY: category 2: fence live; nothing outstanding after
-            // the caller's quiesce.
-            unsafe {
-                let _ = self.shared.device.reset_fences(&[self.fence]);
+        for slot in 0..FRAMES_IN_FLIGHT {
+            if self.pending[slot] {
+                // SAFETY: category 2: fence live; nothing outstanding
+                // after the caller's quiesce.
+                unsafe {
+                    let _ = self.shared.device.reset_fences(&[self.fences[slot]]);
+                }
+                self.pending[slot] = false;
             }
-            self.fence_pending = false;
         }
+    }
+
+    /// How many frames this target may have in flight at once.
+    ///
+    /// **Public because a consumer needs it, not for testing.** The
+    /// resource model requires the caller to double-buffer any buffer a
+    /// live frame may read -- the RHI deliberately owns no scratch -- and
+    /// the correct number of copies is exactly this. A consumer that
+    /// guesses two while the target runs three writes into memory the GPU
+    /// is reading.
+    #[must_use]
+    pub fn frames_in_flight(&self) -> usize {
+        FRAMES_IN_FLIGHT
+    }
+
+    /// Which slot the next frame will use, in `0..frames_in_flight()`.
+    ///
+    /// The other half of what a double-buffering consumer needs: knowing
+    /// how many copies to keep is useless without knowing which one this
+    /// frame belongs to. Advances after each successful submit.
+    #[must_use]
+    pub fn frame_slot(&self) -> usize {
+        self.frame
     }
 
     /// Build the swapchain and its per-image resources for `extent`
@@ -715,7 +819,7 @@ impl WindowTarget {
             extent: chosen,
             views: Vec::new(),
             images: Vec::new(),
-            image_available: vk::Semaphore::null(),
+            image_available: [vk::Semaphore::null(); FRAMES_IN_FLIGHT],
             render_finished: Vec::new(),
         };
         let built = self.populate_chain(&mut chain);
@@ -732,14 +836,21 @@ impl WindowTarget {
     /// for a fresh swapchain.
     fn populate_chain(&self, chain: &mut Chain) -> Result<(), TargetError> {
         let shared = &self.shared;
-        // SAFETY: category 2: device live; default info local.
-        chain.image_available = unsafe {
-            shared.device.create_semaphore(
-                &vk::SemaphoreCreateInfo::default(),
-                Some(&shared.alloc_cbs()),
-            )
+        // One per frame slot. Built in a loop rather than as an array
+        // expression because each is fallible, and a partial ring must
+        // be torn down by `destroy_chain` rather than left half-made:
+        // the nulls this started as are what makes that safe, since
+        // destroying a null handle is defined as doing nothing.
+        for slot in 0..FRAMES_IN_FLIGHT {
+            // SAFETY: category 2: device live; default info local.
+            chain.image_available[slot] = unsafe {
+                shared.device.create_semaphore(
+                    &vk::SemaphoreCreateInfo::default(),
+                    Some(&shared.alloc_cbs()),
+                )
+            }
+            .map_err(|code| creation("vkCreateSemaphore", code))?;
         }
-        .map_err(|code| creation("vkCreateSemaphore", code))?;
         // SAFETY: category 2: swapchain live.
         chain.images = unsafe { self.swapchain_loader.get_swapchain_images(chain.swapchain) }
             .map_err(|code| creation("vkGetSwapchainImagesKHR", code))?;
@@ -792,9 +903,11 @@ impl WindowTarget {
                     .device
                     .destroy_semaphore(semaphore, Some(&self.shared.alloc_cbs()));
             }
-            self.shared
-                .device
-                .destroy_semaphore(chain.image_available, Some(&self.shared.alloc_cbs()));
+            for semaphore in chain.image_available {
+                self.shared
+                    .device
+                    .destroy_semaphore(semaphore, Some(&self.shared.alloc_cbs()));
+            }
             self.swapchain_loader
                 .destroy_swapchain(chain.swapchain, Some(&self.shared.alloc_cbs()));
         }
@@ -848,9 +961,11 @@ impl Drop for WindowTarget {
         self.destroy_chain();
         // SAFETY: as above.
         unsafe {
-            self.shared
-                .device
-                .destroy_fence(self.fence, Some(&self.shared.alloc_cbs()));
+            for fence in self.fences {
+                self.shared
+                    .device
+                    .destroy_fence(fence, Some(&self.shared.alloc_cbs()));
+            }
             self.shared
                 .device
                 .destroy_command_pool(self.pool, Some(&self.shared.alloc_cbs()));
