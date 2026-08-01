@@ -751,6 +751,30 @@ fn every_driver_failure_ladder_behaves() {
             }
         },
     ));
+
+    // E18 is the same loss reported one call later. The submit succeeds
+    // and the *wait* discovers the device is gone, which is a separate
+    // arm with its own quiesce — E17 cannot reach it, and a loss that
+    // only surfaces at the fence is the ordinary way a GPU hang is
+    // reported.
+    verdicts.push(device_case(
+        "E18",
+        "vkWaitForFences=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("E18", "DeviceLost", &other)),
+                Ok(_) => return Err("E18: the upload survived a lost device".to_owned()),
+            }
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("E18", "DeviceLost on the next call", &other)),
+                Ok(_) => {
+                    Err("E18: the device was not poisoned, so the next upload proceeded".to_owned())
+                }
+            }
+        },
+    ));
     for &(name, fault, call, device_memory) in texture_ladder {
         verdicts.push(device_case(name, fault, |device| {
             match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
