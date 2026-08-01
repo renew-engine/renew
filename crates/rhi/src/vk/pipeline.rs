@@ -30,11 +30,48 @@ impl TargetFormat {
 
 /// Pipeline construction parameters. The SPIR-V is borrowed byte
 /// slices — [`crate::builtin`] provides the embedded v0 shaders.
+///
+/// `#[non_exhaustive]`, so it is built through [`PipelineDesc::new`]
+/// rather than as a struct literal. Every field this will grow — vertex
+/// input, blend state, depth state, push-constant ranges — is optional
+/// with a defined absence, so each can arrive as a builder method
+/// without touching a single existing caller. Without the attribute,
+/// adding one field edits every construction site in the workspace, and
+/// the count only rises.
+///
+/// **Not `Default`.** A default would have to supply empty shader bytes,
+/// and empty SPIR-V is rejected by name during validation — so the
+/// default value would be one that can never successfully build a
+/// pipeline. A constructor taking exactly the parameters with no
+/// sensible absence is the honest shape.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PipelineDesc<'a> {
     pub vertex_spirv: &'a [u8],
     pub fragment_spirv: &'a [u8],
     pub target_format: TargetFormat,
+}
+
+impl<'a> PipelineDesc<'a> {
+    /// The three parameters a pipeline cannot be built without.
+    ///
+    /// Positional rather than a builder chain because none of these has
+    /// a meaningful default: a pipeline with no vertex stage, no
+    /// fragment stage, or no target format is not a partially-configured
+    /// pipeline, it is not a pipeline. Optional state arrives later as
+    /// builder methods on top of this.
+    #[must_use]
+    pub fn new(
+        vertex_spirv: &'a [u8],
+        fragment_spirv: &'a [u8],
+        target_format: TargetFormat,
+    ) -> Self {
+        Self {
+            vertex_spirv,
+            fragment_spirv,
+            target_format,
+        }
+    }
 }
 
 /// A compiled draw pipeline. Holds its device alive; destroyed on

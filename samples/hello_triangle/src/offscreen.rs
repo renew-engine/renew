@@ -100,11 +100,11 @@ impl HeadlessRun {
             Draw::ClearOnly => None,
             Draw::Triangle => Some(
                 device
-                    .create_pipeline(&PipelineDesc {
-                        vertex_spirv: builtin::TRIANGLE_VS_SPV,
-                        fragment_spirv: builtin::TRIANGLE_FS_SPV,
-                        target_format: surface.format(),
-                    })
+                    .create_pipeline(&PipelineDesc::new(
+                        builtin::TRIANGLE_VS_SPV,
+                        builtin::TRIANGLE_FS_SPV,
+                        surface.format(),
+                    ))
                     .map_err(pipeline_error)?,
             ),
         };
