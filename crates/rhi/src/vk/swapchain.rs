@@ -696,9 +696,19 @@ impl WindowTarget {
     fn abort_frame(&mut self, error: TargetError) -> TargetError {
         // SAFETY: category 2: device live; best-effort — the target is
         // going dormant regardless.
-        unsafe {
-            let _ = self.shared.device.device_wait_idle();
-        }
+        let idle = unsafe { self.shared.device.device_wait_idle() };
+        // Best effort about *recovering*, not about *reporting*. Every
+        // other quiesce in this crate records a lost device on the
+        // shared spine, and this one discarded the result entirely — so
+        // a device lost while tearing a frame down left the flag clear
+        // and nothing afterwards reported it.
+        //
+        // Handed the outcome unconditionally rather than through a
+        // branch: `note_result` ignores every code but the lost-device
+        // one, so this records exactly what matters and stays a line
+        // that always runs.
+        self.shared
+            .note_result(idle.err().unwrap_or(vk::Result::SUCCESS));
         self.retire_fence_after_idle();
         self.destroy_chain();
         error
