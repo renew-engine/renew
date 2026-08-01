@@ -30,6 +30,16 @@
 # means re-checking its entry here — and if it is forgotten, the gate says
 # so, in whichever direction the mistake went.
 #
+# Drift reads as staleness, so the report distinguishes them for you. An
+# entry left behind by moved code now points at whatever occupies the old
+# number, which is usually covered — so the gate calls it covered and, on
+# its own, that reads as "delete this". It is not: the exemption is still
+# earned, at a new number. Whenever a covered-now finding shares its file
+# with lines that are uncovered and unexempted, the finding names them,
+# because that is where the code most likely went. Re-point the entry
+# instead of deleting it, and check the reason still describes what is
+# there.
+#
 # A `reason` must never cite a line number, and must name the code it
 # describes — "the keyboard arm", not "line 390". The gate reads `lines`
 # and never reads this prose, so a number written here has no guard at all
