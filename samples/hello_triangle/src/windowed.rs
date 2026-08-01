@@ -23,7 +23,8 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    Device, DeviceDesc, Extent, PipelineDesc, RenderPipeline, TargetError, Validation, builtin,
+    Device, DeviceDesc, Extent, PipelineDesc, RenderDesc, RenderPipeline, TargetError, Validation,
+    builtin,
 };
 
 use crate::cli::{Options, Report};
@@ -192,7 +193,11 @@ impl TriangleApp {
             return;
         };
         let clear = clear_color(&self.world, self.alpha);
-        let outcome = surface.render(clear, self.pipeline.as_ref());
+        let mut desc = RenderDesc::new(clear);
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            desc = desc.pipeline(pipeline);
+        }
+        let outcome = surface.render(&desc);
         self.record_draw(outcome);
     }
 

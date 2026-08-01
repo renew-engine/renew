@@ -30,8 +30,8 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, TargetError,
-    Validation, WindowTarget, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, RenderDesc,
+    TargetError, Validation, WindowTarget, builtin,
 };
 
 #[global_allocator]
@@ -177,7 +177,11 @@ impl WindowApp for GateApp {
                 // that was never the engine's. The contract is about the
                 // render path; measure the render path.
                 let before = allocations();
-                let outcome = target.render(clear, self.pipeline.as_ref());
+                let mut desc = RenderDesc::new(clear);
+                if let Some(pipeline) = self.pipeline.as_ref() {
+                    desc = desc.pipeline(pipeline);
+                }
+                let outcome = target.render(&desc);
                 let spent = allocations() - before;
                 match outcome {
                     Ok(PresentOutcome::Presented) => {

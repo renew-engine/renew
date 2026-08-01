@@ -22,8 +22,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, TargetError,
-    TargetFormat, Validation, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
+    TargetError, TargetFormat, Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -444,7 +444,7 @@ fn every_driver_failure_ladder_behaves() {
                 ));
             }
             recovered
-                .render(CLEAR, None)
+                .render(&RenderDesc::new(CLEAR))
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
         }));
     }
@@ -486,7 +486,7 @@ fn every_driver_failure_ladder_behaves() {
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("{name}: recovery target failed: {error}"))?;
             target
-                .render(CLEAR, Some(&pipeline))
+                .render(&RenderDesc::new(CLEAR).pipeline(&pipeline))
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
         }));
     }
@@ -521,13 +521,13 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("{name}: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => creation_named(name, call, &error)?,
                 Ok(()) => return Err(format!("{name}: the frame succeeded despite the fault")),
             }
             // Not wedged, not poisoned: the next frame goes through.
             target
-                .render(CLEAR, None)
+                .render(&RenderDesc::new(CLEAR))
                 .map_err(|error| format!("{name}: recovery frame failed: {error}"))?;
             let mut pixels = vec![0u8; target.byte_len()];
             target.read_back_into(&mut pixels);
@@ -544,11 +544,11 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D5: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D5", "DeviceLost", &other)),
             }
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D5", "DeviceLost on the next frame", &other)),
             }
@@ -573,11 +573,11 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D6: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => timeout_named("D6", "vkWaitForFences", &error)?,
                 Ok(()) => return Err("D6: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => {
                     timeout_named("D6", "target wedged by an earlier incomplete frame", &error)?;
                 }
@@ -605,12 +605,12 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D7: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D7", "DeviceLost", &other)),
             }
             // Wedged first, so the wedge answer wins over the poison.
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => {
                     timeout_named("D7", "target wedged by an earlier incomplete frame", &error)?;
                 }
@@ -633,11 +633,11 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D8: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => creation_named("D8", "vkResetFences", &error)?,
                 Ok(()) => return Err("D8: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => {
                     timeout_named("D8", "target wedged by an earlier incomplete frame", &error)
                 }
@@ -754,7 +754,7 @@ fn every_driver_failure_ladder_behaves() {
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("E5: target: {error}"))?;
             target
-                .render(CLEAR, None)
+                .render(&RenderDesc::new(CLEAR))
                 .map_err(|error| format!("E5: frame after a failed wait-idle: {error}"))
         },
     ));
@@ -827,11 +827,11 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("F1: target: {error}"))?;
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => creation_named("F1", "vkWaitForFences", &error)?,
                 Ok(()) => return Err("F1: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(CLEAR, None) {
+            match target.render(&RenderDesc::new(CLEAR)) {
                 Err(error) => {
                     timeout_named("F1", "target wedged by an earlier incomplete frame", &error)
                 }

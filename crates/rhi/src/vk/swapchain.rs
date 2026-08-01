@@ -16,10 +16,10 @@ use std::rc::Rc;
 use ash::vk;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use crate::config::{Color, Extent};
+use crate::config::Extent;
 use crate::error::TargetError;
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
-use crate::vk::pipeline::{RenderPipeline, TargetFormat};
+use crate::vk::pipeline::{RenderDesc, TargetFormat};
 
 fn creation(call: &'static str, code: vk::Result) -> TargetError {
     match code {
@@ -353,11 +353,10 @@ impl WindowTarget {
         clippy::too_many_lines,
         reason = "one recorded frame; wait, acquire, record, submit, present read top to bottom"
     )]
-    pub fn render(
-        &mut self,
-        clear: Color,
-        pipeline: Option<&RenderPipeline>,
-    ) -> Result<PresentOutcome, TargetError> {
+    pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<PresentOutcome, TargetError> {
+        let RenderDesc {
+            clear, pipeline, ..
+        } = *desc;
         if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }

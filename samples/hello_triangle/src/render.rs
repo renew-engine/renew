@@ -1,7 +1,7 @@
 //! Where a frame goes, and the colour it goes there with.
 
 use renew_frame::Alpha;
-use renew_rhi::{Color, OffscreenTarget, RenderPipeline, TargetError, TargetFormat};
+use renew_rhi::{Color, OffscreenTarget, RenderDesc, TargetError, TargetFormat};
 #[cfg(feature = "window")]
 use renew_rhi::{PresentOutcome, WindowTarget};
 
@@ -45,16 +45,12 @@ impl Surface {
     ///
     /// [`TargetError`] as the renderer reports it: a lost device, a
     /// timed-out submission, an exhausted heap.
-    pub fn render(
-        &mut self,
-        clear: Color,
-        pipeline: Option<&RenderPipeline>,
-    ) -> Result<bool, TargetError> {
+    pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<bool, TargetError> {
         match self {
-            Self::Offscreen(target) => target.render(clear, pipeline).map(|()| true),
+            Self::Offscreen(target) => target.render(desc).map(|()| true),
             #[cfg(feature = "window")]
             Self::Window(target) => target
-                .render(clear, pipeline)
+                .render(desc)
                 .map(|outcome| outcome == PresentOutcome::Presented),
         }
     }

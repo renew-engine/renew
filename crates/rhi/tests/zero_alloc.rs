@@ -16,7 +16,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, TargetFormat, Validation, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc, TargetFormat,
+    Validation, builtin,
 };
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -91,7 +92,9 @@ fn steady_state_frames_allocate_nothing() {
 
     // Warmup: first frames may lazily initialize driver state.
     for _ in 0..3 {
-        target.render(clear, Some(&pipeline)).expect("warmup frame");
+        target
+            .render(&RenderDesc::new(clear).pipeline(&pipeline))
+            .expect("warmup frame");
         target.read_back_into(&mut pixels);
     }
 
@@ -105,7 +108,9 @@ fn steady_state_frames_allocate_nothing() {
     for _ in 0..5 {
         let before = ALLOCATIONS.load(Ordering::Relaxed);
         for _ in 0..16 {
-            target.render(clear, Some(&pipeline)).expect("steady frame");
+            target
+                .render(&RenderDesc::new(clear).pipeline(&pipeline))
+                .expect("steady frame");
             target.read_back_into(&mut pixels);
         }
         let after = ALLOCATIONS.load(Ordering::Relaxed);
