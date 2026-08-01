@@ -8,14 +8,22 @@ No dependencies. Nothing here can make anything happen.
 
 ## Contract
 
-**This crate can never acquire a way to observe the outside world.**
-That is what it is for, and it is checked rather than promised: a crate
-declaring that its output depends only on build, seed and input may
-depend on this one, and the ban it lives under is enforced over the
-dependency graph. Adding a dependency here would defeat that guarantee
-for every such crate at once.
+**This crate must never acquire a way to observe the outside world.**
+A crate declaring that its output depends only on build, seed and input
+may depend on this one, and adding a dependency here would defeat that
+for every such crate at once. The manifest declares no dependencies and
+must keep declaring none.
 
-The manifest declares no dependencies and must keep declaring none.
+**What is enforced, and what is not.** The reverse edge is impossible by
+construction: `renew-platform` depends on this crate, so this crate
+cannot depend on it — a dependency cycle is rejected. **The forward
+direction is not checked yet.** Nothing currently stops a crate that
+promises determinism from adding its own edge back to `renew-platform`
+and reaching a clock through it; the extraction removed the one such
+edge that existed, and a graph rule to prevent new ones is drafted but
+not in force. Until it is, this contract is an obligation maintained by
+review rather than a property enforced by a gate — and saying so is
+worth more than the stronger sentence that used to be here.
 
 ## Why it is a separate crate
 

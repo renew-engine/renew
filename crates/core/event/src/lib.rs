@@ -6,14 +6,22 @@
 //!
 //! # Contract
 //!
-//! **This crate can never acquire a way to observe the outside world.**
-//! That is the whole reason it exists as a crate rather than a module.
-//! A crate promising its output depends only on build, seed and input
-//! may depend on this one; the ban it lives under is checked over the
-//! dependency graph, so a wrapper cannot launder a clock through it.
-//! Adding a dependency here would defeat that for every such crate at
-//! once, which is why the manifest declares none and must keep
-//! declaring none.
+//! **This crate must never acquire a way to observe the outside world**,
+//! and that obligation is the reason it exists as a crate rather than a
+//! module. A crate promising its output depends only on build, seed and
+//! input may depend on this one; adding a dependency here would defeat
+//! that for every such crate at once, which is why the manifest declares
+//! none and must keep declaring none.
+//!
+//! **How much of this is enforced, stated exactly.** The reverse edge —
+//! this crate depending on the platform crate — is impossible: the
+//! platform crate depends on this one, and a dependency cycle is
+//! rejected. That is a real check. **What is not yet checked is the
+//! forward direction**: nothing today stops a crate that promises
+//! determinism from adding its own edge back to the platform crate and
+//! reaching a clock that way. Keeping this crate dependency-free is
+//! therefore a maintained obligation, not a guaranteed one, until that
+//! rule exists.
 //!
 //! **The vocabulary used to live inside the platform crate**, beside the
 //! clock, the filesystem and thread spawning, marked "deliberately not

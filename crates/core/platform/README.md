@@ -18,13 +18,18 @@ seam.
   carries a name, and a *joined* thread's panic surfaces as an error
   naming it. Dropping the handle detaches the thread — deliberate, and
   the handle is `#[must_use]` so detaching is always a visible choice.
-- `event` (always available) — the event vocabulary itself: `WindowEvent`,
-  `KeyCode`, `PointerButton`, and the shape table that forces a new
-  variant to be handled. **Not behind the `window` feature, deliberately.**
-  Naming a key is not the same as opening a window, and a consumer that
-  only speaks the vocabulary — an input layer, a replay harness, a
-  headless server — should not compile a windowing library to do it.
-  `window` re-exports all of it, so either path works.
+- `event` — a re-export of **`renew-event`**, which owns the vocabulary:
+  `WindowEvent`, `KeyCode`, `PointerButton`, and the shape table that
+  forces a new variant to be handled. Naming a key is not the same as
+  opening a window, and a consumer that speaks only the vocabulary — an
+  input layer, a replay harness, a headless server — should take
+  `renew-event` directly and not this crate at all.
+  **It used to be a module here, kept out from behind the `window`
+  feature deliberately.** That expressed the right intent through a
+  mechanism the dependency graph cannot see: the consumer still took on
+  a crate owning a clock, a filesystem and thread spawning. A crate
+  boundary is the version of that promise a graph can read.
+  `window` re-exports it too, so every existing path works.
 - `window` (default-on feature) — one OS window, its event loop, and
   keyboard/mouse input behind an engine-only vocabulary: the OS owns
   the loop, a `WindowApp` receives translated events and drives exit

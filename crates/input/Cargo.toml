@@ -27,12 +27,20 @@ simulation = true
 # compiled anyway — it simply was not linked here.
 #
 # **This crate declares `simulation = true`**, which promises its output
-# is a function of build, seed and input alone. That promise is checked
-# over the dependency graph, so the edge below is the whole of what this
-# crate may reach. Adding anything with access to the outside world
-# breaks the promise structurally rather than by convention — including,
-# and especially, re-adding the platform crate as a dev-dependency to
-# make a test compile.
+# is a function of build, seed and input alone. The edge below is the
+# whole of what it reaches for that purpose, and keeping it that way is
+# currently a rule enforced by review rather than by a check — a graph
+# rule that would enforce it is drafted and not yet in force.
+#
+# So: adding anything here with access to the outside world breaks the
+# promise, and nothing will stop you. That includes re-adding the
+# platform crate as a *dev*-dependency to make a test compile, which is
+# the easiest way to undo this without noticing.
+#
+# The dev-dependency below is the acknowledged exception: proptest pulls
+# a filesystem, OS entropy and process spawning into the test graph. It
+# is a test-only edge and no engine code can reach it, but the claim
+# here is about normal dependencies, not the whole tree.
 renew-event = { path = "../core/event" }
 
 [dev-dependencies]
