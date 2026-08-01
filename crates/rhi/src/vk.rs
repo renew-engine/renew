@@ -18,3 +18,4 @@ pub mod offscreen;
 pub mod pipeline;
 #[cfg(feature = "present")]
 pub mod swapchain;
+pub mod texture;

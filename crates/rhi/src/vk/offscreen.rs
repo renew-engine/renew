@@ -12,9 +12,9 @@ use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
 use crate::vk::pipeline::{RenderDesc, TargetFormat};
 
 /// Bytes per pixel of the fixed RGBA8 format.
-const BPP: u64 = 4;
+pub(crate) const BPP: u64 = 4;
 
-fn creation(call: &'static str, code: vk::Result) -> TargetError {
+pub(crate) fn creation(call: &'static str, code: vk::Result) -> TargetError {
     match code {
         vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => TargetError::OutOfDeviceMemory { call },
         _ => TargetError::Creation {
@@ -25,7 +25,7 @@ fn creation(call: &'static str, code: vk::Result) -> TargetError {
 }
 
 /// Locate a memory type index satisfying `type_bits` and `flags`.
-fn pick_memory_type(
+pub(crate) fn pick_memory_type(
     properties: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
     flags: vk::MemoryPropertyFlags,
@@ -50,7 +50,7 @@ fn pick_memory_type(
 /// a given image's `memoryTypeBits` includes one — the fallback is what
 /// keeps bring-up working on an implementation that does not, and it
 /// lives here, pure, because no test machine can be made into one.
-fn image_memory_type(
+pub(crate) fn image_memory_type(
     properties: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
 ) -> Option<u32> {
@@ -368,7 +368,7 @@ fn build(
     })
 }
 
-fn color_range() -> vk::ImageSubresourceRange {
+pub(crate) fn color_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
@@ -514,7 +514,8 @@ impl OffscreenTarget {
                 };
                 device.cmd_set_viewport(self.cmd, 0, &[viewport]);
                 device.cmd_set_scissor(self.cmd, 0, &[area]);
-                device.cmd_draw(self.cmd, 3, 1, 0, 0);
+                pipeline.bind_descriptors(self.cmd);
+                device.cmd_draw(self.cmd, pipeline.vertex_count, 1, 0, 0);
             }
             device.cmd_end_rendering(self.cmd);
 

@@ -1,5 +1,6 @@
 //! The engine's only doorway to the GPU: device bring-up, render
-//! targets, and the v0 clear-and-triangle draw path, over Vulkan.
+//! targets, and the v0 draw path from a clear through a sampled
+//! texture, over Vulkan.
 //!
 //! # Contract
 //!
@@ -72,17 +73,45 @@ pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation
 pub use error::{DeviceError, PipelineError, TargetError};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
-pub use vk::pipeline::{PipelineDesc, RenderDesc, RenderPipeline, TargetFormat};
+pub use vk::pipeline::{
+    AddressMode, Filter, PipelineDesc, RenderDesc, RenderPipeline, Sampler, SamplerDesc, Shaders,
+    TargetFormat,
+};
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
+pub use vk::texture::{Texture, TextureDesc};
 
-/// The embedded v0 shaders: a colored triangle from `gl_VertexIndex`,
-/// no buffers, no descriptors. Compiled offline by the pinned toolchain
-/// (the record lives beside the sources); removed when the asset
-/// pipeline owns shader delivery.
+/// The embedded v0 shaders, each bundled with the vertex count its
+/// vertex stage generates: a colored triangle, and a full-target quad
+/// that samples one texture. Both draw from `gl_VertexIndex` with no
+/// vertex buffers. Compiled offline by the pinned toolchain (the record
+/// lives beside the sources); removed when the asset pipeline owns
+/// shader delivery.
 pub mod builtin {
+    use crate::Shaders;
+
     /// Vertex stage SPIR-V.
     pub static TRIANGLE_VS_SPV: &[u8] = include_bytes!("../shaders/triangle.vert.spv");
     /// Fragment stage SPIR-V.
     pub static TRIANGLE_FS_SPV: &[u8] = include_bytes!("../shaders/triangle.frag.spv");
+
+    /// Vertex stage SPIR-V for a full-target textured quad.
+    pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
+    /// Fragment stage SPIR-V sampling set 0, binding 0.
+    pub static TEXTURED_FS_SPV: &[u8] = include_bytes!("../shaders/textured.frag.spv");
+
+    /// The colored triangle: three vertices, no descriptors.
+    pub const TRIANGLE: Shaders<'static> = Shaders {
+        vertex: TRIANGLE_VS_SPV,
+        fragment: TRIANGLE_FS_SPV,
+        vertex_count: 3,
+    };
+
+    /// The full-target textured quad: two triangles, sampling set 0,
+    /// binding 0.
+    pub const TEXTURED: Shaders<'static> = Shaders {
+        vertex: TEXTURED_VS_SPV,
+        fragment: TEXTURED_FS_SPV,
+        vertex_count: 6,
+    };
 }

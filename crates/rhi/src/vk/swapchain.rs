@@ -609,7 +609,8 @@ impl WindowTarget {
                 };
                 device.cmd_set_viewport(cmd, 0, &[viewport]);
                 device.cmd_set_scissor(cmd, 0, &[area]);
-                device.cmd_draw(cmd, 3, 1, 0, 0);
+                pipeline.bind_descriptors(cmd);
+                device.cmd_draw(cmd, pipeline.vertex_count, 1, 0, 0);
             }
             device.cmd_end_rendering(cmd);
 

@@ -82,8 +82,7 @@ fn steady_state_frames_allocate_nothing() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
         ))
         .expect("triangle pipeline");

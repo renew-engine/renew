@@ -164,11 +164,7 @@ impl TriangleApp {
             .map_err(target_error)?;
         let surface = Surface::Window(target);
         let pipeline = device
-            .create_pipeline(&PipelineDesc::new(
-                builtin::TRIANGLE_VS_SPV,
-                builtin::TRIANGLE_FS_SPV,
-                surface.format(),
-            ))
+            .create_pipeline(&PipelineDesc::new(builtin::TRIANGLE, surface.format()))
             .map_err(pipeline_error)?;
         self.device = Some(device);
         self.surface = Some(surface);
