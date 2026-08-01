@@ -178,7 +178,13 @@ enum Shape {
     FrameFailsGoesDormant(Expect),
     /// The first frame presents and the second fails on the frame
     /// fence; a resize quiesces, retires the fence, and presents again.
-    SecondFrameFails(Expect),
+    SlotReuseFails(Expect),
+    /// Device loss surfacing from the fence wait, which does not happen
+    /// until a slot is reused. Distinct from `DeviceLostOnFrame` because
+    /// the frame number is a function of the ring depth rather than a
+    /// constant, and a constant here silently stops testing the fence
+    /// the day the depth changes.
+    DeviceLostOnSlotReuse,
     /// Not an error at all: the swapchain is stale, so the frame asks
     /// to be resized.
     StaleSwapchain,
@@ -299,21 +305,27 @@ const LADDER: &[(&str, &str, Shape)] = &[
         "vkQueuePresentKHR=ERROR_SURFACE_LOST_KHR",
         Shape::FrameFailsGoesDormant(Expect::Creation("vkQueuePresentKHR")),
     ),
-    // ---- the frame fence: only waited on from frame two on ---------
+    // ---- the frame fence: waited only when a slot is REUSED --------
+    //
+    // With a ring of N frames in flight, the first N frames each take a
+    // fresh slot with nothing outstanding on it and wait no fence at
+    // all. The wait happens on frame N+1, when the ring wraps. These
+    // said "second frame" until 2026-08-01, which was the same statement
+    // only while N was one.
     (
         "P8 fence-timeout",
         "vkWaitForFences=TIMEOUT",
-        Shape::SecondFrameFails(Expect::Timeout("vkWaitForFences")),
+        Shape::SlotReuseFails(Expect::Timeout("vkWaitForFences")),
     ),
     (
         "P9 fence-failure",
         "vkWaitForFences=ERROR_OUT_OF_HOST_MEMORY",
-        Shape::SecondFrameFails(Expect::Creation("vkWaitForFences")),
+        Shape::SlotReuseFails(Expect::Creation("vkWaitForFences")),
     ),
     (
         "P10 reset-fences",
         "vkResetFences=ERROR_OUT_OF_HOST_MEMORY",
-        Shape::SecondFrameFails(Expect::Creation("vkResetFences")),
+        Shape::SlotReuseFails(Expect::Creation("vkResetFences")),
     ),
     // ---- stale swapchain: protocol outcomes, not errors ------------
     (
@@ -345,7 +357,7 @@ const LADDER: &[(&str, &str, Shape)] = &[
     (
         "L4 fence/device-lost",
         "vkWaitForFences=ERROR_DEVICE_LOST",
-        Shape::DeviceLostOnFrame(2),
+        Shape::DeviceLostOnSlotReuse,
     ),
     // ---- resize: the only caller of wait-idle in this path ---------
     (
@@ -569,7 +581,18 @@ fn walk(
         Shape::BuildFails(expect) => build_fails(expect, device, target, size, window),
         Shape::FrameFailsChainSurvives(expect) => frame_fails_chain_survives(expect, target),
         Shape::FrameFailsGoesDormant(expect) => frame_fails_goes_dormant(expect, target, size),
-        Shape::SecondFrameFails(expect) => second_frame_fails(expect, target, size),
+        Shape::SlotReuseFails(expect) => slot_reuse_fails(expect, target, size),
+        Shape::DeviceLostOnSlotReuse => {
+            // The ring must be full before the fence is waited at all,
+            // so the losing frame is depth + 1. Asked of a freshly built
+            // target rather than assumed.
+            let depth = match &target {
+                Ok(built) => built.frames_in_flight(),
+                Err(_) => 1,
+            };
+            let frame = u32::try_from(depth).unwrap_or(u32::MAX).saturating_add(1);
+            device_lost_on_frame(frame, device, target, size, window)
+        }
         Shape::StaleSwapchain => stale_swapchain(target, size),
         Shape::DeviceLostOnFrame(frame) => {
             device_lost_on_frame(frame, device, target, size, window)
@@ -771,19 +794,38 @@ fn frame_fails_goes_dormant(
     assert_recovers(&mut target, size)
 }
 
-fn second_frame_fails(
+/// Fill the ring, then fail on the frame that reuses a slot.
+///
+/// Asked of the target rather than hardcoded: the fence wait first
+/// happens on frame `frames_in_flight() + 1`, and writing that as a
+/// literal would silently stop testing the fence the day the ring
+/// changes depth -- it would just pass, on a frame that waits nothing.
+fn slot_reuse_fails(
     expect: Expect,
     target: Result<WindowTarget, TargetError>,
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(&RenderDesc::new(CLEAR)) {
-        Ok(PresentOutcome::Presented) => {}
-        other => return Err(wrong("Presented on the first frame", &other)),
+    let depth = target.frames_in_flight();
+    for frame in 0..depth {
+        match target.render(&RenderDesc::new(CLEAR)) {
+            Ok(PresentOutcome::Presented) => {}
+            other => {
+                return Err(wrong(
+                    &format!("Presented on frame {} of the first {depth}", frame + 1),
+                    &other,
+                ));
+            }
+        }
     }
     match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
-        Ok(outcome) => return Err(wrong("an error on the second frame", &outcome)),
+        Ok(outcome) => {
+            return Err(wrong(
+                &format!("an error on frame {}, the first to reuse a slot", depth + 1),
+                &outcome,
+            ));
+        }
     }
     assert_recovers(&mut target, size)
 }
