@@ -102,6 +102,19 @@ fn full_frame_cycle_clear_then_triangle() {
         ))
         .expect("triangle pipeline");
 
+    // The bound case of the descriptor's Debug form. It lives here
+    // rather than in a unit test because reporting "bound" requires a
+    // real pipeline, and building one requires a device. The unbound
+    // case is a unit test beside the impl.
+    let bound = format!(
+        "{:?}",
+        RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline)
+    );
+    assert!(
+        bound.contains("pipeline: Some(\"bound\")"),
+        "a bound pipeline should report presence, not a handle: {bound}"
+    );
+
     let clear = Color::new(0.0, 0.0, 0.0, 1.0);
     target
         .render(&RenderDesc::new(clear))

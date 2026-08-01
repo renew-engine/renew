@@ -339,3 +339,30 @@ impl Device {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unbound case, asserted on its content rather than merely run.
+    ///
+    /// A test that only *calls* `Debug` satisfies a line-coverage gate
+    /// while proving nothing -- which is the failure mode a 100% gate
+    /// invites. This asserts the two claims the impl actually makes: the
+    /// clear colour is reported, and the pipeline field says whether one
+    /// is bound rather than naming a handle.
+    #[test]
+    fn the_debug_form_reports_an_unbound_pipeline_as_none() {
+        let desc = RenderDesc::new(Color::new(0.25, 0.5, 0.75, 1.0));
+        let shown = format!("{desc:?}");
+        assert!(shown.contains("RenderDesc"), "{shown}");
+        assert!(
+            shown.contains("0.25"),
+            "the clear colour should be visible: {shown}"
+        );
+        assert!(shown.contains("pipeline: None"), "{shown}");
+        // `finish_non_exhaustive` renders the trailing `..`, which is the
+        // signal to a reader that the struct grows.
+        assert!(shown.contains(".."), "{shown}");
+    }
+}
