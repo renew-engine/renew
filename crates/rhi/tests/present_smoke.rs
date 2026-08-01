@@ -11,8 +11,8 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, TargetError,
-    Validation, WindowTarget, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, RenderDesc,
+    TargetError, Validation, WindowTarget, builtin,
 };
 
 const FRAMES_WANTED: u32 = 10;
@@ -154,7 +154,7 @@ impl WindowApp for SmokeApp {
                         self.failure = Some("dormant target reports a size".to_string());
                         return;
                     }
-                    match target.render(clear, None) {
+                    match target.render(&RenderDesc::new(clear)) {
                         Ok(PresentOutcome::NeedsResize) => {}
                         Ok(PresentOutcome::Presented) => {
                             self.failure = Some("dormant target presented".to_string());
@@ -170,7 +170,11 @@ impl WindowApp for SmokeApp {
                         return;
                     }
                 }
-                match target.render(clear, self.pipeline.as_ref()) {
+                let mut desc = RenderDesc::new(clear);
+                if let Some(pipeline) = self.pipeline.as_ref() {
+                    desc = desc.pipeline(pipeline);
+                }
+                match target.render(&desc) {
                     Ok(PresentOutcome::Presented) => self.frames += 1,
                     Ok(PresentOutcome::NeedsResize) => {
                         if let Err(error) = target.resize(self.size) {

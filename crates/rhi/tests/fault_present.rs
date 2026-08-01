@@ -42,8 +42,8 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PresentOutcome, TargetError, Validation,
-    WindowTarget,
+    Color, Device, DeviceDesc, DeviceError, Extent, PresentOutcome, RenderDesc, TargetError,
+    Validation, WindowTarget,
 };
 
 const CLEAR: Color = Color::new(0.1, 0.2, 0.3, 1.0);
@@ -457,7 +457,7 @@ fn assert_dormant(target: &mut WindowTarget) -> Verdict {
     if extent.width != 0 || extent.height != 0 {
         return Err(format!("expected a dormant target, got extent {extent:?}"));
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::NeedsResize) => Ok(()),
         other => Err(wrong("NeedsResize from a dormant target", &other)),
     }
@@ -468,7 +468,7 @@ fn assert_recovers(target: &mut WindowTarget, size: Extent) -> Verdict {
     target
         .resize(size)
         .map_err(|error| format!("recovery resize failed: {error}"))?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented after recovery", &other)),
     }
@@ -482,7 +482,7 @@ fn assert_poison_sticks(
     window: &NativeWindow,
     size: Extent,
 ) -> Verdict {
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(TargetError::DeviceLost) => {}
         other => return Err(wrong("DeviceLost from the next frame", &other)),
     }
@@ -638,7 +638,7 @@ fn every_frame_aborts(
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
@@ -652,7 +652,7 @@ fn every_frame_aborts(
             target.extent()
         ));
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error from the rebuilt chain", &outcome)),
     }
@@ -682,7 +682,7 @@ fn presents_at(target: &mut WindowTarget, size: Extent, stage: &str) -> Verdict 
             "expected the chosen extent {size:?} {stage}, got {extent:?}"
         ));
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong(&format!("Presented {stage}"), &other)),
     }
@@ -736,7 +736,7 @@ fn build_fails(
     let mut recovered = device
         .create_window_target(window.clone(), size)
         .map_err(|error| format!("recovery build failed: {error}"))?;
-    match recovered.render(CLEAR, None) {
+    match recovered.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented after recovery", &other)),
     }
@@ -747,11 +747,11 @@ fn frame_fails_chain_survives(
     target: Result<WindowTarget, TargetError>,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented on the next frame", &other)),
     }
@@ -763,7 +763,7 @@ fn frame_fails_goes_dormant(
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
@@ -777,11 +777,11 @@ fn second_frame_fails(
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::Presented) => {}
         other => return Err(wrong("Presented on the first frame", &other)),
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error on the second frame", &outcome)),
     }
@@ -790,7 +790,7 @@ fn second_frame_fails(
 
 fn stale_swapchain(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
     let mut target = built(target)?;
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Ok(PresentOutcome::NeedsResize) => {}
         other => return Err(wrong("NeedsResize", &other)),
     }
@@ -806,12 +806,12 @@ fn device_lost_on_frame(
 ) -> Verdict {
     let mut target = built(target)?;
     for earlier in 1..frame {
-        match target.render(CLEAR, None) {
+        match target.render(&RenderDesc::new(CLEAR)) {
             Ok(PresentOutcome::Presented) => {}
             other => return Err(wrong(&format!("Presented on frame {earlier}"), &other)),
         }
     }
-    match target.render(CLEAR, None) {
+    match target.render(&RenderDesc::new(CLEAR)) {
         Err(TargetError::DeviceLost) => {}
         other => return Err(wrong(&format!("DeviceLost on frame {frame}"), &other)),
     }

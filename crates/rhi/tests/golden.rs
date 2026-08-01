@@ -22,8 +22,8 @@
 use std::path::{Path, PathBuf};
 
 use renew_rhi::{
-    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, TargetFormat,
-    Validation, builtin,
+    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc,
+    TargetFormat, Validation, builtin,
 };
 
 fn strict() -> bool {
@@ -106,7 +106,9 @@ fn clear_is_byte_exact_everywhere() {
         .expect("offscreen target");
     // 51/255, 102/255, 153/255: unambiguous UNORM conversions.
     let clear = Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0);
-    target.render(clear, None).expect("clear render");
+    target
+        .render(&RenderDesc::new(clear))
+        .expect("clear render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
@@ -150,7 +152,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
         ))
         .expect("triangle pipeline");
     target
-        .render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&pipeline))
+        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
         .expect("triangle render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -158,7 +160,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
     // Determinism self-check: the same frame twice is the same bytes,
     // on every adapter — the cheap local form of the golden property.
     target
-        .render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&pipeline))
+        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
         .expect("second triangle render");
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);

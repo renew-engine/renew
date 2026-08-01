@@ -7,8 +7,8 @@
 //! layer skip: correctness is proven where the oracle exists.
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, TargetFormat,
-    Validation, builtin,
+    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
+    TargetFormat, Validation, builtin,
 };
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
@@ -102,13 +102,28 @@ fn full_frame_cycle_clear_then_triangle() {
         ))
         .expect("triangle pipeline");
 
+    // The bound case of the descriptor's Debug form. It lives here
+    // rather than in a unit test because reporting "bound" requires a
+    // real pipeline, and building one requires a device. The unbound
+    // case is a unit test beside the impl.
+    let bound = format!(
+        "{:?}",
+        RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline)
+    );
+    assert!(
+        bound.contains("pipeline: Some(\"bound\")"),
+        "a bound pipeline should report presence, not a handle: {bound}"
+    );
+
     let clear = Color::new(0.0, 0.0, 0.0, 1.0);
-    target.render(clear, None).expect("clear-only render");
+    target
+        .render(&RenderDesc::new(clear))
+        .expect("clear-only render");
     let mut cleared = vec![0u8; target.byte_len()];
     target.read_back_into(&mut cleared);
 
     target
-        .render(clear, Some(&pipeline))
+        .render(&RenderDesc::new(clear).pipeline(&pipeline))
         .expect("triangle render");
     let mut drawn = vec![0u8; target.byte_len()];
     target.read_back_into(&mut drawn);
@@ -142,7 +157,7 @@ fn device_churn_three_rounds() {
             })
             .expect("offscreen target");
         target
-            .render(Color::new(0.5, 0.5, 0.5, 1.0), None)
+            .render(&RenderDesc::new(Color::new(0.5, 0.5, 0.5, 1.0)))
             .expect("render");
         // Teardown first, oracle second: destruction-time findings
         // count in every round.
@@ -174,7 +189,7 @@ fn resources_keep_the_device_alive_past_the_handle() {
     // The handle goes away; the spine lives on through the resources.
     drop(device);
     target
-        .render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&pipeline))
+        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
         .expect("render after the device handle dropped");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -245,7 +260,7 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         ))
         .expect("pipeline on the other device");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = target.render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&foreign));
+        let _ = target.render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&foreign));
     }));
     assert!(
         outcome.is_err(),

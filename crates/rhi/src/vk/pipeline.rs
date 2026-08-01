@@ -1,10 +1,12 @@
 //! The v0 graphics pipeline: two SPIR-V stages, no vertex buffers, no
 //! descriptors, dynamic rendering into one color attachment.
 
+use std::fmt;
 use std::rc::Rc;
 
 use ash::vk;
 
+use crate::config::Color;
 use crate::error::PipelineError;
 use crate::vk::device::{Device, DeviceShared};
 
@@ -71,6 +73,72 @@ impl<'a> PipelineDesc<'a> {
             fragment_spirv,
             target_format,
         }
+    }
+}
+
+/// Everything one frame needs, for either target.
+///
+/// **One type, not one per target.** `RenderPipeline` already crosses
+/// both targets carrying a field only one of them can satisfy, and each
+/// target refuses a mismatch itself with a `debug_assert!` beside its
+/// device check. So "one descriptor, target-specific fields validated at
+/// the target" is the pattern this crate already uses for the closest
+/// analogue it has, and splitting this one would leave two conventions
+/// for one question.
+///
+/// **`#[non_exhaustive]`, and this is the whole point of the type.** The
+/// old signature took the clear colour and the pipeline positionally,
+/// which meant every frame-level parameter that arrived later broke every
+/// caller. Several are already known to be coming: an in-flight policy, a
+/// load operation, a viewport, a colour-space override. Each of those is
+/// now a builder method that touches nothing.
+///
+/// Passing a field a target cannot satisfy is a contract violation rather
+/// than a recoverable condition -- the caller has asked for something
+/// incoherent, not something that failed -- so targets assert rather than
+/// returning an error, exactly as they already do for pipeline format.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct RenderDesc<'a> {
+    /// The colour the target is cleared to before drawing.
+    pub clear: Color,
+    /// The pipeline to draw with, or `None` to clear only.
+    pub pipeline: Option<&'a RenderPipeline>,
+}
+
+impl fmt::Debug for RenderDesc<'_> {
+    /// Reports *whether* a pipeline is bound, not which one.
+    /// `RenderPipeline` has no `Debug` -- a Vulkan handle's address is
+    /// not information -- and presence is the part a reader debugging a
+    /// frame actually wants.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RenderDesc")
+            .field("clear", &self.clear)
+            .field("pipeline", &self.pipeline.map(|_| "bound"))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> RenderDesc<'a> {
+    /// A frame that clears and draws nothing.
+    ///
+    /// The clear colour is positional because a frame has no meaningful
+    /// "no clear" state today -- the load operation is unconditionally a
+    /// clear in both backends. When that becomes configurable it arrives
+    /// as a builder method, and this constructor keeps its meaning.
+    #[must_use]
+    pub fn new(clear: Color) -> Self {
+        Self {
+            clear,
+            pipeline: None,
+        }
+    }
+
+    /// Draw with this pipeline after clearing.
+    #[must_use]
+    pub fn pipeline(mut self, pipeline: &'a RenderPipeline) -> Self {
+        self.pipeline = Some(pipeline);
+        self
     }
 }
 
@@ -269,5 +337,32 @@ impl Device {
             layout,
             format: desc.target_format,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unbound case, asserted on its content rather than merely run.
+    ///
+    /// A test that only *calls* `Debug` satisfies a line-coverage gate
+    /// while proving nothing -- which is the failure mode a 100% gate
+    /// invites. This asserts the two claims the impl actually makes: the
+    /// clear colour is reported, and the pipeline field says whether one
+    /// is bound rather than naming a handle.
+    #[test]
+    fn the_debug_form_reports_an_unbound_pipeline_as_none() {
+        let desc = RenderDesc::new(Color::new(0.25, 0.5, 0.75, 1.0));
+        let shown = format!("{desc:?}");
+        assert!(shown.contains("RenderDesc"), "{shown}");
+        assert!(
+            shown.contains("0.25"),
+            "the clear colour should be visible: {shown}"
+        );
+        assert!(shown.contains("pipeline: None"), "{shown}");
+        // `finish_non_exhaustive` renders the trailing `..`, which is the
+        // signal to a reader that the struct grows.
+        assert!(shown.contains(".."), "{shown}");
     }
 }
