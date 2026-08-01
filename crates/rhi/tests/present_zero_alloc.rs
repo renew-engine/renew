@@ -62,8 +62,10 @@ struct GateApp {
     size: Extent,
     presented: u32,
     updates: u32,
-    /// Allocation count at the start of the window being measured.
-    window_start: u64,
+    /// Allocations charged to `render` calls inside the current window.
+    /// Summed per call rather than measured across the window, so the
+    /// event loop's own work between frames is never counted.
+    window_spent: u64,
     /// Frames presented inside the current window.
     window_frames: u32,
     attempts: u32,
@@ -86,7 +88,7 @@ impl GateApp {
             },
             presented: 0,
             updates: 0,
-            window_start: 0,
+            window_spent: 0,
             window_frames: 0,
             attempts: 0,
             last_delta: 0,
@@ -166,11 +168,23 @@ impl WindowApp for GateApp {
                     return;
                 };
                 let clear = Color::new(0.1, 0.2, 0.3, 1.0);
-                match target.render(clear, self.pipeline.as_ref()) {
+                // Bracket `render` ITSELF, not the event-handling window
+                // around it. Reading the counter at frame boundaries
+                // instead put everything the OS event loop does between
+                // redraws inside the measurement -- which is nothing on
+                // Windows and two allocations per iteration on X11, so
+                // the gate passed locally and failed in CI for a reason
+                // that was never the engine's. The contract is about the
+                // render path; measure the render path.
+                let before = allocations();
+                let outcome = target.render(clear, self.pipeline.as_ref());
+                let spent = allocations() - before;
+                match outcome {
                     Ok(PresentOutcome::Presented) => {
                         self.presented += 1;
                         if self.presented > WARMUP_FRAMES {
                             self.window_frames += 1;
+                            self.window_spent += spent;
                         }
                     }
                     // A rebuild is not steady state. Restart the window
@@ -183,7 +197,7 @@ impl WindowApp for GateApp {
                             return;
                         }
                         self.window_frames = 0;
-                        self.window_start = allocations();
+                        self.window_spent = 0;
                     }
                     Err(error) => {
                         self.failure = Some(format!("render failed: {error}"));
@@ -194,21 +208,20 @@ impl WindowApp for GateApp {
                 // Open the first measurement window exactly when warmup
                 // ends, so the transition itself is never inside one.
                 if self.presented == WARMUP_FRAMES {
-                    self.window_start = allocations();
                     self.window_frames = 0;
+                    self.window_spent = 0;
                 }
                 if self.window_frames == WINDOW_FRAMES {
-                    let delta = allocations() - self.window_start;
-                    self.last_delta = delta;
+                    self.last_delta = self.window_spent;
                     self.attempts += 1;
-                    if delta == 0 {
+                    if self.window_spent == 0 {
                         self.observed_zero = true;
                         self.done = true;
                     } else if self.attempts >= ATTEMPTS {
                         self.done = true;
                     } else {
                         self.window_frames = 0;
-                        self.window_start = allocations();
+                        self.window_spent = 0;
                     }
                 }
             }
