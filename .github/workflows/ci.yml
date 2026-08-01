@@ -427,7 +427,12 @@ jobs:
           # which turns every "zero validation errors" assertion in
           # this step into a claim about nothing.
           export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
-          xvfb-run -a cargo test --package renew-rhi --test present_smoke
+          # RENEW_GOLDEN=1: this lane installed the layer, so a run that
+          # skips for want of it has lost the thing the lane exists to
+          # provide. Making the skip fatal is what keeps that visible --
+          # libtest prints captured output only for failing tests, so a
+          # skip that passes prints nothing at all.
+          RENEW_GOLDEN=1 xvfb-run -a cargo test --package renew-rhi --test present_smoke
           xvfb-run -a cargo test --package renew-rhi --test fault_present
 
   deny:
