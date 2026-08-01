@@ -143,11 +143,11 @@ fn triangle_matches_structure_and_the_committed_golden() {
         })
         .expect("offscreen target");
     let pipeline = device
-        .create_pipeline(&PipelineDesc {
-            vertex_spirv: builtin::TRIANGLE_VS_SPV,
-            fragment_spirv: builtin::TRIANGLE_FS_SPV,
-            target_format: TargetFormat::Rgba8Unorm,
-        })
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE_VS_SPV,
+            builtin::TRIANGLE_FS_SPV,
+            TargetFormat::Rgba8Unorm,
+        ))
         .expect("triangle pipeline");
     target
         .render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&pipeline))

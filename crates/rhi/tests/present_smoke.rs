@@ -100,11 +100,11 @@ impl WindowApp for SmokeApp {
                 return;
             }
         };
-        let pipeline = match device.create_pipeline(&PipelineDesc {
-            vertex_spirv: builtin::TRIANGLE_VS_SPV,
-            fragment_spirv: builtin::TRIANGLE_FS_SPV,
-            target_format: target.format(),
-        }) {
+        let pipeline = match device.create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE_VS_SPV,
+            builtin::TRIANGLE_FS_SPV,
+            target.format(),
+        )) {
             Ok(pipeline) => pipeline,
             Err(error) => {
                 self.failure = Some(format!("pipeline failed: {error}"));

@@ -95,11 +95,11 @@ fn full_frame_cycle_clear_then_triangle() {
         .create_offscreen_target(extent)
         .expect("offscreen target");
     let pipeline = device
-        .create_pipeline(&PipelineDesc {
-            vertex_spirv: builtin::TRIANGLE_VS_SPV,
-            fragment_spirv: builtin::TRIANGLE_FS_SPV,
-            target_format: TargetFormat::Rgba8Unorm,
-        })
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE_VS_SPV,
+            builtin::TRIANGLE_FS_SPV,
+            TargetFormat::Rgba8Unorm,
+        ))
         .expect("triangle pipeline");
 
     let clear = Color::new(0.0, 0.0, 0.0, 1.0);
@@ -165,11 +165,11 @@ fn resources_keep_the_device_alive_past_the_handle() {
         })
         .expect("offscreen target");
     let pipeline = device
-        .create_pipeline(&PipelineDesc {
-            vertex_spirv: builtin::TRIANGLE_VS_SPV,
-            fragment_spirv: builtin::TRIANGLE_FS_SPV,
-            target_format: TargetFormat::Rgba8Unorm,
-        })
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE_VS_SPV,
+            builtin::TRIANGLE_FS_SPV,
+            TargetFormat::Rgba8Unorm,
+        ))
         .expect("pipeline");
     // The handle goes away; the spine lives on through the resources.
     drop(device);
@@ -186,20 +186,20 @@ fn invalid_spirv_is_rejected_per_stage() {
         return;
     };
     let bad = [0xDEu8, 0xAD, 0xBE, 0xEF];
-    match device.create_pipeline(&PipelineDesc {
-        vertex_spirv: &bad,
-        fragment_spirv: builtin::TRIANGLE_FS_SPV,
-        target_format: TargetFormat::Rgba8Unorm,
-    }) {
+    match device.create_pipeline(&PipelineDesc::new(
+        &bad,
+        builtin::TRIANGLE_FS_SPV,
+        TargetFormat::Rgba8Unorm,
+    )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "vertex"),
         Err(other) => panic!("expected vertex rejection, got {other:?}"),
         Ok(_) => panic!("expected vertex rejection, got a pipeline"),
     }
-    match device.create_pipeline(&PipelineDesc {
-        vertex_spirv: builtin::TRIANGLE_VS_SPV,
-        fragment_spirv: &[],
-        target_format: TargetFormat::Rgba8Unorm,
-    }) {
+    match device.create_pipeline(&PipelineDesc::new(
+        builtin::TRIANGLE_VS_SPV,
+        &[],
+        TargetFormat::Rgba8Unorm,
+    )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "fragment"),
         Err(other) => panic!("expected fragment rejection, got {other:?}"),
         Ok(_) => panic!("expected fragment rejection, got a pipeline"),
@@ -238,11 +238,11 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         })
         .expect("offscreen target");
     let foreign = device_b
-        .create_pipeline(&PipelineDesc {
-            vertex_spirv: builtin::TRIANGLE_VS_SPV,
-            fragment_spirv: builtin::TRIANGLE_FS_SPV,
-            target_format: TargetFormat::Rgba8Unorm,
-        })
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE_VS_SPV,
+            builtin::TRIANGLE_FS_SPV,
+            TargetFormat::Rgba8Unorm,
+        ))
         .expect("pipeline on the other device");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = target.render(Color::new(0.0, 0.0, 0.0, 1.0), Some(&foreign));
