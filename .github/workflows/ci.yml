@@ -267,10 +267,16 @@ jobs:
           cargo build $sel
           cargo test $sel
       # The input layer names keys; it must not compile a windowing
-      # library to do it. This is the whole reason the event vocabulary
-      # sits outside the window feature, so it is guarded rather than
-      # assumed -- the crate has no feature flags, so the plain build is
-      # the only build, and winit must be absent from it.
+      # library to do it. The vocabulary now lives in its own crate with
+      # no dependencies, so the input layer reaches nothing else -- and
+      # this cell guards that rather than assuming it. The crate has no
+      # feature flags, so the plain build is the only build, and winit
+      # must be absent from it.
+      #
+      # Note what this cell does NOT cover: it checks that a windowing
+      # library is absent, not that the input layer keeps its distance
+      # from OS capabilities generally. A dependency-graph rule for the
+      # second is drafted and not yet in force.
       - name: Build and test the input layer with no windowing library
         run: |
           sel="-p renew-input"
