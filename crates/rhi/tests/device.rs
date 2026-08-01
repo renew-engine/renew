@@ -99,6 +99,7 @@ fn full_frame_cycle_clear_then_triangle() {
             builtin::TRIANGLE_VS_SPV,
             builtin::TRIANGLE_FS_SPV,
             TargetFormat::Rgba8Unorm,
+            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("triangle pipeline");
 
@@ -184,6 +185,7 @@ fn resources_keep_the_device_alive_past_the_handle() {
             builtin::TRIANGLE_VS_SPV,
             builtin::TRIANGLE_FS_SPV,
             TargetFormat::Rgba8Unorm,
+            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("pipeline");
     // The handle goes away; the spine lives on through the resources.
@@ -205,6 +207,7 @@ fn invalid_spirv_is_rejected_per_stage() {
         &bad,
         builtin::TRIANGLE_FS_SPV,
         TargetFormat::Rgba8Unorm,
+        builtin::TRIANGLE_VERTEX_COUNT,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "vertex"),
         Err(other) => panic!("expected vertex rejection, got {other:?}"),
@@ -214,6 +217,7 @@ fn invalid_spirv_is_rejected_per_stage() {
         builtin::TRIANGLE_VS_SPV,
         &[],
         TargetFormat::Rgba8Unorm,
+        builtin::TRIANGLE_VERTEX_COUNT,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "fragment"),
         Err(other) => panic!("expected fragment rejection, got {other:?}"),
@@ -257,6 +261,7 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
             builtin::TRIANGLE_VS_SPV,
             builtin::TRIANGLE_FS_SPV,
             TargetFormat::Rgba8Unorm,
+            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("pipeline on the other device");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

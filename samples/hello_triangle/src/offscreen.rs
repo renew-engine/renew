@@ -105,6 +105,7 @@ impl HeadlessRun {
                         builtin::TRIANGLE_VS_SPV,
                         builtin::TRIANGLE_FS_SPV,
                         surface.format(),
+                        builtin::TRIANGLE_VERTEX_COUNT,
                     ))
                     .map_err(pipeline_error)?,
             ),

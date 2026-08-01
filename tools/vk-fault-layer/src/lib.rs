@@ -415,6 +415,9 @@ struct DeviceNext {
     create_command_pool: Option<vk::PFN_vkCreateCommandPool>,
     create_fence: Option<vk::PFN_vkCreateFence>,
     create_sampler: Option<vk::PFN_vkCreateSampler>,
+    create_descriptor_set_layout: Option<vk::PFN_vkCreateDescriptorSetLayout>,
+    create_descriptor_pool: Option<vk::PFN_vkCreateDescriptorPool>,
+    allocate_descriptor_sets: Option<vk::PFN_vkAllocateDescriptorSets>,
     create_semaphore: Option<vk::PFN_vkCreateSemaphore>,
     create_swapchain_khr: Option<vk::PFN_vkCreateSwapchainKHR>,
     allocate_memory: Option<vk::PFN_vkAllocateMemory>,
@@ -543,6 +546,13 @@ unsafe fn resolve_device_next(gdpa: vk::PFN_vkGetDeviceProcAddr, device: vk::Dev
             create_command_pool: resolve_device_pfn(gdpa, device, c"vkCreateCommandPool"),
             create_fence: resolve_device_pfn(gdpa, device, c"vkCreateFence"),
             create_sampler: resolve_device_pfn(gdpa, device, c"vkCreateSampler"),
+            create_descriptor_set_layout: resolve_device_pfn(
+                gdpa,
+                device,
+                c"vkCreateDescriptorSetLayout",
+            ),
+            create_descriptor_pool: resolve_device_pfn(gdpa, device, c"vkCreateDescriptorPool"),
+            allocate_descriptor_sets: resolve_device_pfn(gdpa, device, c"vkAllocateDescriptorSets"),
             create_semaphore: resolve_device_pfn(gdpa, device, c"vkCreateSemaphore"),
             create_swapchain_khr: resolve_device_pfn(gdpa, device, c"vkCreateSwapchainKHR"),
             allocate_memory: resolve_device_pfn(gdpa, device, c"vkAllocateMemory"),
@@ -684,6 +694,15 @@ fn device_level_wrapper(name: &[u8]) -> vk::PFN_vkVoidFunction {
             )),
             b"vkCreateFence" => Some(erase::<vk::PFN_vkCreateFence>(fault_create_fence)),
             b"vkCreateSampler" => Some(erase::<vk::PFN_vkCreateSampler>(fault_create_sampler)),
+            b"vkCreateDescriptorSetLayout" => Some(erase::<vk::PFN_vkCreateDescriptorSetLayout>(
+                fault_create_descriptor_set_layout,
+            )),
+            b"vkCreateDescriptorPool" => Some(erase::<vk::PFN_vkCreateDescriptorPool>(
+                fault_create_descriptor_pool,
+            )),
+            b"vkAllocateDescriptorSets" => Some(erase::<vk::PFN_vkAllocateDescriptorSets>(
+                fault_allocate_descriptor_sets,
+            )),
             b"vkCreateSemaphore" => {
                 Some(erase::<vk::PFN_vkCreateSemaphore>(fault_create_semaphore))
             }
@@ -1726,6 +1745,74 @@ unsafe extern "system" fn fault_create_sampler(
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
     unsafe { next(device, p_create_info, p_allocator, p_sampler) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_create_descriptor_set_layout(
+    device: vk::Device,
+    p_create_info: *const vk::DescriptorSetLayoutCreateInfo<'_>,
+    p_allocator: *const vk::AllocationCallbacks<'_>,
+    p_set_layout: *mut vk::DescriptorSetLayout,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkCreateDescriptorSetLayout") {
+        return result;
+    }
+    // SAFETY: a non-null device reaching a layer wrapper is live.
+    let next = unsafe { device_next(device.as_raw(), |next| next.create_descriptor_set_layout) };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(device, p_create_info, p_allocator, p_set_layout) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_create_descriptor_pool(
+    device: vk::Device,
+    p_create_info: *const vk::DescriptorPoolCreateInfo<'_>,
+    p_allocator: *const vk::AllocationCallbacks<'_>,
+    p_descriptor_pool: *mut vk::DescriptorPool,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkCreateDescriptorPool") {
+        return result;
+    }
+    // SAFETY: a non-null device reaching a layer wrapper is live.
+    let next = unsafe { device_next(device.as_raw(), |next| next.create_descriptor_pool) };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(device, p_create_info, p_allocator, p_descriptor_pool) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_allocate_descriptor_sets(
+    device: vk::Device,
+    p_allocate_info: *const vk::DescriptorSetAllocateInfo<'_>,
+    p_descriptor_sets: *mut vk::DescriptorSet,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkAllocateDescriptorSets") {
+        return result;
+    }
+    // SAFETY: a non-null device reaching a layer wrapper is live.
+    let next = unsafe { device_next(device.as_raw(), |next| next.allocate_descriptor_sets) };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(device, p_allocate_info, p_descriptor_sets) }
 }
 
 /// # Safety

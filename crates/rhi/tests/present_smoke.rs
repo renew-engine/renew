@@ -107,6 +107,7 @@ impl WindowApp for SmokeApp {
             builtin::TRIANGLE_VS_SPV,
             builtin::TRIANGLE_FS_SPV,
             target.format(),
+            builtin::TRIANGLE_VERTEX_COUNT,
         )) {
             Ok(pipeline) => pipeline,
             Err(error) => {

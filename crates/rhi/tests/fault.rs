@@ -19,11 +19,12 @@
 #![allow(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    SamplerDesc, TargetError, TargetFormat, Validation, builtin,
+    Sampler, SamplerDesc, TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -136,11 +137,49 @@ fn new_device() -> Result<Device, DeviceError> {
     })
 }
 
+/// A two-by-two atlas: the smallest thing a real upload can carry, and
+/// large enough that a row-stride error would show.
+const TEXEL_SIZE: Extent = Extent {
+    width: 2,
+    height: 2,
+};
+const TEXELS: [u8; 16] = [
+    10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+];
+
+/// The texture and sampler a textured pipeline needs, built with no
+/// fault armed against them — the descriptor ladder arms calls that
+/// only `create_pipeline` makes, so these must succeed first.
+fn textured_inputs(device: &Device) -> Result<(Rc<Texture>, Rc<Sampler>), String> {
+    let texture = Rc::new(
+        device
+            .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+            .map_err(|error| format!("texture: {error}"))?,
+    );
+    let sampler = Rc::new(
+        device
+            .create_sampler(&SamplerDesc::atlas())
+            .map_err(|error| format!("sampler: {error}"))?,
+    );
+    Ok((texture, sampler))
+}
+
+fn textured_desc<'a>(texture: &Rc<Texture>, sampler: &Rc<Sampler>) -> PipelineDesc<'a> {
+    PipelineDesc::new(
+        builtin::TEXTURED_VS_SPV,
+        builtin::TEXTURED_FS_SPV,
+        TargetFormat::Rgba8Unorm,
+        builtin::TEXTURED_VERTEX_COUNT,
+    )
+    .texture(Rc::clone(texture), Rc::clone(sampler))
+}
+
 fn pipeline_desc() -> PipelineDesc<'static> {
     PipelineDesc::new(
         builtin::TRIANGLE_VS_SPV,
         builtin::TRIANGLE_FS_SPV,
         TargetFormat::Rgba8Unorm,
+        builtin::TRIANGLE_VERTEX_COUNT,
     )
 }
 
@@ -521,6 +560,164 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
 
+    // ---- C6-C8 · descriptor ladder ---------------------------------
+    // A textured pipeline is the only thing that allocates descriptors,
+    // so these arm the fault and then build one. Each is a distinct
+    // creation call inside `create_pipeline`, and each must leave the
+    // device able to build the same pipeline on a second attempt.
+    let descriptor_ladder: &[(&str, &str, &str)] = &[
+        (
+            "C6",
+            "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateDescriptorSetLayout",
+        ),
+        (
+            "C7",
+            "vkCreateDescriptorPool=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateDescriptorPool",
+        ),
+        (
+            "C8",
+            "vkAllocateDescriptorSets=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateDescriptorSets",
+        ),
+    ];
+    for &(name, fault, call) in descriptor_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            let (texture, sampler) = textured_inputs(device)
+                .map_err(|error| format!("{name}: textured inputs: {error}"))?;
+            match device.create_pipeline(&textured_desc(&texture, &sampler)) {
+                Err(PipelineError::Creation { call: got, .. }) if got == call => {}
+                Err(other) => return Err(wrong(name, &format!("Creation({call})"), &other)),
+                Ok(_) => return Err(format!("{name}: the build succeeded despite the fault")),
+            }
+            device
+                .create_pipeline(&textured_desc(&texture, &sampler))
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery build failed: {error}"))
+        }));
+    }
+
+    // ---- E · texture upload ladder ---------------------------------
+    // Every fallible call `create_texture` makes, in the order it makes
+    // them. The upload is synchronous and owns transient staging state,
+    // so each failure must both surface the right call and leave
+    // nothing behind — which the validation layer, consulted after each
+    // case by `device_case`, is what actually proves.
+    let texture_ladder: &[(&str, &str, &str, bool)] = &[
+        (
+            "E1",
+            "vkCreateImage=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImage",
+            false,
+        ),
+        (
+            "E2",
+            "vkAllocateMemory=ERROR_OUT_OF_DEVICE_MEMORY",
+            "vkAllocateMemory(texture)",
+            true,
+        ),
+        (
+            "E3",
+            "vkBindImageMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindImageMemory",
+            false,
+        ),
+        (
+            "E4",
+            "vkCreateImageView=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImageView",
+            false,
+        ),
+        (
+            "E5",
+            "vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateBuffer",
+            false,
+        ),
+        (
+            "E6",
+            "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY@2",
+            "vkAllocateMemory(staging)",
+            false,
+        ),
+        (
+            "E7",
+            "vkBindBufferMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindBufferMemory",
+            false,
+        ),
+        (
+            "E8",
+            "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkMapMemory",
+            false,
+        ),
+        (
+            "E9",
+            "vkCreateCommandPool=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateCommandPool",
+            false,
+        ),
+        (
+            "E10",
+            "vkAllocateCommandBuffers=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateCommandBuffers",
+            false,
+        ),
+        (
+            "E11",
+            "vkCreateFence=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateFence",
+            false,
+        ),
+        (
+            "E12",
+            "vkBeginCommandBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBeginCommandBuffer",
+            false,
+        ),
+        (
+            "E13",
+            "vkEndCommandBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkEndCommandBuffer",
+            false,
+        ),
+        (
+            "E14",
+            "vkQueueSubmit2=ERROR_OUT_OF_HOST_MEMORY",
+            "vkQueueSubmit2",
+            false,
+        ),
+        (
+            "E15",
+            "vkWaitForFences=ERROR_OUT_OF_HOST_MEMORY",
+            "vkWaitForFences(texture upload)",
+            false,
+        ),
+    ];
+    for &(name, fault, call, device_memory) in texture_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(error) => {
+                    let matched = if device_memory {
+                        matches!(&error, TargetError::OutOfDeviceMemory { call: got } if *got == call)
+                    } else {
+                        matches!(&error, TargetError::Creation { call: got, .. } if *got == call)
+                    };
+                    if !matched {
+                        return Err(wrong(name, call, &error));
+                    }
+                }
+                Ok(_) => return Err(format!("{name}: the upload succeeded despite the fault")),
+            }
+            device
+                .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery upload failed: {error}"))
+        }));
+    }
+
     // ---- D · offscreen render ladder -------------------------------
     // D1-D3: the frame fails before submission, so nothing is in
     // flight: the target stays usable and the next frame succeeds.
@@ -813,6 +1010,7 @@ fn every_driver_failure_ladder_behaves() {
                 &IMPLAUSIBLE_SPIRV,
                 builtin::TRIANGLE_FS_SPV,
                 TargetFormat::Rgba8Unorm,
+                builtin::TRIANGLE_VERTEX_COUNT,
             )) {
                 Err(PipelineError::Creation { .. }) => {}
                 Err(other) => return Err(wrong("", "Creation(vkCreateShaderModule)", &other)),

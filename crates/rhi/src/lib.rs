@@ -78,6 +78,7 @@ pub use vk::pipeline::{
 };
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
+pub use vk::texture::{Texture, TextureDesc};
 
 /// The embedded v0 shaders: a colored triangle from `gl_VertexIndex`,
 /// no buffers, no descriptors. Compiled offline by the pinned toolchain
@@ -88,4 +89,14 @@ pub mod builtin {
     pub static TRIANGLE_VS_SPV: &[u8] = include_bytes!("../shaders/triangle.vert.spv");
     /// Fragment stage SPIR-V.
     pub static TRIANGLE_FS_SPV: &[u8] = include_bytes!("../shaders/triangle.frag.spv");
+
+    /// Vertex stage SPIR-V for a full-target textured quad.
+    pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
+    /// Fragment stage SPIR-V sampling set 0, binding 0.
+    pub static TEXTURED_FS_SPV: &[u8] = include_bytes!("../shaders/textured.frag.spv");
+
+    /// How many vertices [`TRIANGLE_VS_SPV`] generates.
+    pub const TRIANGLE_VERTEX_COUNT: u32 = 3;
+    /// How many vertices [`TEXTURED_VS_SPV`] generates: two triangles.
+    pub const TEXTURED_VERTEX_COUNT: u32 = 6;
 }

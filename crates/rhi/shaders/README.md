@@ -21,6 +21,14 @@ Target: SPIR-V 1.0
 > glslc -O triangle.frag -o triangle.frag.spv
 ```
 
+`textured.vert` and `textured.frag` were compiled 2026-08-01 with the
+same SDK, which reported the same `--version` output verbatim:
+
+```
+> glslc -O textured.vert -o textured.vert.spv
+> glslc -O textured.frag -o textured.frag.spv
+```
+
 To recompile: install the same SDK version, run the same commands, and
 update this record with the observed `--version` output in the same
 commit as the new bytes.

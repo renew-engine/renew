@@ -21,9 +21,11 @@
 
 use std::path::{Path, PathBuf};
 
+use std::rc::Rc;
+
 use renew_rhi::{
     AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc,
-    TargetFormat, Validation, builtin,
+    SamplerDesc, TargetFormat, TextureDesc, Validation, builtin,
 };
 
 fn strict() -> bool {
@@ -149,6 +151,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
             builtin::TRIANGLE_VS_SPV,
             builtin::TRIANGLE_FS_SPV,
             TargetFormat::Rgba8Unorm,
+            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("triangle pipeline");
     target
@@ -282,4 +285,107 @@ fn triangle_matches_structure_and_the_committed_golden() {
             actual.display()
         );
     }
+}
+
+/// G3: a sampled texture — exact bytes on every conformant adapter.
+///
+/// **This one needs no software rasterizer and no committed artifact,
+/// and the reason is worth stating.** G2 pins its bytes to a pinned
+/// rasterizer because a triangle has edges, and which pixels an edge
+/// covers varies between implementations. This quad covers the whole
+/// target, so there are no edges to disagree about; nearest filtering
+/// makes each output pixel exactly one texel; and UNORM-to-UNORM with
+/// blending disabled passes those bytes through unchanged. Every step
+/// is specified, so the expected image is computed here rather than
+/// read from a file, and the assertion is as strong on real hardware as
+/// on a rasterizer.
+///
+/// Because the quad is drawn from `gl_VertexIndex` with no vertex
+/// buffer, what this proves is the resource path: an image uploaded
+/// through a staging buffer, transitioned to shader-read, bound through
+/// a descriptor set written at pipeline creation, and sampled.
+#[test]
+fn a_sampled_texture_is_byte_exact_everywhere() {
+    // Four texels, one per quadrant of the target. The size is a
+    // multiple of two so every output pixel centre falls unambiguously
+    // inside one texel rather than on a boundary.
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 2;
+    #[rustfmt::skip]
+    const ATLAS: [u8; 16] = [
+        10, 20, 30, 255,    40, 50, 60, 255,
+        70, 80, 90, 255,    100, 110, 120, 255,
+    ];
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let texture = Rc::new(
+        device
+            .create_texture(&TextureDesc::new(
+                Extent {
+                    width: TEXELS,
+                    height: TEXELS,
+                },
+                &ATLAS,
+            ))
+            .expect("texture upload"),
+    );
+    let sampler = Rc::new(
+        device
+            .create_sampler(&SamplerDesc::atlas())
+            .expect("sampler"),
+    );
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(
+                builtin::TEXTURED_VS_SPV,
+                builtin::TEXTURED_FS_SPV,
+                TargetFormat::Rgba8Unorm,
+                builtin::TEXTURED_VERTEX_COUNT,
+            )
+            .texture(Rc::clone(&texture), Rc::clone(&sampler)),
+        )
+        .expect("textured pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+    // A clear colour that appears nowhere in the atlas, so a quad that
+    // failed to cover the target would show as unwritten rather than
+    // blending into a plausible result.
+    target
+        .render(&RenderDesc::new(Color::new(1.0, 0.0, 1.0, 1.0)).pipeline(&pipeline))
+        .expect("textured render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            // Clip space runs top-to-bottom in y and the atlas's first
+            // row is its top row, so neither axis flips.
+            let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
+            let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+            let offset = ((y * SIZE + x) as usize) * 4;
+            assert_eq!(
+                &pixels[offset..offset + 4],
+                expected,
+                "pixel ({x},{y}) should sample texel {texel} on adapter {:?}",
+                device.adapter()
+            );
+        }
+    }
+
+    // Teardown first, oracle second: destruction-time findings count.
+    // The pipeline holds the texture and sampler alive, so dropping
+    // them here proves the keep-alive rather than relying on scope
+    // order — a descriptor set pointing at a destroyed image is exactly
+    // what the validation layer would report.
+    drop(texture);
+    drop(sampler);
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
 }
