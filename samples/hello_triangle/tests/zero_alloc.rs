@@ -116,6 +116,25 @@ fn steady_state_frames_allocate_nothing() {
     })
     .expect("planning, stepping, drawing and tallying stay heap-silent");
 
+    // Printed for the record, never gated — the same terms the render
+    // backend reports its own ledgers on.
+    //
+    // **This is the only place a sample's peak is observable.** The
+    // figure comes from the counting allocator, which has to *be* the
+    // process allocator, so a shipped sample cannot carry it: the cost
+    // would land in delivered code to serve a measurement. A test
+    // binary can, and this one already runs the sample's real headless
+    // loop, so the number was one line away the whole time.
+    //
+    // Never asserted on: a peak is a property of the whole process,
+    // this harness included, while the assertion above is about the
+    // frame path alone. Gating on it would make an unrelated change to
+    // the test fail the test.
+    eprintln!(
+        "engine allocation counters after the steady state: {:?}",
+        counters::snapshot()
+    );
+
     // The window did real work: without this the test would pass on a
     // driver that returned early from every frame.
     let report = run.report();
