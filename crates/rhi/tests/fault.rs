@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    TargetError, TargetFormat, Validation, builtin,
+    SamplerDesc, TargetError, TargetFormat, Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -490,6 +490,36 @@ fn every_driver_failure_ladder_behaves() {
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
         }));
     }
+
+    // C5 sits outside the loop above because it exercises a different
+    // constructor: the ladder's body builds a pipeline, and a sampler
+    // is built by its own call. Recovery is asserted the same way --
+    // an armed fault fires once, so the second attempt must succeed.
+    verdicts.push(device_case(
+        "C5",
+        "vkCreateSampler=ERROR_OUT_OF_HOST_MEMORY",
+        |device| {
+            match device.create_sampler(&SamplerDesc::atlas()) {
+                Err(PipelineError::Creation {
+                    call: "vkCreateSampler",
+                    ..
+                }) => {}
+                Err(other) => return Err(wrong("C5", "Creation(vkCreateSampler)", &other)),
+                Ok(_) => return Err("C5: the sampler was created despite the fault".to_owned()),
+            }
+            let recovered = device
+                .create_sampler(&SamplerDesc::atlas())
+                .map_err(|error| format!("C5: recovery sampler failed: {error}"))?;
+            // `Debug` is asserted here rather than in the device
+            // suite: that suite skips wherever the validation layer is
+            // absent, which is most environments.
+            let shown = format!("{recovered:?}");
+            if !shown.starts_with("Sampler") {
+                return Err(format!("C5: unexpected Debug form: {shown}"));
+            }
+            Ok(())
+        },
+    ));
 
     // ---- D · offscreen render ladder -------------------------------
     // D1-D3: the frame fails before submission, so nothing is in

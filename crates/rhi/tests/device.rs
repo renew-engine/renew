@@ -7,8 +7,8 @@
 //! layer skip: correctness is proven where the oracle exists.
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    TargetFormat, Validation, builtin,
+    AddressMode, Color, Device, DeviceDesc, DeviceError, Extent, Filter, PipelineDesc,
+    PipelineError, RenderDesc, SamplerDesc, TargetFormat, Validation, builtin,
 };
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
@@ -284,4 +284,24 @@ fn wrong_readback_length_is_a_retained_contract_check() {
         target.read_back_into(&mut wrong);
     }));
     assert!(outcome.is_err(), "short readback buffer must be rejected");
+}
+
+#[test]
+fn samplers_are_created_and_dropped_without_validation_complaint() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    // Every combination the descriptor can express, not just the
+    // preset: `atlas()` picks one corner of a two-by-two space, and a
+    // filter or address mode that no test ever hands to the driver is
+    // an untested conversion however well-covered its line is.
+    for filter in [Filter::Nearest, Filter::Linear] {
+        for address in [AddressMode::ClampToEdge, AddressMode::Repeat] {
+            let mut desc = SamplerDesc::atlas();
+            desc.filter = filter;
+            desc.address = address;
+            drop(device.create_sampler(&desc).expect("sampler"));
+        }
+    }
+    assert_no_validation_errors(&device);
 }

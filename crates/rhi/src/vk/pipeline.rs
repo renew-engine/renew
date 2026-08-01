@@ -142,6 +142,118 @@ impl<'a> RenderDesc<'a> {
     }
 }
 
+/// How a sampled image is filtered and addressed.
+///
+/// **`#[non_exhaustive]` with a constructor, per the descriptor pattern
+/// this crate now uses everywhere** -- filter and address mode are the
+/// two a sprite atlas needs, and mip mode, anisotropy and border colour
+/// arrive as builders touching no caller.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct SamplerDesc {
+    /// How texels are chosen when the sample lands between them.
+    pub filter: Filter,
+    /// What happens outside `[0, 1]`.
+    pub address: AddressMode,
+}
+
+impl SamplerDesc {
+    /// The atlas default: nearest, clamped.
+    ///
+    /// **Nearest rather than linear, and this is a decision rather than
+    /// an omission.** It is the single parameter deciding whether a
+    /// sprite atlas comes out crisp or blurred. Nearest keeps it exact,
+    /// and keeps reference-image comparisons meaningful: those compare
+    /// bytes, and linear filtering makes the bytes depend on how a
+    /// particular adapter interpolates rather than on the engine.
+    /// Clamped because an atlas has no meaning outside its own edges --
+    /// a wrapped sample reads a neighbouring sprite, which is a bug that
+    /// looks like a rendering artifact.
+    #[must_use]
+    pub fn atlas() -> Self {
+        Self {
+            filter: Filter::Nearest,
+            address: AddressMode::ClampToEdge,
+        }
+    }
+}
+
+/// Texel selection between sample points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Filter {
+    /// The nearest texel. Exact, and what a sprite atlas wants.
+    Nearest,
+    /// Bilinear blend of the four surrounding texels.
+    Linear,
+}
+
+/// What a sample outside `[0, 1]` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AddressMode {
+    /// The edge texel, repeated.
+    ClampToEdge,
+    /// The image, tiled.
+    Repeat,
+}
+
+impl Filter {
+    fn to_vk(self) -> vk::Filter {
+        match self {
+            Self::Nearest => vk::Filter::NEAREST,
+            Self::Linear => vk::Filter::LINEAR,
+        }
+    }
+}
+
+impl AddressMode {
+    fn to_vk(self) -> vk::SamplerAddressMode {
+        match self {
+            Self::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            Self::Repeat => vk::SamplerAddressMode::REPEAT,
+        }
+    }
+}
+
+/// A sampler. Holds its device alive; destroyed on drop.
+///
+/// # Contract
+///
+/// A sampler must outlive every descriptor set that references it.
+///
+/// **Nothing can reference one yet** -- there is no API that binds a
+/// sampler to anything -- so today the contract is satisfied vacuously,
+/// and `Drop` needs no quiesce: no submit can name a handle no submit
+/// can reach. Whatever gains the ability to bind one owns keeping it
+/// alive, by holding it rather than by asking the caller to sequence
+/// drops. Stated now because the reason `Drop` is bare is the emptiness
+/// of that set, and a later binding API that does not hold its sampler
+/// would silently turn a vacuous guarantee into a dangling handle.
+pub struct Sampler {
+    pub(crate) shared: Rc<DeviceShared>,
+    pub(crate) sampler: vk::Sampler,
+}
+
+impl fmt::Debug for Sampler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sampler").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        // SAFETY: category 2 (ash dispatch): device live via the spine
+        // Rc; the handle was created with these callbacks; the owner of
+        // any descriptor set referencing it has already quiesced.
+        unsafe {
+            self.shared
+                .device
+                .destroy_sampler(self.sampler, Some(&self.shared.alloc_cbs()));
+        }
+    }
+}
+
 /// A compiled draw pipeline. Holds its device alive; destroyed on
 /// drop (after a best-effort quiesce — v0 accepts a wait-idle in cold
 /// teardown paths for unconditional correctness).
@@ -177,6 +289,45 @@ fn creation(call: &'static str, code: vk::Result) -> PipelineError {
 }
 
 impl Device {
+    /// Create a sampler.
+    ///
+    /// # Errors
+    ///
+    /// [`PipelineError::Creation`] if the driver refuses the sampler.
+    pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler, PipelineError> {
+        let shared = &self.shared;
+        let address = desc.address.to_vk();
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(desc.filter.to_vk())
+            .min_filter(desc.filter.to_vk())
+            // NEAREST rather than LINEAR: with no mip levels created,
+            // the mode only decides how a single level is selected, and
+            // nearest keeps the choice from mattering at all.
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(address)
+            .address_mode_v(address)
+            .address_mode_w(address)
+            // No anisotropy: it is a device feature that must be enabled
+            // at device creation, and this crate enables none. Asking
+            // for it here without that is a validation error.
+            .anisotropy_enable(false)
+            .unnormalized_coordinates(false);
+        // SAFETY: category 2 (ash dispatch): device live via the spine
+        // Rc; the info struct is a local outliving this call; the crate
+        // is structurally `!Send + !Sync`, so external synchronisation
+        // holds.
+        let sampler = unsafe {
+            shared
+                .device
+                .create_sampler(&info, Some(&shared.alloc_cbs()))
+        }
+        .map_err(|code| creation("vkCreateSampler", code))?;
+        Ok(Sampler {
+            shared: Rc::clone(shared),
+            sampler,
+        })
+    }
+
     /// Build a draw pipeline for a target of `desc.target_format`.
     ///
     /// # Errors
@@ -343,6 +494,36 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The converters, both arms of each, with no device involved.
+    ///
+    /// **These live here rather than in the device suite deliberately.**
+    /// That suite demands `Validation::Required` and skips wherever the
+    /// validation layer is absent, which is most environments. A
+    /// conversion whose only exercise sits behind a skipped test is an
+    /// untested conversion on every machine but the few that happen to
+    /// have the layer installed.
+    #[test]
+    fn every_filter_and_address_mode_maps_to_its_vulkan_spelling() {
+        assert_eq!(Filter::Nearest.to_vk(), vk::Filter::NEAREST);
+        assert_eq!(Filter::Linear.to_vk(), vk::Filter::LINEAR);
+        assert_eq!(
+            AddressMode::ClampToEdge.to_vk(),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(AddressMode::Repeat.to_vk(), vk::SamplerAddressMode::REPEAT);
+    }
+
+    /// The atlas preset is a decision, so it is asserted rather than
+    /// assumed: linear filtering would make a sampled golden's bytes
+    /// depend on how an adapter interpolates, and the golden lane
+    /// compares bytes.
+    #[test]
+    fn the_atlas_preset_is_nearest_and_clamped() {
+        let desc = SamplerDesc::atlas();
+        assert_eq!(desc.filter, Filter::Nearest);
+        assert_eq!(desc.address, AddressMode::ClampToEdge);
+    }
 
     /// The unbound case, asserted on its content rather than merely run.
     ///

@@ -414,6 +414,7 @@ struct DeviceNext {
     create_graphics_pipelines: Option<vk::PFN_vkCreateGraphicsPipelines>,
     create_command_pool: Option<vk::PFN_vkCreateCommandPool>,
     create_fence: Option<vk::PFN_vkCreateFence>,
+    create_sampler: Option<vk::PFN_vkCreateSampler>,
     create_semaphore: Option<vk::PFN_vkCreateSemaphore>,
     create_swapchain_khr: Option<vk::PFN_vkCreateSwapchainKHR>,
     allocate_memory: Option<vk::PFN_vkAllocateMemory>,
@@ -541,6 +542,7 @@ unsafe fn resolve_device_next(gdpa: vk::PFN_vkGetDeviceProcAddr, device: vk::Dev
             ),
             create_command_pool: resolve_device_pfn(gdpa, device, c"vkCreateCommandPool"),
             create_fence: resolve_device_pfn(gdpa, device, c"vkCreateFence"),
+            create_sampler: resolve_device_pfn(gdpa, device, c"vkCreateSampler"),
             create_semaphore: resolve_device_pfn(gdpa, device, c"vkCreateSemaphore"),
             create_swapchain_khr: resolve_device_pfn(gdpa, device, c"vkCreateSwapchainKHR"),
             allocate_memory: resolve_device_pfn(gdpa, device, c"vkAllocateMemory"),
@@ -681,6 +683,7 @@ fn device_level_wrapper(name: &[u8]) -> vk::PFN_vkVoidFunction {
                 fault_create_command_pool,
             )),
             b"vkCreateFence" => Some(erase::<vk::PFN_vkCreateFence>(fault_create_fence)),
+            b"vkCreateSampler" => Some(erase::<vk::PFN_vkCreateSampler>(fault_create_sampler)),
             b"vkCreateSemaphore" => {
                 Some(erase::<vk::PFN_vkCreateSemaphore>(fault_create_semaphore))
             }
@@ -1700,6 +1703,29 @@ unsafe extern "system" fn fault_create_fence(
     // SAFETY: chaining to the next layer with the caller's own
     // arguments.
     unsafe { next(device, p_create_info, p_allocator, p_fence) }
+}
+
+/// # Safety
+///
+/// Called through the dispatch chain with valid arguments per the
+/// Vulkan contract.
+unsafe extern "system" fn fault_create_sampler(
+    device: vk::Device,
+    p_create_info: *const vk::SamplerCreateInfo<'_>,
+    p_allocator: *const vk::AllocationCallbacks<'_>,
+    p_sampler: *mut vk::Sampler,
+) -> vk::Result {
+    if let Some(result) = should_fail("vkCreateSampler") {
+        return result;
+    }
+    // SAFETY: a non-null device reaching a layer wrapper is live.
+    let next = unsafe { device_next(device.as_raw(), |next| next.create_sampler) };
+    let Some(next) = next else {
+        return vk::Result::ERROR_UNKNOWN;
+    };
+    // SAFETY: chaining to the next layer with the caller's own
+    // arguments.
+    unsafe { next(device, p_create_info, p_allocator, p_sampler) }
 }
 
 /// # Safety

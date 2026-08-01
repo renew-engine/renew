@@ -72,7 +72,10 @@ pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation
 pub use error::{DeviceError, PipelineError, TargetError};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
-pub use vk::pipeline::{PipelineDesc, RenderDesc, RenderPipeline, TargetFormat};
+pub use vk::pipeline::{
+    AddressMode, Filter, PipelineDesc, RenderDesc, RenderPipeline, Sampler, SamplerDesc,
+    TargetFormat,
+};
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
 
