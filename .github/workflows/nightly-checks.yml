@@ -26,6 +26,11 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             sanitizer: thread
+            # The only lane with a Vulkan runtime. Without one, every
+            # device-touching test takes the graceful-skip path and passes
+            # while doing nothing, and a skip prints only on failure — so
+            # a green log is exactly the case that withholds the fact.
+            vulkan: true
           - os: macos-latest
             target: aarch64-apple-darwin
             sanitizer: address
@@ -44,9 +49,62 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
+      - uses: ./.github/actions/software-vulkan
+        if: matrix.vulkan
+      # Set through GITHUB_ENV rather than the step's `env:` map, because
+      # this variable must be ABSENT on the other lanes, not empty. An
+      # `env:` entry whose expression yields '' still sets the variable,
+      # and libtest parses this one as a number -- an empty value panics
+      # in test::helpers::concurrency before a single test runs. That is
+      # not hypothetical: it reddened three previously-green lanes.
+      #
+      # RENEW_GOLDEN below can use the inline form safely because every
+      # one of its readers compares against the literal "1"
+      # (`is_some_and(|v| v == "1")` / `is_none_or(|v| v != "1")`), so
+      # empty means "not strict". The idiom is only safe when the
+      # consumer treats empty as absent, which is a property of the
+      # reader, not of the workflow.
+      - name: Serialise test functions on the lane with a driver
+        if: matrix.vulkan
+        shell: bash
+        run: echo "RUST_TEST_THREADS=1" >> "$GITHUB_ENV"
       - name: Run tests under ${{ matrix.sanitizer }} sanitizer
         env:
           RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+          # On the lane that has a driver, a skipped device test is a
+          # failure: the lane exists to run them, so passing must mean
+          # executed rather than absent. Empty elsewhere, where a skip is
+          # the only honest outcome.
+          RENEW_GOLDEN: ${{ matrix.vulkan && '1' || '' }}
+          # Run the rasterizer single-threaded. This is a DIAGNOSTIC, and
+          # the variable under test.
+          #
+          # A previous attempt added the runtime alone and found three
+          # races: two entirely inside lavapipe's fence lifecycle, and one
+          # with engine frames -- DeviceShared::drop closing the loader
+          # while a driver worker thread was still live. Reading the
+          # teardown afterwards showed the engine's order is the
+          # spec-required one and nothing instance-derived outlives the
+          # instance, which argues against an engine defect and leaves
+          # "lavapipe does not join its workers by vkDestroyDevice" as the
+          # live hypothesis. A reading is not a sanitizer report.
+          #
+          # LP_NUM_THREADS=0 turns llvmpipe's threading off entirely
+          # (Mesa's documented behaviour for zero). Against the recorded
+          # three-race baseline this is a single-variable experiment and
+          # every outcome is informative:
+          #   - all three gone: the other side of each was a driver worker,
+          #     so the engine teardown is exonerated and the remaining
+          #     question is lavapipe's, not ours;
+          #   - the two driver-internal ones gone, the engine-frame one
+          #     left: the other side is NOT a driver worker, which is a
+          #     worse and more interesting finding;
+          #   - all three still there: the variable does not reach lavapipe
+          #     and the hypothesis needs a different lever.
+          #
+          # It is set on every lane because it names nothing that exists
+          # where no rasterizer does.
+          LP_NUM_THREADS: "0"
           # Read only by the thread sanitizer; harmless where the file's
           # contents mean nothing. Every line in it is a place this job
           # has been told not to look, so it is short and each entry
