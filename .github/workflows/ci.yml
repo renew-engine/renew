@@ -273,13 +273,27 @@ jobs:
       # feature flags, so the plain build is the only build, and winit
       # must be absent from it.
       #
-      # Note what this cell does NOT cover: it checks that a windowing
-      # library is absent, not that the input layer keeps its distance
-      # from OS capabilities generally. A dependency-graph rule for the
-      # second is drafted and not yet in force.
+      # The platform crate is asserted absent too, and that is the
+      # substantive half. This crate promises its output is a function of
+      # build, seed and input alone; the lints backing that promise match
+      # a definition path in the crate being compiled, so they stop at
+      # the first wrapper. Reaching a clock through a first-party helper
+      # named nothing they look for -- which is precisely what this crate
+      # could do until the vocabulary moved out.
+      #
+      # Absence from the graph is the form of that promise nothing can
+      # talk its way around. It is asserted separately rather than added
+      # to the loop below: that loop enumerates window-system integration
+      # libraries, and the platform crate is not one.
+      #
+      # Scope, stated so nobody reads more into a green cell than it
+      # earns: this guards ONE crate. The general rule -- no crate
+      # declaring simulation may reach the platform crate by any path --
+      # needs a standards amendment and is not in force.
       - name: Build and test the input layer with no windowing library
         run: |
           sel="-p renew-input"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-platform $sel
           for wsi in winit raw-window-handle; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
           done
