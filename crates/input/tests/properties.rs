@@ -12,8 +12,8 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
+use renew_event::{KeyCode, WindowEvent};
 use renew_input::{Binding, InputMap};
-use renew_platform::event::{KeyCode, WindowEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {

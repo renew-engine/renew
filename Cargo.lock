@@ -1429,6 +1429,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-event"
+version = "0.1.0"
+
+[[package]]
 name = "renew-frame"
 version = "0.1.0"
 dependencies = [
@@ -1441,7 +1445,7 @@ name = "renew-input"
 version = "0.1.0"
 dependencies = [
  "proptest",
- "renew-platform",
+ "renew-event",
 ]
 
 [[package]]
@@ -1473,6 +1477,7 @@ name = "renew-platform"
 version = "0.1.0"
 dependencies = [
  "raw-window-handle",
+ "renew-event",
  "winit",
 ]
 

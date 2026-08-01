@@ -26,7 +26,7 @@
 //!
 //! ```
 //! use renew_input::{Binding, InputMap};
-//! use renew_platform::event::{KeyCode, WindowEvent};
+//! use renew_event::{KeyCode, WindowEvent};
 //!
 //! #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 //! enum Action { Jump, Left }
@@ -49,7 +49,7 @@
 // belong to whoever is driving the loop.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
-use renew_platform::event::{KeyCode, PointerButton, WindowEvent};
+use renew_event::{KeyCode, PointerButton, WindowEvent};
 
 /// One physical input that can be bound to an action.
 ///
