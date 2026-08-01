@@ -79,26 +79,54 @@ pub struct PipelineDesc<'a> {
     pub texture: Option<(Rc<Texture>, Rc<Sampler>)>,
 }
 
-impl<'a> PipelineDesc<'a> {
-    /// The three parameters a pipeline cannot be built without.
-    ///
-    /// Positional rather than a builder chain because none of these has
-    /// a meaningful default: a pipeline with no vertex stage, no
-    /// fragment stage, or no target format is not a partially-configured
-    /// pipeline, it is not a pipeline. Optional state arrives later as
-    /// builder methods on top of this.
+/// A vertex/fragment pair and the number of vertices its vertex stage
+/// generates.
+///
+/// **The three travel together because they are only correct together.**
+/// With no vertex buffers, the vertex list is written into the shader,
+/// so the count belongs to that shader and to no other. Passed
+/// separately they are two safe values that compile in any combination:
+/// too low and the draw renders part of the geometry, too high and the
+/// stage indexes past the end of its own constant array. Bundled, the
+/// mismatch cannot be spelled.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Shaders<'a> {
+    /// Vertex stage SPIR-V.
+    pub vertex: &'a [u8],
+    /// Fragment stage SPIR-V.
+    pub fragment: &'a [u8],
+    /// How many vertices [`Self::vertex`] generates for one draw.
+    pub vertex_count: u32,
+}
+
+impl<'a> Shaders<'a> {
+    /// A stage pair and its vertex count.
     #[must_use]
-    pub fn new(
-        vertex_spirv: &'a [u8],
-        fragment_spirv: &'a [u8],
-        target_format: TargetFormat,
-        vertex_count: u32,
-    ) -> Self {
+    pub fn new(vertex: &'a [u8], fragment: &'a [u8], vertex_count: u32) -> Self {
         Self {
-            vertex_spirv,
-            fragment_spirv,
-            target_format,
+            vertex,
+            fragment,
             vertex_count,
+        }
+    }
+}
+
+impl<'a> PipelineDesc<'a> {
+    /// The two things a pipeline cannot be built without.
+    ///
+    /// Positional rather than a builder chain because neither has a
+    /// meaningful default: a pipeline with no shaders, or with no target
+    /// format, is not a partially-configured pipeline, it is not a
+    /// pipeline. Optional state arrives later as builder methods on top
+    /// of this.
+    #[must_use]
+    pub fn new(shaders: Shaders<'a>, target_format: TargetFormat) -> Self {
+        Self {
+            vertex_spirv: shaders.vertex,
+            fragment_spirv: shaders.fragment,
+            target_format,
+            vertex_count: shaders.vertex_count,
             texture: None,
         }
     }
@@ -261,14 +289,14 @@ impl AddressMode {
 ///
 /// A sampler must outlive every descriptor set that references it.
 ///
-/// **Nothing can reference one yet** -- there is no API that binds a
-/// sampler to anything -- so today the contract is satisfied vacuously,
-/// and `Drop` needs no quiesce: no submit can name a handle no submit
-/// can reach. Whatever gains the ability to bind one owns keeping it
-/// alive, by holding it rather than by asking the caller to sequence
-/// drops. Stated now because the reason `Drop` is bare is the emptiness
-/// of that set, and a later binding API that does not hold its sampler
-/// would silently turn a vacuous guarantee into a dangling handle.
+/// **The caller cannot violate that, because they do not hold the
+/// obligation.** [`PipelineDesc::texture`] takes shared ownership, and
+/// the [`RenderPipeline`] keeps its clone for as long as the descriptor
+/// set exists — so a caller who drops their own handle mid-frame takes
+/// nothing away from the set. `Drop` therefore needs no quiesce: it can
+/// only run once the pipeline has released its clone, which happens
+/// inside `RenderPipeline`'s own `Drop`, after that has waited for the
+/// device to go idle and destroyed the pool.
 pub struct Sampler {
     pub(crate) shared: Rc<DeviceShared>,
     pub(crate) sampler: vk::Sampler,
@@ -410,6 +438,18 @@ fn create_descriptors(
     texture: &Texture,
     sampler: &Sampler,
 ) -> Result<Descriptors, PipelineError> {
+    // Handles from another device would be written into this device's
+    // set and used by it — undefined behaviour that no return value can
+    // report, so it asserts, as the two targets already do for a
+    // pipeline built on a foreign device.
+    debug_assert!(
+        core::ptr::eq(shared, Rc::as_ptr(texture.shared())),
+        "texture and pipeline come from different devices"
+    );
+    debug_assert!(
+        core::ptr::eq(shared, Rc::as_ptr(&sampler.shared)),
+        "sampler and pipeline come from different devices"
+    );
     let bindings = [vk::DescriptorSetLayoutBinding::default()
         .binding(0)
         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)

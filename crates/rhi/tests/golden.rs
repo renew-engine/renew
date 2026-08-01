@@ -148,10 +148,8 @@ fn triangle_matches_structure_and_the_committed_golden() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
-            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("triangle pipeline");
     target
@@ -289,16 +287,30 @@ fn triangle_matches_structure_and_the_committed_golden() {
 
 /// G3: a sampled texture — exact bytes on every conformant adapter.
 ///
-/// **This one needs no software rasterizer and no committed artifact,
-/// and the reason is worth stating.** G2 pins its bytes to a pinned
-/// rasterizer because a triangle has edges, and which pixels an edge
-/// covers varies between implementations. This quad covers the whole
-/// target, so there are no edges to disagree about; nearest filtering
-/// makes each output pixel exactly one texel; and UNORM-to-UNORM with
-/// blending disabled passes those bytes through unchanged. Every step
-/// is specified, so the expected image is computed here rather than
-/// read from a file, and the assertion is as strong on real hardware as
-/// on a rasterizer.
+/// **This one needs no software rasterizer and no committed artifact.**
+/// G2 pins its bytes to a pinned rasterizer because a triangle has a
+/// silhouette, and which pixels a silhouette edge covers is where
+/// implementations differ. This quad has no silhouette — it covers the
+/// target exactly — so the only edge in play is the diagonal the two
+/// triangles share, and a shared edge is not a place implementations
+/// are free to differ: the spec requires a sample on it to be covered
+/// by exactly one of the two, never both and never neither.
+///
+/// **That distinction is worth stating precisely, because the naive
+/// version of it is false here.** At this size the diagonal runs
+/// through eight pixel centres exactly, which is the most fragile
+/// arrangement such a test can have. It is nonetheless safe three times
+/// over: whichever triangle claims a sample, both interpolate the same
+/// affine UV plane, so the coordinate is identical either way; blending
+/// is disabled, so even a double hit would write the same bytes; and
+/// nearest filtering has margin to spare — pixel centres land on texel
+/// coordinates 0.125, 0.375, 0.625, 0.875, never within rounding
+/// distance of a texel boundary.
+///
+/// The rest is specified arithmetic: nearest maps each pixel to exactly
+/// one texel, and UNORM-to-UNORM passes bytes through unchanged. So the
+/// expected image is computed here rather than read from a file, and
+/// the assertion is as strong on real hardware as on a rasterizer.
 ///
 /// Because the quad is drawn from `gl_VertexIndex` with no vertex
 /// buffer, what this proves is the resource path: an image uploaded
@@ -336,15 +348,21 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
             .create_sampler(&SamplerDesc::atlas())
             .expect("sampler"),
     );
+    // The accessor and `Debug` are exercised here rather than in the
+    // device suite, which skips wherever the validation layer is absent.
+    // Asserted on content: the extent must be the one the texture was
+    // built from, which is a claim about the field being set from the
+    // right place rather than about formatting.
+    assert_eq!(texture.extent().width, TEXELS);
+    assert_eq!(texture.extent().height, TEXELS);
+    let shown = format!("{texture:?}");
+    assert!(shown.starts_with("Texture"), "{shown}");
+    assert!(shown.contains("extent"), "{shown}");
+
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(
-                builtin::TEXTURED_VS_SPV,
-                builtin::TEXTURED_FS_SPV,
-                TargetFormat::Rgba8Unorm,
-                builtin::TEXTURED_VERTEX_COUNT,
-            )
-            .texture(Rc::clone(&texture), Rc::clone(&sampler)),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
+                .texture(Rc::clone(&texture), Rc::clone(&sampler)),
         )
         .expect("textured pipeline");
     let mut target = device
@@ -378,13 +396,32 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         }
     }
 
-    // Teardown first, oracle second: destruction-time findings count.
-    // The pipeline holds the texture and sampler alive, so dropping
-    // them here proves the keep-alive rather than relying on scope
-    // order — a descriptor set pointing at a destroyed image is exactly
-    // what the validation layer would report.
+    // The pipeline must keep the texture and sampler alive on its own.
+    // `Rc::strong_count` states the claim directly: one handle here, one
+    // held by the pipeline.
+    assert_eq!(Rc::strong_count(&texture), 2, "the pipeline must hold it");
+    assert_eq!(Rc::strong_count(&sampler), 2);
     drop(texture);
     drop(sampler);
+
+    // **Then draw again, and this is the part that does the proving.**
+    // Validation reports a destroyed image view at the draw that samples
+    // it, not at the moment it is destroyed — so a test that drops these
+    // and merely tears down asserts nothing, and would pass just as
+    // happily with the keep-alive deleted. Rendering once more after the
+    // caller's handles are gone is what makes the claim testable.
+    target
+        .render(&RenderDesc::new(Color::new(1.0, 0.0, 1.0, 1.0)).pipeline(&pipeline))
+        .expect("render after the caller dropped its handles");
+    target.read_back_into(&mut pixels);
+    let texel = &ATLAS[..4];
+    assert_eq!(
+        &pixels[..4],
+        texel,
+        "the second draw must sample the same texels as the first"
+    );
+
+    // Teardown first, oracle second: destruction-time findings count.
     drop(target);
     drop(pipeline);
     assert_no_validation_errors(&device);

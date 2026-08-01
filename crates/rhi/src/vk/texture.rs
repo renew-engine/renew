@@ -56,6 +56,21 @@ impl<'a> TextureDesc<'a> {
 /// The byte length `extent` demands, or `None` if it does not fit a
 /// `u64` — a pure function so the overflow case is provable without a
 /// device, and without allocating the terabytes that would reach it.
+/// No memory type satisfies a resource's requirements.
+///
+/// Not a driver refusal, so it carries no result code — the driver
+/// answered, and the answer was that nothing fits.
+///
+/// **A named function rather than a struct literal at each site**, so
+/// the `?` that propagates it shares a line with a call made on every
+/// pass. `ok_or` takes its argument eagerly, so a literal spelled out
+/// inline can leave the closing `)?;` holding nothing but the
+/// propagation — a region reachable only on a machine where no memory
+/// type fits, which is to say not reachable at all.
+fn no_memory_type(call: &'static str) -> TargetError {
+    TargetError::Creation { call, code: 0 }
+}
+
 fn required_bytes(extent: Extent) -> Option<u64> {
     u64::from(extent.width)
         .checked_mul(u64::from(extent.height))?
@@ -185,6 +200,12 @@ impl Texture {
     pub fn extent(&self) -> Extent {
         self.extent
     }
+
+    /// The device spine this texture belongs to, for the cross-device
+    /// contract check the pipeline makes before writing a descriptor.
+    pub(crate) fn shared(&self) -> &Rc<DeviceShared> {
+        &self.shared
+    }
 }
 
 impl core::fmt::Debug for Texture {
@@ -225,27 +246,34 @@ impl Device {
     /// [`TargetError::OutOfDeviceMemory`] if an allocation fails for
     /// want of device memory. [`TargetError::Timeout`] if the upload
     /// does not complete within the fence timeout.
+    /// [`TargetError::DeviceLost`] if the device was already lost, or is
+    /// lost by this upload.
     ///
     /// # Panics
     ///
     /// In a dev build, if `desc` is malformed. The returned error is the
     /// release-build verdict for the same condition.
     pub fn create_texture(&self, desc: &TextureDesc<'_>) -> Result<Texture, TargetError> {
+        // Fatal in dev builds; in release, where the assertion is
+        // compiled out, the same verdict is returned instead.
+        //
+        // **Every value in the message is bound first and captured
+        // inline.** A call left inside the argument list becomes a
+        // region that runs only when the assertion fails, which is to
+        // say never — and an unreachable region is a hole in the
+        // coverage gate rather than a nicety.
+        let checked = check_desc(desc);
+        let extent = desc.extent;
+        let supplied = desc.rgba8.len();
         debug_assert!(
-            desc.extent.width != 0 && desc.extent.height != 0,
-            "texture extent must be non-zero, got {}x{}",
-            desc.extent.width,
-            desc.extent.height
+            checked.is_ok(),
+            "a texture needs a non-zero extent and exactly width*height*4 bytes; \
+             got {extent:?} with {supplied} bytes"
         );
-        debug_assert!(
-            required_bytes(desc.extent) == u64::try_from(desc.rgba8.len()).ok(),
-            "texture pixel slice is {} bytes, but {}x{} RGBA8 needs {:?}",
-            desc.rgba8.len(),
-            desc.extent.width,
-            desc.extent.height,
-            required_bytes(desc.extent)
-        );
-        let byte_len = check_desc(desc)?;
+        let byte_len = checked?;
+        if self.shared.lost.poisoned() {
+            return Err(TargetError::DeviceLost);
+        }
         let shared = &self.shared;
         let mut partial = Partial {
             shared,
@@ -312,12 +340,8 @@ fn upload(
             .instance
             .get_physical_device_memory_properties(shared.physical)
     };
-    let image_type = image_memory_type(&memory_properties, requirements.memory_type_bits).ok_or(
-        TargetError::Creation {
-            call: "texture memory type",
-            code: 0,
-        },
-    )?;
+    let image_type = image_memory_type(&memory_properties, requirements.memory_type_bits)
+        .ok_or(no_memory_type("texture memory type"))?;
     let alloc = vk::MemoryAllocateInfo::default()
         .allocation_size(requirements.size)
         .memory_type_index(image_type);
@@ -369,10 +393,7 @@ fn upload(
         buffer_requirements.memory_type_bits,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )
-    .ok_or(TargetError::Creation {
-        call: "staging memory type",
-        code: 0,
-    })?;
+    .ok_or(no_memory_type("staging memory type"))?;
     let buffer_alloc = vk::MemoryAllocateInfo::default()
         .allocation_size(buffer_requirements.size)
         .memory_type_index(buffer_type);
@@ -526,8 +547,24 @@ fn upload(
     let submits = [vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos)];
     // SAFETY: queue live via the spine; the arrays outlive the call; the
     // fence is unsignaled and not in use.
-    unsafe { shared.device.queue_submit2(shared.queue, &submits, fence) }
-        .map_err(|code| creation("vkQueueSubmit2", code))?;
+    if let Err(code) = unsafe { shared.device.queue_submit2(shared.queue, &submits, fence) } {
+        // Poison the device before returning, exactly as every other
+        // submitting path does. A loss reported only as a creation
+        // error would leave `lost` unset, and every later render would
+        // pass its own guard and submit to a dead device.
+        shared.note_result(code);
+        if code == vk::Result::ERROR_DEVICE_LOST {
+            // The queue's execution state is undefined, so the staging
+            // buffer this submit reads must not be destroyed until the
+            // device settles — `Partial::drop` runs the moment we
+            // return.
+            //
+            // SAFETY: device live; blocking until every queue is idle.
+            let _ = unsafe { shared.device.device_wait_idle() };
+            return Err(TargetError::DeviceLost);
+        }
+        return Err(creation("vkQueueSubmit2", code));
+    }
 
     let fences = [fence];
     // SAFETY: fence live and associated with the submit above.
@@ -552,11 +589,16 @@ fn upload(
             });
         }
         Err(code) => {
+            shared.note_result(code);
             // SAFETY: same argument as the timeout arm — the submit's
             // state is unknown, so nothing it reads may be destroyed
             // until the device is idle.
             let _ = unsafe { shared.device.device_wait_idle() };
-            return Err(creation("vkWaitForFences(texture upload)", code));
+            return Err(if code == vk::Result::ERROR_DEVICE_LOST {
+                TargetError::DeviceLost
+            } else {
+                creation("vkWaitForFences(texture upload)", code)
+            });
         }
     }
 

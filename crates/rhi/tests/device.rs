@@ -8,7 +8,7 @@
 
 use renew_rhi::{
     AddressMode, Color, Device, DeviceDesc, DeviceError, Extent, Filter, PipelineDesc,
-    PipelineError, RenderDesc, SamplerDesc, TargetFormat, Validation, builtin,
+    PipelineError, RenderDesc, SamplerDesc, Shaders, TargetFormat, Validation, builtin,
 };
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
@@ -96,10 +96,8 @@ fn full_frame_cycle_clear_then_triangle() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
-            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("triangle pipeline");
 
@@ -182,10 +180,8 @@ fn resources_keep_the_device_alive_past_the_handle() {
         .expect("offscreen target");
     let pipeline = device
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
-            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("pipeline");
     // The handle goes away; the spine lives on through the resources.
@@ -204,20 +200,16 @@ fn invalid_spirv_is_rejected_per_stage() {
     };
     let bad = [0xDEu8, 0xAD, 0xBE, 0xEF];
     match device.create_pipeline(&PipelineDesc::new(
-        &bad,
-        builtin::TRIANGLE_FS_SPV,
+        Shaders::new(&bad, builtin::TRIANGLE_FS_SPV, 3),
         TargetFormat::Rgba8Unorm,
-        builtin::TRIANGLE_VERTEX_COUNT,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "vertex"),
         Err(other) => panic!("expected vertex rejection, got {other:?}"),
         Ok(_) => panic!("expected vertex rejection, got a pipeline"),
     }
     match device.create_pipeline(&PipelineDesc::new(
-        builtin::TRIANGLE_VS_SPV,
-        &[],
+        Shaders::new(builtin::TRIANGLE_VS_SPV, &[], 3),
         TargetFormat::Rgba8Unorm,
-        builtin::TRIANGLE_VERTEX_COUNT,
     )) {
         Err(PipelineError::InvalidSpirv { stage, .. }) => assert_eq!(stage, "fragment"),
         Err(other) => panic!("expected fragment rejection, got {other:?}"),
@@ -258,10 +250,8 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         .expect("offscreen target");
     let foreign = device_b
         .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE_VS_SPV,
-            builtin::TRIANGLE_FS_SPV,
+            builtin::TRIANGLE,
             TargetFormat::Rgba8Unorm,
-            builtin::TRIANGLE_VERTEX_COUNT,
         ))
         .expect("pipeline on the other device");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

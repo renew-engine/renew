@@ -24,7 +24,8 @@ use std::sync::Mutex;
 
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    Sampler, SamplerDesc, TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
+    Sampler, SamplerDesc, Shaders, TargetError, TargetFormat, Texture, TextureDesc, Validation,
+    builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -165,22 +166,12 @@ fn textured_inputs(device: &Device) -> Result<(Rc<Texture>, Rc<Sampler>), String
 }
 
 fn textured_desc<'a>(texture: &Rc<Texture>, sampler: &Rc<Sampler>) -> PipelineDesc<'a> {
-    PipelineDesc::new(
-        builtin::TEXTURED_VS_SPV,
-        builtin::TEXTURED_FS_SPV,
-        TargetFormat::Rgba8Unorm,
-        builtin::TEXTURED_VERTEX_COUNT,
-    )
-    .texture(Rc::clone(texture), Rc::clone(sampler))
+    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
+        .texture(Rc::clone(texture), Rc::clone(sampler))
 }
 
 fn pipeline_desc() -> PipelineDesc<'static> {
-    PipelineDesc::new(
-        builtin::TRIANGLE_VS_SPV,
-        builtin::TRIANGLE_FS_SPV,
-        TargetFormat::Rgba8Unorm,
-        builtin::TRIANGLE_VERTEX_COUNT,
-    )
+    PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm)
 }
 
 /// A scenario failure, carrying its own name.
@@ -581,6 +572,20 @@ fn every_driver_failure_ladder_behaves() {
             "vkAllocateDescriptorSets=ERROR_OUT_OF_HOST_MEMORY",
             "vkAllocateDescriptorSets",
         ),
+        // C9 and C10 fail *after* the descriptor set exists, which is
+        // the case that has to unwind it again. Nothing else reaches
+        // that cleanup: the untextured ladder above takes the same two
+        // failures with no set to destroy.
+        (
+            "C9",
+            "vkCreatePipelineLayout=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreatePipelineLayout",
+        ),
+        (
+            "C10",
+            "vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateGraphicsPipelines",
+        ),
     ];
     for &(name, fault, call) in descriptor_ladder {
         verdicts.push(device_case(name, fault, |device| {
@@ -696,6 +701,56 @@ fn every_driver_failure_ladder_behaves() {
             false,
         ),
     ];
+    // E16 is the same call reporting the one non-error outcome that is
+    // still a failure for us: the upload did not finish in time. It sits
+    // outside the table because its verdict is a different variant — a
+    // timeout is not a creation error, and folding it in would hide the
+    // case where a driver merely needs longer.
+    verdicts.push(device_case("E16", "vkWaitForFences=TIMEOUT", |device| {
+        match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+            Err(TargetError::Timeout {
+                call: "vkWaitForFences(texture upload)",
+            }) => {}
+            Err(other) => {
+                return Err(wrong(
+                    "E16",
+                    "Timeout(vkWaitForFences(texture upload))",
+                    &other,
+                ));
+            }
+            Ok(_) => {
+                return Err("E16: the upload reported success despite timing out".to_owned());
+            }
+        }
+        device
+            .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+            .map(|_| ())
+            .map_err(|error| format!("E16: recovery upload failed: {error}"))
+    }));
+
+    // E17 is the one submit failure that must do more than report: a
+    // lost device has to be recorded on the shared spine, or every
+    // later render passes its own guard and submits to a dead device.
+    // Asserted through a second call, because the poison flag is not
+    // public and its whole purpose is what the *next* call does.
+    verdicts.push(device_case(
+        "E17",
+        "vkQueueSubmit2=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("E17", "DeviceLost", &other)),
+                Ok(_) => return Err("E17: the upload survived a lost device".to_owned()),
+            }
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("E17", "DeviceLost on the next call", &other)),
+                Ok(_) => {
+                    Err("E17: the device was not poisoned, so the next upload proceeded".to_owned())
+                }
+            }
+        },
+    ));
     for &(name, fault, call, device_memory) in texture_ladder {
         verdicts.push(device_case(name, fault, |device| {
             match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
@@ -1007,10 +1062,8 @@ fn every_driver_failure_ladder_behaves() {
         // destruction lands in exactly that window.
         verdicts.push(teardown_case("E7 teardown/validation-report", |device| {
             match device.create_pipeline(&PipelineDesc::new(
-                &IMPLAUSIBLE_SPIRV,
-                builtin::TRIANGLE_FS_SPV,
+                Shaders::new(&IMPLAUSIBLE_SPIRV, builtin::TRIANGLE_FS_SPV, 3),
                 TargetFormat::Rgba8Unorm,
-                builtin::TRIANGLE_VERTEX_COUNT,
             )) {
                 Err(PipelineError::Creation { .. }) => {}
                 Err(other) => return Err(wrong("", "Creation(vkCreateShaderModule)", &other)),

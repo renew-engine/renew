@@ -18,9 +18,16 @@ the bytes.
   over an opaque window handle; `render` returns `Presented` or
   `NeedsResize` (resizes and minimized windows are protocol outcomes,
   never errors). One frame in flight, FIFO presentation.
-- `RenderPipeline` — two SPIR-V stages, no buffers, no descriptors;
-  `builtin` carries the embedded triangle shaders (sources and compile
-  record in [shaders/](shaders/README.md)).
+- `RenderPipeline` — two SPIR-V stages and no vertex buffers, with an
+  optional sampled texture bound at creation. `builtin` carries the
+  embedded shader bundles — a colored triangle and a textured
+  full-target quad — each pairing its stages with the vertex count they
+  generate, so the two cannot be mismatched (sources and compile record
+  in [shaders/](shaders/README.md)).
+- `Texture` — a sampled RGBA8 image, filled once from host bytes during
+  creation and immutable thereafter.
+- `Sampler` — filter and address mode; `SamplerDesc::atlas()` is
+  nearest and clamped.
 
 ## Contract
 
@@ -54,8 +61,11 @@ the bytes.
 ## Ownership and teardown
 
 Every resource holds the device spine alive (`Rc`), so drop order is
-free for consumers; each `Drop` quiesces the GPU (best-effort
-wait-idle) and destroys in exact reverse creation order. The
+free for consumers, and each `Drop` destroys in exact reverse creation
+order. The targets and the pipeline quiesce the GPU first (best-effort
+wait-idle); `Texture` and `Sampler` deliberately do not, because a
+pipeline that references either holds shared ownership of it, so their
+`Drop` cannot run while a submit could still name them. The
 `WindowTarget` owns a keep-alive handle to its window: the OS window
 cannot be torn down under a live surface, by construction.
 
@@ -72,8 +82,9 @@ presents frames where a display exists.
 ## Status
 
 Early-stage: the surface is exactly device + two target kinds + one
-pipeline shape — no buffers, no descriptors, no depth, no MSAA — grown
-only when a consumer demands it. The `[package.metadata.renew]` table
+pipeline shape + one sampled texture — no vertex buffers, no depth, no
+MSAA, one fixed descriptor layout (a combined image sampler at set 0,
+binding 0) — grown only when a consumer demands it. The `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
 metadata. Contract lints live in [clippy.toml](clippy.toml): thread
 spawning, clock reads, and filesystem access are rejected at lint time.
