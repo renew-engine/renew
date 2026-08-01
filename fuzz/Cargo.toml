@@ -1,0 +1,43 @@
+# Deliberately its own workspace, not a member of the root one.
+#
+# A libFuzzer target links a runtime that needs the nightly toolchain and
+# sanitizer instrumentation. Making this a workspace member would put both
+# in the path of `cargo build --workspace`, which runs on stable and gates
+# every merge — so the harness would break the build it exists to protect.
+[workspace]
+
+[package]
+name = "renew-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+renew-asset = { path = "../crates/asset" }
+renew-trace = { path = "../crates/trace" }
+
+# Fuzzing measures the parser, not the optimiser's mood. Debug assertions
+# stay on so a violated internal invariant is a finding rather than
+# undefined behaviour the harness never sees.
+[profile.release]
+debug = true
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "asset_pack"
+path = "fuzz_targets/asset_pack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "trace_parse"
+path = "fuzz_targets/trace_parse.rs"
+test = false
+doc = false
+bench = false

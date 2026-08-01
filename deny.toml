@@ -23,6 +23,12 @@ allow = [
 # review; this entry only permits the named crate's expression.
 exceptions = [
     { name = "unicode-ident", allow = ["Unicode-3.0"] },
+    # The fuzzing runtime vendors LLVM's libFuzzer, whose NCSA term cannot
+    # be elected away by taking the other side of the OR. Permissive, and
+    # confined to the fuzz harnesses, which are never linked into a shipped
+    # binary. The harnesses live in their own workspace, so this entry
+    # applies when the policy is checked there.
+    { name = "libfuzzer-sys", allow = ["NCSA"] },
 ]
 
 [advisories]
