@@ -16,8 +16,13 @@
 //! fails, instead of writing a file that is quietly missing events and
 //! replays into a different world.
 //!
-//! The other half of that guarantee lives in the platform crate, which
-//! publishes one value of every shape and an exhaustive match over them.
+//! The other half of that guarantee lives in the event vocabulary crate,
+//! which publishes one value of every shape and an exhaustive match over
+//! them. It used to live in the platform crate; the vocabulary moved out
+//! into a crate of its own, and the forcing function moved with it —
+//! deliberately, because splitting the two would have meant adding a
+//! wildcard arm to that match, which compiles green and silently ends
+//! the guarantee this file depends on.
 //! Adding a variant breaks the build there, and the test at the bottom of
 //! this file then fails until this translation learns the new shape.
 

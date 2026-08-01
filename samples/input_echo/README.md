@@ -127,7 +127,9 @@ recording reproduces the run that made it.
 
 It is the complementary proof to `hello_triangle`: a *running*
 frame-loop sample in a workspace with the GPU crate removed. Its
-dependencies are `renew-frame` and `renew-platform`, and nothing else.
+dependencies are `renew-frame`, `renew-input`, `renew-platform` and
+`renew-trace` — four, where this sentence said two until 2026-08-01,
+having been written before the last two were added.
 
 ## Tests
 
