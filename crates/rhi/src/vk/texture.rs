@@ -53,9 +53,6 @@ impl<'a> TextureDesc<'a> {
     }
 }
 
-/// The byte length `extent` demands, or `None` if it does not fit a
-/// `u64` — a pure function so the overflow case is provable without a
-/// device, and without allocating the terabytes that would reach it.
 /// No memory type satisfies a resource's requirements.
 ///
 /// Not a driver refusal, so it carries no result code — the driver
@@ -71,6 +68,9 @@ fn no_memory_type(call: &'static str) -> TargetError {
     TargetError::Creation { call, code: 0 }
 }
 
+/// The byte length `extent` demands, or `None` if it does not fit a
+/// `u64` — a pure function so the overflow case is provable without a
+/// device, and without allocating the terabytes that would reach it.
 fn required_bytes(extent: Extent) -> Option<u64> {
     u64::from(extent.width)
         .checked_mul(u64::from(extent.height))?
@@ -130,6 +130,28 @@ impl Drop for Partial<'_> {
     fn drop(&mut self) {
         let device = &self.shared.device;
         let cbs = self.shared.alloc_cbs();
+        // Quiesce before destroying anything a submit touched, which is
+        // what both other fence sites in this crate already do and what
+        // this one originally did not.
+        //
+        // **Waiting the fence is enough for the specification and not
+        // enough in practice.** `vkDestroyFence` asks only that the
+        // submissions referring to the fence have completed, and they
+        // have. But the validation layer keeps its own fence state,
+        // retires it on a thread of its own, and will free that state
+        // here while the other thread is still unlocking a lock embedded
+        // in it — a race the sanitizer reports against two of the
+        // layer's own frames, reproducibly, with no engine frame in the
+        // second stack.
+        //
+        // Guarded on the fence because it is the only handle here tied
+        // to a submit: a failure before the fence existed has nothing in
+        // flight to wait for, and this runs on every upload.
+        if self.fence.is_some() {
+            // SAFETY: device live via the spine `Rc`; blocking until
+            // every queue is idle.
+            let _ = unsafe { device.device_wait_idle() };
+        }
         // SAFETY: category 2 (ash dispatch): every handle in an
         // `Option` here was created by this module with these callbacks
         // and has not been destroyed; the device outlives them via the
@@ -554,13 +576,9 @@ fn upload(
         // pass its own guard and submit to a dead device.
         shared.note_result(code);
         if code == vk::Result::ERROR_DEVICE_LOST {
-            // The queue's execution state is undefined, so the staging
-            // buffer this submit reads must not be destroyed until the
-            // device settles — `Partial::drop` runs the moment we
-            // return.
-            //
-            // SAFETY: device live; blocking until every queue is idle.
-            let _ = unsafe { shared.device.device_wait_idle() };
+            // The staging buffer this submit reads is destroyed by
+            // `Partial::drop`, which quiesces first — so a queue whose
+            // execution state is undefined is already accounted for.
             return Err(TargetError::DeviceLost);
         }
         return Err(creation("vkQueueSubmit2", code));
@@ -577,23 +595,18 @@ fn upload(
         Ok(()) => {}
         Err(vk::Result::TIMEOUT) => {
             // The submit is still running and it reads the staging
-            // buffer. Destroying that buffer now would be a use-after-
-            // free in the driver, so the device is quiesced first —
-            // this is a dead-end path where correctness outranks the
-            // cost of a wait-idle.
-            //
-            // SAFETY: device live; blocking until every queue is idle.
-            let _ = unsafe { shared.device.device_wait_idle() };
+            // buffer, so that buffer must not be destroyed yet.
+            // `Partial::drop` quiesces before destroying anything, which
+            // is what makes returning here safe.
             return Err(TargetError::Timeout {
                 call: "vkWaitForFences(texture upload)",
             });
         }
         Err(code) => {
             shared.note_result(code);
-            // SAFETY: same argument as the timeout arm — the submit's
-            // state is unknown, so nothing it reads may be destroyed
-            // until the device is idle.
-            let _ = unsafe { shared.device.device_wait_idle() };
+            // Same argument as the timeout arm: the submit's state is
+            // unknown, and `Partial::drop` is what waits before
+            // destroying anything it reads.
             return Err(if code == vk::Result::ERROR_DEVICE_LOST {
                 TargetError::DeviceLost
             } else {
