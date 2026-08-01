@@ -20,6 +20,13 @@ pub const CORE_CRATES: &[&str] = &[
     "renew-math",
 ];
 
+/// The crate holding the OS capabilities a deterministic crate must not
+/// reach: a wall clock, the filesystem, thread spawning. Rule 8 is about
+/// reachability to this crate by name, so a rename would silently disable
+/// it — which is why the workspace check below refuses to pass when a
+/// crate claims determinism and this name is absent.
+const PLATFORM_CRATE: &str = "renew-platform";
+
 const MATURITIES: &[&str] = &["bootstrap", "internal", "stable"];
 const REQUIRED_FIELDS: &[&str] = &[
     "purpose",
@@ -242,6 +249,24 @@ pub fn evaluate(shapes: &[CrateShape]) -> Vec<Finding> {
         }
     }
 
+    // The guard on Rule 8's guard. The rule names one crate as a string,
+    // so renaming that crate would turn the check into a walk that can
+    // never match and report green forever. Demanded only when some crate
+    // actually claims determinism: a workspace with no such claim has
+    // nothing for the rule to protect, and synthetic ones are common.
+    if shapes
+        .iter()
+        .any(|shape| shape.meta.as_ref().is_ok_and(|meta| meta.simulation))
+        && !shapes.iter().any(|shape| shape.name == PLATFORM_CRATE)
+    {
+        findings.push(Finding {
+            rule: "simulation-closure",
+            message: format!(
+                "a crate declares simulation = true but no crate is named {PLATFORM_CRATE} — the closure rule names it literally, so a rename disables the rule instead of failing it"
+            ),
+        });
+    }
+
     findings
 }
 
@@ -333,15 +358,14 @@ fn flag_rules(
                 ),
             });
         }
-        if !shape.engine && meta.simulation {
-            findings.push(Finding {
-                rule: "non-engine",
-                message: format!(
-                    "{} is outside crates/ and must declare simulation = false",
-                    shape.name
-                ),
-            });
-        }
+        // `simulation` is deliberately absent here. The rule used to
+        // forbid both flags outside crates/, which conflated "is this
+        // engine core" with "is this deterministic fixed-step code" —
+        // unrelated claims. A sample's game world is the second without
+        // being the first, and while the flags travelled together no
+        // sample's determinism could be machine-checked. Declaring the
+        // flag only ever adds obligations, so nothing can use it to
+        // escape a rule.
     }
 }
 
@@ -399,6 +423,42 @@ fn edge_rules(shape: &CrateShape, meta: &Meta, shapes: &[CrateShape], findings: 
                         ),
                     });
                 }
+                stack.extend(dep_shape.deps.iter().map(String::as_str));
+            }
+        }
+    }
+
+    // Rule 8 — simulation closure: a crate promising determinism cannot
+    // reach the crate holding OS capabilities, at any depth.
+    //
+    // The lint set that enforces determinism matches a *definition path*
+    // in the crate being compiled, so it is exactly one wrapper deep: a
+    // first-party type re-exported from an intermediate crate defeats
+    // every ban while compiling clean. That is a graph property, not a
+    // source-text property, which is why it is checked here.
+    //
+    // Resolved through `shapes` rather than `meta_of` on purpose — a
+    // dependency whose own metadata failed to parse must not truncate the
+    // walk and hide a path. Its schema failure is already its own finding.
+    if meta.simulation {
+        let mut stack: Vec<&str> = shape.deps.iter().map(String::as_str).collect();
+        let mut visited: Vec<&str> = Vec::new();
+        while let Some(current) = stack.pop() {
+            if visited.contains(&current) {
+                continue;
+            }
+            visited.push(current);
+            if current == PLATFORM_CRATE {
+                findings.push(Finding {
+                    rule: "simulation-closure",
+                    message: format!(
+                        "{} declares simulation = true and reaches {PLATFORM_CRATE} (transitively) — a wrapper cannot launder an OS capability",
+                        shape.name
+                    ),
+                });
+                continue;
+            }
+            if let Some(dep_shape) = shapes.iter().find(|candidate| candidate.name == current) {
                 stack.extend(dep_shape.deps.iter().map(String::as_str));
             }
         }
@@ -657,9 +717,19 @@ mod tests {
             }),
         }];
         let findings = evaluate(&flagged);
+        // One, not two: `core = true` outside crates/ is still wrong, and
+        // `simulation = true` outside crates/ is now allowed. The two used
+        // to be forbidden together, which is what stopped a sample's
+        // fixed-step world from ever declaring what it is.
         assert_eq!(
             findings.iter().filter(|f| f.rule == "non-engine").count(),
-            2
+            1
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.message.contains("must declare simulation = false")),
+            "location must no longer constrain the determinism flag: {findings:?}"
         );
 
         let backwards = [
@@ -671,6 +741,79 @@ mod tests {
             findings
                 .iter()
                 .any(|f| f.rule == "non-engine" && f.message.contains("depends on non-engine"))
+        );
+    }
+
+    /// A crate declaring determinism, with `deps` and nothing else set.
+    fn sim(name: &str, deps: &[&str], simulation: bool) -> CrateShape {
+        CrateShape {
+            name: name.to_string(),
+            dir: format!("/w/crates/{name}"),
+            engine: true,
+            deps: deps.iter().map(|d| (*d).to_string()).collect(),
+            meta: Ok(Meta {
+                maturity: "bootstrap".to_string(),
+                core: false,
+                simulation,
+            }),
+        }
+    }
+
+    #[test]
+    fn simulation_closure_sees_through_a_wrapper_crate() {
+        // The whole point of checking the graph instead of the source.
+        // The determinism lints match a definition path in the crate being
+        // compiled, so `world` naming a re-exported type from `wrapper`
+        // trips nothing while the capability is one hop away.
+        let shapes = [
+            sim("world", &["wrapper"], true),
+            sim("wrapper", &[PLATFORM_CRATE], false),
+            sim(PLATFORM_CRATE, &[], false),
+        ];
+        let findings = evaluate(&shapes);
+        let closure: Vec<_> = findings
+            .iter()
+            .filter(|f| f.rule == "simulation-closure")
+            .collect();
+        assert_eq!(closure.len(), 1, "{findings:?}");
+        assert!(
+            closure[0]
+                .message
+                .starts_with("world declares simulation = true and reaches"),
+            "{:?}",
+            closure[0]
+        );
+    }
+
+    #[test]
+    fn simulation_closure_leaves_a_clean_chain_alone() {
+        // Depth is not the trigger — reaching the capability crate is. A
+        // deterministic crate may sit on any number of pure crates.
+        let shapes = [
+            sim("world", &["vocabulary"], true),
+            sim("vocabulary", &["values"], false),
+            sim("values", &[], false),
+            sim(PLATFORM_CRATE, &[], false),
+        ];
+        assert!(
+            evaluate(&shapes)
+                .iter()
+                .all(|f| f.rule != "simulation-closure"),
+            "a chain that never reaches the capability crate is legal"
+        );
+    }
+
+    #[test]
+    fn simulation_closure_refuses_to_pass_when_its_target_is_missing() {
+        // The rule names one crate as a string. Renaming that crate would
+        // turn this into a walk that can never match, and a rule that can
+        // never match reports green forever.
+        let shapes = [sim("world", &[], true)];
+        assert!(
+            evaluate(&shapes)
+                .iter()
+                .any(|f| f.rule == "simulation-closure" && f.message.contains("no crate is named")),
+            "a missing target must fail loudly rather than vacuously pass"
         );
     }
 
