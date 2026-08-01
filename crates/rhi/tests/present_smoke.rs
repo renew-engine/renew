@@ -27,6 +27,8 @@ struct SmokeApp {
     frames: u32,
     updates: u32,
     cycled: bool,
+    /// Bitmask of the frame slots observed across the run.
+    slots_seen: u32,
     skip: Option<String>,
     failure: Option<String>,
 }
@@ -44,6 +46,7 @@ impl SmokeApp {
             frames: 0,
             updates: 0,
             cycled: false,
+            slots_seen: 0,
             skip: None,
             failure: None,
         }
@@ -174,6 +177,13 @@ impl WindowApp for SmokeApp {
                 if let Some(pipeline) = self.pipeline.as_ref() {
                     desc = desc.pipeline(pipeline);
                 }
+                // The ring must actually cycle. A ring stuck on slot
+                // zero is still *correct* -- every frame just waits its
+                // own fence and the pipeline serialises -- so no other
+                // assertion here can tell the difference. Record which
+                // slots were used and check at the end that more than
+                // one was.
+                self.slots_seen |= 1u32 << target.frame_slot();
                 match target.render(&desc) {
                     Ok(PresentOutcome::Presented) => self.frames += 1,
                     Ok(PresentOutcome::NeedsResize) => {
@@ -250,6 +260,11 @@ fn main() {
         std::process::exit(1);
     }
     assert!(app.frames >= FRAMES_WANTED);
+    assert!(
+        app.slots_seen.count_ones() > 1,
+        "the frame ring never advanced past one slot ({:#b}); frames pipeline correctly but          serially, which no other assertion here can detect",
+        app.slots_seen
+    );
     // State the oracle in the output: "validation on" means the frames
     // above ran under the layer (with synchronization checking) and the
     // zero-error verdict is meaningful, not vacuous.
