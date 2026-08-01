@@ -1,0 +1,52 @@
+# Fuzzing: scheduled, and never a merge gate.
+#
+# The harnesses need the nightly toolchain for sanitizer instrumentation,
+# so a break here can be nightly moving rather than the engine regressing.
+# Gating merges on that would make an upstream change able to stop work,
+# which is why this runs on a schedule and reports instead.
+#
+# Short runs on a schedule are a smoke test, not a campaign: they catch a
+# harness that stopped building and shallow input bugs. Finding deep ones
+# needs a corpus that outlives a job, which is a later change.
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [asset_pack, trace_parse]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      # The licence policy is checked here rather than at the root: these
+      # harnesses are a separate workspace, so the root check never
+      # resolves their dependencies and cannot see the term this allows.
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Check the harness licences
+        working-directory: fuzz
+        run: cargo deny --config ../deny.toml check licenses
+      - name: Run ${{ matrix.target }}
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=120 -print_final_stats=1
+      # A crash is the whole point of the job, so the input that caused it
+      # has to leave the runner. Without this the log says a crash happened
+      # and the bytes that caused it are deleted with the workspace.
+      - name: Keep any crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
