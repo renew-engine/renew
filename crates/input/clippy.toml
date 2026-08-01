@@ -35,6 +35,8 @@ disallowed-methods = [
 ]
 
 disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so a value derived from it differs between runs of the same binary on the same inputs — unseeded randomness, which simulation code may not contain" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same road to the same entropy: it is built from RandomState, and stable Rust ships no other self-seeding source that needs no dependency" },
     { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle" },
     { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on `File::open` misses" },
     { path = "std::path::Path", reason = "the crate takes entity slots and components, never a path" },

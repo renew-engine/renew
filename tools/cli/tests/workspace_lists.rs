@@ -362,9 +362,22 @@ fn the_unsafe_surface_is_exactly_what_is_recorded() {
 /// **That is the argument for adding it now**: a list that costs nothing
 /// to satisfy today costs a rewrite once a crate forgets.
 ///
-/// The randomness clause stays unlisted deliberately: `std` ships no
-/// generator, so reaching one means taking a dependency, and that is
-/// caught at the `docs/deps/` gate rather than by a lint.
+/// The randomness clause stays unlisted deliberately — but **the reason
+/// recorded here until 2026-08-01 was wrong, and the correction is worth
+/// keeping.** It said `std` ships no generator, so reaching one means
+/// taking a dependency caught at the `docs/deps/` gate. The premise is
+/// true and the inference is not: what is banned is *unseeded
+/// randomness*, not generators, and `RandomState::new` /
+/// `DefaultHasher::new` are stable Rust's dependency-free road to
+/// operating-system entropy.
+///
+/// It stays unlisted because adding it here is **not** the zero-cost
+/// lock-in the collections were. Every declaring crate must already
+/// satisfy every entry, and until 2026-08-01 only `renew-rng` banned
+/// those two types — the other three carried the marker with no
+/// randomness guard at all. That gap is now closed crate-by-crate, which
+/// is the prerequisite for listing it here rather than an alternative to
+/// it. Add it once a fifth crate would not be surprised by it.
 const BANNED_IN_SIMULATION: &[&str] = &[
     "std::time::Instant::now",
     "std::time::SystemTime::now",
