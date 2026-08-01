@@ -8,7 +8,13 @@ use crate::counters;
 
 /// A counting wrapper over [`System`]. Install in a binary:
 ///
-/// ```ignore
+/// `no_run` rather than `ignore`: the snippet cannot execute, because a
+/// doctest harness has already installed its own global allocator — but
+/// it does compile, so a rename of this type breaks the build instead of
+/// silently leaving the example wrong. `ignore` would not even compile
+/// it.
+///
+/// ```no_run
 /// #[global_allocator]
 /// static ALLOCATOR: renew_memory::CountingAllocator =
 ///     renew_memory::CountingAllocator;
