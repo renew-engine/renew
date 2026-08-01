@@ -1,8 +1,8 @@
 //! The action state machine, including the cases that make it worth
 //! having a layer here at all rather than reading keys directly.
 
+use renew_event::{KeyCode, PointerButton, WindowEvent};
 use renew_input::{ActionState, Binding, InputMap};
-use renew_platform::event::{KeyCode, PointerButton, WindowEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {

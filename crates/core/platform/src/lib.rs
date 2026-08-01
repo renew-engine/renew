@@ -20,9 +20,20 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod clock;
-/// The event vocabulary, always available — see the module docs for why
-/// it is not behind the `window` feature.
-pub mod event;
+/// The event vocabulary, re-exported from the crate that owns it.
+///
+/// **It is a neighbour, not a resident.** The types are plain data with
+/// no way to reach the operating system, and they used to live here
+/// only because everything in this crate was "platform-ish" — which is
+/// exactly what made the dependency edge onto this crate impossible to
+/// forbid. They now have their own crate with no dependencies, so a
+/// consumer that needs the vocabulary and nothing else can take it
+/// without taking a clock, a filesystem and thread spawning as well.
+///
+/// Re-exported so every path a consumer already uses keeps working. The
+/// code that *produces* these values from the OS stays here, in
+/// [`window`], and does need a windowing library.
+pub use renew_event as event;
 pub mod fs;
 pub mod thread;
 

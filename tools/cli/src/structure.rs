@@ -12,7 +12,13 @@ use crate::json::Value;
 /// The core crate list the `core` flags must agree with. Crates listed
 /// here but not yet in the workspace are fine (the list leads the code);
 /// a crate that exists must match.
-pub const CORE_CRATES: &[&str] = &["renew-diag", "renew-platform", "renew-memory", "renew-math"];
+pub const CORE_CRATES: &[&str] = &[
+    "renew-diag",
+    "renew-event",
+    "renew-platform",
+    "renew-memory",
+    "renew-math",
+];
 
 const MATURITIES: &[&str] = &["bootstrap", "internal", "stable"];
 const REQUIRED_FIELDS: &[&str] = &[

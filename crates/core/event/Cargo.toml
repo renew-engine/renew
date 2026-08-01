@@ -1,0 +1,21 @@
+[package]
+name = "renew-event"
+description = "The engine's event vocabulary as plain data, with no dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The event vocabulary — key codes, pointer buttons and event shapes — as dependency-free plain data."
+maturity = "internal"
+core = true
+extension_points = []
+simulation = false
+
+[dependencies]
+
+[lints]
+workspace = true

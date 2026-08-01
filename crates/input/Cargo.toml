@@ -19,10 +19,21 @@ simulation = true
 # Taking a copy of it instead would mean every caller converting at the
 # seam, and two enums that must be kept in step by hand.
 [dependencies]
-# default-features = false: this crate needs the event vocabulary, not
-# the OS event loop. An input layer must be buildable — and testable —
-# without compiling a windowing library.
-renew-platform = { path = "../core/platform", default-features = false }
+# The vocabulary, and nothing else. This used to be the platform crate
+# with `default-features = false`, which expressed the intent and did
+# not enforce it: feature selection is invisible to the dependency
+# graph, the crate on the other end still owned a clock, a filesystem
+# and thread spawning, and under a workspace build the windowing library
+# compiled anyway — it simply was not linked here.
+#
+# **This crate declares `simulation = true`**, which promises its output
+# is a function of build, seed and input alone. That promise is checked
+# over the dependency graph, so the edge below is the whole of what this
+# crate may reach. Adding anything with access to the outside world
+# breaks the promise structurally rather than by convention — including,
+# and especially, re-adding the platform crate as a dev-dependency to
+# make a test compile.
+renew-event = { path = "../core/event" }
 
 [dev-dependencies]
 proptest = "1.11"

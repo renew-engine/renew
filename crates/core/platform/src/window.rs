@@ -35,9 +35,19 @@ impl Default for WindowConfig {
     }
 }
 
-/// The event vocabulary lives in [`crate::event`], which is not behind
-/// this feature: naming a key must not require compiling a windowing
-/// library. Re-exported here so existing paths keep working.
+/// The event vocabulary lives in its own dependency-free crate, which
+/// this crate re-exports as [`crate::event`]: naming a key must not
+/// require compiling a windowing library, and a crate boundary is the
+/// only form of that promise the dependency graph can check.
+/// Re-exported here too, so existing paths keep working.
+///
+/// **Note for anyone extending the translation below.** This crate is
+/// now *downstream* of enums it used to define, and they are
+/// `#[non_exhaustive]` — an attribute that binds downstream crates and
+/// never the defining one. Constructing these values is still fine, and
+/// is all the translation does. **Matching on one exhaustively is not**,
+/// and will fail to compile with a message that looks baffling until you
+/// remember the types moved.
 pub use crate::event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
 
 /// What the app tells the loop each iteration.
