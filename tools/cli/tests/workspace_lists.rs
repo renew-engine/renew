@@ -198,7 +198,6 @@ const ALLOWS_UNSAFE: &[&str] = &[
     "crates/rhi/src/lib.rs",
     "crates/rhi/tests/fault.rs",
     "crates/rhi/tests/fault_present.rs",
-    "crates/rhi/tests/zero_alloc.rs",
 ];
 
 /// Crates that do not inherit the workspace lint table, and so are not

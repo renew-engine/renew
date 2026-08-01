@@ -8,53 +8,30 @@
 //! side of the line. Validation stays off: the messenger deliberately
 //! allocates when it speaks, and it must not speak into the window.
 
-// `unsafe` is required to implement a global allocator; this test-only
-// shim wraps the system allocator unchanged and only adds a counter.
-#![allow(unsafe_code)]
-
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
+use renew_memory::{CountingAllocator, counters};
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc, SamplerDesc,
     TargetFormat, TextureDesc, Validation, builtin,
 };
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// Counts every allocation while delegating to the system allocator.
-struct CountingAllocator;
-
-// SAFETY: every method delegates directly to `System`, which upholds the
-// `GlobalAlloc` contract; the counter is a relaxed atomic side effect.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded under the caller's own contract.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded under the caller's own contract.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded under the caller's own contract.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: forwarded under the caller's own contract.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
+/// The engine's own counting allocator, not a local copy of one.
+///
+/// **This file used to carry its own `GlobalAlloc` shim** — forty lines
+/// of `unsafe` duplicating `renew-memory`'s, differing only in counting
+/// allocations and not bytes. The windowed sibling already used the real
+/// one. Two implementations of one thing is the shape a defect hides in,
+/// and the duplicate was the poorer of the two: it could not report a
+/// peak, so the byte figure this suite is otherwise positioned to
+/// produce did not exist.
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+/// Allocations recorded so far, process-wide.
+fn allocations() -> u64 {
+    counters::snapshot().allocations
+}
 
 #[test]
 #[cfg_attr(
@@ -135,17 +112,17 @@ fn steady_state_frames_allocate_nothing() {
     // retries: one-shot neighbor noise rides out, while a real
     // render-path allocation reproduces in every window and still
     // fails.
-    let mut last_delta = 0usize;
+    let mut last_delta = 0u64;
     let mut observed_zero = false;
     for _ in 0..5 {
-        let before = ALLOCATIONS.load(Ordering::Relaxed);
+        let before = allocations();
         for _ in 0..16 {
             target
                 .render(&RenderDesc::new(clear).pipeline(&pipeline))
                 .expect("steady frame");
             target.read_back_into(&mut pixels);
         }
-        let after = ALLOCATIONS.load(Ordering::Relaxed);
+        let after = allocations();
         last_delta = after - before;
         if last_delta == 0 {
             observed_zero = true;
@@ -156,6 +133,15 @@ fn steady_state_frames_allocate_nothing() {
     // driver host-allocation behavior is the driver's, not ours.
     let stats = device.host_allocation_stats();
     eprintln!("driver host-allocation ledger after steady state: {stats:?}");
+    // The engine-side figure, which the local shim this file used to
+    // carry could not produce. Printed for the record on the same terms
+    // as the driver ledger above: never gated, because a peak is a
+    // property of the whole process — this harness included — and not of
+    // the frame path the assertion below actually guards.
+    eprintln!(
+        "engine allocation counters after steady state: {:?}",
+        counters::snapshot()
+    );
     assert!(
         observed_zero,
         "the render path heap-allocated in every window (last delta: {last_delta})"
