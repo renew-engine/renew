@@ -51,6 +51,23 @@ jobs:
         if: runner.os == 'Windows'
       - uses: ./.github/actions/software-vulkan
         if: matrix.vulkan
+      # Set through GITHUB_ENV rather than the step's `env:` map, because
+      # this variable must be ABSENT on the other lanes, not empty. An
+      # `env:` entry whose expression yields '' still sets the variable,
+      # and libtest parses this one as a number -- an empty value panics
+      # in test::helpers::concurrency before a single test runs. That is
+      # not hypothetical: it reddened three previously-green lanes.
+      #
+      # RENEW_GOLDEN below can use the inline form safely because every
+      # one of its readers compares against the literal "1"
+      # (`is_some_and(|v| v == "1")` / `is_none_or(|v| v != "1")`), so
+      # empty means "not strict". The idiom is only safe when the
+      # consumer treats empty as absent, which is a property of the
+      # reader, not of the workflow.
+      - name: Serialise test functions on the lane with a driver
+        if: matrix.vulkan
+        shell: bash
+        run: echo "RUST_TEST_THREADS=1" >> "$GITHUB_ENV"
       - name: Run tests under ${{ matrix.sanitizer }} sanitizer
         env:
           RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
@@ -88,34 +105,6 @@ jobs:
           # It is set on every lane because it names nothing that exists
           # where no rasterizer does.
           LP_NUM_THREADS: "0"
-          # Serialise test FUNCTIONS on the lane that has a driver.
-          #
-          # With a real driver, the one remaining race is between two test
-          # functions on parallel harness threads, both sides inside the
-          # validation layer, on state it allocated -- each thread holding
-          # a read lock on a *different* command-buffer mutex. The tests
-          # share nothing: the helper builds a fresh device per test, so
-          # there is no shared engine state to synchronise.
-          #
-          # The reason this is not a meaningful coverage loss, which is
-          # the part that matters:
-          #   - It does NOT serialise threads *within* a test. The jobs
-          #     stress tier -- the interleaving this whole job exists for
-          #     -- spawns its own threads and is untouched.
-          #   - Global mutable state is banned in engine modules outside
-          #     the sanctioned log and assert sinks, so racing *between*
-          #     tests is close to a null set by construction.
-          #   - The macOS thread lane still runs tests in parallel, so
-          #     cross-test racing keeps a home in the matrix. Only this
-          #     lane trades it, and only for real device coverage it
-          #     could not otherwise have.
-          #
-          # Preferred over suppressing the report. A suppression here
-          # would have to name the validation layer, and every engine
-          # Vulkan call passes through it -- so the pattern would be at
-          # least as blanket as the loader entry retired in this same
-          # change, while looking narrower.
-          RUST_TEST_THREADS: ${{ matrix.vulkan && '1' || '' }}
           # Read only by the thread sanitizer; harmless where the file's
           # contents mean nothing. Every line in it is a place this job
           # has been told not to look, so it is short and each entry
