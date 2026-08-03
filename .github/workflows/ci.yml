@@ -178,7 +178,7 @@ jobs:
       # accumulator, and the bench suite.
       - name: Build and test without the frame loop
         run: |
-          sel="--workspace --exclude renew-frame --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude hello-engine --exclude renew-bench"
+          sel="--workspace --exclude renew-frame --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
@@ -188,7 +188,7 @@ jobs:
       # makes an exclude list stop being upward-closed if it is forgotten.
       - name: Build and test without the generator
         run: |
-          sel="--workspace --exclude renew-rng --exclude renew-bench"
+          sel="--workspace --exclude renew-rng --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
           cargo build $sel
           cargo test $sel
@@ -201,7 +201,7 @@ jobs:
       # guard catches this rather than passing vacuously.
       - name: Build and test without the trace codec
         run: |
-          sel="--workspace --exclude renew-trace --exclude renew-replay --exclude renew-sample-input-echo"
+          sel="--workspace --exclude renew-trace --exclude renew-replay --exclude renew-sample-input-echo --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-trace $sel
           cargo build $sel
           cargo test $sel
@@ -234,7 +234,7 @@ jobs:
       # turns forgetting that into a red cell rather than a green one.
       - name: Build and test without the entity storage
         run: |
-          sel="--workspace --exclude renew-ecs --exclude renew-bench"
+          sel="--workspace --exclude renew-ecs --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
           cargo build $sel
           cargo test $sel
@@ -244,14 +244,14 @@ jobs:
       # build and proves nothing about removability.
       - name: Build and test without the input mapping
         run: |
-          sel="--workspace --exclude renew-input --exclude renew-sample-input-echo"
+          sel="--workspace --exclude renew-input --exclude renew-sample-input-echo --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-input $sel
           cargo build $sel
           cargo test $sel
       # The replay tooling, and the sample that consumes it.
       - name: Build and test without the replay tooling
         run: |
-          sel="--workspace --exclude renew-replay --exclude renew-sample-input-echo"
+          sel="--workspace --exclude renew-replay --exclude renew-sample-input-echo --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-replay $sel
           cargo build $sel
           cargo test $sel
@@ -578,6 +578,12 @@ jobs:
             --headless --input-trace walk
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-input-echo --bin input_echo -- \
             --frames 30
+          # The game's two committed traces: one that plays, one that
+          # falls. Both are pure headless runs, so they execute anywhere.
+          cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
+            --input-trace soar --frames 600
+          cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
+            --input-trace sink --frames 600
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate

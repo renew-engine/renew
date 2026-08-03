@@ -166,7 +166,7 @@ impl World {
     }
 
     fn spawn_pipes(&mut self) {
-        if self.tick % PIPE_INTERVAL != 0 {
+        if !self.tick.is_multiple_of(PIPE_INTERVAL) {
             return;
         }
         let span = u32::try_from((FLOOR - 2 * GAP_MARGIN) / ONE).unwrap_or(1);
