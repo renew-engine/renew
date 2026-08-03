@@ -28,6 +28,13 @@ matters.
 counting-allocator gate. The world owns one scratch allocation for its
 whole life.
 
+**The render view is a read.** The whole-unit accessors and view
+constants exist for renderers and change nothing: no state, no digest
+movement — a test holds the digest still across view access — and the
+allocation-free visitor closes over no collection by construction.
+Division truncates, pinned where it differs from floor (a pipe's left
+edge one unit past the screen edge).
+
 ## Testing
 
 Determinism and discrimination over 3,000 ticks; an entity-slot leak
@@ -36,7 +43,9 @@ concurrency plus two — with the despawn call deleted it fails at 667
 slots against a peak of five, and that mutation kill is the test's
 acceptance bar; scoring and death reachability; ticking past death;
 the zero-allocation gate, measured over windows it proves are alive
-with pipes on screen. Property
+with pipes on screen; the view constants held identical to the
+fixed-point rules they describe, and the view accessors pinned against
+observed values from a piloted run. Property
 tests: N/A — not math, containers or allocators. Fuzz: N/A — no
 external data enters this crate; the trace bytes are parsed elsewhere
 and arrive as resolved booleans.

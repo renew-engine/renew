@@ -211,10 +211,17 @@ jobs:
       # other side.
       - name: Build and test without the rendering crate
         run: |
-          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-sample-hello-triangle"
+          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi $sel
           cargo build $sel
           cargo test $sel
+          # The game's oracle brought GPU crates into its DEV graph, so
+          # the full test cell above must exclude it — but the property
+          # this cell witnesses (the game itself needs no GPU) must not
+          # lose its evidence. Build-only probe on normal edges: the
+          # binary a player runs carries no rendering crate.
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi -p renew-sample-glide
+          cargo build -p renew-sample-glide
       # The other half of the removability claim, and the half no cell
       # covered until now: the always-present crates on their own, with
       # every optional engine crate proven out of the graph rather than
@@ -259,10 +266,14 @@ jobs:
       # yet -- the windowed game grows this list when it draws sprites.
       - name: Build and test without the 2D renderer
         run: |
-          sel="--workspace --exclude renew-render2d"
+          sel="--workspace --exclude renew-render2d --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d $sel
           cargo build $sel
           cargo test $sel
+          # Same witness as the without-rendering cell: the game's dev
+          # graph gained the sprite renderer, its normal graph did not.
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
+          cargo build -p renew-sample-glide
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
@@ -364,6 +375,13 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-render2d --test golden --test zero_alloc
+      # The game's replay-capture oracle on the same pinned rasterizer:
+      # committed traces replayed through the driver's own loop, drawn
+      # through the sprite pipeline, compared against committed images.
+      - name: Replay-capture oracle on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-sample-glide --test golden
       # The frame loop's rendering evidence, on the same pinned
       # rasterizer and under the same rule: the tick-derived pixel
       # oracle (does the readback match the colour the world computes
@@ -459,6 +477,7 @@ jobs:
           path: |
             crates/rhi/tests/goldens/
             crates/render2d/tests/goldens/
+            samples/glide/tests/goldens/
           if-no-files-found: ignore
       - name: Install a virtual display and the distro software driver
         run: |

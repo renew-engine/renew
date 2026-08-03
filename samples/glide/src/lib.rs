@@ -16,11 +16,14 @@
 
 mod cli;
 mod error;
+pub mod scene;
 mod scripted;
 mod trace;
 
 pub use cli::{Options, Report};
 pub use error::SampleError;
+pub use scene::{SceneSprite, Tile, scene};
+pub use scripted::world_at;
 pub use trace::{by_name, names};
 
 /// Exit code for a command line this sample cannot honour.

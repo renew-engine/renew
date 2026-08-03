@@ -72,6 +72,24 @@ const STEP_SPAN: core::num::NonZeroU32 = {
     }
 };
 
+/// The visible playfield in whole screen units — the render view's
+/// vocabulary. Deliberately a dedicated constant rather than an alias
+/// of the spawn position: spawning at the right screen edge is a design
+/// choice, not a rule, and the unit test asserting the identity makes a
+/// future divergence break loudly instead of silently widening the view
+/// and invalidating every committed image with a misleading diff.
+pub const VIEW_WIDTH: u32 = 320;
+/// The floor line, in whole screen units; the view's height.
+pub const VIEW_HEIGHT: u32 = 240;
+/// The bird's fixed horizontal centre, whole units.
+pub const BIRD_X_UNITS: i32 = 40;
+/// Half the bird's square body, whole units.
+pub const BIRD_HALF_UNITS: i32 = 6;
+/// A pipe's width, whole units.
+pub const PIPE_WIDTH_UNITS: i32 = 16;
+/// The gap's half-height: a gap spans its centre ± this, whole units.
+pub const PIPE_GAP_HALF_UNITS: i32 = 30;
+
 /// The one thing a player can do. The driver binds keys, taps and
 /// scripted traces to this through the input layer's generic map; the
 /// world itself takes the resolved decision as a plain `bool`, which is
@@ -182,6 +200,36 @@ impl World {
     #[must_use]
     pub fn entity_capacity(&self) -> usize {
         self.entities.capacity()
+    }
+
+    /// The bird's centre in whole screen units — a derived read for
+    /// renderers, not state: nothing here enters the digest, and the
+    /// test beside the accessors holds that sentence true. Division
+    /// truncates; the bird's range keeps it non-negative.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded by the ceiling and floor rules to [0, 240] and change"
+    )]
+    pub fn bird_y_units(&self) -> i32 {
+        (self.bird_y / ONE) as i32
+    }
+
+    /// Visit every pipe as (left edge x, gap centre y) in whole screen
+    /// units, ascending slot order — the store's own guarantee, so draw
+    /// order is a property of the rules, not the storage. Allocation-free
+    /// by construction: the visitor closes over no collection and the
+    /// store walk is lazy. A pipe's x truncates toward zero while it
+    /// leaves the screen (one unit of difference from floor for one
+    /// visible column, pinned by test).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "pipe coordinates are bounded by spawn position and exit cull to well under i32"
+    )]
+    pub fn for_each_pipe_units(&self, mut visit: impl FnMut(i32, i32)) {
+        for (_, pipe) in self.body.iter() {
+            visit((pipe.x / ONE) as i32, (pipe.gap_y / ONE) as i32);
+        }
     }
 
     /// A deterministic pilot: flap when falling below the nearest
@@ -363,6 +411,52 @@ mod tests {
         let a = run(7, 3_000);
         let b = run(7, 3_000);
         assert_eq!(a.digest(), b.digest(), "determinism over 3000 ticks");
+    }
+
+    #[test]
+    fn the_view_constants_match_the_rules_they_describe() {
+        // Unit test rather than a const block on purpose: const
+        // evaluation executes no runtime lines, and the coverage gate
+        // once refused exactly that shape. Same claim, visible
+        // execution. VIEW_WIDTH is deliberately its own number -- the
+        // identity below is where a future spawn-position change breaks
+        // loudly instead of silently rescaling every committed image.
+        assert_eq!(i64::from(VIEW_WIDTH) * ONE, PIPE_SPAWN_X);
+        assert_eq!(i64::from(VIEW_HEIGHT) * ONE, FLOOR);
+        assert_eq!(i64::from(BIRD_X_UNITS) * ONE, BIRD_X);
+        assert_eq!(i64::from(BIRD_HALF_UNITS) * ONE, BIRD_HALF);
+        assert_eq!(i64::from(PIPE_WIDTH_UNITS) * ONE, PIPE_WIDTH);
+        assert_eq!(i64::from(PIPE_GAP_HALF_UNITS) * ONE * 2, PIPE_GAP);
+    }
+
+    #[test]
+    fn the_view_is_a_read_and_truncates_where_it_says_it_does() {
+        // Observed pins, the crate's committed-fixture method: seed 7
+        // piloted to tick 361 puts the first-visited pipe's left edge
+        // one unit past the screen edge at -4 -- where floor division
+        // would say -5, so this line is the truncation contract. The
+        // rest pins the accessors against the same run.
+        let mut world = World::new(7);
+        for _ in 0..361 {
+            let flap = world.autopilot();
+            world.step(flap);
+        }
+        assert!(world.alive(), "the pilot survives to the pin");
+        assert_eq!(world.score(), 1, "observed at tick 361");
+        assert_eq!(world.bird_y_units(), 162, "observed at tick 361");
+        let before = world.digest();
+        let mut pipes = Vec::new();
+        world.for_each_pipe_units(|x, gap| pipes.push((x, gap)));
+        assert_eq!(
+            pipes,
+            [(-4, 148), (76, 181), (157, 147), (238, 159), (319, 192)],
+            "observed at tick 361; the -4 is truncation, floor would say -5"
+        );
+        assert_eq!(
+            world.digest(),
+            before,
+            "the view is a read: rendering-side access must not move the digest"
+        );
     }
 
     #[test]
