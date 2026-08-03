@@ -274,6 +274,17 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
+      # The other direction: the game's window feature builds, lints,
+      # and tests. No graph guard -- the build itself proves the WSI
+      # stack is reachable, and the absence guards belong to the default
+      # graph, where they already stand. Display-less-safe: no test
+      # opens a window. Clippy rides here because the canonical lint
+      # never compiles feature-gated code the default graph omits.
+      - name: Build, lint, and test the game with its window feature
+        run: |
+          cargo build -p renew-sample-glide --features window
+          cargo clippy -p renew-sample-glide --features window --all-targets -- -D warnings
+          cargo test -p renew-sample-glide --features window
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
@@ -621,6 +632,12 @@ jobs:
             --input-trace soar --frames 600
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace sink --frames 600
+          # The game's windowed feature, in two instrumented pieces: the
+          # feature-gated unit tests (display-less-safe -- they open no
+          # window), and the windowed arm live under the virtual display.
+          # Keyboardless there: the bird falls; a legal run.
+          cargo llvm-cov --no-report test -p renew-sample-glide --features window
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-glide --features window --bin glide --             --window --frames 30
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate

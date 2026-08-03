@@ -1,6 +1,6 @@
 //! Driving the world from a trace: the fixed-step loop on a synthetic
 //! clock, events delivered by tick, input resolved through the same map
-//! a windowed mode will use.
+//! the windowed mode uses.
 
 use renew_event::{KeyCode, WindowEvent};
 use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
@@ -16,11 +16,17 @@ use crate::{SampleError, trace::Trace};
 /// expected numbers are readable without running anything.
 const FRAME_INTERVAL_NS: u64 = Timestep::HZ_60.nanos().get();
 
-/// The bindings a windowed mode will share: space or the primary
-/// button, one action.
-fn input_map() -> InputMap<Action> {
+/// The bindings both modes share: space or the primary button, one
+/// action. The pointer binding is invisible to committed traces (none
+/// carries a pointer event) and makes the windowed mode mouse-playable;
+/// binding it here keeps this doc sentence true instead of aspirational.
+pub(crate) fn input_map() -> InputMap<Action> {
     let mut map = InputMap::new();
     map.bind(Binding::Key(KeyCode::Space), Action::Flap);
+    map.bind(
+        Binding::Pointer(renew_event::PointerButton::Left),
+        Action::Flap,
+    );
     map
 }
 
@@ -172,5 +178,38 @@ fn drive(
         source,
         stats,
         world,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_bindings_resolve_to_the_one_action() {
+        // The doc above the map promises "space or the primary button";
+        // this is the featureless test that keeps the sentence true.
+        let mut map = input_map();
+        map.handle(WindowEvent::Key {
+            code: KeyCode::Space,
+            pressed: true,
+            repeat: false,
+        });
+        assert!(map.state(Action::Flap).just_pressed, "space flaps");
+        map.advance();
+        map.handle(WindowEvent::Key {
+            code: KeyCode::Space,
+            pressed: false,
+            repeat: false,
+        });
+        map.advance();
+        map.handle(WindowEvent::PointerButton {
+            button: renew_event::PointerButton::Left,
+            pressed: true,
+        });
+        assert!(
+            map.state(Action::Flap).just_pressed,
+            "the primary button flaps"
+        );
     }
 }

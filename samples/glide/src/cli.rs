@@ -8,7 +8,7 @@ use crate::SampleError;
 /// The sample's name in its digest line.
 const SAMPLE: &str = "glide";
 
-/// A parsed command line. Headless in every mode today.
+/// A parsed command line.
 #[derive(Debug)]
 pub struct Options {
     pub seed: u64,
@@ -19,6 +19,16 @@ pub struct Options {
     pub record_trace: Option<String>,
     /// Replay a recorded file instead; owns the whole run.
     pub replay_trace: Option<String>,
+    /// Open a window and play, instead of any headless mode.
+    pub window: bool,
+    /// The windowed run's tick bound: `None` plays until closed; the
+    /// headless `frames` default must not leak into an interactive
+    /// session, so this is derived from an EXPLICIT --frames only. The
+    /// bound lands at the first frame boundary at or after N ticks —
+    /// plans are never cut mid-frame, so the digest line's counts and
+    /// the world always agree; a lagging frame may overshoot by at most
+    /// the step budget minus one.
+    pub window_ticks: Option<u64>,
 }
 
 /// Parse, refusing combinations that would silently ignore a flag.
@@ -33,7 +43,13 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
     let mut input_trace = String::from("soar");
     let mut record_trace = None;
     let mut replay_trace = None;
-    let mut seen_run_flags = false;
+    let mut window = false;
+    // Per-flag tracking, not one folded bool: refusing an explicit
+    // trace flag beside --window while keeping an explicit seed needs
+    // to know WHICH flags were given.
+    let mut seen_seed = false;
+    let mut seen_frames = false;
+    let mut seen_input_trace = false;
 
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -44,15 +60,19 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         match flag.as_str() {
             "--seed" => {
                 seed = parse_number(&value_for("--seed")?, "--seed")?;
-                seen_run_flags = true;
+                seen_seed = true;
             }
             "--frames" => {
                 frames = parse_number(&value_for("--frames")?, "--frames")?;
-                seen_run_flags = true;
+                seen_frames = true;
             }
             "--input-trace" => {
                 input_trace = value_for("--input-trace")?;
-                seen_run_flags = true;
+                seen_input_trace = true;
+            }
+            "--window" => {
+                refuse_repeat("--window", window)?;
+                window = true;
             }
             "--record-trace" => {
                 refuse_repeat("--record-trace", record_trace.is_some())?;
@@ -65,19 +85,43 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
             other => {
                 return Err(SampleError::Usage(format!(
                     "unknown flag `{other}`; this sample takes --seed, --frames, \
-                     --input-trace, --record-trace, --replay-trace"
+                     --input-trace, --record-trace, --replay-trace, --window"
                 )));
             }
         }
     }
 
-    if replay_trace.is_some() && (seen_run_flags || record_trace.is_some()) {
+    let seen_run_flags = seen_seed || seen_frames || seen_input_trace;
+    if replay_trace.is_some() && (seen_run_flags || record_trace.is_some() || window) {
         return Err(SampleError::Usage(
-            "--replay-trace owns the whole run; --seed, --frames, --input-trace and \
-             --record-trace contradict it"
+            "--replay-trace owns the whole run; --seed, --frames, --input-trace, \
+             --record-trace and --window contradict it"
                 .to_string(),
         ));
     }
+    if window && (seen_input_trace || record_trace.is_some()) {
+        return Err(SampleError::Usage(
+            "--window plays from the keyboard; --input-trace and --record-trace \
+             contradict it"
+                .to_string(),
+        ));
+    }
+    // The windowed tick bound comes from an EXPLICIT --frames only: the
+    // headless default of 2000 silently ending an interactive session
+    // would be the exact bare-invocation surprise --window avoids. An
+    // explicit zero is a contradiction, refused rather than reinterpreted.
+    let window_ticks = if window && seen_frames {
+        if frames == 0 {
+            return Err(SampleError::Usage(
+                "--window with --frames 0 is a zero-tick window; leave --frames off \
+                 to play until closed"
+                    .to_string(),
+            ));
+        }
+        Some(frames)
+    } else {
+        None
+    };
 
     Ok(Options {
         seed,
@@ -85,7 +129,43 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         input_trace,
         record_trace,
         replay_trace,
+        window,
+        window_ticks,
     })
+}
+
+#[cfg(test)]
+mod window_flag_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, SampleError> {
+        parse_args(args.iter().map(ToString::to_string))
+    }
+
+    #[test]
+    fn a_bare_window_run_is_unbounded() {
+        // The centerpiece: the headless default of 2000 frames must not
+        // leak into an interactive session and silently end it mid-play.
+        let options = parse(&["--window"]).expect("bare --window parses");
+        assert!(options.window);
+        assert_eq!(options.window_ticks, None, "no bound unless asked for");
+    }
+
+    #[test]
+    fn an_explicit_frames_bounds_the_window_in_ticks() {
+        let options = parse(&["--window", "--frames", "30"]).expect("parses");
+        assert_eq!(options.window_ticks, Some(30));
+    }
+
+    #[test]
+    fn seed_stays_legal_beside_window() {
+        // The positive half the per-flag seen-set exists for: refusing
+        // trace flags must not take --seed down with them.
+        let options = parse(&["--window", "--seed", "3"]).expect("parses");
+        assert!(options.window);
+        assert_eq!(options.seed, 3);
+        assert_eq!(options.window_ticks, None, "seed alone adds no bound");
+    }
 }
 
 /// A repeated flag silently last-winning is the same defect as a

@@ -1,8 +1,8 @@
 # renew-sample-glide
 
 A small complete game, headless-first: the glide world driven by
-scripted traces or a recorded replay, with a windowed mode arriving
-later behind a feature.
+scripted traces or a recorded replay — and, behind the `window`
+feature, playable in a window with the score in the title.
 
 ## Running it
 
@@ -24,9 +24,17 @@ pure `scene` module that turns a world into draw-order rectangles with
 no GPU crate in the normal graph. The frame-capture test consumes
 both: committed traces replayed to a checkpoint, drawn through the
 sprite renderer offscreen, compared against committed images. The GPU
-crates enter as dev-dependencies only, and the build matrix carries a
-build-only probe proving the game a player runs still needs none of
-them.
+crates enter the normal graph only behind the `window` feature (and
+the dev graph for the oracle); the default build carries none of
+them, and the build matrix proves it with a build-only probe.
+
+`glide --window` opens the game (`--features window` builds it):
+space or the primary mouse button flaps, the score lives in the
+title, and the digest line prints at close marked `source=window` so
+nothing ever compares a wall-clock run against a scripted one. Flap
+edges ride a saturating counter consumed one per fixed step — a press
+on a frame that plans no steps survives to the next, and two presses
+with two due steps deliver two flaps.
 
 `--replay-trace` owns the whole run — the header carries the seed and
 the length — so the flags it would contradict are refused by name
@@ -38,7 +46,7 @@ Two crates. `world/` is the simulation — a pure fixed-step function of
 seed and per-tick input, forbidden by the workspace structure rules
 from reaching a clock, a file or a window at any dependency depth.
 This crate is the driver: it maps input to the world's one action
-through the same bindings a windowed mode will use, runs the loop on a
+through the same bindings the windowed mode uses, runs the loop on a
 synthetic clock, and owns every file that is read or written.
 
 Traces index events by tick from zero, exactly as the loader returns
