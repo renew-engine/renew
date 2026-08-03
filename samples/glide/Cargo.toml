@@ -32,5 +32,13 @@ renew-replay = { path = "../../crates/replay" }
 renew-sample-glide-world = { path = "world" }
 renew-trace = { path = "../../crates/trace" }
 
+# The frame-capture oracle's GPU edges live here, in the dev graph, so
+# the game's normal graph stays free of rendering crates and the
+# headless-without-GPU property keeps its witness (a build-only probe in
+# the matrix proves it).
+[dev-dependencies]
+renew-render2d = { path = "../../crates/render2d" }
+renew-rhi = { path = "../../crates/rhi", default-features = false }
+
 [lints]
 workspace = true

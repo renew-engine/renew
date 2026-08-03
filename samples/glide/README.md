@@ -18,6 +18,16 @@ Every run prints one digest line last; two runs with the same seed,
 trace and length print bit-identical lines, cross-process, and the
 test suite holds that.
 
+The library also exposes `world_at(trace, tick)` — the same replay
+loop the runs use, promoted so image oracles need not copy it — and a
+pure `scene` module that turns a world into draw-order rectangles with
+no GPU crate in the normal graph. The frame-capture test consumes
+both: committed traces replayed to a checkpoint, drawn through the
+sprite renderer offscreen, compared against committed images. The GPU
+crates enter as dev-dependencies only, and the build matrix carries a
+build-only probe proving the game a player runs still needs none of
+them.
+
 `--replay-trace` owns the whole run — the header carries the seed and
 the length — so the flags it would contradict are refused by name
 rather than silently ignored.

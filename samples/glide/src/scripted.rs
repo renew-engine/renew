@@ -60,6 +60,30 @@ pub fn close_recording(
 /// Drive a run a recorded file owns: its header carries the length and
 /// the seed, and only its event lines steer.
 pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleError> {
+    replay_to(recorded, None)
+}
+
+/// The world a committed trace produces at `tick` — the scripted loop,
+/// promoted so oracles need not copy it. A copy could drift (events
+/// after the step, `advance` before the read) into a different
+/// deterministic world whose premises still pass; one loop, however
+/// many consumers, is the only shape that cannot.
+///
+/// # Errors
+///
+/// [`SampleError::Usage`] for an unknown trace name;
+/// [`SampleError::Failed`] if a committed file does not parse or its
+/// header refuses this driver's clock, budget, or missing seed.
+pub fn world_at(name: &str, tick: u64) -> Result<World, SampleError> {
+    let recorded = renew_trace::parse(crate::trace::text_by_name(name)?)
+        .map_err(|error| SampleError::Failed(format!("built-in trace: {error}")))?;
+    replay_to(&recorded, Some(tick)).map(|report| report.world)
+}
+
+/// The recorded-replay loop with an optional frame override: the header
+/// still rules on clock, budget and seed; `frames` merely stops early
+/// for checkpoint oracles.
+fn replay_to(recorded: &renew_trace::Trace, frames: Option<u64>) -> Result<Report, SampleError> {
     // The header carries four facts and this loop honours all four or
     // refuses: replaying a 120Hz recording at this driver's fixed 60Hz
     // would be a different run wearing the recording's name.
@@ -91,7 +115,7 @@ pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleEr
         .collect();
     Ok(drive(
         seed,
-        recorded.header().ticks(),
+        frames.unwrap_or_else(|| recorded.header().ticks()),
         "replay".to_string(),
         &events,
         None,

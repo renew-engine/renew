@@ -1528,7 +1528,9 @@ dependencies = [
  "renew-frame",
  "renew-input",
  "renew-platform",
+ "renew-render2d",
  "renew-replay",
+ "renew-rhi",
  "renew-sample-glide-world",
  "renew-trace",
 ]

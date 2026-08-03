@@ -60,6 +60,17 @@ pub fn by_name(name: &str) -> Result<Trace, SampleError> {
     })
 }
 
+/// The committed file's raw text, for callers that need the header the
+/// event loader deliberately skips (the promoted replay loop reads the
+/// recorded seed from it rather than assuming a default).
+pub(crate) fn text_by_name(name: &str) -> Result<&'static str, SampleError> {
+    SCRIPTED
+        .iter()
+        .find(|scripted| scripted.name == name)
+        .map(|scripted| scripted.text)
+        .ok_or_else(|| SampleError::Usage(format!("no trace named `{name}`; {}", names())))
+}
+
 /// Every built-in trace, named and summarised, for usage messages.
 #[must_use]
 pub fn names() -> String {
