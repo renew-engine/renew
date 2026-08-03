@@ -24,40 +24,37 @@ fn input_map() -> InputMap<Action> {
     map
 }
 
-/// Drive a run from a built-in trace, optionally recording it.
-///
-/// Returns the recording alongside the report rather than writing it:
-/// this module computes bytes, and the caller owns files.
-pub fn run(
-    options: &Options,
-    trace: &Trace,
-) -> Result<(Report, Option<renew_trace::Trace>), SampleError> {
-    let mut recorder = options.record_trace.as_ref().map(|_| Recorder::default());
-    let report = drive(
+/// Drive a run from a built-in trace, recording into `recorder` if the
+/// caller brought one. The caller owns the recorder and the files it
+/// will become; this module computes.
+pub fn run(options: &Options, trace: &Trace, recorder: Option<&mut Recorder>) -> Report {
+    drive(
         options.seed,
         options.frames,
         trace.name.to_string(),
         &trace.events,
-        recorder.as_mut(),
-    );
-    let written = match recorder {
-        None => None,
-        Some(recorder) => {
-            let header = renew_trace::TraceHeader::new(
-                "glide",
-                report.world.tick(),
-                FRAME_INTERVAL_NS,
-                StepBudget::DEFAULT.get().get(),
-            )
-            .and_then(|header| header.with_key("seed", &report.seed.to_string()))
-            .map_err(|error| SampleError::failed("describing the recording", &error))?;
-            let written = recorder
-                .finish(header)
-                .map_err(|error| SampleError::failed("closing the recording", &error))?;
-            Some(written)
-        }
-    };
-    Ok((report, written))
+        recorder,
+    )
+}
+
+/// Seal a recording against the run that produced it: the header's
+/// facts — length, seed — come from the report, which is why this
+/// takes both.
+pub fn close_recording(
+    report: &Report,
+    recorder: Recorder,
+) -> Result<renew_trace::Trace, SampleError> {
+    let header = renew_trace::TraceHeader::new(
+        "glide",
+        report.world.tick(),
+        FRAME_INTERVAL_NS,
+        StepBudget::DEFAULT.get().get(),
+    )
+    .and_then(|header| header.with_key("seed", &report.seed.to_string()))
+    .map_err(|error| SampleError::failed("describing the recording", &error))?;
+    recorder
+        .finish(header)
+        .map_err(|error| SampleError::failed("closing the recording", &error))
 }
 
 /// Drive a run a recorded file owns: its header carries the length and

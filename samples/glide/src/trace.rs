@@ -85,10 +85,10 @@ mod tests {
     #[test]
     fn an_unknown_name_lists_what_exists() {
         let refused = by_name("swim");
-        let Err(SampleError::Usage(message)) = refused else {
-            panic!("an unknown trace is a usage error");
-        };
-        assert!(message.contains("soar"), "{message}");
-        assert!(message.contains("sink"), "{message}");
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message))
+                if message.contains("soar") && message.contains("sink")),
+            "an unknown trace is a usage error listing what exists: {refused:?}"
+        );
     }
 }

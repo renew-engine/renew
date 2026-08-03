@@ -48,6 +48,23 @@ const PIPE_INTERVAL: u64 = 90;
 const PIPE_SPAWN_X: i64 = 320 * ONE;
 const GAP_MARGIN: i64 = 30 * ONE;
 
+/// The vertical span a gap centre may occupy, in screen units. A
+/// compile-time fact about the constants above, so the zero-guard and
+/// the width check live at compile time too — a runtime arm for a value
+/// that cannot occur is a hole in the coverage gate.
+const GAP_SPAN: core::num::NonZeroU32 = {
+    let span = (FLOOR - 2 * GAP_MARGIN) / ONE;
+    // Range-checked by hand: try_from is not const yet, and a negative
+    // or oversized span must refuse the build rather than wrap into a
+    // valid-looking bound.
+    assert!(span > 0 && span <= u32::MAX as i64);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    match core::num::NonZeroU32::new(span as u32) {
+        Some(span) => span,
+        None => panic!("the gap margin leaves no room for a gap"),
+    }
+};
+
 /// The one thing a player can do. The driver binds keys, taps and
 /// scripted traces to this through the input layer's generic map; the
 /// world itself takes the resolved decision as a plain `bool`, which is
@@ -58,15 +75,23 @@ pub enum Action {
     Flap,
 }
 
+/// One pipe's whole body. One store, not three parallel ones: parallel
+/// stores force defensive arms for a desync that construction forbids,
+/// and an arm no test can reach is a hole in the coverage gate.
+#[derive(Clone, Copy)]
+struct Pipe {
+    x: i64,
+    gap_y: i64,
+    passed: bool,
+}
+
 /// Everything the simulation is, so one value can be hashed and compared.
 pub struct World {
     entities: Entities,
     /// Each live pipe's handle, by slot — what despawn needs and what
     /// the leak version never kept.
     pipe: Store<Entity>,
-    pipe_x: Store<i64>,
-    pipe_gap_y: Store<i64>,
-    pipe_passed: Store<bool>,
+    body: Store<Pipe>,
     rng: Rng,
     bird_y: i64,
     bird_velocity: i64,
@@ -87,9 +112,7 @@ impl World {
         Self {
             entities: Entities::new(),
             pipe: Store::new(),
-            pipe_x: Store::new(),
-            pipe_gap_y: Store::new(),
-            pipe_passed: Store::new(),
+            body: Store::new(),
             rng: Rng::new(Seed::from_u64(seed), StreamId::from_u64(1)),
             bird_y: 120 * ONE,
             bird_velocity: 0,
@@ -139,7 +162,7 @@ impl World {
     /// upper bound for sizing an instance batch.
     #[must_use]
     pub fn pipes(&self) -> usize {
-        self.pipe.len()
+        self.body.len()
     }
 
     /// Entity slots ever allocated. Flat over a long run when despawn
@@ -169,29 +192,30 @@ impl World {
         if !self.tick.is_multiple_of(PIPE_INTERVAL) {
             return;
         }
-        let span = u32::try_from((FLOOR - 2 * GAP_MARGIN) / ONE).unwrap_or(1);
-        let Some(bound) = core::num::NonZeroU32::new(span) else {
-            return;
-        };
-        let gap_y = GAP_MARGIN + i64::from(self.rng.below_u32(bound)) * ONE;
+        let gap_y = GAP_MARGIN + i64::from(self.rng.below_u32(GAP_SPAN)) * ONE;
         let entity = self.entities.spawn();
         self.pipe.insert(entity.index(), entity);
-        self.pipe_x.insert(entity.index(), PIPE_SPAWN_X);
-        self.pipe_gap_y.insert(entity.index(), gap_y);
-        self.pipe_passed.insert(entity.index(), false);
+        self.body.insert(
+            entity.index(),
+            Pipe {
+                x: PIPE_SPAWN_X,
+                gap_y,
+                passed: false,
+            },
+        );
     }
 
     fn advance_pipes(&mut self) {
-        self.pipe_x.for_each_mut(|_, x| *x -= PIPE_SPEED);
+        self.body.for_each_mut(|_, pipe| pipe.x -= PIPE_SPEED);
         // Sweep in ascending slot order (`iter`'s guarantee), so the
         // order pipes leave the world is a property of the rules and not
         // of the storage. The scratch list is reused, never reallocated
         // at steady state.
         self.swept.clear();
         self.swept.extend(
-            self.pipe_x
+            self.body
                 .iter()
-                .filter(|(_, x)| **x + PIPE_WIDTH < 0)
+                .filter(|(_, pipe)| pipe.x + PIPE_WIDTH < 0)
                 .map(|(slot, _)| slot),
         );
         for index in 0..self.swept.len() {
@@ -202,9 +226,7 @@ impl World {
                 self.entities.despawn(entity);
             }
             self.pipe.remove(slot);
-            self.pipe_x.remove(slot);
-            self.pipe_gap_y.remove(slot);
-            self.pipe_passed.remove(slot);
+            self.body.remove(slot);
         }
     }
 
@@ -214,26 +236,26 @@ impl World {
         let mut hit = false;
 
         self.swept.clear();
-        for (slot, x) in self.pipe_x.iter() {
-            let Some(gap_y) = self.pipe_gap_y.get(slot) else {
-                continue;
-            };
-            let overlaps_x = *x < BIRD_X + BIRD_HALF && *x + PIPE_WIDTH > BIRD_X - BIRD_HALF;
+        for (slot, pipe) in self.body.iter() {
+            let overlaps_x =
+                pipe.x < BIRD_X + BIRD_HALF && pipe.x + PIPE_WIDTH > BIRD_X - BIRD_HALF;
             if overlaps_x {
-                let gap_top = gap_y - PIPE_GAP / 2;
-                let gap_bottom = gap_y + PIPE_GAP / 2;
+                let gap_top = pipe.gap_y - PIPE_GAP / 2;
+                let gap_bottom = pipe.gap_y + PIPE_GAP / 2;
                 if bird_top < gap_top || bird_bottom > gap_bottom {
                     hit = true;
                 }
             }
-            if *x + PIPE_WIDTH < BIRD_X - BIRD_HALF && self.pipe_passed.get(slot) == Some(&false) {
+            if pipe.x + PIPE_WIDTH < BIRD_X - BIRD_HALF && !pipe.passed {
                 self.swept.push(slot);
             }
         }
 
         for index in 0..self.swept.len() {
             let slot = self.swept[index];
-            self.pipe_passed.insert(slot, true);
+            if let Some(pipe) = self.body.get_mut(slot) {
+                pipe.passed = true;
+            }
             self.score += 1;
         }
         if hit {
@@ -253,23 +275,14 @@ impl World {
             .absorb_bytes(&self.bird_velocity.to_le_bytes())
             .absorb_u64(self.score)
             .absorb_u64(u64::from(self.alive))
-            .absorb_u64(self.pipe_x.len() as u64);
-        for (slot, x) in self.pipe_x.iter() {
+            .absorb_u64(self.body.len() as u64);
+        for (slot, pipe) in self.body.iter() {
             self.digest = self
                 .digest
                 .absorb_u32(slot)
-                .absorb_bytes(&x.to_le_bytes())
-                .absorb_bytes(
-                    &self
-                        .pipe_gap_y
-                        .get(slot)
-                        .copied()
-                        .unwrap_or(0)
-                        .to_le_bytes(),
-                )
-                .absorb_u64(u64::from(
-                    self.pipe_passed.get(slot).copied().unwrap_or(false),
-                ));
+                .absorb_bytes(&pipe.x.to_le_bytes())
+                .absorb_bytes(&pipe.gap_y.to_le_bytes())
+                .absorb_u64(u64::from(pipe.passed));
         }
     }
 }
@@ -318,10 +331,10 @@ mod tests {
         // Pipes on screen at once are bounded by geometry: spawn X over
         // speed, per interval. Slot reuse keeps capacity in the same
         // order; the leak version reaches the high hundreds here.
+        let capacity = world.entity_capacity();
         assert!(
-            world.entity_capacity() <= 16,
-            "slot count climbed to {} — despawn is leaking",
-            world.entity_capacity()
+            capacity <= 16,
+            "slot count climbed to {capacity} — despawn is leaking"
         );
     }
 
@@ -336,6 +349,30 @@ mod tests {
             doomed.step(false);
         }
         assert!(!doomed.alive(), "a bird that never flaps must fall");
+    }
+
+    #[test]
+    fn the_ceiling_stops_the_bird_without_killing_it() {
+        // Flap every tick: the bird climbs to the clamp and stays alive
+        // there — the ceiling is a wall, the floor is the grave.
+        let mut world = World::new(7);
+        // 200 ticks: the clamp engages within thirty, and the first
+        // pipe cannot reach the bird before tick ~287 — dying to a pipe
+        // while pinned at the ceiling would test collision, not the wall.
+        for _ in 0..200 {
+            world.step(true);
+        }
+        assert!(world.alive(), "the ceiling must not kill");
+    }
+
+    #[test]
+    fn pipes_exist_at_steady_state() {
+        let world = run(7, 1_000);
+        assert!(world.pipes() > 0, "pipes spawn and persist on screen");
+        assert!(
+            world.pipes() <= world.entity_capacity(),
+            "live pipes are bounded by slots ever allocated"
+        );
     }
 
     #[test]

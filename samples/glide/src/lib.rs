@@ -72,17 +72,22 @@ fn run<I: IntoIterator<Item = String>>(args: I) -> Result<Report, SampleError> {
     }
 
     let trace = trace::by_name(&options.input_trace)?;
-    let (report, written) = scripted::run(&options, &trace)?;
-    if let Some(path) = &options.record_trace {
+    // The recorder lives here, beside the path it exists for, so a
+    // recording that was asked for and a recording that exists are the
+    // same fact — no mismatch arm, because no mismatch can be built.
+    let mut recorder = options
+        .record_trace
+        .as_ref()
+        .map(|_| renew_replay::Recorder::default());
+    let report = scripted::run(&options, &trace, recorder.as_mut());
+    if let (Some(path), Some(recorder)) = (&options.record_trace, recorder) {
         // The recorder produced the bytes; the driver performs the
         // write. The plumbing crate does no I/O by contract, so the
         // side effect lives here, at the seam that owns files.
-        let recorded = written.ok_or_else(|| {
-            SampleError::Failed("the run produced no recording to write".to_string())
-        })?;
+        let sealed = scripted::close_recording(&report, recorder)?;
         renew_platform::fs::write(
             std::path::Path::new(path),
-            renew_trace::write(&recorded).as_bytes(),
+            renew_trace::write(&sealed).as_bytes(),
         )
         .map_err(|error| SampleError::failed("writing the trace file", &error))?;
     }

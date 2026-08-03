@@ -153,9 +153,18 @@ mod tests {
     #[test]
     fn unknown_flags_name_themselves() {
         let refused = parse(&["--fly"]);
-        let Err(SampleError::Usage(message)) = refused else {
-            panic!("unknown flag must be a usage error");
-        };
-        assert!(message.contains("--fly"), "{message}");
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("--fly")),
+            "unknown flag must be a usage error naming itself: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_number_that_is_not_one_is_refused_by_flag_name() {
+        let refused = parse(&["--seed", "seven"]);
+        assert!(
+            matches!(&refused, Err(SampleError::Usage(message)) if message.contains("--seed")),
+            "{refused:?}"
+        );
     }
 }
