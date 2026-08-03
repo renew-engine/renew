@@ -28,10 +28,15 @@ jobs:
       # have passed while silently losing it.
       - name: Remove the committed goldens
         run: |
-          ls crates/rhi/tests/goldens/*.rgba             | xargs -n1 basename             | sed 's/\.rgba$//' > "$RUNNER_TEMP/goldens.txt"
+          # Full paths (extension stripped), nullglob so a crate whose
+          # golden is still bootstrapping does not fail the listing.
+          shopt -s nullglob
+          for f in crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba; do
+            echo "${f%.rgba}"
+          done > "$RUNNER_TEMP/goldens.txt"
           test -s "$RUNNER_TEMP/goldens.txt"
           echo "refreshing:"; cat "$RUNNER_TEMP/goldens.txt"
-          rm -f crates/rhi/tests/goldens/*.rgba
+          rm -f crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba
       # Expected to fail: the bootstrap path writes the candidate and
       # panics so the refresh is never silent.
       - name: Render fresh candidates (fails by design)
@@ -39,15 +44,15 @@ jobs:
         continue-on-error: true
         env:
           RENEW_GOLDEN: "1"
-        run: cargo test --package renew-rhi --test golden
+        run: cargo test --package renew-rhi --package renew-render2d --test golden
       - name: Verify the ritual behaved (test failed, every candidate exists)
         run: |
           test "${{ steps.render.outcome }}" = "failure"
-          ls -l crates/rhi/tests/goldens/
+          ls -l crates/rhi/tests/goldens/ crates/render2d/tests/goldens/
           missing=0
           while read -r name; do
             for suffix in candidate.rgba provenance.txt; do
-              path="crates/rhi/tests/goldens/$name.$suffix"
+              path="$name.$suffix"
               if [ ! -f "$path" ]; then
                 echo "::error::$path was deleted but no replacement was produced"
                 missing=1
@@ -59,4 +64,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: golden-candidates
-          path: crates/rhi/tests/goldens/
+          path: |
+            crates/rhi/tests/goldens/
+            crates/render2d/tests/goldens/
