@@ -26,7 +26,7 @@
 //! Adding a variant breaks the build there, and the test at the bottom of
 //! this file then fails until this translation learns the new shape.
 
-use renew_platform::window::{KeyCode, PointerButton, WindowEvent};
+use renew_event::{KeyCode, PointerButton, WindowEvent};
 use renew_trace::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
 
 /// An event this build cannot write down.
@@ -98,7 +98,7 @@ const fn button_to_trace(button: PointerButton) -> Option<TraceButton> {
 pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
     // Taken once, up front, so every refusal below names the same
     // shape the platform does and no arm carries a magic number.
-    let shape = renew_platform::window::shape_index(&event);
+    let shape = renew_event::shape_index(&event);
     let encoded = match event {
         WindowEvent::CloseRequested => TraceEvent::CloseRequested,
         WindowEvent::RedrawRequested => TraceEvent::RedrawRequested,
@@ -213,9 +213,7 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
 #[cfg(test)]
 mod tests {
     use super::{Unencodable, to_trace};
-    use renew_platform::window::{
-        EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index,
-    };
+    use renew_event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
 
     /// Every shape the window seam can produce has an encoding.
     ///

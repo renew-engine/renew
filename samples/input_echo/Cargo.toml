@@ -34,6 +34,7 @@ renew-frame = { path = "../../crates/frame" }
 # someone is sitting at, and the simulation receives resolved intent.
 renew-input = { path = "../../crates/input" }
 renew-platform = { path = "../../crates/core/platform" }
+renew-replay = { path = "../../crates/replay" }
 renew-trace = { path = "../../crates/trace" }
 
 [lints]

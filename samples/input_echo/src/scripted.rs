@@ -11,12 +11,12 @@ use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
 use renew_trace::TraceHeader;
 
 use crate::cli::{Options, Report};
-use crate::convert;
 use crate::error::SampleError;
 use crate::input::Input;
-use crate::record::Recorder;
 use crate::trace::{self, Trace};
 use crate::world::EchoWorld;
+use renew_replay as convert;
+use renew_replay::Recorder;
 
 /// The synthetic frame interval: exactly one timestep, so a run of N
 /// frames executes exactly N steps, banks nothing and drops nothing. The
@@ -241,8 +241,8 @@ mod tests {
     };
     use crate::cli::Options;
     use crate::error::SampleError;
-    use crate::record::Recorder;
     use crate::trace;
+    use renew_replay::Recorder;
 
     /// A recorded tick is the number of steps that had already run, which
     /// is what the format means and what `record.rs` promises — **not**

@@ -14,16 +14,15 @@ may depend on this one, and adding a dependency here would defeat that
 for every such crate at once. The manifest declares no dependencies and
 must keep declaring none.
 
-**What is enforced, and what is not.** The reverse edge is impossible by
+**Both directions are enforced.** The reverse edge is impossible by
 construction: `renew-platform` depends on this crate, so this crate
-cannot depend on it — a dependency cycle is rejected. **The forward
-direction is not checked yet.** Nothing currently stops a crate that
-promises determinism from adding its own edge back to `renew-platform`
-and reaching a clock through it; the extraction removed the one such
-edge that existed, and a graph rule to prevent new ones is drafted but
-not in force. Until it is, this contract is an obligation maintained by
-review rather than a property enforced by a gate — and saying so is
-worth more than the stronger sentence that used to be here.
+cannot depend on it — a dependency cycle is rejected. The forward
+direction is checked by the workspace structure rules: a crate that
+promises determinism is refused any dependency path back to
+`renew-platform`, at any depth and in any dependency kind. An earlier
+version of this paragraph said the forward rule was drafted but not in
+force; it is in force, and this contract is now a property a gate
+enforces rather than an obligation review maintains.
 
 ## Why it is a separate crate
 

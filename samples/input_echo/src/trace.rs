@@ -46,7 +46,6 @@
 
 use renew_platform::window::WindowEvent;
 
-use crate::convert;
 use crate::error::SampleError;
 
 /// The frame a tick-zero event is delivered before.
@@ -115,21 +114,18 @@ pub fn by_name(name: &str) -> Result<Trace, SampleError> {
 }
 
 fn load(scripted: &Scripted) -> Result<Trace, SampleError> {
-    let parsed = renew_trace::parse(scripted.text).map_err(|error| {
-        SampleError::failed(
-            &format!("reading the built-in `{}` trace", scripted.name),
-            &error,
-        )
-    })?;
-    let events = parsed
-        .events()
-        .iter()
-        .map(|(tick, event)| {
-            (
-                tick.saturating_add(FIRST_FRAME),
-                convert::from_trace(*event),
-            )
-        })
+    // The shared loader hands back ticks from zero — the format's own
+    // meaning. The +1 to this driver's frames-from-one convention
+    // happens here, on the sample side, exactly because it is this
+    // driver's convention: baked into the shared crate it would silently
+    // bind every future consumer to it. Blame stays here too — the
+    // loader reports what refused, and "built-in" (a defect in this
+    // repository, not the caller's command line) is a fact only this
+    // crate knows.
+    let events = renew_replay::events(scripted.name, scripted.text)
+        .map_err(|error| SampleError::Failed(format!("built-in trace: {error}")))?
+        .into_iter()
+        .map(|(tick, event)| (tick.saturating_add(FIRST_FRAME), event))
         .collect();
     Ok(Trace {
         name: scripted.name,

@@ -12,7 +12,7 @@
 //! a recording that quietly filtered would replay into a different
 //! world and the digests would disagree with nothing to explain it.
 
-use renew_platform::window::WindowEvent;
+use renew_event::WindowEvent;
 use renew_trace::{Trace, TraceError, TraceHeader};
 
 use crate::convert::{Unencodable, to_trace};

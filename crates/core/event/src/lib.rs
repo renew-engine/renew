@@ -16,12 +16,12 @@
 //! **How much of this is enforced, stated exactly.** The reverse edge —
 //! this crate depending on the platform crate — is impossible: the
 //! platform crate depends on this one, and a dependency cycle is
-//! rejected. That is a real check. **What is not yet checked is the
-//! forward direction**: nothing today stops a crate that promises
-//! determinism from adding its own edge back to the platform crate and
-//! reaching a clock that way. Keeping this crate dependency-free is
-//! therefore a maintained obligation, not a guaranteed one, until that
-//! rule exists.
+//! rejected. That is a real check. **The forward direction is checked
+//! too**: the workspace structure check walks the dependency graph and
+//! refuses any crate that promises determinism a path back to the
+//! platform crate, at any depth, dev-dependencies included. Keeping this
+//! crate dependency-free is what keeps that walk meaningful — every
+//! crate reachable from a deterministic one inherits the prohibition.
 //!
 //! **The vocabulary used to live inside the platform crate**, beside the
 //! clock, the filesystem and thread spawning, marked "deliberately not

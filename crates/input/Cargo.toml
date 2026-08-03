@@ -30,7 +30,9 @@ simulation = true
 # is a function of build, seed and input alone. The edge below is the
 # whole of what it reaches for that purpose, and keeping it that way is
 # currently a rule enforced by review rather than by a check — a graph
-# rule that would enforce it is drafted and not yet in force.
+# rule that enforces it walks the dependency graph in the workspace
+# structure check: a deterministic crate is refused any path back to
+# the platform crate, at any depth.
 #
 # So: adding anything here with access to the outside world breaks the
 # promise, and nothing will stop you. That includes re-adding the
