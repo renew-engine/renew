@@ -1,0 +1,2 @@
+renew-trace 0 sample=ho ticks=20 timestep_ns=166667 budget=5 seed=0
+e 1 pointer 0x402ddddddddddddd 0x40414000d00o00wn ui

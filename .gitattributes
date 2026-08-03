@@ -4,3 +4,6 @@
 # Windows only — the least useful place to discover it. The reader itself
 # tolerates CRLF; byte equality does not.
 *.trace text eol=lf
+# Corpus entries are byte-exact fuzzer inputs: any eol conversion would
+# change the bytes coverage was measured on. Never text.
+fuzz/corpus/** -text

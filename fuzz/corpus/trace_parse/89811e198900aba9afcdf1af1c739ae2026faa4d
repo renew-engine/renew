@@ -1,0 +1,4 @@
+renew-trace 0 sample=in ticks=20 timestep_ns=1664663 budget=5 seed=0
+e 1 key arrow-down up
+e 8 wheel 0x00000000 0x4180z000
+e 

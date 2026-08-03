@@ -1,0 +1,2 @@
+renew-trace 0 sample=puk_echo ticks=20 timestep_ns=33333333 budget=5 seed=0
+eow-no

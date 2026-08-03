@@ -1,0 +1,2 @@
+renew-trace 0 sample=iho ticks=20 timestep_ns=03 budget=50
+00000000000 0

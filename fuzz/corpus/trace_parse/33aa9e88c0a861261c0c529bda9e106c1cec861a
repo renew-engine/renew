@@ -1,0 +1,1 @@
+renew-trace 0 sample=input_echo ticks=25 timestep_ns=166666 budget=5 seed=0ease

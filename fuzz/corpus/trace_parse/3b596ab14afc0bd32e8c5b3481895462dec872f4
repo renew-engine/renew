@@ -1,0 +1,2 @@
+renew-trace 0 sample=input_echo ticks=40 timestep_ns=16666667 budget=50
+e 5 button ﻿e 19 

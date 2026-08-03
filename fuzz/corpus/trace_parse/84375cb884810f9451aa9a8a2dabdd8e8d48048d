@@ -1,0 +1,2 @@
+renew-trace 0 sample=incho ticks=20 timestep_ns=166666 budget=500000
+e 9 focus inw-trace 0 saplde t sample

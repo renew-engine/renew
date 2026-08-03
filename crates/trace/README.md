@@ -182,6 +182,13 @@ refused on read.
 
 ## Testing note
 
+The recorded fuzz corpus is replayed as a merge gate: every committed
+input under `fuzz/corpus/trace_parse/` that parses as UTF-8 feeds
+`parse` in a stable test that fails loudly if the corpus is missing or
+below its committed floor. A crash input, when one ever exists,
+additionally becomes a permanent named regression test beside this
+suite, independent of the corpus.
+
 Unit tests cover the vocabulary, the header, the tick rules and every line
 shape in both directions. `tests/rejects.rs` gives every distinct
 malformed input its own test, asserting one refusal and one line number

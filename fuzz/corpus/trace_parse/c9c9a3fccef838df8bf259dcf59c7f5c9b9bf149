@@ -1,0 +1,2 @@
+renew-trace 0 sample=inpute_ch ticks=20 timestep_ns=166663 budget=5
+e 1 pointer 0x402909551615down vinputkey s1

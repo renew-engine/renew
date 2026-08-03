@@ -64,6 +64,13 @@ shared.
 
 ## Testing
 
+The recorded fuzz corpus is replayed as a merge gate: every committed
+input under `fuzz/corpus/asset_pack/` feeds `Pack::read` (and the
+integrity walk, result discarded) in a stable test that fails loudly
+if the corpus is missing or below its committed floor. A crash input,
+when one ever exists, additionally becomes a permanent named
+regression test beside this suite, independent of the corpus.
+
 Round-trip and ordering properties over generated packs (seeded), a
 hostile-input property that hands the reader arbitrary bytes and
 pack-shaped bytes and requires an answer rather than a panic, and a golden

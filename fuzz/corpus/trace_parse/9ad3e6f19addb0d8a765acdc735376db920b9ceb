@@ -1,0 +1,2 @@
+renew-trace 0 sample=inpuecho ticks=20 timestep_ns=6667 budget=0000
+e 9 focus key te

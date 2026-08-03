@@ -1,0 +1,5 @@
+renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666667 budget=50000
+e 3 key arrow-down down repeat
+e 06 key arrow-down up
+e 8 wheel 0x00+00000 0x4up
+ece 0 0000

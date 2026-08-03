@@ -1,0 +1,3 @@
+renew-trace 0 sample=input_ec ticks=19 timestep_ns=17 budget=00000
+e 9 resize 640 360 
+e r00

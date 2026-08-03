@@ -1,0 +1,2 @@
+renew-trace 0 sample=inech* ticks=20 timestep_ns=6 budget=2
+e 1 pointer 0x40ple=input_echo ticks=2r

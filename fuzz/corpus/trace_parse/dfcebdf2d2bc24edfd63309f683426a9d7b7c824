@@ -1,0 +1,11 @@
+renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666666 budget=5 seed=0
+e 1 key arrow-right down
+e 1 pointer 0x4029000000000000 0x4041400000000000
+e 3 key arrow-down down
+e 5 button left down
+e 5 button left up
+e 1 key arrow-right down
+e 1 pointer 0x4029000000000000 0x4041400000000000
+e 3 key arrow-down down
+e 5 button left down
+e 5 ole 0x40000r
