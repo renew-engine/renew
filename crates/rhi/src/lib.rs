@@ -75,8 +75,8 @@ pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pipeline::{
-    AddressMode, Filter, FrameData, InstanceAttribute, PipelineDesc, RenderDesc, RenderPipeline,
-    Sampler, SamplerDesc, Shaders, TargetFormat,
+    AddressMode, Blend, Filter, FrameData, InstanceAttribute, PipelineDesc, RenderDesc,
+    RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat,
 };
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};

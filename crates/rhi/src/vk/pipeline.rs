@@ -99,6 +99,10 @@ pub struct PipelineDesc<'a> {
     /// and its bytes advance per instance, never per vertex — corners
     /// come from `gl_VertexIndex` expansion, per the house shader style.
     pub instance_input: Option<&'a [InstanceAttribute]>,
+    /// How this pipeline's output combines with the target's contents.
+    /// [`Blend::Opaque`] — no blending — unless the builder says
+    /// otherwise.
+    pub blend: Blend,
     /// The texture this pipeline samples, and how.
     ///
     /// **Bound here rather than after creation, and that is the whole
@@ -114,6 +118,28 @@ pub struct PipelineDesc<'a> {
     /// as long as the set points at them, without the caller having to
     /// sequence drops correctly.
     pub texture: Option<(Rc<Texture>, Rc<Sampler>)>,
+}
+
+/// How a pipeline's output is combined with what the target already
+/// holds.
+///
+/// An input enum, so `#[non_exhaustive]`: a third mode later must not be
+/// a breaking change for downstream matchers. Both variants are bound by
+/// tests where they live — the default by every existing pipeline, the
+/// premultiplied mode by the sprite path that exists for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Blend {
+    /// Blending disabled; the draw's output replaces the target's
+    /// contents wherever a fragment lands. Today's behavior, and the
+    /// default.
+    Opaque,
+    /// `src + dst * (1 - src.a)`, color and alpha alike — compositing
+    /// for sources whose color is already multiplied by their alpha.
+    /// The premultiplied convention is the caller's obligation; bytes
+    /// that are not premultiplied composite wrong, visibly, not
+    /// unsafely.
+    PremultipliedAlpha,
 }
 
 /// A vertex/fragment pair and the number of vertices its vertex stage
@@ -164,9 +190,19 @@ impl<'a> PipelineDesc<'a> {
             fragment_spirv: shaders.fragment,
             target_format,
             vertex_count: shaders.vertex_count,
+            blend: Blend::Opaque,
             texture: None,
             instance_input: None,
         }
+    }
+
+    /// Combine output with the target per `blend` instead of replacing
+    /// it. The premultiplied convention, where chosen, is the caller's
+    /// obligation on every byte the pipeline samples or tints.
+    #[must_use]
+    pub fn blend(mut self, blend: Blend) -> Self {
+        self.blend = blend;
+        self
     }
 
     /// Declare per-instance vertex input, in order. Locations and
@@ -837,8 +873,19 @@ impl Device {
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let blend_attachments = [match desc.blend {
+            Blend::Opaque => vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA),
+            Blend::PremultipliedAlpha => vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD),
+        }];
         let color_blend =
             vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];

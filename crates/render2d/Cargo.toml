@@ -1,0 +1,36 @@
+[package]
+name = "renew-render2d"
+description = "Batched 2D sprites over the rendering crate: one atlas, one pipeline, one instanced draw per frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Batched 2D sprites over the rendering crate: one atlas, one pipeline, one instanced draw per frame."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# The rendering crate without its presentation feature: this crate fills
+# and describes, it never presents, and taking the default would drag
+# windowing crates into every consumer's graph. The math crate carries
+# the ortho and UV maps.
+[dependencies]
+renew-math = { path = "../core/math" }
+renew-rhi = { path = "../rhi", default-features = false }
+
+[dev-dependencies]
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[features]
+# Allocation-counting tests are meaningless under instrumented
+# allocators; the sanitizer lane enables this to skip them by name.
+sanitized = []
+
+[lints]
+workspace = true

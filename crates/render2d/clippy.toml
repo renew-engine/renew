@@ -1,0 +1,33 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: this crate turns sprites into instance bytes and rhi
+# descriptors — it never reads a clock, never touches the filesystem,
+# never spawns a thread. The golden harness in tests/ is the one
+# sanctioned exception and carries its own file-top allow, exactly as
+# the rendering crate's does.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock; a fill is a pure function of its sprites" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock" },
+    { path = "std::thread::spawn", reason = "single-threaded by the rendering crate's contract; parallelism belongs to the job pool" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem; atlas bytes arrive from callers" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
+]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

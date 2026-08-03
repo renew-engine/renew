@@ -1482,6 +1482,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-render2d"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-math",
+ "renew-memory",
+ "renew-rhi",
+]
+
+[[package]]
 name = "renew-replay"
 version = "0.1.0"
 dependencies = [
