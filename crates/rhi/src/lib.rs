@@ -75,8 +75,8 @@ pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pipeline::{
-    AddressMode, Filter, PipelineDesc, RenderDesc, RenderPipeline, Sampler, SamplerDesc, Shaders,
-    TargetFormat,
+    AddressMode, Filter, FrameData, InstanceAttribute, PipelineDesc, RenderDesc, RenderPipeline,
+    Sampler, SamplerDesc, Shaders, TargetFormat,
 };
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
@@ -100,6 +100,27 @@ pub mod builtin {
     pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
     /// Fragment stage SPIR-V sampling set 0, binding 0.
     pub static TEXTURED_FS_SPV: &[u8] = include_bytes!("../shaders/textured.frag.spv");
+
+    /// Vertex stage SPIR-V for the instanced quad.
+    pub static INSTANCED_VS_SPV: &[u8] = include_bytes!("../shaders/instanced.vert.spv");
+    /// Fragment stage SPIR-V passing the instance colour through.
+    pub static INSTANCED_FS_SPV: &[u8] = include_bytes!("../shaders/instanced.frag.spv");
+
+    /// The instanced quad: six expanded vertices per instance, placement
+    /// and colour from the one vertex buffer at instance rate. The
+    /// matching layout is [`INSTANCED_LAYOUT`]; shader and slice describe
+    /// the same bytes and change together.
+    pub const INSTANCED: Shaders<'static> = Shaders {
+        vertex: INSTANCED_VS_SPV,
+        fragment: INSTANCED_FS_SPV,
+        vertex_count: 6,
+    };
+
+    /// The instance layout `INSTANCED` consumes: centre, then colour.
+    pub const INSTANCED_LAYOUT: &[crate::InstanceAttribute] = &[
+        crate::InstanceAttribute::Vec2,
+        crate::InstanceAttribute::Vec4,
+    ];
 
     /// The colored triangle: three vertices, no descriptors.
     pub const TRIANGLE: Shaders<'static> = Shaders {

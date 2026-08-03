@@ -426,3 +426,137 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     drop(pipeline);
     assert_no_validation_errors(&device);
 }
+
+/// One instance record, packed exactly as `INSTANCED_LAYOUT` declares:
+/// centre vec2, colour vec4. The layout slice, the shader's locations
+/// and this function describe the same bytes.
+fn instance(centre: [f32; 2], colour: [f32; 4]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(24);
+    for v in centre {
+        bytes.extend_from_slice(&v.to_ne_bytes());
+    }
+    for v in colour {
+        bytes.extend_from_slice(&v.to_ne_bytes());
+    }
+    bytes
+}
+
+/// The per-frame data path, end to end, with a computed oracle: two
+/// instances at known centres in known colours, pixels asserted at the
+/// centres and at a corner the quads do not reach. Then a second frame
+/// with different bytes through the SAME buffer, asserting the new
+/// colours — the copy lands per call, not once at creation.
+#[test]
+fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: 64,
+        height: 64,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+            .instance_input(builtin::INSTANCED_LAYOUT),
+    )?;
+    let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+
+    // NDC (-0.5, -0.5) is pixel (16, 16); (+0.5, +0.5) is (48, 48).
+    let mut bytes = instance([-0.5, -0.5], [1.0, 0.0, 0.0, 1.0]);
+    bytes.extend(instance([0.5, 0.5], [0.0, 0.0, 1.0, 1.0]));
+
+    let desc = RenderDesc::new(Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    })
+    .pipeline(&pipeline)
+    .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 2));
+    target.render(&desc)?;
+
+    let mut pixels = vec![0u8; (extent.width * extent.height * 4) as usize];
+    target.read_back_into(&mut pixels);
+    fn at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * width + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    assert_eq!(
+        at(&pixels, extent.width, 16, 16),
+        [255, 0, 0, 255],
+        "first instance's centre"
+    );
+    assert_eq!(
+        at(&pixels, extent.width, 48, 48),
+        [0, 0, 255, 255],
+        "second instance's centre"
+    );
+    assert_eq!(
+        at(&pixels, extent.width, 0, 0),
+        [0, 0, 0, 255],
+        "clear colour where no quad reaches"
+    );
+
+    // Second frame, same buffer, different bytes: green replaces red.
+    let bytes = instance([-0.5, -0.5], [0.0, 1.0, 0.0, 1.0]);
+    let desc = RenderDesc::new(Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    })
+    .pipeline(&pipeline)
+    .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1));
+    target.render(&desc)?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, extent.width, 16, 16),
+        [0, 255, 0, 255],
+        "this frame's bytes, not last frame's"
+    );
+    assert_eq!(
+        at(&pixels, extent.width, 48, 48),
+        [0, 0, 0, 255],
+        "one instance now: the second quad is gone"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// The over-length refusal is retained in release, exactly as the
+/// readback length guard is: the length bounds a copy into mapped
+/// device memory, which makes it a memory-safety boundary.
+#[test]
+fn oversized_frame_data_is_a_retained_contract_check() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut target = device.create_offscreen_target(Extent {
+        width: 16,
+        height: 16,
+    })?;
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+            .instance_input(builtin::INSTANCED_LAYOUT),
+    )?;
+    let buffer = device.create_buffer(8, renew_rhi::BufferUsage::PerFrame)?;
+    let bytes = [0u8; 9];
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let desc = RenderDesc::new(Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        })
+        .pipeline(&pipeline)
+        .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1));
+        let _ = target.render(&desc);
+    }));
+    assert!(
+        refused.is_err(),
+        "nine bytes into an eight-byte region must refuse"
+    );
+    Ok(())
+}

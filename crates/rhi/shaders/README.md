@@ -21,6 +21,19 @@ Target: SPIR-V 1.0
 > glslc -O triangle.frag -o triangle.frag.spv
 ```
 
+`instanced.vert` and `instanced.frag` were compiled 2026-08-03, version
+output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+> glslc -O instanced.vert -o instanced.vert.spv
+> glslc -O instanced.frag -o instanced.frag.spv
+```
+
 `textured.vert` and `textured.frag` were compiled 2026-08-01, with the
 version output observed again rather than assumed unchanged:
 
