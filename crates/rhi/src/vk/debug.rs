@@ -55,7 +55,16 @@ extern "system" fn messenger_cb(
         counters.warnings.fetch_add(1, Ordering::Relaxed);
         renew_diag::warn!(target: "renew-rhi", "validation: {message}");
     }
-    if let Ok(mut retained) = counters.first_messages.lock()
+    // Retain errors only. Keeping the first N of any severity let
+    // loader chatter fill every slot — first infos, then, once infos
+    // were excluded, the loader's own layer-management WARNINGS — so a
+    // report could say "3 errors" while showing eight lines of noise: a
+    // diagnostic that hides the diagnosis. The counters still count
+    // warnings; the retained text answers one question, "what made this
+    // red", and only errors make it red. Found the first time a test
+    // drove a failure corner past a noisy loader.
+    if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR)
+        && let Ok(mut retained) = counters.first_messages.lock()
         && retained.len() < RETAINED_MESSAGES
     {
         retained.push(message);
@@ -113,8 +122,13 @@ mod tests {
         );
         assert_eq!(counters.errors.load(Ordering::Relaxed), 1);
         assert_eq!(counters.warnings.load(Ordering::Relaxed), 1);
+        // Warnings are counted and NOT retained: the retained text
+        // answers "what made this red", and only errors make it red.
+        // The loader's layer-management warnings taught that lesson by
+        // flooding every slot in the first report anyone actually
+        // needed.
         let retained = counters.first_messages.lock().expect("retained lock");
-        assert_eq!(retained.as_slice(), ["bad barrier", "suspicious usage"]);
+        assert_eq!(retained.as_slice(), ["bad barrier"]);
     }
 
     #[test]

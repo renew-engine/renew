@@ -10,7 +10,11 @@
 //! down; every other call resolves through the stored next entry
 //! points, so the layer adds nothing but a table lookup.
 //!
-//! Fault protocol: `RENEW_FAULT=<vkCallName>=<result>[@<ordinal>]`
+//! Fault protocol: `RENEW_FAULT=<directive>[,<directive>]` where each
+//! directive is `<vkCallName>=<result>[@<ordinal>]`. A list arms every
+//! directive at once, each with its own counter — the shape a compound
+//! scenario needs, where a frame failure and the recovery quiesce's
+//! failure must both be injected in one run.
 //! arms exactly one fault — the ordinal-th occurrence (1-based,
 //! default 1) of the named call returns the given result instead of
 //! calling down. The variable is re-read at every `vkCreateInstance`,
@@ -103,8 +107,8 @@ struct Fault {
     seen: u32,
 }
 
-fn fault_slot() -> &'static Mutex<Option<Fault>> {
-    static SLOT: LazyLock<Mutex<Option<Fault>>> = LazyLock::new(|| Mutex::new(None));
+fn fault_slot() -> &'static Mutex<Vec<Fault>> {
+    static SLOT: LazyLock<Mutex<Vec<Fault>>> = LazyLock::new(|| Mutex::new(Vec::new()));
     &SLOT
 }
 
@@ -147,28 +151,42 @@ fn parse_fault(spec: &str) -> Option<Fault> {
     })
 }
 
-/// Re-arm the fault from `RENEW_FAULT`, counter reset; unset or
-/// malformed clears it. Reading the environment is all this layer ever
-/// does with it — nothing here calls `set_var`.
+/// Re-arm the faults from `RENEW_FAULT`, counters reset; unset clears
+/// them, and one malformed directive clears the whole list rather than
+/// arming half a scenario — half an injection is a test that means
+/// something other than its name. Reading the environment is all this
+/// layer ever does with it — nothing here calls `set_var`.
 fn rearm_fault() {
     let armed = std::env::var("RENEW_FAULT")
         .ok()
-        .and_then(|spec| parse_fault(&spec));
+        .map(|spec| {
+            spec.split(',')
+                .map(|directive| parse_fault(directive.trim()))
+                .collect::<Option<Vec<Fault>>>()
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
     if let Ok(mut slot) = fault_slot().lock() {
         *slot = armed;
     }
 }
 
-/// Count a call against the armed fault: `Some(result)` exactly on the
-/// ordinal-th occurrence of the named call, `None` otherwise.
+/// Count a call against every armed fault: `Some(result)` exactly on
+/// the ordinal-th occurrence of a named call, `None` otherwise. Each
+/// directive keeps its own counter, so a compound scenario's second
+/// fault is not disturbed by how many times the first one's call ran.
 fn should_fail(call: &str) -> Option<vk::Result> {
     let mut slot = fault_slot().lock().ok()?;
-    let fault = slot.as_mut()?;
-    if fault.call != call {
-        return None;
+    for fault in slot.iter_mut() {
+        if fault.call != call {
+            continue;
+        }
+        fault.seen += 1;
+        if fault.seen == fault.ordinal {
+            return Some(fault.result);
+        }
     }
-    fault.seen += 1;
-    (fault.seen == fault.ordinal).then_some(fault.result)
+    None
 }
 
 // --- Response mutations (`RENEW_QUIRK`). One bit per name; the wrapper

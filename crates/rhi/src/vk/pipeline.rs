@@ -9,6 +9,7 @@ use ash::vk;
 
 use crate::config::Color;
 use crate::error::PipelineError;
+use crate::vk::buffer::Buffer;
 use crate::vk::device::{Device, DeviceShared};
 use crate::vk::texture::Texture;
 
@@ -36,6 +37,36 @@ impl TargetFormat {
 /// slices — [`crate::builtin`] provides the embedded v0 shaders.
 ///
 /// `#[non_exhaustive]`, so it is built through [`PipelineDesc::new`]
+/// One per-instance vertex attribute, in declaration order.
+///
+/// Closed and small on purpose: these are the shapes the instanced-quad
+/// path consumes today, and a format nobody binds is an enum arm no test
+/// can reach. Offsets and locations are derived from position in the
+/// slice — the caller declares an order, never arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceAttribute {
+    /// Two 32-bit floats.
+    Vec2,
+    /// Four 32-bit floats.
+    Vec4,
+}
+
+impl InstanceAttribute {
+    pub(crate) fn byte_len(self) -> u32 {
+        match self {
+            Self::Vec2 => 8,
+            Self::Vec4 => 16,
+        }
+    }
+
+    pub(crate) fn format(self) -> vk::Format {
+        match self {
+            Self::Vec2 => vk::Format::R32G32_SFLOAT,
+            Self::Vec4 => vk::Format::R32G32B32A32_SFLOAT,
+        }
+    }
+}
+
 /// rather than as a struct literal. Every field this will grow — vertex
 /// input, blend state, depth state, push-constant ranges — is optional
 /// with a defined absence, so each can arrive as a builder method
@@ -62,6 +93,12 @@ pub struct PipelineDesc<'a> {
     /// a count to a draw. Asking a stage for more vertices than it has
     /// indexes past the end of its own constant array.
     pub vertex_count: u32,
+    /// Per-instance vertex input, or `None` for the shaders that write
+    /// their vertex list into the source. One binding, instance rate:
+    /// the per-frame buffer is the only vertex buffer this crate binds,
+    /// and its bytes advance per instance, never per vertex — corners
+    /// come from `gl_VertexIndex` expansion, per the house shader style.
+    pub instance_input: Option<&'a [InstanceAttribute]>,
     /// The texture this pipeline samples, and how.
     ///
     /// **Bound here rather than after creation, and that is the whole
@@ -128,7 +165,19 @@ impl<'a> PipelineDesc<'a> {
             target_format,
             vertex_count: shaders.vertex_count,
             texture: None,
+            instance_input: None,
         }
+    }
+
+    /// Declare per-instance vertex input, in order. Locations and
+    /// offsets are derived from position; the shader's `location(n)`
+    /// list and this slice describe the same layout or the draw reads
+    /// garbage, which is why the instanced builtin and its layout slice
+    /// live beside each other.
+    #[must_use]
+    pub fn instance_input(mut self, attributes: &'a [InstanceAttribute]) -> Self {
+        self.instance_input = Some(attributes);
+        self
     }
 
     /// Sample `texture` through `sampler`, at set 0 binding 0.
@@ -171,6 +220,46 @@ pub struct RenderDesc<'a> {
     pub clear: Color,
     /// The pipeline to draw with, or `None` to clear only.
     pub pipeline: Option<&'a RenderPipeline>,
+    /// Per-frame bytes and the instanced draw they feed, or `None` for
+    /// the byte-free frame every existing caller records.
+    pub frame_data: Option<FrameData<'a>>,
+}
+
+/// Per-frame bytes and the instanced draw they feed.
+///
+/// **`#[non_exhaustive]` with a constructor, per the descriptor pattern
+/// this crate uses everywhere** -- the fields a pass model will add
+/// (first instance, a vertex offset) arrive as builders touching no
+/// existing caller.
+///
+/// The bytes are written into the buffer's region for the frame being
+/// recorded, *after* that slot's fence wait -- the one point where "no
+/// submit is reading this region" is a fact. The draw stays counts and
+/// offsets: `instances` here, the vertex count from the pipeline's
+/// shaders, the slot offset chosen by the target.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct FrameData<'a> {
+    /// The buffer whose current-slot region receives `bytes`.
+    pub buffer: &'a Buffer,
+    /// This frame's data. Length must be at most the buffer's per-frame
+    /// capacity; over-length is refused by a retained assertion, never
+    /// truncated -- a truncated instance is a quiet wrong draw.
+    pub bytes: &'a [u8],
+    /// Instance count for the draw.
+    pub instances: u32,
+}
+
+impl<'a> FrameData<'a> {
+    /// `bytes` for this frame, feeding `instances` instances.
+    #[must_use]
+    pub fn new(buffer: &'a Buffer, bytes: &'a [u8], instances: u32) -> Self {
+        Self {
+            buffer,
+            bytes,
+            instances,
+        }
+    }
 }
 
 impl fmt::Debug for RenderDesc<'_> {
@@ -198,6 +287,7 @@ impl<'a> RenderDesc<'a> {
         Self {
             clear,
             pipeline: None,
+            frame_data: None,
         }
     }
 
@@ -205,6 +295,13 @@ impl<'a> RenderDesc<'a> {
     #[must_use]
     pub fn pipeline(mut self, pipeline: &'a RenderPipeline) -> Self {
         self.pipeline = Some(pipeline);
+        self
+    }
+
+    /// Carry per-frame bytes and an instanced draw in this frame.
+    #[must_use]
+    pub fn frame_data(mut self, data: FrameData<'a>) -> Self {
+        self.frame_data = Some(data);
         self
     }
 }
@@ -697,7 +794,37 @@ impl Device {
                 .module(fs)
                 .name(c"main"),
         ];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        // With no instance input this stays the empty state every
+        // existing pipeline was built with. With it, one binding at
+        // instance rate: stride is the packed sum of the declared
+        // attributes, locations and offsets derived from order.
+        let mut attribute_descs = Vec::new();
+        let mut instance_stride = 0u32;
+        if let Some(attributes) = desc.instance_input {
+            for (index, attribute) in attributes.iter().enumerate() {
+                // The list is a handful of attributes; a count that
+                // overflows u32 is not a real pipeline.
+                #[allow(clippy::cast_possible_truncation)]
+                attribute_descs.push(
+                    vk::VertexInputAttributeDescription::default()
+                        .location(index as u32)
+                        .binding(0)
+                        .format(attribute.format())
+                        .offset(instance_stride),
+                );
+                instance_stride += attribute.byte_len();
+            }
+        }
+        let binding_descs = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(instance_stride)
+            .input_rate(vk::VertexInputRate::INSTANCE)];
+        let mut vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        if !attribute_descs.is_empty() {
+            vertex_input = vertex_input
+                .vertex_binding_descriptions(&binding_descs)
+                .vertex_attribute_descriptions(&attribute_descs);
+        }
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let viewport = vk::PipelineViewportStateCreateInfo::default()

@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use renew_memory::{CountingAllocator, counters};
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc, SamplerDesc,
-    TargetFormat, TextureDesc, Validation, builtin,
+    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
+    RenderDesc, SamplerDesc, TargetFormat, TextureDesc, Validation, builtin,
 };
 
 /// The engine's own counting allocator, not a local copy of one.
@@ -96,6 +96,13 @@ fn steady_state_frames_allocate_nothing() {
                 .texture(texture, sampler),
         )
         .expect("textured pipeline");
+    // The frame under measurement carries per-frame bytes: a gate that
+    // measured a byte-free frame would pass vacuously the moment the
+    // data path allocated. The copy into the mapped region is the whole
+    // point of measuring it; the instance bytes themselves live in a
+    // caller array filled once, out here.
+    let (instanced, buffer, instance_bytes) =
+        instanced_fixture(&device).expect("instanced fixture");
     let clear = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
@@ -104,6 +111,13 @@ fn steady_state_frames_allocate_nothing() {
         target
             .render(&RenderDesc::new(clear).pipeline(&pipeline))
             .expect("warmup frame");
+        target
+            .render(
+                &RenderDesc::new(clear)
+                    .pipeline(&instanced)
+                    .frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
+            )
+            .expect("warmup instanced frame");
         target.read_back_into(&mut pixels);
     }
 
@@ -120,6 +134,13 @@ fn steady_state_frames_allocate_nothing() {
             target
                 .render(&RenderDesc::new(clear).pipeline(&pipeline))
                 .expect("steady frame");
+            target
+                .render(
+                    &RenderDesc::new(clear)
+                        .pipeline(&instanced)
+                        .frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
+                )
+                .expect("steady instanced frame");
             target.read_back_into(&mut pixels);
         }
         let after = allocations();
@@ -146,4 +167,21 @@ fn steady_state_frames_allocate_nothing() {
         observed_zero,
         "the render path heap-allocated in every window (last delta: {last_delta})"
     );
+}
+
+/// The instanced pipeline, its per-frame buffer, and one packed
+/// instance record, built outside the measured window.
+fn instanced_fixture(
+    device: &Device,
+) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Buffer, [u8; 24]), Box<dyn std::error::Error>> {
+    let instanced = device.create_pipeline(
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+            .instance_input(builtin::INSTANCED_LAYOUT),
+    )?;
+    let buffer = device.create_buffer(64, BufferUsage::PerFrame)?;
+    let mut bytes = [0u8; 24];
+    for (i, v) in [-0.5f32, -0.5, 1.0, 0.0, 0.0, 1.0].iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    Ok((instanced, buffer, bytes))
 }

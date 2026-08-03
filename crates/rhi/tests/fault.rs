@@ -23,9 +23,9 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError, RenderDesc,
-    Sampler, SamplerDesc, Shaders, TargetError, TargetFormat, Texture, TextureDesc, Validation,
-    builtin,
+    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError,
+    RenderDesc, Sampler, SamplerDesc, Shaders, TargetError, TargetFormat, Texture, TextureDesc,
+    Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -794,6 +794,51 @@ fn every_driver_failure_ladder_behaves() {
                 .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
                 .map(|_| ())
                 .map_err(|error| format!("{name}: recovery upload failed: {error}"))
+        }));
+    }
+
+    // ---- B · per-frame buffer ladder --------------------------------
+    // Every fallible call `create_buffer` makes, in order. Each case
+    // must surface the right call, leave nothing behind (the validation
+    // layer consulted after each case proves the unwinder ran), and
+    // recover: the same creation succeeds once the fault clears. No
+    // ordinals: within one `create_buffer` each interposed call runs
+    // exactly once, and the pinned `@2` scenarios elsewhere drive paths
+    // that never construct a buffer, so their counts are undisturbed.
+    let buffer_ladder: &[(&str, &str, &str)] = &[
+        (
+            "B1",
+            "vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateBuffer",
+        ),
+        (
+            "B2",
+            "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateMemory",
+        ),
+        (
+            "B3",
+            "vkBindBufferMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindBufferMemory",
+        ),
+        ("B4", "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY", "vkMapMemory"),
+    ];
+    for &(name, fault, call) in buffer_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            match device.create_buffer(64, BufferUsage::PerFrame) {
+                Err(error) => {
+                    if !matches!(&error, TargetError::Creation { call: got, .. } if *got == call) {
+                        return Err(wrong(name, call, &error));
+                    }
+                }
+                Ok(_) => {
+                    return Err(format!("{name}: creation succeeded despite the fault"));
+                }
+            }
+            device
+                .create_buffer(64, BufferUsage::PerFrame)
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery creation failed: {error}"))
         }));
     }
 

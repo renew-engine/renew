@@ -18,6 +18,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::config::Extent;
 use crate::error::TargetError;
+use crate::vk::buffer::BufferInner;
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
 use crate::vk::pipeline::{RenderDesc, TargetFormat};
 
@@ -127,6 +128,23 @@ pub struct WindowTarget {
     /// is the defect this split exists to prevent.
     fences: [vk::Fence; FRAMES_IN_FLIGHT],
     pending: [bool; FRAMES_IN_FLIGHT],
+    /// Buffers a slot's recorded work references, retained so a caller
+    /// dropping its handle cannot free memory the submit still reads.
+    /// Cleared only when the work has PROVABLY ended — a successful
+    /// fence wait, a successful quiesce, or a lost device. Deliberately
+    /// NOT cleared beside `pending` after a failed non-lost quiesce:
+    /// `pending` answers "may I record?", retention answers "may memory
+    /// die?", and the failed-quiesce corner is where those two questions
+    /// have different answers.
+    retained: [Option<Rc<BufferInner>>; FRAMES_IN_FLIGHT],
+    /// Set when a frame aborted and the recovery quiesce FAILED without
+    /// a lost device: the GPU may still be executing, so fences were not
+    /// reset, flags were not cleared, the chain was not destroyed and
+    /// retained memory was not released — the validation layer wrote
+    /// three VUIDs against the path that used to do all four. Everything
+    /// waits, intact, for the next PROVEN quiesce: `resize`'s, whose
+    /// wait-idle must succeed before it retires anything.
+    dormant: bool,
     /// The slot the next frame records into; advances after each submit.
     frame: usize,
 }
@@ -342,6 +360,8 @@ impl Device {
             cmds,
             fences,
             pending: [false; FRAMES_IN_FLIGHT],
+            retained: std::array::from_fn(|_| None),
+            dormant: false,
             frame: 0,
         };
         // Build the initial chain; zero extents stay dormant. From here
@@ -364,6 +384,15 @@ impl WindowTarget {
     /// The current drawable size; zero while dormant.
     #[must_use]
     pub fn extent(&self) -> Extent {
+        // A parked target keeps its chain object alive purely so nothing
+        // GPU-referenced is destroyed without proof; publicly it is as
+        // dormant as one whose chain is gone, and it reports the same.
+        if self.dormant {
+            return Extent {
+                width: 0,
+                height: 0,
+            };
+        }
         self.chain.as_ref().map_or(
             Extent {
                 width: 0,
@@ -399,6 +428,7 @@ impl WindowTarget {
         }
         self.retire_fence_after_idle();
         self.destroy_chain();
+        self.dormant = false;
         if extent.width == 0 || extent.height == 0 {
             return Ok(());
         }
@@ -410,6 +440,13 @@ impl WindowTarget {
     /// The pipeline must come from this target's device and target
     /// [`format`](Self::format) — contract violations, checked in dev
     /// builds.
+    ///
+    /// # Panics
+    ///
+    /// Frame data longer than its buffer's per-frame capacity panics
+    /// through a retained assertion: the length bounds a copy into
+    /// mapped device memory, which makes it a memory-safety boundary
+    /// rather than a contract nicety.
     ///
     /// # Errors
     ///
@@ -424,10 +461,19 @@ impl WindowTarget {
     )]
     pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<PresentOutcome, TargetError> {
         let RenderDesc {
-            clear, pipeline, ..
+            clear,
+            pipeline,
+            frame_data,
+            ..
         } = *desc;
         if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
+        }
+        // Before any fence is waited or written: a dormant target's ring
+        // state is deliberately frozen mid-flight, and only `resize` may
+        // thaw it.
+        if self.dormant {
+            return Ok(PresentOutcome::NeedsResize);
         }
         if let Some(pipeline) = pipeline {
             debug_assert!(
@@ -475,11 +521,61 @@ impl WindowTarget {
                     return Err(creation("vkResetFences", code));
                 }
                 self.pending[frame] = false;
+                // The wait succeeded, so slot `frame`'s previous work has
+                // provably ended: the memory it read may die.
+                self.retained[frame] = None;
             }
 
             let Some(chain) = self.chain.as_ref() else {
                 return Ok(PresentOutcome::NeedsResize);
             };
+            // Per-frame bytes land here and not one line earlier: after
+            // the fence wait AND the chain check. A dormant target's
+            // flags can claim nothing is outstanding after a failed
+            // quiesce, and the chain check is what stands between that
+            // state and a copy into memory the GPU may still read.
+            if let Some(data) = frame_data {
+                let inner = &data.buffer.inner;
+                debug_assert!(
+                    Rc::ptr_eq(&inner.shared, &self.shared),
+                    "buffer and target come from different devices"
+                );
+                let me = std::ptr::from_ref::<Self>(self) as usize;
+                match inner.owner.get() {
+                    None => inner.owner.set(Some(me)),
+                    Some(owner) => debug_assert!(
+                        owner == me,
+                        "a per-frame buffer belongs to one target: its slot regions are                          owned by whichever target last submitted against them"
+                    ),
+                }
+                // Retained in release: this length bounds the copy below,
+                // which makes it a memory-safety boundary, not a contract
+                // nicety.
+                assert!(
+                    data.bytes.len() <= inner.capacity,
+                    "frame data exceeds the buffer's per-frame capacity"
+                );
+                // SAFETY: the mapping covers `slot_stride * MAX_FRAME_SLOTS`
+                // bytes; `frame < MAX_FRAME_SLOTS` and the assert above
+                // bounds the length within one slot region, so the write
+                // stays inside the allocation and cannot touch a
+                // neighbouring slot. The wait above proved no submit reads
+                // this region; the memory is HOST_COHERENT, so no flush.
+                // The stride is 64-aligned and doubled, far inside
+                // usize on every supported target; the cast is a lint
+                // formality, not a risk.
+                #[allow(clippy::cast_possible_truncation)]
+                let slot_byte_offset = (inner.slot_stride * frame as u64) as usize;
+                std::ptr::copy_nonoverlapping(
+                    data.bytes.as_ptr(),
+                    inner.mapped.add(slot_byte_offset),
+                    data.bytes.len(),
+                );
+                // The submit this frame records will read the region
+                // until its fence retires; keep the memory alive past any
+                // caller drop until that is proven.
+                self.retained[frame] = Some(Rc::clone(inner));
+            }
             let acquired = self.swapchain_loader.acquire_next_image(
                 chain.swapchain,
                 FENCE_TIMEOUT_NS,
@@ -610,7 +706,22 @@ impl WindowTarget {
                 device.cmd_set_viewport(cmd, 0, &[viewport]);
                 device.cmd_set_scissor(cmd, 0, &[area]);
                 pipeline.bind_descriptors(cmd);
-                device.cmd_draw(cmd, pipeline.vertex_count, 1, 0, 0);
+                let instances = match frame_data {
+                    Some(data) => {
+                        // A plain record-time offset — sound only because
+                        // this buffer is re-recorded every frame, so each
+                        // recording bakes in its own slot's region.
+                        device.cmd_bind_vertex_buffers(
+                            cmd,
+                            0,
+                            &[data.buffer.inner.buffer],
+                            &[data.buffer.inner.slot_stride * frame as u64],
+                        );
+                        data.instances
+                    }
+                    None => 1,
+                };
+                device.cmd_draw(cmd, pipeline.vertex_count, instances, 0, 0);
             }
             device.cmd_end_rendering(cmd);
 
@@ -709,8 +820,26 @@ impl WindowTarget {
         // that always runs.
         self.shared
             .note_result(idle.err().unwrap_or(vk::Result::SUCCESS));
-        self.retire_fence_after_idle();
-        self.destroy_chain();
+        // Work has provably ended if the quiesce succeeded OR the device
+        // is lost — a lost device terminates execution as finally as an
+        // idle one. A failed non-lost quiesce proves nothing, and
+        // retained buffer memory then survives until the next successful
+        // wait-idle (`resize`'s, which rebirth already requires) or this
+        // target's own teardown.
+        let quiesced = match idle {
+            Ok(()) => true,
+            Err(code) => code == vk::Result::ERROR_DEVICE_LOST,
+        };
+        if quiesced {
+            self.retire_fence_after_idle();
+            self.destroy_chain();
+        } else {
+            // No proof the GPU stopped, so nothing it may reference is
+            // touched: resetting a pending fence or destroying the
+            // chain's semaphores here is exactly the spec violation the
+            // first test to drive this corner caught. Park everything.
+            self.dormant = true;
+        }
         error
     }
 
@@ -718,6 +847,15 @@ impl WindowTarget {
     /// is signaled: reset it so the unsignaled-when-not-pending
     /// invariant holds.
     fn retire_fence_after_idle(&mut self) {
+        // Called only after PROOF that work ended — a successful
+        // wait-idle or a lost device. An unproven quiesce parks the
+        // target dormant instead, touching nothing: fences stay
+        // unreset, flags stay pending, retained memory stays alive.
+        // One rule, one place; the failed-quiesce corner is handled by
+        // never arriving here.
+        for slot in &mut self.retained {
+            *slot = None;
+        }
         for slot in 0..FRAMES_IN_FLIGHT {
             if self.pending[slot] {
                 // SAFETY: category 2: fence live; nothing outstanding
@@ -760,16 +898,17 @@ impl WindowTarget {
     /// frames are clear and every frame after that is not.
     ///
     /// A consumer that writes its copy for this slot between frames is
-    /// therefore writing memory the GPU may be reading. **Keeping
-    /// [`frames_in_flight`](Self::frames_in_flight) copies is necessary
-    /// and it is not sufficient**; nothing in this API currently reports
-    /// when a slot's previous submit has completed, so per-frame data
-    /// that a draw reads has no safe write point through these two
-    /// accessors alone.
+    /// therefore writing memory the GPU may be reading. **Per-frame data
+    /// a draw reads does not go through these accessors at all**: it
+    /// rides [`RenderDesc`](crate::RenderDesc) as
+    /// [`FrameData`](crate::FrameData), and the target copies it into
+    /// the right slot region *after* that slot's fence wait — the one
+    /// point where the region is provably not being read. There is no
+    /// caller-side write to time correctly, which is the entire design.
     ///
-    /// They remain correct for anything that does not race a submit —
-    /// choosing which of N caller-owned resources to *create* or label,
-    /// or reading back after a frame the caller has otherwise
+    /// These accessors remain correct for anything that does not race a
+    /// submit — choosing which of N caller-owned resources to *create*
+    /// or label, or reading back after a frame the caller has otherwise
     /// synchronised.
     #[must_use]
     pub fn frame_slot(&self) -> usize {
@@ -991,6 +1130,11 @@ impl Drop for WindowTarget {
         unsafe {
             let _ = self.shared.device.device_wait_idle();
         }
+        // Teardown releases retained memory unconditionally: this target
+        // and its ring die here, and holding memory past the owner that
+        // guaranteed its fences would be a leak, not a safety net. The
+        // best-effort wait above is the same one every cold teardown
+        // path in this crate already accepts.
         self.retire_fence_after_idle();
         self.destroy_chain();
         // SAFETY: as above.
