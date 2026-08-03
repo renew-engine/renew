@@ -36,27 +36,6 @@ const SPRITE_LAYOUT: &[InstanceAttribute] = &[
 /// table declares.
 const SPRITE_VERTEX_COUNT: u32 = 6;
 
-/// The stride and the layout describe the same bytes, checked at
-/// compile time so only the shader remains coupled by comment.
-const _: () = {
-    const fn width(attribute: InstanceAttribute) -> usize {
-        match attribute {
-            InstanceAttribute::Vec2 => 8,
-            InstanceAttribute::Vec4 => 16,
-        }
-    }
-    let mut total = 0usize;
-    let mut index = 0;
-    while index < SPRITE_LAYOUT.len() {
-        total += width(SPRITE_LAYOUT[index]);
-        index += 1;
-    }
-    assert!(
-        total == fill::INSTANCE_STRIDE,
-        "the instance layout and the packed stride disagree"
-    );
-};
-
 /// The atlas: dimensions and premultiplied pixels, borrowed for the one
 /// call that uploads them.
 ///
@@ -273,6 +252,27 @@ impl core::fmt::Debug for SpriteRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stride and the layout describe the same bytes, checked
+    /// mechanically so only the shader remains coupled by comment. A
+    /// test rather than a const block: const evaluation never executes
+    /// at runtime, so its lines read as uncovered to the coverage gate,
+    /// and a guard that needs an exemption to exist defeats both.
+    #[test]
+    fn the_stride_and_the_layout_describe_the_same_bytes() {
+        let total: usize = SPRITE_LAYOUT
+            .iter()
+            .map(|attribute| match attribute {
+                InstanceAttribute::Vec2 => 8,
+                InstanceAttribute::Vec4 => 16,
+            })
+            .sum();
+        assert_eq!(
+            total,
+            fill::INSTANCE_STRIDE,
+            "the instance layout and the packed stride disagree"
+        );
+    }
 
     #[test]
     fn errors_display_their_context_and_expose_their_source() {
