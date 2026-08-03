@@ -2,7 +2,8 @@
 
 The glide game's rules: a bird, gravity, pipes, a score. A pure
 fixed-step function of (seed, per-tick input), integer-only, with a
-digest folded over every store and scalar each tick.
+digest folded over every store, every scalar, and the generator each
+tick.
 
 ## Why the game is two crates
 
@@ -30,9 +31,12 @@ whole life.
 ## Testing
 
 Determinism and discrimination over 3,000 ticks; an entity-slot leak
-regression over 60,000 (the feasibility version's slot count climbs
-into the hundreds; this holds at or under sixteen); scoring and death
-reachability; ticking past death; the zero-allocation gate. Property
+regression over 60,000 piloted ticks whose bound is measured peak
+concurrency plus two — with the despawn call deleted it fails at 667
+slots against a peak of five, and that mutation kill is the test's
+acceptance bar; scoring and death reachability; ticking past death;
+the zero-allocation gate, measured over windows it proves are alive
+with pipes on screen. Property
 tests: N/A — not math, containers or allocators. Fuzz: N/A — no
 external data enters this crate; the trace bytes are parsed elsewhere
 and arrive as resolved booleans.

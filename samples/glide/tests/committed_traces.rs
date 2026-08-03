@@ -61,9 +61,14 @@ fn soar_bytes() -> Result<String, String> {
         "the recorded run must clear several pipes"
     );
 
-    let header = renew_trace::TraceHeader::new("glide", FRAMES, 16_666_667, 5)
-        .and_then(|header| header.with_key("seed", &SEED.to_string()))
-        .map_err(|error| error.to_string())?;
+    let header = renew_trace::TraceHeader::new(
+        "glide",
+        FRAMES,
+        renew_frame::Timestep::HZ_60.nanos().get(),
+        renew_frame::StepBudget::DEFAULT.get().get(),
+    )
+    .and_then(|header| header.with_key("seed", &SEED.to_string()))
+    .map_err(|error| error.to_string())?;
     let sealed = recorder.finish(header).map_err(|error| error.to_string())?;
     Ok(renew_trace::write(&sealed))
 }

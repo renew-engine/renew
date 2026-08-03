@@ -63,6 +63,9 @@ const GAP_MAX_STEP: i64 = 35 * ONE;
 /// bound. A compile-time fact about the constants, checked there.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 const STEP_SPAN: core::num::NonZeroU32 = {
+    // Range-checked before the cast: a future negative GAP_MAX_STEP
+    // must refuse the build, not wrap into a huge valid-looking bound.
+    assert!(GAP_MAX_STEP > 0 && GAP_MAX_STEP / ONE <= 1_000);
     match core::num::NonZeroU32::new((2 * (GAP_MAX_STEP / ONE) + 1) as u32) {
         Some(span) => span,
         None => panic!("the gap step span is empty"),
@@ -321,6 +324,7 @@ impl World {
             .digest
             .absorb_u64(rng_state)
             .absorb_u64(rng_increment)
+            .absorb_u64(self.entities.capacity() as u64)
             .absorb_bytes(&self.last_gap_y.to_le_bytes())
             .absorb_u64(self.tick)
             .absorb_bytes(&self.bird_y.to_le_bytes())
