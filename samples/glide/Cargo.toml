@@ -1,0 +1,36 @@
+[package]
+name = "renew-sample-glide"
+description = "A small complete game, headless-first: the glide world driven by keys, scripted traces, or a recorded replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The glide game's driver: maps input to the world's one action, runs the fixed-step loop headless, records and replays traces."
+maturity = "bootstrap"
+core = false
+simulation = false
+
+extension_points = []
+
+[[bin]]
+name = "glide"
+path = "src/main.rs"
+
+# The driver owns everything the world may not touch: the filesystem for
+# recordings and replays. Windowing arrives later as a feature, which is
+# why the platform dependency compiles the window stack out today.
+[dependencies]
+renew-event = { path = "../../crates/core/event" }
+renew-frame = { path = "../../crates/frame" }
+renew-input = { path = "../../crates/input" }
+renew-platform = { path = "../../crates/core/platform", default-features = false }
+renew-replay = { path = "../../crates/replay" }
+renew-sample-glide-world = { path = "world" }
+renew-trace = { path = "../../crates/trace" }
+
+[lints]
+workspace = true

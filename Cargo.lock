@@ -1511,6 +1511,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-glide"
+version = "0.1.0"
+dependencies = [
+ "renew-event",
+ "renew-frame",
+ "renew-input",
+ "renew-platform",
+ "renew-replay",
+ "renew-sample-glide-world",
+ "renew-trace",
+]
+
+[[package]]
+name = "renew-sample-glide-world"
+version = "0.1.0"
+dependencies = [
+ "renew-ecs",
+ "renew-frame",
+ "renew-memory",
+ "renew-rng",
+]
+
+[[package]]
 name = "renew-sample-hello-triangle"
 version = "0.1.0"
 dependencies = [
