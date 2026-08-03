@@ -1,0 +1,36 @@
+[package]
+name = "renew-sample-glide-world"
+description = "The glide sample's simulation: a fixed-step, integer-only world whose determinism is machine-checked"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The glide game's rules as a pure fixed-step function of seed and input: bird, pipes, scoring, and a digest over every store."
+maturity = "bootstrap"
+core = false
+simulation = true
+
+extension_points = []
+
+# Simulation only: the world may not reach an OS capability at any
+# dependency depth, and the structure check walks this list to prove it.
+# The driver crate beside it owns every file, window and clock.
+[dependencies]
+renew-ecs = { path = "../../../crates/ecs" }
+renew-frame = { path = "../../../crates/frame" }
+renew-rng = { path = "../../../crates/rng" }
+
+[features]
+# Marks the allocation-counting test ignored: counting is invalid by
+# construction when an instrumented runtime does its own allocating.
+sanitized = []
+
+[dev-dependencies]
+renew-memory = { path = "../../../crates/core/memory" }
+
+[lints]
+workspace = true
