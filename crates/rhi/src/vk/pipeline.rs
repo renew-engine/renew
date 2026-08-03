@@ -9,6 +9,7 @@ use ash::vk;
 
 use crate::config::Color;
 use crate::error::PipelineError;
+use crate::vk::buffer::Buffer;
 use crate::vk::device::{Device, DeviceShared};
 use crate::vk::texture::Texture;
 
@@ -171,6 +172,46 @@ pub struct RenderDesc<'a> {
     pub clear: Color,
     /// The pipeline to draw with, or `None` to clear only.
     pub pipeline: Option<&'a RenderPipeline>,
+    /// Per-frame bytes and the instanced draw they feed, or `None` for
+    /// the byte-free frame every existing caller records.
+    pub frame_data: Option<FrameData<'a>>,
+}
+
+/// Per-frame bytes and the instanced draw they feed.
+///
+/// **`#[non_exhaustive]` with a constructor, per the descriptor pattern
+/// this crate uses everywhere** -- the fields a pass model will add
+/// (first instance, a vertex offset) arrive as builders touching no
+/// existing caller.
+///
+/// The bytes are written into the buffer's region for the frame being
+/// recorded, *after* that slot's fence wait -- the one point where "no
+/// submit is reading this region" is a fact. The draw stays counts and
+/// offsets: `instances` here, the vertex count from the pipeline's
+/// shaders, the slot offset chosen by the target.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct FrameData<'a> {
+    /// The buffer whose current-slot region receives `bytes`.
+    pub buffer: &'a Buffer,
+    /// This frame's data. Length must be at most the buffer's per-frame
+    /// capacity; over-length is refused by a retained assertion, never
+    /// truncated -- a truncated instance is a quiet wrong draw.
+    pub bytes: &'a [u8],
+    /// Instance count for the draw.
+    pub instances: u32,
+}
+
+impl<'a> FrameData<'a> {
+    /// `bytes` for this frame, feeding `instances` instances.
+    #[must_use]
+    pub fn new(buffer: &'a Buffer, bytes: &'a [u8], instances: u32) -> Self {
+        Self {
+            buffer,
+            bytes,
+            instances,
+        }
+    }
 }
 
 impl fmt::Debug for RenderDesc<'_> {
@@ -198,6 +239,7 @@ impl<'a> RenderDesc<'a> {
         Self {
             clear,
             pipeline: None,
+            frame_data: None,
         }
     }
 
@@ -205,6 +247,13 @@ impl<'a> RenderDesc<'a> {
     #[must_use]
     pub fn pipeline(mut self, pipeline: &'a RenderPipeline) -> Self {
         self.pipeline = Some(pipeline);
+        self
+    }
+
+    /// Carry per-frame bytes and an instanced draw in this frame.
+    #[must_use]
+    pub fn frame_data(mut self, data: FrameData<'a>) -> Self {
+        self.frame_data = Some(data);
         self
     }
 }

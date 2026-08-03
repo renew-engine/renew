@@ -64,7 +64,7 @@ impl<'a> TextureDesc<'a> {
 /// inline can leave the closing `)?;` holding nothing but the
 /// propagation — a region reachable only on a machine where no memory
 /// type fits, which is to say not reachable at all.
-fn no_memory_type(call: &'static str) -> TargetError {
+pub(crate) fn no_memory_type(call: &'static str) -> TargetError {
     TargetError::Creation { call, code: 0 }
 }
 

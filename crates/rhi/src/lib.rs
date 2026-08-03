@@ -71,6 +71,7 @@ mod vk;
 
 pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation};
 pub use error::{DeviceError, PipelineError, TargetError};
+pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pipeline::{

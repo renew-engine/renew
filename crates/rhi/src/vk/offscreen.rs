@@ -412,7 +412,10 @@ impl OffscreenTarget {
     )]
     pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<(), TargetError> {
         let RenderDesc {
-            clear, pipeline, ..
+            clear,
+            pipeline,
+            frame_data,
+            ..
         } = *desc;
         if self.wedged {
             return Err(TargetError::Timeout {
@@ -432,6 +435,37 @@ impl OffscreenTarget {
                 "pipeline targets {:?}, offscreen is Rgba8Unorm",
                 pipeline.format
             );
+        }
+        if let Some(data) = frame_data {
+            let inner = &data.buffer.inner;
+            debug_assert!(
+                Rc::ptr_eq(&inner.shared, &self.shared),
+                "buffer and target come from different devices"
+            );
+            let me = self as *const Self as usize;
+            match inner.owner.get() {
+                None => inner.owner.set(Some(me)),
+                Some(owner) => debug_assert!(
+                    owner == me,
+                    "a per-frame buffer belongs to one target: its slot regions are                      owned by whichever target last submitted against them"
+                ),
+            }
+            // Retained in release: this length bounds the copy below,
+            // which makes it a memory-safety boundary, not a contract
+            // nicety.
+            assert!(
+                data.bytes.len() <= inner.capacity,
+                "frame data ({} bytes) exceeds the buffer's per-frame capacity ({})",
+                data.bytes.len(),
+                inner.capacity
+            );
+            // SAFETY: the mapping covers every slot region and the assert
+            // bounds the length within slot zero's; the tail wait of the
+            // previous `render` proved no submit reads it; HOST_COHERENT,
+            // so no flush.
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.bytes.as_ptr(), inner.mapped, data.bytes.len());
+            }
         }
         let device = &self.shared.device;
 
@@ -515,7 +549,24 @@ impl OffscreenTarget {
                 device.cmd_set_viewport(self.cmd, 0, &[viewport]);
                 device.cmd_set_scissor(self.cmd, 0, &[area]);
                 pipeline.bind_descriptors(self.cmd);
-                device.cmd_draw(self.cmd, pipeline.vertex_count, 1, 0, 0);
+                let instances = match frame_data {
+                    Some(data) => {
+                        // Slot zero always: this target's tail wait means
+                        // no submit outlives `render`, so there is one
+                        // region in play and no retention to keep — the
+                        // caller's borrow covers the only window in which
+                        // the GPU reads.
+                        device.cmd_bind_vertex_buffers(
+                            self.cmd,
+                            0,
+                            &[data.buffer.inner.buffer],
+                            &[0],
+                        );
+                        data.instances
+                    }
+                    None => 1,
+                };
+                device.cmd_draw(self.cmd, pipeline.vertex_count, instances, 0, 0);
             }
             device.cmd_end_rendering(self.cmd);
 
