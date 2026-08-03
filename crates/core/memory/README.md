@@ -10,7 +10,11 @@ an instrumented global allocator for counting.
   handles: stale handles miss instead of aliasing recycled slots.
 - `CountingAllocator` — a wrapper over the system allocator that a
   *binary* installs with `#[global_allocator]`; every allocation in the
-  process is then counted, readable through `counters::snapshot()`.
+  process is then counted, readable through `counters::snapshot()`. The
+  retry-until-quiet window policy the allocation gates share lives beside
+  the counters as `counters::quiet_window` — one home for the decision of
+  what counts as a quiet window (no allocations AND no deallocations),
+  however many suites enforce it.
 
 ## Contract
 

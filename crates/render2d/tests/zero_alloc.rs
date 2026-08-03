@@ -18,11 +18,6 @@ use renew_rhi::{Color, Device, DeviceDesc, DeviceError, Extent, TargetFormat, Va
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// Allocations recorded so far, process-wide.
-fn allocations() -> u64 {
-    counters::snapshot().allocations
-}
-
 const SIZE: u32 = 64;
 /// Per-frame variation without per-frame allocation: positions read
 /// from a fixed table, so the packed bytes differ frame to frame and
@@ -165,36 +160,24 @@ fn steady_state_fill_and_render_allocates_nothing() {
     }
     assert_frame_is_live(&pixels, 2, "after warmup");
 
-    // Measurement protocol: the counter is process-wide and the harness
-    // thread can allocate concurrently, so the window retries — one-shot
-    // neighbor noise rides out, while a real fill-or-render allocation
-    // reproduces in every window and still fails.
-    let mut last_delta = 0u64;
-    let mut observed_zero = false;
-    for attempt in 0..5 {
-        let before = allocations();
-        for index in 0..16 {
-            frame(
-                &mut renderer,
-                &mut target,
-                &mut pixels,
-                attempt * 16 + index,
-            );
+    // The retry-until-quiet policy lives with the counters it reads;
+    // both channels now — a fill that frees is as loud as one that
+    // allocates. The frame counter threads through the closure so the
+    // liveness check still knows where this window's last frame put
+    // the wandering sprite.
+    let mut frames_run = 0usize;
+    let verdict = counters::quiet_window(5, || {
+        for _ in 0..16 {
+            frame(&mut renderer, &mut target, &mut pixels, frames_run);
+            frames_run += 1;
         }
-        let after = allocations();
-        assert_frame_is_live(&pixels, attempt * 16 + 15, "at the window's end");
-        last_delta = after - before;
-        if last_delta == 0 {
-            observed_zero = true;
-            break;
-        }
-    }
+        assert_frame_is_live(&pixels, frames_run - 1, "at the window's end");
+    });
     eprintln!(
         "engine allocation counters after steady state: {:?}",
         counters::snapshot()
     );
-    assert!(
-        observed_zero,
-        "the fill-and-render path heap-allocated in every window (last delta: {last_delta})"
-    );
+    if let Err(activity) = verdict {
+        panic!("the fill-and-render path was loud in every window (last: {activity})");
+    }
 }

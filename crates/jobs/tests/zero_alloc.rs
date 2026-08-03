@@ -12,30 +12,11 @@ use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use renew_jobs::{JobPool, PoolConfig};
-use renew_memory::{CountingAllocator, counters};
+use renew_memory::CountingAllocator;
+use renew_memory::counters::quiet_window;
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-fn quiet_window(attempts: usize, mut window: impl FnMut()) -> Result<(), String> {
-    let mut last = (0u64, 0u64);
-    for _ in 0..attempts {
-        let before = counters::snapshot();
-        window();
-        let after = counters::snapshot();
-        if after.allocations == before.allocations && after.deallocations == before.deallocations {
-            return Ok(());
-        }
-        last = (
-            after.allocations - before.allocations,
-            after.deallocations - before.deallocations,
-        );
-    }
-    Err(format!(
-        "allocator activity in every window (last deltas: +{} allocations, +{} deallocations)",
-        last.0, last.1
-    ))
-}
 
 #[test]
 #[cfg_attr(

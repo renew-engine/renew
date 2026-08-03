@@ -28,11 +28,6 @@ use renew_rhi::{
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// Allocations recorded so far, process-wide.
-fn allocations() -> u64 {
-    counters::snapshot().allocations
-}
-
 #[test]
 #[cfg_attr(
     feature = "sanitized",
@@ -121,15 +116,11 @@ fn steady_state_frames_allocate_nothing() {
         target.read_back_into(&mut pixels);
     }
 
-    // Measurement protocol: the counter is process-wide and the test
-    // harness's own thread can allocate concurrently. So the window
-    // retries: one-shot neighbor noise rides out, while a real
-    // render-path allocation reproduces in every window and still
-    // fails.
-    let mut last_delta = 0u64;
-    let mut observed_zero = false;
-    for _ in 0..5 {
-        let before = allocations();
+    // The retry-until-quiet policy lives with the counters it reads;
+    // this file used to open-code it, invisible to anyone grepping for
+    // the helper. Both channels now: a steady frame that deallocates is
+    // as loud as one that allocates.
+    let verdict = counters::quiet_window(5, || {
         for _ in 0..16 {
             target
                 .render(&RenderDesc::new(clear).pipeline(&pipeline))
@@ -143,13 +134,7 @@ fn steady_state_frames_allocate_nothing() {
                 .expect("steady instanced frame");
             target.read_back_into(&mut pixels);
         }
-        let after = allocations();
-        last_delta = after - before;
-        if last_delta == 0 {
-            observed_zero = true;
-            break;
-        }
-    }
+    });
     // The driver-side ledger is printed for the record, never gated:
     // driver host-allocation behavior is the driver's, not ours.
     let stats = device.host_allocation_stats();
@@ -163,10 +148,9 @@ fn steady_state_frames_allocate_nothing() {
         "engine allocation counters after steady state: {:?}",
         counters::snapshot()
     );
-    assert!(
-        observed_zero,
-        "the render path heap-allocated in every window (last delta: {last_delta})"
-    );
+    if let Err(activity) = verdict {
+        panic!("the render path was loud in every window (last: {activity})");
+    }
 }
 
 /// The instanced pipeline, its per-frame buffer, and one packed

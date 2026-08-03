@@ -49,8 +49,13 @@ const WINDOW_FRAMES: u32 = 16;
 const WARMUP_FRAMES: u32 = 8;
 /// Retries. The counter is process-wide, so a neighbour's one-shot
 /// allocation must be allowed to ride out while a real render-path
-/// allocation reproduces in every window. Same protocol as the offscreen
-/// gate, and the reason is the same.
+/// allocation reproduces in every window — the same reasoning as
+/// `renew_memory::counters::quiet_window`, which every other gate now
+/// calls. This file deliberately does NOT: its window spans event-loop
+/// callbacks with per-call bracketing (the event loop's own allocations
+/// are the environment's, not the engine's) and restarts on resize, a
+/// different measurement no call-frame-shaped helper can express. If
+/// that ever stops being true, the helper is where this goes.
 const ATTEMPTS: u32 = 5;
 /// Poll-loop iterations before declaring the run wedged.
 const UPDATE_BUDGET: u32 = 20_000;
