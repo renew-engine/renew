@@ -12,7 +12,8 @@
 //! lands in a window either. Own process on purpose; this file holds a
 //! single test so no sibling test allocates alongside it.
 
-use renew_memory::{CountingAllocator, LinearArena, Pool, counters};
+use renew_memory::counters::quiet_window;
+use renew_memory::{CountingAllocator, LinearArena, Pool};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -20,26 +21,6 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// Run the window until one pass shows exactly zero allocator activity.
 /// Fallible on purpose: the `expect()` lives inside the test, where the
 /// lint configuration scopes it.
-fn quiet_window(attempts: usize, mut window: impl FnMut()) -> Result<(), String> {
-    let mut last = (0u64, 0u64);
-    for _ in 0..attempts {
-        let before = counters::snapshot();
-        window();
-        let after = counters::snapshot();
-        if after.allocations == before.allocations && after.deallocations == before.deallocations {
-            return Ok(());
-        }
-        last = (
-            after.allocations - before.allocations,
-            after.deallocations - before.deallocations,
-        );
-    }
-    Err(format!(
-        "allocator activity in every window (last deltas: +{} allocations, +{} deallocations)",
-        last.0, last.1
-    ))
-}
-
 #[test]
 #[cfg_attr(
     feature = "sanitized",

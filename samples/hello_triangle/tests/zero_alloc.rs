@@ -23,6 +23,7 @@
 
 #[cfg(feature = "window")]
 use renew_frame::{Nanos, Timestamp};
+use renew_memory::counters::quiet_window;
 use renew_memory::{CountingAllocator, counters};
 #[cfg(feature = "window")]
 use renew_sample_hello_triangle::Readout;
@@ -36,26 +37,6 @@ const WINDOW_FRAMES: u64 = 16;
 
 fn strict() -> bool {
     std::env::var_os("RENEW_FRAME_STRICT").is_some_and(|value| value == "1")
-}
-
-fn quiet_window(attempts: usize, mut window: impl FnMut()) -> Result<(), String> {
-    let mut last = (0u64, 0u64);
-    for _ in 0..attempts {
-        let before = counters::snapshot();
-        window();
-        let after = counters::snapshot();
-        if after.allocations == before.allocations && after.deallocations == before.deallocations {
-            return Ok(());
-        }
-        last = (
-            after.allocations - before.allocations,
-            after.deallocations - before.deallocations,
-        );
-    }
-    Err(format!(
-        "allocator activity in every window (last deltas: +{} allocations, +{} deallocations)",
-        last.0, last.1
-    ))
 }
 
 #[test]

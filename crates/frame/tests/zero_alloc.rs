@@ -15,6 +15,7 @@
 //! `format!` in a hot path, or a boxed callback.
 
 use renew_frame::{FrameLoop, FrameStats, FrameTiming, Nanos, StepBudget, Timestamp, Timestep};
+use renew_memory::counters::quiet_window;
 use renew_memory::{CountingAllocator, counters};
 
 #[global_allocator]
@@ -22,26 +23,6 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// 60 Hz in whole nanoseconds.
 const DT: u64 = 16_666_667;
-
-fn quiet_window(attempts: usize, mut window: impl FnMut()) -> Result<(), String> {
-    let mut last = (0u64, 0u64);
-    for _ in 0..attempts {
-        let before = counters::snapshot();
-        window();
-        let after = counters::snapshot();
-        if after.allocations == before.allocations && after.deallocations == before.deallocations {
-            return Ok(());
-        }
-        last = (
-            after.allocations - before.allocations,
-            after.deallocations - before.deallocations,
-        );
-    }
-    Err(format!(
-        "allocator activity in every window (last deltas: +{} allocations, +{} deallocations)",
-        last.0, last.1
-    ))
-}
 
 /// One frame of the full steady-state path: plan, execute, interpolate,
 /// tally. Every call a caller makes per frame is here, so a future

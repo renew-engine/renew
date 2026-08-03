@@ -17,10 +17,6 @@ use renew_sample_glide_world::World;
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-fn allocations() -> u64 {
-    counters::snapshot().allocations
-}
-
 #[test]
 #[cfg_attr(
     feature = "sanitized",
@@ -38,31 +34,24 @@ fn steady_state_ticks_allocate_nothing() {
         world.step(flap);
     }
 
-    let mut last_delta = 0u64;
-    let mut observed_zero = false;
-    for _ in 0..5 {
+    // The retry-until-quiet policy lives with the counters it reads;
+    // both channels now — a tick that frees is as loud as one that
+    // allocates.
+    let verdict = counters::quiet_window(5, || {
         assert!(
             world.alive() && world.pipes() > 0,
             "the window must open on a live game"
         );
-        let before = allocations();
         for _ in 0..1_000u64 {
             let flap = world.autopilot();
             world.step(flap);
         }
-        let after = allocations();
         assert!(
             world.alive() && world.pipes() > 0,
             "the window must close on a live game"
         );
-        last_delta = after - before;
-        if last_delta == 0 {
-            observed_zero = true;
-            break;
-        }
+    });
+    if let Err(activity) = verdict {
+        panic!("a live tick was loud in every window (last: {activity})");
     }
-    assert!(
-        observed_zero,
-        "a live tick allocated in every window (last delta: +{last_delta})"
-    );
 }
