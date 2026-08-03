@@ -458,8 +458,10 @@ mod tests {
     /// One 60Hz step interval in nanoseconds.
     const STEP: u64 = Timestep::HZ_60.nanos().get();
 
+    /// Through the seam, not straight into the map: the fall-through
+    /// event arm is part of what these tests witness.
     fn press(app: &mut GlideApp) {
-        app.input.handle(WindowEvent::Key {
+        app.event(WindowEvent::Key {
             code: renew_event::KeyCode::Space,
             pressed: true,
             repeat: false,
@@ -467,7 +469,7 @@ mod tests {
     }
 
     fn release(app: &mut GlideApp) {
-        app.input.handle(WindowEvent::Key {
+        app.event(WindowEvent::Key {
             code: renew_event::KeyCode::Space,
             pressed: false,
             repeat: false,
@@ -608,6 +610,26 @@ mod tests {
         assert!(matches!(&second.failure, Some(SampleError::Failed(_))));
         second.record_bring_up(Ok(()));
         second.record_resize(Ok(()));
+    }
+
+    #[test]
+    fn an_update_before_ready_is_a_quiet_no_op() {
+        // No frame is anchored until ready runs; an update arriving
+        // first must step nothing and fail nothing.
+        let options = Options {
+            seed: 7,
+            frames: 2_000,
+            input_trace: "soar".to_string(),
+            record_trace: None,
+            replay_trace: None,
+            window: true,
+            window_ticks: None,
+        };
+        let mut app = GlideApp::new(&options);
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(STEP), &mut control);
+        assert_eq!(app.world.tick(), 0);
+        assert!(app.failure.is_none());
     }
 
     #[test]
