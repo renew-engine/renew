@@ -1,0 +1,69 @@
+# renew-render2d
+
+Batched 2D sprites over the rendering crate: one atlas, one pipeline,
+one instanced draw per frame. Fill in canvas space, describe the frame,
+hand the descriptor to whichever target you hold.
+
+## Why it is a crate
+
+Sprite batching is policy over the rendering crate's mechanisms — which
+attributes an instance carries, what order sprites composite in, what
+convention the bytes obey. Policy is removable; mechanism is not. An
+engine build without 2D rendering drops this crate and loses nothing
+else, which the build matrix proves by building and testing without it.
+
+## Contract
+
+- **Fill order is draw order.** Sprites composite in exactly the order
+  pushed — painter's algorithm. **No sort keys, no batch splitting**; a
+  caller that wants order sorts before pushing.
+- **Everything is premultiplied.** Atlas texels and tints alike carry
+  their alpha multiplied into their color channels, and the pipeline
+  composites `src + dst * (1 - src.a)`. Bytes that break the convention
+  composite wrong — visibly, not unsafely.
+- **All allocations happen at creation.** `begin`, `push`, and `desc`
+  allocate nothing; a gate measures it over frames it first proves are
+  alive and drawing.
+- **This crate never renders.** `desc` returns the rendering crate's
+  own frame descriptor; targets belong to the caller. It never touches
+  a window, a clock, or the filesystem — the lint file makes the ways
+  that stops being true unwritable.
+- **Capacity is refused by name.** Pushing past the size fixed at
+  creation is a caller sizing bug and fails with a retained assertion
+  saying so, never a truncated draw.
+
+## What is here
+
+- `Canvas`, `Region`, `Sprite` — the pure vocabulary: a logical pixel
+  space (y down from the top-left), a rectangle of atlas texels, and
+  one placed, sized, tinted sprite.
+- `AtlasDesc` — dimensions plus premultiplied RGBA8 bytes. This crate
+  parses nothing: where the bytes come from (an asset pack, a test
+  fixture) is the caller's business, and the untrusted-input surface
+  here is zero.
+- `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
+  (premultiplied blending, nearest/clamped sampling) and the per-frame
+  buffer; `begin`/`push` fill; `desc` describes the frame for either
+  target.
+
+The ortho and UV maps run on the CPU at push time — each instance
+carries its own NDC rectangle, so no uniform, matrix, or push constant
+exists anywhere in the crate.
+
+## Testing
+
+Unit tests pin the maps (all four canvas corners, exact) and the packed
+bytes against hand-written records; a property test holds the ortho map
+monotone, corner-exact, and invertible over random canvases. A computed
+image oracle proves placement, region selection, and fill-order
+overwrite byte-exactly on every adapter; a committed golden proves the
+premultiplied compositing convention on the pinned software-rasterizer
+lane, with the same candidate/provenance ritual as the rendering
+crate's goldens. The allocation gate measures fill-and-render windows
+it first proves are drawing. Fuzzing: N/A — no parser; inputs are
+first-party structs and trusted first-party bytes.
+
+## Manifest
+
+Machine-readable fields — maturity, dependencies, core status — live in
+`Cargo.toml` under `[package.metadata.renew]`, which is authoritative.

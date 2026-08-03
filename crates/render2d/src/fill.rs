@@ -1,0 +1,382 @@
+//! The pure half: sprites in canvas space become instance bytes in NDC.
+//!
+//! Nothing here touches a device. The ortho map, the UV map, and the
+//! packing are plain functions so the unit and property tests below can
+//! pin them without bringing up Vulkan — the GPU half consumes exactly
+//! these bytes.
+
+use renew_math::Vec2;
+use renew_rhi::Extent;
+
+/// One packed instance: five attributes, twelve `f32`s, 48 bytes. The
+/// shader's `location(0..=4)` list, the layout slice in `gpu.rs`, and
+/// [`pack`] describe the same bytes; change one and the others in the
+/// same commit or the draw reads garbage.
+pub(crate) const INSTANCE_STRIDE: usize = 48;
+
+/// The drawing surface's logical size in pixels. Sprites are placed in
+/// this space — y grows downward from the top-left, matching both how
+/// 2D art is authored and the NDC orientation the targets render with —
+/// and the ortho map turns it into NDC at push time.
+///
+/// `new` refuses zero by construction (`Option`, the `NonZeroU32::new`
+/// idiom): a zero-sized canvas is not a failed environment or a broken
+/// contract mid-frame, it is a value that cannot exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Canvas {
+    width: core::num::NonZeroU32,
+    height: core::num::NonZeroU32,
+}
+
+impl Canvas {
+    /// A canvas of `width × height` logical pixels, or `None` if either
+    /// is zero.
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Option<Self> {
+        Some(Self {
+            width: core::num::NonZeroU32::new(width)?,
+            height: core::num::NonZeroU32::new(height)?,
+        })
+    }
+
+    /// Width in logical pixels.
+    #[must_use]
+    pub fn width(self) -> u32 {
+        self.width.get()
+    }
+
+    /// Height in logical pixels.
+    #[must_use]
+    pub fn height(self) -> u32 {
+        self.height.get()
+    }
+}
+
+/// A rectangle of atlas texels: which part of the atlas a sprite shows.
+///
+/// Plain data with public fields — every combination is meaningful to
+/// construct, and the UV map is total over it. A region reaching past
+/// the atlas edge samples clamped edge texels rather than failing;
+/// that is visible art, not unsoundness, and the golden tests pin the
+/// in-bounds behavior that matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    /// Left edge, in texels from the atlas's left.
+    pub x: u32,
+    /// Top edge, in texels from the atlas's top.
+    pub y: u32,
+    /// Width in texels.
+    pub width: u32,
+    /// Height in texels.
+    pub height: u32,
+}
+
+/// One sprite: an atlas region, a place on the canvas, a size, a tint.
+///
+/// `#[non_exhaustive]` with a constructor and builders, the descriptor
+/// pattern this tree uses everywhere: the fields a later version adds
+/// (rotation, origin) arrive as builders touching no existing caller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Sprite {
+    /// The atlas texels this sprite shows.
+    pub region: Region,
+    /// Left edge on the canvas, logical pixels.
+    pub x: f32,
+    /// Top edge on the canvas, logical pixels.
+    pub y: f32,
+    /// Width on the canvas, logical pixels.
+    pub width: f32,
+    /// Height on the canvas, logical pixels.
+    pub height: f32,
+    /// Premultiplied RGBA tint, multiplied into every sampled texel.
+    /// Opaque white — the default — is the identity. Like the atlas
+    /// bytes themselves, the tint carries its alpha multiplied in;
+    /// one convention end to end.
+    pub tint: [f32; 4],
+}
+
+impl Sprite {
+    /// `region` drawn with its top-left corner at (`x`, `y`), at the
+    /// region's own size, untinted.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "atlas regions are far below 2^24 texels per axis, where f32 is exact"
+    )]
+    pub fn new(region: Region, x: f32, y: f32) -> Self {
+        Self {
+            region,
+            x,
+            y,
+            width: region.width as f32,
+            height: region.height as f32,
+            tint: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// Draw at `width × height` canvas pixels instead of the region's
+    /// own size.
+    #[must_use]
+    pub fn size(mut self, width: f32, height: f32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// Multiply every sampled texel by `tint` (premultiplied RGBA).
+    #[must_use]
+    pub fn tint(mut self, tint: [f32; 4]) -> Self {
+        self.tint = tint;
+        self
+    }
+}
+
+/// Canvas pixels to NDC: `2c/extent - 1` per axis, no flip — canvas y
+/// grows downward and so does the targets' NDC y (both viewports are
+/// positive-height). The unit tests pin all four canvas corners so a
+/// sign mistake cannot survive.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "canvas dimensions are far below 2^24, where f32 is exact"
+)]
+pub(crate) fn to_ndc(point: Vec2, canvas: Canvas) -> Vec2 {
+    Vec2::new(
+        2.0 * point.x / canvas.width() as f32 - 1.0,
+        2.0 * point.y / canvas.height() as f32 - 1.0,
+    )
+}
+
+/// Region texels to UV: `texel / atlas_extent` per axis. Region edges
+/// land on texel boundaries; nearest sampling then picks interior
+/// texels, so no half-texel inset exists to get wrong.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "atlas dimensions are far below 2^24, where f32 is exact"
+)]
+pub(crate) fn to_uv(texel: Vec2, atlas: Extent) -> Vec2 {
+    Vec2::new(texel.x / atlas.width as f32, texel.y / atlas.height as f32)
+}
+
+/// One instance record, packed exactly as the layout slice declares:
+/// NDC min, NDC max, UV min, UV max — each two `f32`s — then the
+/// four-`f32` tint, native-endian, in declaration order.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "region texel coordinates are far below 2^24, where f32 is exact"
+)]
+pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
+    let canvas_min = Vec2::new(sprite.x, sprite.y);
+    let canvas_max = canvas_min + Vec2::new(sprite.width, sprite.height);
+    let ndc_min = to_ndc(canvas_min, canvas);
+    let ndc_max = to_ndc(canvas_max, canvas);
+
+    let texel_min = Vec2::new(sprite.region.x as f32, sprite.region.y as f32);
+    let texel_max = texel_min + Vec2::new(sprite.region.width as f32, sprite.region.height as f32);
+    let uv_min = to_uv(texel_min, atlas);
+    let uv_max = to_uv(texel_max, atlas);
+
+    let values: [f32; 12] = [
+        ndc_min.x,
+        ndc_min.y,
+        ndc_max.x,
+        ndc_max.y,
+        uv_min.x,
+        uv_min.y,
+        uv_max.x,
+        uv_max.y,
+        sprite.tint[0],
+        sprite.tint[1],
+        sprite.tint[2],
+        sprite.tint[3],
+    ];
+    let mut bytes = [0u8; INSTANCE_STRIDE];
+    for (slot, value) in bytes.chunks_exact_mut(4).zip(values) {
+        slot.copy_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "test dimensions stay far below 2^24, where f32 is exact"
+)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn canvas(width: u32, height: u32) -> Canvas {
+        Canvas::new(width, height).expect("nonzero test canvas")
+    }
+
+    /// Exact float claims compare bits, the math crate's own pattern:
+    /// these maps promise identities, not approximations.
+    fn bits(v: Vec2) -> (u32, u32) {
+        (v.x.to_bits(), v.y.to_bits())
+    }
+
+    #[test]
+    fn a_zero_dimension_is_not_a_canvas() {
+        assert!(Canvas::new(0, 1).is_none());
+        assert!(Canvas::new(1, 0).is_none());
+        assert!(Canvas::new(0, 0).is_none());
+        let c = canvas(320, 200);
+        assert_eq!((c.width(), c.height()), (320, 200));
+    }
+
+    #[test]
+    fn the_four_canvas_corners_map_to_their_ndc_corners() {
+        // The sign-mistake killer: top-left is (-1, -1) — NDC y grows
+        // downward like canvas y — and each corner is exact, not close.
+        let c = canvas(640, 360);
+        assert_eq!(
+            bits(to_ndc(Vec2::new(0.0, 0.0), c)),
+            bits(Vec2::new(-1.0, -1.0))
+        );
+        assert_eq!(
+            bits(to_ndc(Vec2::new(640.0, 0.0), c)),
+            bits(Vec2::new(1.0, -1.0))
+        );
+        assert_eq!(
+            bits(to_ndc(Vec2::new(0.0, 360.0), c)),
+            bits(Vec2::new(-1.0, 1.0))
+        );
+        assert_eq!(
+            bits(to_ndc(Vec2::new(640.0, 360.0), c)),
+            bits(Vec2::new(1.0, 1.0))
+        );
+        assert_eq!(
+            bits(to_ndc(Vec2::new(320.0, 180.0), c)),
+            bits(Vec2::new(0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn uv_maps_texel_edges_to_unit_fractions() {
+        let atlas = Extent {
+            width: 8,
+            height: 4,
+        };
+        assert_eq!(
+            bits(to_uv(Vec2::new(0.0, 0.0), atlas)),
+            bits(Vec2::new(0.0, 0.0))
+        );
+        assert_eq!(
+            bits(to_uv(Vec2::new(8.0, 4.0), atlas)),
+            bits(Vec2::new(1.0, 1.0))
+        );
+        assert_eq!(
+            bits(to_uv(Vec2::new(2.0, 1.0), atlas)),
+            bits(Vec2::new(0.25, 0.25))
+        );
+    }
+
+    #[test]
+    fn new_takes_the_regions_own_size_and_no_tint() {
+        let sprite = Sprite::new(
+            Region {
+                x: 4,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            10.0,
+            20.0,
+        );
+        assert_eq!(
+            (sprite.width.to_bits(), sprite.height.to_bits()),
+            (4.0f32.to_bits(), 4.0f32.to_bits())
+        );
+        assert_eq!(sprite.tint.map(f32::to_bits), [1.0f32; 4].map(f32::to_bits));
+        let resized = sprite.size(8.0, 2.0).tint([0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(
+            (resized.width.to_bits(), resized.height.to_bits()),
+            (8.0f32.to_bits(), 2.0f32.to_bits())
+        );
+        assert_eq!(
+            resized.tint.map(f32::to_bits),
+            [0.5f32; 4].map(f32::to_bits)
+        );
+    }
+
+    #[test]
+    fn packing_is_byte_exact_against_a_hand_computed_record() {
+        // A 4×4 region at the top-left of an 8×8 atlas, drawn from
+        // (16, 8) to (48, 24) on a 64×32 canvas, half-tinted. Every
+        // expected f32 below is written out by hand from the maps'
+        // definitions; the test owns the arithmetic, not the code
+        // under test.
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprite = Sprite::new(
+            Region {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            16.0,
+            8.0,
+        )
+        .size(32.0, 16.0)
+        .tint([0.5, 0.25, 0.125, 0.5]);
+
+        let expected: [f32; 12] = [
+            -0.5, -0.5, // ndc min: 2*16/64-1, 2*8/32-1
+            0.5, 0.5, // ndc max: 2*48/64-1, 2*24/32-1
+            0.0, 0.0, // uv min
+            0.5, 0.5, // uv max: 4/8
+            0.5, 0.25, 0.125, 0.5, // tint, verbatim
+        ];
+        let packed = pack(&sprite, c, atlas);
+        for (index, value) in expected.iter().enumerate() {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packed[index * 4..index * 4 + 4]);
+            assert_eq!(
+                f32::from_ne_bytes(raw).to_bits(),
+                value.to_bits(),
+                "f32 slot {index} disagrees with the hand computation"
+            );
+        }
+    }
+
+    proptest! {
+        /// Math earns property tests: over arbitrary canvases and points, the
+        /// ortho map is monotone in both axes, exact at the corners,
+        /// and inverts back to the input within one part in a million
+        /// of the canvas size.
+        #[test]
+        fn the_ortho_map_is_monotone_exact_at_corners_and_invertible(
+            width in 1u32..=16_384,
+            height in 1u32..=16_384,
+            x in 0.0f32..=16_384.0,
+            y in 0.0f32..=16_384.0,
+            step in 0.001f32..=64.0,
+        ) {
+            let c = canvas(width, height);
+            let w = width as f32;
+            let h = height as f32;
+
+            // Corners are exact — the identity `2w/w - 1 == 1` holds in
+            // f32 because the division is by the value itself.
+            prop_assert_eq!(bits(to_ndc(Vec2::new(0.0, 0.0), c)), bits(Vec2::new(-1.0, -1.0)));
+            prop_assert_eq!(bits(to_ndc(Vec2::new(w, h), c)), bits(Vec2::new(1.0, 1.0)));
+
+            // Monotone: a strictly larger input never maps smaller.
+            let here = to_ndc(Vec2::new(x, y), c);
+            let there = to_ndc(Vec2::new(x + step, y + step), c);
+            prop_assert!(there.x >= here.x);
+            prop_assert!(there.y >= here.y);
+
+            // Invertible: canvas = (ndc + 1) * extent / 2, within one
+            // part in a million of the extent.
+            let back = Vec2::new((here.x + 1.0) * w / 2.0, (here.y + 1.0) * h / 2.0);
+            prop_assert!((back.x - x).abs() <= w * 1e-6 + 1e-3);
+            prop_assert!((back.y - y).abs() <= h * 1e-6 + 1e-3);
+        }
+    }
+}
