@@ -1,9 +1,8 @@
-//! Why a run stopped: two meanings, two exit codes.
+//! Why a run stopped: two meanings headless, a third with a window.
 //!
-//! No "environment unavailable" variant, deliberately: every mode this
-//! sample has today is headless, so there is no display to be missing.
-//! The variant arrives with the windowed feature, not before — an error
-//! nothing can construct is an arm no test can reach.
+//! The "environment unavailable" variant rides the windowed feature —
+//! in a headless-only build there is no display to be missing, and an
+//! error nothing can construct is an arm no test can reach.
 
 use core::fmt;
 
@@ -14,6 +13,11 @@ pub enum SampleError {
     Usage(String),
     /// Something that should have worked did not.
     Failed(String),
+    /// The environment cannot host this mode: a window was asked for
+    /// and no display can provide one. Named separately so the message
+    /// says whose fault it is — nobody's.
+    #[cfg(feature = "window")]
+    Unavailable(String),
 }
 
 impl SampleError {
@@ -28,6 +32,8 @@ impl fmt::Display for SampleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage(message) | Self::Failed(message) => f.write_str(message),
+            #[cfg(feature = "window")]
+            Self::Unavailable(message) => f.write_str(message),
         }
     }
 }

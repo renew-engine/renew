@@ -21,21 +21,35 @@ name = "glide"
 path = "src/main.rs"
 
 # The driver owns everything the world may not touch: the filesystem for
-# recordings and replays. Windowing arrives later as a feature, which is
-# why the platform dependency compiles the window stack out today.
+# recordings and replays, and — behind the window feature — the window
+# and the GPU. The feature is default-OFF so the default graph stays
+# free of rendering crates, which the build matrix proves.
 [dependencies]
 renew-event = { path = "../../crates/core/event" }
 renew-frame = { path = "../../crates/frame" }
 renew-input = { path = "../../crates/input" }
 renew-platform = { path = "../../crates/core/platform", default-features = false }
+renew-render2d = { path = "../../crates/render2d", optional = true }
 renew-replay = { path = "../../crates/replay" }
+renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-sample-glide-world = { path = "world" }
 renew-trace = { path = "../../crates/trace" }
 
-# The frame-capture oracle's GPU edges live here, in the dev graph, so
-# the game's normal graph stays free of rendering crates and the
-# headless-without-GPU property keeps its witness (a build-only probe in
-# the matrix proves it).
+[features]
+# Play in a window: the platform's window stack, the rendering crate's
+# presentation path, and the sprite renderer. Off by default — the game
+# a player runs headless carries none of it.
+window = [
+    "renew-platform/window",
+    "dep:renew-rhi",
+    "renew-rhi/present",
+    "dep:renew-render2d",
+]
+
+# The frame-capture oracle needs the GPU crates whether or not the
+# window feature is on, so they stay dev-dependencies too; the default
+# NORMAL graph stays free of rendering crates and the build matrix
+# carries a probe proving it.
 [dev-dependencies]
 renew-render2d = { path = "../../crates/render2d" }
 renew-rhi = { path = "../../crates/rhi", default-features = false }

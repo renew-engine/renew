@@ -2,10 +2,11 @@
 //! things — files in, files out — and hands the simulation nothing but a
 //! seed and one resolved boolean per tick.
 //!
-//! Headless-first. A windowed mode arrives later behind a feature; every
-//! mode here is a pure function of its command line, which is what lets
-//! the cross-process determinism gate compare runs by their one output
-//! line.
+//! Headless-first, with a windowed mode behind the `window` feature.
+//! Every headless mode is a pure function of its command line, which is
+//! what lets the cross-process determinism gate compare runs by their
+//! one output line; a windowed run rides the real clock and marks its
+//! digest line `source=window` so nothing ever compares the two.
 //!
 //! # Indexing
 //!
@@ -19,6 +20,8 @@ mod error;
 pub mod scene;
 mod scripted;
 mod trace;
+#[cfg(feature = "window")]
+mod windowed;
 
 pub use cli::{Options, Report};
 pub use error::SampleError;
@@ -50,8 +53,12 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
             eprintln!("usage: {message}");
             USAGE_EXIT
         }
-        Err(SampleError::Failed(message)) => {
-            eprintln!("FAIL: {message}");
+        // Variant-agnostic on purpose: Failed and the feature-gated
+        // Unavailable both mean exit 1, and a cfg'd arm here would be a
+        // line no lane can execute — the xvfb lane HAS a display, and no
+        // test may construct an event loop to manufacture the miss.
+        Err(other) => {
+            eprintln!("FAIL: {other}");
             FAILURE_EXIT
         }
     }
@@ -59,6 +66,10 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
 
 fn run<I: IntoIterator<Item = String>>(args: I) -> Result<Report, SampleError> {
     let options = cli::parse_args(args)?;
+
+    if options.window {
+        return windowed_run(&options);
+    }
 
     if let Some(path) = &options.replay_trace {
         // Untrusted input: bounded read, then the codec judges the
@@ -95,4 +106,19 @@ fn run<I: IntoIterator<Item = String>>(args: I) -> Result<Report, SampleError> {
         .map_err(|error| SampleError::failed("writing the trace file", &error))?;
     }
     Ok(report)
+}
+
+#[cfg(feature = "window")]
+fn windowed_run(options: &Options) -> Result<Report, SampleError> {
+    windowed::run(options)
+}
+
+/// The honest answer in a build with the windowing stack compiled out:
+/// name the reason and exit non-zero. Silently pretending to open a
+/// window would make the removability evidence worthless.
+#[cfg(not(feature = "window"))]
+fn windowed_run(_options: &Options) -> Result<Report, SampleError> {
+    Err(SampleError::Usage(
+        "this build has no windowing support; rebuild with --features window".to_string(),
+    ))
 }

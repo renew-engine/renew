@@ -95,6 +95,26 @@ fn a_trace_whose_header_lacks_a_seed_is_refused() {
 fn a_repeated_flag_is_refused_by_name() {
     assert_eq!(run(&["--record-trace", "a", "--record-trace", "b"]), 2);
     assert_eq!(run(&["--replay-trace", "a", "--replay-trace", "b"]), 2);
+    assert_eq!(run(&["--window", "--window"]), 2);
+}
+
+#[test]
+fn window_refuses_the_flags_that_contradict_it() {
+    // The flag parses in every build; only the arm behind it is
+    // feature-gated. Playing from the keyboard contradicts scripted
+    // input and recording; replay owns everything; a zero-tick window
+    // is a contradiction of its own.
+    assert_eq!(run(&["--window", "--input-trace", "soar"]), 2);
+    assert_eq!(run(&["--window", "--record-trace", "out.trace"]), 2);
+    assert_eq!(run(&["--replay-trace", "a.trace", "--window"]), 2);
+    assert_eq!(run(&["--window", "--frames", "0"]), 2);
+}
+
+#[cfg(not(feature = "window"))]
+#[test]
+fn a_window_in_a_headless_build_is_refused_by_name() {
+    // The twin function: same signature, honest answer, exit 2.
+    assert_eq!(run(&["--window"]), 2);
 }
 
 #[test]

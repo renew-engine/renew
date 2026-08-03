@@ -621,6 +621,12 @@ jobs:
             --input-trace soar --frames 600
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace sink --frames 600
+          # The game's windowed feature, in two instrumented pieces: the
+          # feature-gated unit tests (display-less-safe -- they open no
+          # window), and the windowed arm live under the virtual display.
+          # Keyboardless there: the bird falls; a legal run.
+          cargo llvm-cov --no-report test -p renew-sample-glide --features window
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-glide --features window --bin glide --             --window --frames 30
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate
