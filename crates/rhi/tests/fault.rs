@@ -807,21 +807,21 @@ fn every_driver_failure_ladder_behaves() {
     // that never construct a buffer, so their counts are undisturbed.
     let buffer_ladder: &[(&str, &str, &str)] = &[
         (
-            "B1",
+            "PB1",
             "vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY",
             "vkCreateBuffer",
         ),
         (
-            "B2",
+            "PB2",
             "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY",
             "vkAllocateMemory",
         ),
         (
-            "B3",
+            "PB3",
             "vkBindBufferMemory=ERROR_OUT_OF_HOST_MEMORY",
             "vkBindBufferMemory",
         ),
-        ("B4", "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY", "vkMapMemory"),
+        ("PB4", "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY", "vkMapMemory"),
     ];
     for &(name, fault, call) in buffer_ladder {
         verdicts.push(device_case(name, fault, |device| {
