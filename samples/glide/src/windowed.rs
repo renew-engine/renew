@@ -85,28 +85,29 @@ pub fn run(options: &Options) -> Result<Report, SampleError> {
 }
 
 /// The fixed-capacity title buffer: format into it, borrow it, never
-/// touch the heap. Score digits and the terminal suffix fit in a
-/// fraction of this.
-struct Title {
-    bytes: [u8; 64],
+/// touch the heap. The capacity is a type parameter rather than a
+/// constant — the sibling's trick — so the overflow refusal is
+/// reachable from a test holding a deliberately tiny buffer; a branch
+/// nothing can execute is a branch nobody has checked.
+struct Title<const N: usize = 64> {
+    bytes: [u8; N],
     length: usize,
 }
 
-impl Title {
+impl<const N: usize> Title<N> {
     fn new() -> Self {
         Self {
-            bytes: [0; 64],
+            bytes: [0; N],
             length: 0,
         }
     }
 
     /// The title for a score, with the game-over suffix once dead.
-    /// Returns `None` when the buffer would overflow — unreachable at
-    /// this capacity, kept so the refusal is a branch and not a panic.
+    /// Returns `None` when the buffer would overflow.
     fn compose(&mut self, score: u64, alive: bool) -> Option<&str> {
         use core::fmt::Write as _;
         struct Sink<'a> {
-            bytes: &'a mut [u8; 64],
+            bytes: &'a mut [u8],
             length: &'a mut usize,
         }
         impl core::fmt::Write for Sink<'_> {
@@ -288,10 +289,24 @@ impl GlideApp {
     /// swapchain.
     fn resize(&mut self, size: Extent) {
         self.size = size;
-        if let Some(target) = &mut self.target
-            && let Err(error) = target.resize(size)
-        {
+        if let Some(target) = &mut self.target {
+            let outcome = target.resize(size);
+            self.record_resize(outcome);
+        }
+    }
+
+    /// What a resize outcome means — split so tests drive the error
+    /// arm with a constructed value, no window.
+    fn record_resize(&mut self, outcome: Result<(), renew_rhi::TargetError>) {
+        if let Err(error) = outcome {
             self.failure = Some(SampleError::failed("resizing", &error));
+        }
+    }
+
+    /// What a failed bring-up means — the same driven-seam split.
+    fn record_bring_up(&mut self, outcome: Result<(), SampleError>) {
+        if let Err(error) = outcome {
+            self.failure = Some(error);
         }
     }
 
@@ -390,9 +405,8 @@ impl WindowApp for GlideApp {
         self.size = Extent { width, height };
         let native = window.native();
         self.window = Some(native.clone());
-        if let Err(error) = self.bring_up(native, self.size) {
-            self.failure = Some(error);
-        }
+        let outcome = self.bring_up(native, self.size);
+        self.record_bring_up(outcome);
         // Anchor AFTER bring-up, so device creation is not banked as a
         // clamped burst of catch-up steps.
         let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
@@ -563,8 +577,86 @@ mod tests {
     }
 
     #[test]
+    fn the_title_refuses_a_buffer_it_cannot_fit() {
+        // The overflow branch, reachable through a deliberately tiny
+        // capacity — the reason the capacity is a type parameter.
+        let mut tiny = Title::<8>::new();
+        assert!(tiny.compose(0, true).is_none(), "eight bytes cannot fit");
+    }
+
+    #[test]
+    fn draw_without_a_target_is_a_quiet_no_op() {
+        let mut app = app();
+        app.event(WindowEvent::RedrawRequested);
+        app.event(WindowEvent::Resized {
+            width: 320,
+            height: 240,
+        });
+        assert!(app.failure.is_none());
+        assert_eq!(app.presented, 0);
+    }
+
+    #[test]
+    fn the_outcome_seams_record_their_failures() {
+        let mut first = app();
+        first.record_resize(Err(renew_rhi::TargetError::SurfaceCreation { code: -3 }));
+        assert!(
+            matches!(&first.failure, Some(SampleError::Failed(message)) if message.starts_with("resizing"))
+        );
+        let mut second = app();
+        second.record_bring_up(Err(SampleError::Failed("no device".to_string())));
+        assert!(matches!(&second.failure, Some(SampleError::Failed(_))));
+        second.record_bring_up(Ok(()));
+        second.record_resize(Ok(()));
+    }
+
+    #[test]
+    fn the_tick_bound_stops_the_steps_mid_plan() {
+        let mut app = app();
+        app.ticks_wanted = Some(1);
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 1, "the bound break fired inside the plan");
+    }
+
+    #[test]
+    fn progress_marks_ride_a_drawn_frame() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.record_draw(Ok(PresentOutcome::Presented));
+        assert!(app.drawn_since_update);
+        app.update_at(Timestamp::from_nanos(STEP), &mut control);
+        assert_eq!(
+            app.last_progress,
+            Timestamp::from_nanos(STEP),
+            "a drawn frame moves the progress mark"
+        );
+        assert!(!app.drawn_since_update, "consumed by the update");
+    }
+
+    #[test]
+    fn finish_names_a_loop_that_ran_and_failed() {
+        let options = Options {
+            seed: 7,
+            frames: 2_000,
+            input_trace: "soar".to_string(),
+            record_trace: None,
+            replay_trace: None,
+            window: true,
+            window_ticks: None,
+        };
+        let app = GlideApp::new(&options);
+        assert!(matches!(
+            app.finish(Err(WindowError::Loop {
+                message: "test".to_string()
+            })),
+            Err(SampleError::Failed(message)) if message.starts_with("running the window loop")
+        ));
+    }
+
+    #[test]
     fn the_title_reflects_score_and_death_and_only_changes_when_they_do() {
-        let mut title = Title::new();
+        let mut title = Title::<64>::new();
         let alive = title.compose(0, true).expect("compose").to_string();
         assert_eq!(alive, "renew — glide — score 0");
         let scored = title.compose(12, true).expect("compose").to_string();
