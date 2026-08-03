@@ -448,6 +448,10 @@ fn instance(centre: [f32; 2], colour: [f32; 4]) -> Vec<u8> {
 /// colours — the copy lands per call, not once at creation.
 #[test]
 fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    fn at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * width + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
     let Some(device) = device_or_skip()? else {
         return Ok(());
     };
@@ -461,6 +465,12 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+    assert_eq!(buffer.capacity(), 64, "capacity is per frame, as created");
+    assert_eq!(
+        format!("{buffer:?}"),
+        "Buffer { capacity: 64, .. }",
+        "debug output carries the capacity and no addresses"
+    );
 
     // NDC (-0.5, -0.5) is pixel (16, 16); (+0.5, +0.5) is (48, 48).
     let mut bytes = instance([-0.5, -0.5], [1.0, 0.0, 0.0, 1.0]);
@@ -478,10 +488,6 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
 
     let mut pixels = vec![0u8; (extent.width * extent.height * 4) as usize];
     target.read_back_into(&mut pixels);
-    fn at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * width + x) * 4) as usize;
-        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
-    }
     assert_eq!(
         at(&pixels, extent.width, 16, 16),
         [255, 0, 0, 255],

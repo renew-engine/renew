@@ -164,9 +164,14 @@ impl Device {
     ///
     /// # Errors
     ///
-    /// [`TargetError`] naming the Vulkan call that refused, or a
-    /// zero-`capacity` refusal — an empty per-frame region has no
-    /// meaning the draw could consume.
+    /// [`TargetError`] naming the Vulkan call that refused.
+    ///
+    /// # Panics
+    ///
+    /// A zero `capacity` is a contract violation and panics through a
+    /// retained assertion — an empty per-frame region has no meaning a
+    /// draw could consume, and the capacity bounds every later copy, so
+    /// the check survives release builds.
     pub fn create_buffer(
         &self,
         capacity: usize,

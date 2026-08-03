@@ -42,8 +42,8 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PresentOutcome, RenderDesc, TargetError,
-    Validation, WindowTarget,
+    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
+    PresentOutcome, RenderDesc, TargetError, Validation, WindowTarget, builtin,
 };
 
 const CLEAR: Color = Color::new(0.1, 0.2, 0.3, 1.0);
@@ -482,7 +482,9 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
 ];
 
 /// The two scenarios that arm nothing, run after both tables.
-const UNFAULTED_SCENARIOS: usize = 2;
+// S1 and S2 run unfaulted; S3 arms a COMPOUND fault through the same
+// path the ladder uses, but does not fit the table's one-call shape.
+const UNFAULTED_SCENARIOS: usize = 3;
 /// How many scenarios there are in total.
 const SCENARIOS: usize = LADDER.len() + QUIRKS.len() + UNFAULTED_SCENARIOS;
 
@@ -508,6 +510,64 @@ fn assert_recovers(target: &mut WindowTarget, size: Extent) -> Verdict {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented after recovery", &other)),
     }
+}
+
+/// The failed-quiesce corner, which is the retention design's whole
+/// reason to exist: a frame fails, the abort's recovery quiesce ALSO
+/// fails (host OOM, not a lost device), and the pending flags clear with
+/// work possibly still executing. Retained buffer memory must survive
+/// that moment — releasing it there is a device-side use-after-free —
+/// and release only at the next PROVEN quiesce, which is the resize
+/// rebirth already requires. The caller's handle is dropped in the
+/// middle, so retention is the only thing keeping the memory alive; the
+/// validation layer, consulted after the case, is what proves no freed
+/// memory was still referenced.
+fn failed_quiesce_retains_frame_buffers(
+    device: &Device,
+    target: Result<WindowTarget, TargetError>,
+    size: Extent,
+) -> Verdict {
+    let mut target = built(target)?;
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::INSTANCED, target.format())
+                .instance_input(builtin::INSTANCED_LAYOUT),
+        )
+        .map_err(|error| format!("instanced pipeline failed: {error}"))?;
+    let buffer = device
+        .create_buffer(64, BufferUsage::PerFrame)
+        .map_err(|error| format!("per-frame buffer failed: {error}"))?;
+    let bytes = [0u8; 24];
+
+    // Frame 1 presents and its slot retains the buffer.
+    match target.render(
+        &RenderDesc::new(CLEAR)
+            .pipeline(&pipeline)
+            .frame_data(FrameData::new(&buffer, &bytes, 1)),
+    ) {
+        Ok(PresentOutcome::Presented) => {}
+        other => return Err(wrong("Presented on the first frame", &other)),
+    }
+
+    // Frame 2: the submit fails, the abort's quiesce fails too.
+    match target.render(
+        &RenderDesc::new(CLEAR)
+            .pipeline(&pipeline)
+            .frame_data(FrameData::new(&buffer, &bytes, 1)),
+    ) {
+        Err(error) => Expect::Creation("vkQueueSubmit2").matched(&error)?,
+        Ok(outcome) => return Err(wrong("an error", &outcome)),
+    }
+
+    // The caller walks away. Retention is now the only owner, and the
+    // flags cleared under a FAILED quiesce — the exact corner where
+    // releasing would free memory frame 1's submit may still read.
+    drop(buffer);
+    assert_dormant(&mut target)?;
+
+    // Rebirth: resize's wait-idle is the proof (its fault was spent on
+    // the abort), retention releases, and a plain frame presents.
+    assert_recovers(&mut target, size)
 }
 
 /// Once the device is lost the poison is total: the target, a resize, a
@@ -1046,7 +1106,16 @@ impl FaultApp {
         }
         match after_ladder - QUIRKS.len() {
             0 => ("S1 born-dormant", born_dormant(window, size)),
-            _ => ("S2 unsupported-window-handles", unsupported_handles()),
+            1 => ("S2 unsupported-window-handles", unsupported_handles()),
+            _ => (
+                "S3 failed-quiesce-retention",
+                present_case(
+                    size,
+                    window,
+                    "vkQueueSubmit2=ERROR_OUT_OF_HOST_MEMORY@2,                     vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+                    |device, target| failed_quiesce_retains_frame_buffers(device, target, size),
+                ),
+            ),
         }
     }
 }

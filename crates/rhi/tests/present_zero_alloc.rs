@@ -30,8 +30,8 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, RenderDesc,
-    TargetError, Validation, WindowTarget, builtin,
+    Buffer, BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
+    PresentOutcome, RenderDesc, TargetError, Validation, WindowTarget, builtin,
 };
 
 #[global_allocator]
@@ -59,6 +59,11 @@ struct GateApp {
     device: Option<Device>,
     target: Option<WindowTarget>,
     pipeline: Option<renew_rhi::RenderPipeline>,
+    /// The instanced pipeline and its per-frame buffer: the measured
+    /// frame carries bytes, because a gate over a byte-free frame would
+    /// pass vacuously the moment the data path allocated. This is also
+    /// the one automated exercise of the window path's retention ring.
+    instanced: Option<(renew_rhi::RenderPipeline, Buffer)>,
     size: Extent,
     presented: u32,
     updates: u32,
@@ -82,6 +87,7 @@ impl GateApp {
             device: None,
             target: None,
             pipeline: None,
+            instanced: None,
             size: Extent {
                 width: 0,
                 height: 0,
@@ -145,9 +151,26 @@ impl WindowApp for GateApp {
                     return;
                 }
             };
+        let instanced = match device.create_pipeline(
+            &PipelineDesc::new(builtin::INSTANCED, target.format())
+                .instance_input(builtin::INSTANCED_LAYOUT),
+        ) {
+            Ok(instanced) => match device.create_buffer(64, BufferUsage::PerFrame) {
+                Ok(buffer) => (instanced, buffer),
+                Err(error) => {
+                    self.failure = Some(format!("per-frame buffer failed: {error}"));
+                    return;
+                }
+            },
+            Err(error) => {
+                self.failure = Some(format!("instanced pipeline failed: {error}"));
+                return;
+            }
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
+        self.instanced = Some(instanced);
     }
 
     fn event(&mut self, event: WindowEvent) {
@@ -173,10 +196,29 @@ impl WindowApp for GateApp {
                 // the gate passed locally and failed in CI for a reason
                 // that was never the engine's. The contract is about the
                 // render path; measure the render path.
+                // Alternate byte-free and byte-carrying frames so the
+                // gate measures both, and the ring sees the buffer on
+                // every other slot -- retain and release both run inside
+                // the measured window.
+                let instance_bytes = {
+                    let mut bytes = [0u8; 24];
+                    for (i, v) in [0.0f32, 0.0, 0.2, 0.6, 0.9, 1.0].iter().enumerate() {
+                        bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+                    }
+                    bytes
+                };
                 let before = allocations();
                 let mut desc = RenderDesc::new(clear);
-                if let Some(pipeline) = self.pipeline.as_ref() {
-                    desc = desc.pipeline(pipeline);
+                if self.presented.is_multiple_of(2) {
+                    if let Some(pipeline) = self.pipeline.as_ref() {
+                        desc = desc.pipeline(pipeline);
+                    }
+                } else if let Some((instanced, buffer)) = self.instanced.as_ref() {
+                    desc = desc.pipeline(instanced).frame_data(FrameData::new(
+                        buffer,
+                        &instance_bytes,
+                        1,
+                    ));
                 }
                 let outcome = target.render(&desc);
                 let spent = allocations() - before;

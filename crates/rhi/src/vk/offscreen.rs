@@ -399,6 +399,13 @@ impl OffscreenTarget {
     /// [`TargetFormat::Rgba8Unorm`] — contract violations, checked in
     /// dev builds.
     ///
+    /// # Panics
+    ///
+    /// Frame data longer than its buffer's per-frame capacity panics
+    /// through a retained assertion: the length bounds a copy into
+    /// mapped device memory, which makes it a memory-safety boundary
+    /// rather than a contract nicety.
+    ///
     /// # Errors
     ///
     /// [`TargetError::Timeout`] when the GPU exceeds the watchdog —
@@ -442,7 +449,7 @@ impl OffscreenTarget {
                 Rc::ptr_eq(&inner.shared, &self.shared),
                 "buffer and target come from different devices"
             );
-            let me = self as *const Self as usize;
+            let me = std::ptr::from_ref::<Self>(self) as usize;
             match inner.owner.get() {
                 None => inner.owner.set(Some(me)),
                 Some(owner) => debug_assert!(
@@ -455,9 +462,7 @@ impl OffscreenTarget {
             // nicety.
             assert!(
                 data.bytes.len() <= inner.capacity,
-                "frame data ({} bytes) exceeds the buffer's per-frame capacity ({})",
-                data.bytes.len(),
-                inner.capacity
+                "frame data exceeds the buffer's per-frame capacity"
             );
             // SAFETY: the mapping covers every slot region and the assert
             // bounds the length within slot zero's; the tail wait of the

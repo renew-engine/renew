@@ -300,3 +300,20 @@ fn samplers_are_created_and_dropped_without_validation_complaint() {
     }
     assert_no_validation_errors(&device);
 }
+
+#[test]
+fn zero_capacity_buffer_is_a_retained_contract_check() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    // Retained in release: the capacity bounds every later copy into the
+    // mapping, so the refusal survives builds with debug assertions off,
+    // exactly as the readback length guard does.
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = device.create_buffer(0, renew_rhi::BufferUsage::PerFrame);
+    }));
+    assert!(
+        refused.is_err(),
+        "a zero-capacity per-frame buffer must refuse, not allocate"
+    );
+}

@@ -802,6 +802,9 @@ impl Device {
         let mut instance_stride = 0u32;
         if let Some(attributes) = desc.instance_input {
             for (index, attribute) in attributes.iter().enumerate() {
+                // The list is a handful of attributes; a count that
+                // overflows u32 is not a real pipeline.
+                #[allow(clippy::cast_possible_truncation)]
                 attribute_descs.push(
                     vk::VertexInputAttributeDescription::default()
                         .location(index as u32)
