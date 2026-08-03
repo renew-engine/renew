@@ -60,6 +60,23 @@ pub fn close_recording(
 /// Drive a run a recorded file owns: its header carries the length and
 /// the seed, and only its event lines steer.
 pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleError> {
+    // The header carries four facts and this loop honours all four or
+    // refuses: replaying a 120Hz recording at this driver's fixed 60Hz
+    // would be a different run wearing the recording's name.
+    if recorded.header().timestep_ns() != FRAME_INTERVAL_NS {
+        return Err(SampleError::Failed(format!(
+            "the trace was recorded at timestep_ns={}, this driver runs {}",
+            recorded.header().timestep_ns(),
+            FRAME_INTERVAL_NS
+        )));
+    }
+    if recorded.header().budget() != StepBudget::DEFAULT.get().get() {
+        return Err(SampleError::Failed(format!(
+            "the trace was recorded with budget={}, this driver runs {}",
+            recorded.header().budget(),
+            StepBudget::DEFAULT.get().get()
+        )));
+    }
     let seed = recorded
         .header()
         .value("seed")
@@ -110,6 +127,14 @@ fn drive(
         }
         let now = Timestamp::from_nanos(FRAME_INTERVAL_NS.saturating_mul(index));
         let plan = frame.begin_frame(now);
+        // One frame is exactly one timestep by construction, so one
+        // flap edge feeds exactly one step. A multi-step plan here
+        // would double-fire every press; the loop's whole shape rests
+        // on this, so it is asserted rather than assumed.
+        debug_assert!(
+            plan.steps().len() == 1,
+            "a synthetic frame must plan exactly one step"
+        );
         let flap = input.state(Action::Flap).just_pressed;
         for _step in plan.steps() {
             world.step(flap);

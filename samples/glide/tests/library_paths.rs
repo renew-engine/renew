@@ -90,3 +90,40 @@ fn a_trace_whose_header_lacks_a_seed_is_refused() {
     assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn a_repeated_flag_is_refused_by_name() {
+    assert_eq!(run(&["--record-trace", "a", "--record-trace", "b"]), 2);
+    assert_eq!(run(&["--replay-trace", "a", "--replay-trace", "b"]), 2);
+}
+
+#[test]
+fn a_trace_recorded_at_another_timestep_is_refused() {
+    // The header carries the run's clock; replaying a 120Hz recording
+    // through this driver's fixed 60Hz loop would be a different run
+    // wearing the recording's name.
+    let dir = std::env::temp_dir().join("glide-library-paths");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("wrong-clock.trace");
+    std::fs::write(
+        &path,
+        "renew-trace 0 sample=glide ticks=5 timestep_ns=8333333 budget=5 seed=7\n",
+    )
+    .expect("fixture");
+    assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_trace_recorded_at_another_budget_is_refused() {
+    let dir = std::env::temp_dir().join("glide-library-paths");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("wrong-budget.trace");
+    std::fs::write(
+        &path,
+        "renew-trace 0 sample=glide ticks=5 timestep_ns=16666667 budget=3 seed=7\n",
+    )
+    .expect("fixture");
+    assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);
+    let _ = std::fs::remove_file(&path);
+}

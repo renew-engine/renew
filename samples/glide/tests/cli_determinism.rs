@@ -77,18 +77,22 @@ fn a_recorded_run_replays_to_the_same_state() {
     let recorded = digest_line(&["--frames", "600", "--record-trace", &path]);
     let replayed = digest_line(&["--replay-trace", &path]);
 
-    // Same world, same input, same length: everything after `source=`
-    // must agree, and source honestly differs. Compare the state half.
-    let state = |line: &str| {
-        line.split("state_hash=")
-            .nth(1)
-            .expect("digest lines carry a state hash")
-            .to_string()
+    // Same world, same input, same length: everything after the source
+    // token must agree — frames, ticks, dropped, score, alive, both
+    // hashes — and source honestly differs. Comparing only the state
+    // hash would let a schedule or length divergence hide behind an
+    // agreeing endpoint.
+    let tail = |line: &str| {
+        let start = line.find(" frames=");
+        assert!(start.is_some(), "digest lines carry a frames field: {line}");
+        line[start.unwrap_or_default()..].to_string()
     };
     assert_eq!(
-        state(&recorded),
-        state(&replayed),
-        "a replay must land on the recorded run's exact state\nrecorded: {recorded}\nreplayed: {replayed}"
+        tail(&recorded),
+        tail(&replayed),
+        "a replay must land on the recorded run's exact line
+recorded: {recorded}
+replayed: {replayed}"
     );
     let _ = std::fs::remove_file(&path);
 }

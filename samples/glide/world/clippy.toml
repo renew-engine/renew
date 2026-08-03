@@ -1,11 +1,10 @@
 # Crate-local lint configuration (a crate-local file fully replaces the
-# workspace one, so the test allowances are repeated). This crate is the
-# tree's first `simulation = true` crate, and these are the mechanical
-# half of that designation: the obligations the language standard puts on
-# simulation code, made unwritable rather than merely documented. One
-# `Instant::now` inside `begin_frame` would destroy determinism for every
-# consumer with no test failing anywhere until a replay diverged months
-# later.
+# workspace one, so the test allowances are repeated). The mechanical
+# half of this crate's determinism declaration: the world is a pure
+# function of seed and per-tick input, and everything below makes the
+# ways that stops being true unwritable rather than merely documented.
+# One clock read inside `step` would destroy replay identity for every
+# recorded trace with no test failing until a digest diverged.
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true

@@ -54,8 +54,14 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
                 input_trace = value_for("--input-trace")?;
                 seen_run_flags = true;
             }
-            "--record-trace" => record_trace = Some(value_for("--record-trace")?),
-            "--replay-trace" => replay_trace = Some(value_for("--replay-trace")?),
+            "--record-trace" => {
+                refuse_repeat("--record-trace", record_trace.is_some())?;
+                record_trace = Some(value_for("--record-trace")?);
+            }
+            "--replay-trace" => {
+                refuse_repeat("--replay-trace", replay_trace.is_some())?;
+                replay_trace = Some(value_for("--replay-trace")?);
+            }
             other => {
                 return Err(SampleError::Usage(format!(
                     "unknown flag `{other}`; this sample takes --seed, --frames, \
@@ -80,6 +86,16 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         record_trace,
         replay_trace,
     })
+}
+
+/// A repeated flag silently last-winning is the same defect as a
+/// contradicted one silently losing: the caller meant something and the
+/// run does something else.
+fn refuse_repeat(flag: &str, seen: bool) -> Result<(), SampleError> {
+    if seen {
+        return Err(SampleError::Usage(format!("{flag} was given twice")));
+    }
+    Ok(())
 }
 
 fn parse_number(text: &str, flag: &str) -> Result<u64, SampleError> {

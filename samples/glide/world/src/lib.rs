@@ -11,12 +11,13 @@
 //!   slot count without bound. The world now keeps each pipe's handle
 //!   and despawns it, and a test holds the slot count flat over a run
 //!   long enough that the leak version visibly climbs.
-//! - **The step allocates nothing.** The original collected despawn and
-//!   scoring candidates into fresh `Vec`s every tick. Those lists are
-//!   now persistent scratch, cleared and refilled in place — the world
-//!   owns two small allocations for its whole life, made at
-//!   construction, and a counting-allocator test holds the steady state
-//!   at zero.
+//! - **The live step allocates nothing.** The original collected sweep
+//!   candidates into fresh vectors every tick, and the store's own
+//!   `for_each_mut` allocates once per call besides. Both are gone: one
+//!   scratch list, allocated at construction, does every walk in place,
+//!   and a counting-allocator test measures a window it proves is alive
+//!   with pipes on screen — a gate over a dead world's ticks holds
+//!   nothing.
 //!
 //! Integer-only throughout: one world unit is 1/1000 of a screen unit,
 //! so the digest is a fact about the rules and not about anyone's
@@ -47,21 +48,24 @@ const PIPE_SPEED: i64 = 900;
 const PIPE_INTERVAL: u64 = 90;
 const PIPE_SPAWN_X: i64 = 320 * ONE;
 const GAP_MARGIN: i64 = 30 * ONE;
+/// The farthest one gap's centre may sit from the previous gap's.
+///
+/// A rules constraint, not a nicety: between adjacent pipes the bird has
+/// ~58 ticks of transit, its climb tops out near 50 screen units in that
+/// window, and an unconstrained generator can demand 180 — some seeds
+/// were unwinnable by ANY input, measured when the pilot died at the
+/// second pipe. Bounding the delta makes every seed playable while the
+/// gap sequence stays exactly as deterministic as before.
+const GAP_MAX_STEP: i64 = 35 * ONE;
 
-/// The vertical span a gap centre may occupy, in screen units. A
-/// compile-time fact about the constants above, so the zero-guard and
-/// the width check live at compile time too — a runtime arm for a value
-/// that cannot occur is a hole in the coverage gate.
-const GAP_SPAN: core::num::NonZeroU32 = {
-    let span = (FLOOR - 2 * GAP_MARGIN) / ONE;
-    // Range-checked by hand: try_from is not const yet, and a negative
-    // or oversized span must refuse the build rather than wrap into a
-    // valid-looking bound.
-    assert!(span > 0 && span <= u32::MAX as i64);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    match core::num::NonZeroU32::new(span as u32) {
+/// One draw's worth of gap movement: every step in
+/// `[-GAP_MAX_STEP, +GAP_MAX_STEP]`, in screen units, as the generator
+/// bound. A compile-time fact about the constants, checked there.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const STEP_SPAN: core::num::NonZeroU32 = {
+    match core::num::NonZeroU32::new((2 * (GAP_MAX_STEP / ONE) + 1) as u32) {
         Some(span) => span,
-        None => panic!("the gap margin leaves no room for a gap"),
+        None => panic!("the gap step span is empty"),
     }
 };
 
@@ -93,6 +97,9 @@ pub struct World {
     pipe: Store<Entity>,
     body: Store<Pipe>,
     rng: Rng,
+    /// The previous gap's centre: the next gap is drawn within
+    /// [`GAP_MAX_STEP`] of it. State, so the digest absorbs it.
+    last_gap_y: i64,
     bird_y: i64,
     bird_velocity: i64,
     score: u64,
@@ -114,6 +121,7 @@ impl World {
             pipe: Store::new(),
             body: Store::new(),
             rng: Rng::new(Seed::from_u64(seed), StreamId::from_u64(1)),
+            last_gap_y: 120 * ONE,
             bird_y: 120 * ONE,
             bird_velocity: 0,
             score: 0,
@@ -173,6 +181,29 @@ impl World {
         self.entities.capacity()
     }
 
+    /// A deterministic pilot: flap when falling below the nearest
+    /// oncoming gap's centre. Pure — a function of the state it reads —
+    /// so a recorded autopilot run replays exactly.
+    ///
+    /// Public for three consumers that all need a run that *survives*:
+    /// the leak regression (despawn only happens while alive), the
+    /// allocation gate (a dead world's tick measures nothing), and the
+    /// committed traces (a demo that scores nothing demonstrates
+    /// nothing).
+    #[must_use]
+    pub fn autopilot(&self) -> bool {
+        if !self.alive {
+            return false;
+        }
+        let target = self
+            .body
+            .iter()
+            .filter(|(_, pipe)| pipe.x + PIPE_WIDTH >= BIRD_X - BIRD_HALF)
+            .min_by_key(|(_, pipe)| pipe.x)
+            .map_or(120 * ONE, |(_, pipe)| pipe.gap_y);
+        self.bird_velocity > 0 && self.bird_y > target
+    }
+
     fn integrate_bird(&mut self, flap: bool) {
         if flap {
             self.bird_velocity = FLAP_VELOCITY;
@@ -192,7 +223,9 @@ impl World {
         if !self.tick.is_multiple_of(PIPE_INTERVAL) {
             return;
         }
-        let gap_y = GAP_MARGIN + i64::from(self.rng.below_u32(GAP_SPAN)) * ONE;
+        let delta = (i64::from(self.rng.below_u32(STEP_SPAN)) - GAP_MAX_STEP / ONE) * ONE;
+        let gap_y = (self.last_gap_y + delta).clamp(GAP_MARGIN, FLOOR - GAP_MARGIN);
+        self.last_gap_y = gap_y;
         let entity = self.entities.spawn();
         self.pipe.insert(entity.index(), entity);
         self.body.insert(
@@ -206,7 +239,18 @@ impl World {
     }
 
     fn advance_pipes(&mut self) {
-        self.body.for_each_mut(|_, pipe| pipe.x -= PIPE_SPEED);
+        // Not `for_each_mut`: that method collects its slot list into a
+        // fresh vector on every call — one heap allocation per live
+        // tick, measured — and this crate's steady state allocates
+        // nothing. The world's own scratch list does the same walk for
+        // free.
+        self.swept.clear();
+        self.swept.extend(self.body.iter().map(|(slot, _)| slot));
+        for index in 0..self.swept.len() {
+            if let Some(pipe) = self.body.get_mut(self.swept[index]) {
+                pipe.x -= PIPE_SPEED;
+            }
+        }
         // Sweep in ascending slot order (`iter`'s guarantee), so the
         // order pipes leave the world is a property of the rules and not
         // of the storage. The scratch list is reused, never reallocated
@@ -263,13 +307,21 @@ impl World {
         }
     }
 
-    /// The digest covers every store and every scalar. A determinism
-    /// oracle that omits part of the state passes happily while blind —
-    /// only a discrimination check (a different seed must move the
-    /// digest) can see the omission, so both live in the tests.
+    /// The digest covers every store, every scalar, and the generator.
+    /// A determinism oracle that omits part of the state passes happily
+    /// while blind — only a discrimination check (a different seed must
+    /// move the digest) can see the omission, so both live in the tests.
+    /// The generator's own fingerprint rides in because hidden RNG state
+    /// is exactly the part everyone forgets: two worlds differing only
+    /// there digest identically until the next spawn, then diverge with
+    /// nothing to explain it.
     fn absorb(&mut self) {
+        let (rng_state, rng_increment) = self.rng.parts();
         self.digest = self
             .digest
+            .absorb_u64(rng_state)
+            .absorb_u64(rng_increment)
+            .absorb_bytes(&self.last_gap_y.to_le_bytes())
             .absorb_u64(self.tick)
             .absorb_bytes(&self.bird_y.to_le_bytes())
             .absorb_bytes(&self.bird_velocity.to_le_bytes())
@@ -277,9 +329,11 @@ impl World {
             .absorb_u64(u64::from(self.alive))
             .absorb_u64(self.body.len() as u64);
         for (slot, pipe) in self.body.iter() {
+            let generation = self.pipe.get(slot).map_or(0, |entity| entity.generation());
             self.digest = self
                 .digest
                 .absorb_u32(slot)
+                .absorb_u32(generation)
                 .absorb_bytes(&pipe.x.to_le_bytes())
                 .absorb_bytes(&pipe.gap_y.to_le_bytes())
                 .absorb_u64(u64::from(pipe.passed));
@@ -291,18 +345,10 @@ impl World {
 mod tests {
     use super::*;
 
-    /// A deterministic flap schedule that steers toward the next gap —
-    /// the policy that actually exercises scoring and despawn.
-    fn steer(world: &World) -> bool {
-        // Flap when falling below the midline; crude, deterministic, and
-        // enough to survive long enough to score.
-        world.bird_velocity > 0 && world.bird_y > 100 * ONE
-    }
-
     fn run(seed: u64, ticks: u64) -> World {
         let mut world = World::new(seed);
         for _ in 0..ticks {
-            let flap = steer(&world);
+            let flap = world.autopilot();
             world.step(flap);
         }
         world
@@ -327,14 +373,29 @@ mod tests {
 
     #[test]
     fn entity_slots_stay_bounded_over_a_long_run() {
-        let world = run(7, 60_000);
-        // Pipes on screen at once are bounded by geometry: spawn X over
-        // speed, per interval. Slot reuse keeps capacity in the same
-        // order; the leak version reaches the high hundreds here.
+        // The oracle is only as good as the run is alive: a dead world
+        // neither spawns nor sweeps, so the first version of this test
+        // passed with the despawn call deleted — measured, not
+        // suspected. So the test now proves its own premises: the pilot
+        // survives, hundreds of pipes cross the screen, and the bound is
+        // peak concurrency, not a guess. Acceptance bar: delete
+        // `entities.despawn` and this must fail on slot growth.
+        let mut world = World::new(7);
+        let mut peak = 0;
+        for _ in 0..60_000 {
+            let flap = world.autopilot();
+            world.step(flap);
+            peak = peak.max(world.pipes());
+        }
+        assert!(
+            world.alive(),
+            "the pilot died — everything after would be a frozen corpse"
+        );
+        assert!(world.score() > 100, "hundreds of pipes must have scored");
         let capacity = world.entity_capacity();
         assert!(
-            capacity <= 16,
-            "slot count climbed to {capacity} — despawn is leaking"
+            capacity <= peak + 2,
+            "slot count {capacity} exceeds peak concurrency {peak} — despawn is leaking"
         );
     }
 
@@ -343,7 +404,8 @@ mod tests {
         // The steering policy scores; the blind world (never flapping)
         // dies on the floor. Both ends of the game are real.
         let steered = run(7, 20_000);
-        assert!(steered.score() > 0, "the steering policy never scored");
+        let score = steered.score();
+        assert!(score > 0, "the pilot never scored");
         let mut doomed = World::new(7);
         for _ in 0..2_000 {
             doomed.step(false);
@@ -384,5 +446,9 @@ mod tests {
         let after_death = world.tick();
         world.step(false);
         assert_eq!(world.tick(), after_death + 1, "ticks continue past death");
+        assert!(
+            !world.autopilot(),
+            "a dead world's pilot asks for nothing — the driver may keep polling it"
+        );
     }
 }

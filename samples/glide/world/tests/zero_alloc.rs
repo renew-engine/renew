@@ -27,23 +27,34 @@ fn allocations() -> u64 {
     ignore = "allocation counting is invalid under instrumented allocators"
 )]
 fn steady_state_ticks_allocate_nothing() {
+    // The pilot, not a blind schedule: the first version's schedule
+    // killed the bird at tick 305, so every measured window was a dead
+    // world executing nothing but its counter — and a dead world's tick
+    // proves nothing about the game's. The window now asserts its own
+    // premises: alive with pipes on screen at both ends.
     let mut world = World::new(7);
-    // Warmup: construction, plus enough ticks that pipes have spawned,
-    // scored and despawned — the scratch list has seen its worst case.
-    for tick in 0..2_000u64 {
-        let flap = tick.is_multiple_of(23);
+    for _ in 0..2_000u64 {
+        let flap = world.autopilot();
         world.step(flap);
     }
 
     let mut last_delta = 0u64;
     let mut observed_zero = false;
     for _ in 0..5 {
+        assert!(
+            world.alive() && world.pipes() > 0,
+            "the window must open on a live game"
+        );
         let before = allocations();
-        for tick in 0..1_000u64 {
-            let flap = tick.is_multiple_of(23);
+        for _ in 0..1_000u64 {
+            let flap = world.autopilot();
             world.step(flap);
         }
         let after = allocations();
+        assert!(
+            world.alive() && world.pipes() > 0,
+            "the window must close on a live game"
+        );
         last_delta = after - before;
         if last_delta == 0 {
             observed_zero = true;
@@ -52,6 +63,6 @@ fn steady_state_ticks_allocate_nothing() {
     }
     assert!(
         observed_zero,
-        "the step allocated in every window (last delta: +{last_delta})"
+        "a live tick allocated in every window (last delta: +{last_delta})"
     );
 }

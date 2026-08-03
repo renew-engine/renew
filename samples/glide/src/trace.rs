@@ -22,7 +22,7 @@ struct Scripted {
 const SCRIPTED: &[Scripted] = &[
     Scripted {
         name: "soar",
-        summary: "spaced flaps that clear several pipes before falling",
+        summary: "the autopilot's own recorded run: nineteen pipes cleared, still flying at the end",
         text: include_str!("../traces/soar.trace"),
     },
     Scripted {
