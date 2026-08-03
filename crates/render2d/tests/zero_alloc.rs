@@ -28,6 +28,9 @@ const SIZE: u32 = 64;
 /// from a fixed table, so the packed bytes differ frame to frame and
 /// the copy path cannot be skipped by a caching driver.
 const WANDER: [f32; 4] = [24.0, 28.0, 32.0, 36.0];
+/// The clear's exact bytes; the conversion is unambiguous by choice of
+/// channel values, so any adapter must land on them.
+const CLEAR_BYTES: [u8; 4] = [51, 102, 153, 255];
 const RED: Region = Region {
     x: 0,
     y: 0,
@@ -97,20 +100,49 @@ fn steady_state_fill_and_render_allocates_nothing() {
             height: SIZE,
         })
         .expect("offscreen target");
-    let clear = Color::new(0.1, 0.2, 0.3, 1.0);
+    // 51/255, 102/255, 153/255: unambiguous UNORM conversions, so the
+    // liveness checks below can demand exact bytes on any adapter.
+    let clear = Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
-    // The premise assertion the vacuity lesson requires: a fixed sprite
-    // covers this pixel every frame, and the frame is only credible if
-    // the read-back shows it.
-    let sprite_pixel = |pixels: &[u8]| {
-        let base = ((12 * SIZE + 12) * 4) as usize;
+    // The premise assertions the vacuity lesson requires. The fixed red
+    // sprite proves a frame drew; the WANDERING green sprite proves the
+    // frame that drew is THIS frame — its bytes differ frame to frame,
+    // so a stale image from a skipped render shows green in the wrong
+    // place. The third check pins a pixel every wander position leaves
+    // clear, so green cannot simply be everywhere.
+    let pixel_at = |pixels: &[u8], x: u32, y: u32| {
+        let base = ((y * SIZE + x) * 4) as usize;
         [
             pixels[base],
             pixels[base + 1],
             pixels[base + 2],
             pixels[base + 3],
         ]
+    };
+    let assert_frame_is_live = |pixels: &[u8], index: usize, when: &str| {
+        assert_eq!(
+            pixel_at(pixels, 12, 12),
+            [255, 0, 0, 255],
+            "{when}: the fixed sprite never drew — the gate would measure a blank frame"
+        );
+        let wander_x = WANDER[index % WANDER.len()];
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the wander table holds small positive integers"
+        )]
+        let sample_x = wander_x as u32 + 4;
+        assert_eq!(
+            pixel_at(pixels, sample_x, 44),
+            [0, 255, 0, 255],
+            "{when}: the wandering sprite is not where THIS frame put it —              the read-back is not this frame's image"
+        );
+        assert_eq!(
+            pixel_at(pixels, 20, 44),
+            CLEAR_BYTES,
+            "{when}: a pixel every wander position leaves clear is not clear"
+        );
     };
     let frame = |renderer: &mut SpriteRenderer,
                  target: &mut renew_rhi::OffscreenTarget,
@@ -131,11 +163,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
     for index in 0..3 {
         frame(&mut renderer, &mut target, &mut pixels, index);
     }
-    assert_eq!(
-        sprite_pixel(&pixels),
-        [255, 0, 0, 255],
-        "warmup frames never drew the fixed sprite — the gate would measure a blank frame"
-    );
+    assert_frame_is_live(&pixels, 2, "after warmup");
 
     // Measurement protocol: the counter is process-wide and the harness
     // thread can allocate concurrently, so the window retries — one-shot
@@ -154,11 +182,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
             );
         }
         let after = allocations();
-        assert_eq!(
-            sprite_pixel(&pixels),
-            [255, 0, 0, 255],
-            "the measured window's last frame never drew the fixed sprite"
-        );
+        assert_frame_is_live(&pixels, attempt * 16 + 15, "at the window's end");
         last_delta = after - before;
         if last_delta == 0 {
             observed_zero = true;

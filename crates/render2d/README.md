@@ -59,9 +59,14 @@ image oracle proves placement, region selection, and fill-order
 overwrite byte-exactly on every adapter; a committed golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
-crate's goldens. The allocation gate measures fill-and-render windows
-it first proves are drawing. Fuzzing: N/A — no parser; inputs are
-first-party structs and trusted first-party bytes.
+crate's goldens. Two scheduled facts about the oracles: the computed
+image leans on alpha-1 blending degenerating to replacement, and the
+first divergence report on any adapter scopes it to the software
+rasterizer, no debate; and the planned move to a linear working space
+re-decides it entirely — convert to a committed golden or retire. The
+allocation gate measures fill-and-render windows it first proves are
+drawing. Fuzzing: N/A — no parser; inputs are first-party structs and
+trusted first-party bytes.
 
 ## Manifest
 

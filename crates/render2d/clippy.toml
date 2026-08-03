@@ -20,6 +20,11 @@ disallowed-methods = [
     { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
     { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
     { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
 ]
 
 # The SAFETY-comment lint accepts the comment above an attribute or

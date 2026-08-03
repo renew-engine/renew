@@ -36,6 +36,27 @@ const SPRITE_LAYOUT: &[InstanceAttribute] = &[
 /// table declares.
 const SPRITE_VERTEX_COUNT: u32 = 6;
 
+/// The stride and the layout describe the same bytes, checked at
+/// compile time so only the shader remains coupled by comment.
+const _: () = {
+    const fn width(attribute: InstanceAttribute) -> usize {
+        match attribute {
+            InstanceAttribute::Vec2 => 8,
+            InstanceAttribute::Vec4 => 16,
+        }
+    }
+    let mut total = 0usize;
+    let mut index = 0;
+    while index < SPRITE_LAYOUT.len() {
+        total += width(SPRITE_LAYOUT[index]);
+        index += 1;
+    }
+    assert!(
+        total == fill::INSTANCE_STRIDE,
+        "the instance layout and the packed stride disagree"
+    );
+};
+
 /// The atlas: dimensions and premultiplied pixels, borrowed for the one
 /// call that uploads them.
 ///
@@ -184,8 +205,8 @@ impl SpriteRenderer {
     /// Append `sprite`; it draws over everything pushed before it.
     ///
     /// Refuses the push past `max_sprites` with a retained assertion —
-    /// a deliberate deviation from the debug-only default, recorded in
-    /// the crate's records: the scratch is a fixed preallocation whose
+    /// a deliberate choice the README's contract carries: the scratch
+    /// is a fixed preallocation whose
     /// slice write would panic on its own bounds check anyway, so the
     /// assertion buys a named refusal at the API boundary for a branch
     /// release mode pays either way. Not a memory-safety guard.

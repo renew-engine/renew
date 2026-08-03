@@ -102,7 +102,7 @@ impl Sprite {
     #[must_use]
     #[allow(
         clippy::cast_precision_loss,
-        reason = "atlas regions are far below 2^24 texels per axis, where f32 is exact"
+        reason = "past 2^24 texels the placement degrades visibly, never unsafely; real atlases sit far below it"
     )]
     pub fn new(region: Region, x: f32, y: f32) -> Self {
         Self {
@@ -138,7 +138,7 @@ impl Sprite {
 /// sign mistake cannot survive.
 #[allow(
     clippy::cast_precision_loss,
-    reason = "canvas dimensions are far below 2^24, where f32 is exact"
+    reason = "past 2^24 pixels the map degrades visibly, never unsafely; real canvases sit far below it"
 )]
 pub(crate) fn to_ndc(point: Vec2, canvas: Canvas) -> Vec2 {
     Vec2::new(
@@ -152,7 +152,7 @@ pub(crate) fn to_ndc(point: Vec2, canvas: Canvas) -> Vec2 {
 /// texels, so no half-texel inset exists to get wrong.
 #[allow(
     clippy::cast_precision_loss,
-    reason = "atlas dimensions are far below 2^24, where f32 is exact"
+    reason = "past 2^24 texels the map degrades visibly, never unsafely; real atlases sit far below it"
 )]
 pub(crate) fn to_uv(texel: Vec2, atlas: Extent) -> Vec2 {
     Vec2::new(texel.x / atlas.width as f32, texel.y / atlas.height as f32)
@@ -163,7 +163,7 @@ pub(crate) fn to_uv(texel: Vec2, atlas: Extent) -> Vec2 {
 /// four-`f32` tint, native-endian, in declaration order.
 #[allow(
     clippy::cast_precision_loss,
-    reason = "region texel coordinates are far below 2^24, where f32 is exact"
+    reason = "past 2^24 texels the packing degrades visibly, never unsafely; real regions sit far below it"
 )]
 pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
     let canvas_min = Vec2::new(sprite.x, sprite.y);
@@ -297,6 +297,33 @@ mod tests {
         assert_eq!(
             resized.tint.map(f32::to_bits),
             [0.5f32; 4].map(f32::to_bits)
+        );
+    }
+
+    #[test]
+    fn packing_the_same_sprite_twice_is_byte_identical() {
+        // The CPU half of the determinism story: the render-twice
+        // checks downstream prove the GPU half, this proves the fill.
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprite = Sprite::new(
+            Region {
+                x: 2,
+                y: 2,
+                width: 3,
+                height: 5,
+            },
+            7.25,
+            11.5,
+        )
+        .tint([0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(
+            pack(&sprite, c, atlas),
+            pack(&sprite, c, atlas),
+            "the same fill must produce the same bytes"
         );
     }
 

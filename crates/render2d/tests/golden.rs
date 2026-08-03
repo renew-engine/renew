@@ -9,9 +9,9 @@
 //! committed artifact. Weaker than the rendering crate's version of the
 //! same argument (blending is *enabled* here); the recorded fallback is
 //! scoping it to the software rasterizer, and its trigger is the first
-//! divergence report — no debate. Scheduled sunset: the linear-space
-//! change re-decides this test (convert to a committed golden or
-//! retire), per the crate's records.
+//! divergence report — no debate. Scheduled sunset: the move to a
+//! linear working space re-decides this test (convert to a committed
+//! golden or retire), as the README's Testing section records.
 //!
 //! **Committed, pinned-lane exact:** semi-transparent overlaps proving
 //! the premultiplied compositing convention in committed bytes, with
