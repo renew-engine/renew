@@ -1,0 +1,27 @@
+[package]
+name = "renew-replay"
+description = "Deterministic input replay: translation between the event vocabulary and the trace format, a trace loader, and a recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Replaying recorded input deterministically: event-to-trace translation both ways, a tick-indexed trace loader, and the recorder that produces replayable traces."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+# The vocabulary this crate translates from, and the codec it translates
+# to. Deliberately nothing else: the crate declares `simulation = true`,
+# so the structure check refuses it a path to the platform crate — where
+# the text comes from and where it goes is its caller's business.
+[dependencies]
+renew-event = { path = "../core/event" }
+renew-trace = { path = "../trace" }
+
+[lints]
+workspace = true

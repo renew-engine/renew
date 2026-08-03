@@ -1482,6 +1482,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-replay"
+version = "0.1.0"
+dependencies = [
+ "renew-event",
+ "renew-trace",
+]
+
+[[package]]
 name = "renew-rhi"
 version = "0.1.0"
 dependencies = [
@@ -1519,6 +1527,7 @@ dependencies = [
  "renew-frame",
  "renew-input",
  "renew-platform",
+ "renew-replay",
  "renew-trace",
 ]
 

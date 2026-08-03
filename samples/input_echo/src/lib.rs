@@ -36,10 +36,14 @@ use std::process::ExitCode;
 
 mod app;
 mod cli;
-pub mod convert;
+/// The translation and the recorder moved to `renew-replay` — any game
+/// shipping a replay needs them, and a correctness property maintained
+/// in two copies is maintained in one and a half. Re-exported so every
+/// existing path through this crate keeps meaning what it meant.
+pub use renew_replay as convert;
 mod error;
 mod input;
-pub mod record;
+pub use renew_replay as record;
 mod scripted;
 mod trace;
 mod world;

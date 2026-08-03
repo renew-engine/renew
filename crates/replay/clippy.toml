@@ -1,0 +1,47 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate declares `simulation = true`, and this file is the
+# mechanical half of that claim: translation between the event
+# vocabulary and the trace format is a pure function of its arguments,
+# and everything below makes the ways that stops being true unwritable
+# rather than merely documented. The structure check enforces the other
+# half — no dependency path to the platform crate at any depth — so a
+# capability cannot arrive through a wrapper either.
+#
+# The union of the frame crate's bans (clock, threads, unseeded hashing)
+# and the trace codec's (filesystem by every road anyone actually takes,
+# environment): this crate sits between those two and inherits both
+# obligations.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a translator reads no clock; nothing it produces may depend on when it ran" },
+    { path = "std::time::SystemTime::now", reason = "a translator reads no clock; nothing it produces may depend on when it ran" },
+    { path = "std::thread::spawn", reason = "a translator spawns nothing; it is a pure function of its input" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; a translator spawns nothing" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem: callers hand it text they already hold" },
+    { path = "std::fs::read_to_string", reason = "an unbounded whole-file read belongs at the I/O seam, which can refuse an oversized file; this crate never does I/O" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road: a handle plus this method is `fs::read_to_string` spelled in two lines" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem: it returns data for a caller to write" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem, and asking about a file is one line away from opening it" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a translator is a pure function of its argument; a value from the environment would make one run differ from the next with nothing in the input to explain it" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so a value derived from it differs between runs of the same binary on the same inputs" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same road to the same entropy: it is built from RandomState" },
+    { path = "std::collections::HashMap", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs" },
+    { path = "std::collections::HashSet", reason = "the default RandomState hasher is seeded per instance, so iteration order varies between runs" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
