@@ -58,9 +58,8 @@ const PIPE_REGION: Region = Region {
 
 fn atlas_bytes() -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4 * 2 * 4);
-    for y in 0..2u32 {
+    for _y in 0..2u32 {
         for x in 0..4u32 {
-            let _ = y;
             let texel = if x < 2 { BIRD_BYTES } else { PIPE_BYTES };
             bytes.extend_from_slice(&texel);
         }
@@ -75,7 +74,7 @@ fn strict() -> bool {
 /// `Ok(None)` is the graceful skip; under `RENEW_GOLDEN=1` (the CI
 /// rendering lane) a skip is a failure and validation must be active.
 /// Same harness as the two golden suites before it; the copy is
-/// recorded, with its extraction trigger.
+/// deliberate — a fourth copy is the cue to extract a shared harness.
 fn device_or_skip() -> Result<Option<Device>, DeviceError> {
     match Device::new(&DeviceDesc {
         app_name: "renew-glide-golden-tests",
@@ -324,12 +323,24 @@ fn soar_at_tick_600_matches_the_committed_image() {
         "the replayed trace and the re-flown pilot diverged — the loop drifted"
     );
 
+    let digest_before_rendering = world.digest();
     let pixels = capture(&device, &world).expect("capture");
+    assert_eq!(
+        world.digest(),
+        digest_before_rendering,
+        "rendering must be a read: the scene and the capture may not move the state"
+    );
     assert_no_validation_errors(&device);
 
-    // Structure, adapter-independent: sky at the corners, the bird's
-    // opaque color at its centre (replacement — alpha one end to end).
-    for (x, y) in [(0, 0), (VIEW_WIDTH - 1, 0), (0, VIEW_HEIGHT - 1)] {
+    // Structure, adapter-independent: sky at all four corners, the
+    // bird's opaque color at its centre (replacement — alpha one end
+    // to end).
+    for (x, y) in [
+        (0, 0),
+        (VIEW_WIDTH - 1, 0),
+        (0, VIEW_HEIGHT - 1),
+        (VIEW_WIDTH - 1, VIEW_HEIGHT - 1),
+    ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
     #[allow(
@@ -337,8 +348,13 @@ fn soar_at_tick_600_matches_the_committed_image() {
         reason = "the bird's centre is on-screen and non-negative at this pinned checkpoint"
     )]
     let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
     assert_eq!(
-        pixel_at(&pixels, 40, bird_y),
+        pixel_at(&pixels, bird_x, bird_y),
         BIRD_BYTES,
         "the bird's centre pixel"
     );
@@ -362,10 +378,21 @@ fn sink_at_tick_240_matches_the_committed_image() {
     assert_eq!(world.tick(), 240);
     assert!(world.pipes() > 0, "the frozen pipes must be on screen");
 
+    let digest_before_rendering = world.digest();
     let pixels = capture(&device, &world).expect("capture");
+    assert_eq!(
+        world.digest(),
+        digest_before_rendering,
+        "rendering must be a read: the scene and the capture may not move the state"
+    );
     assert_no_validation_errors(&device);
 
-    for (x, y) in [(0, 0), (VIEW_WIDTH - 1, 0)] {
+    for (x, y) in [
+        (0, 0),
+        (VIEW_WIDTH - 1, 0),
+        (0, VIEW_HEIGHT - 1),
+        (VIEW_WIDTH - 1, VIEW_HEIGHT - 1),
+    ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
     #[allow(
@@ -373,8 +400,13 @@ fn sink_at_tick_240_matches_the_committed_image() {
         reason = "the corpse froze on-screen; the world test pins the value"
     )]
     let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
     assert_eq!(
-        pixel_at(&pixels, 40, bird_y),
+        pixel_at(&pixels, bird_x, bird_y),
         BIRD_BYTES,
         "the corpse's centre pixel, frozen where death left it"
     );
