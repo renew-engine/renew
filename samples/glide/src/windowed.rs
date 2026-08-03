@@ -135,6 +135,29 @@ impl<const N: usize> Title<N> {
     }
 }
 
+/// The relabel decision as a free function, generic over the title's
+/// capacity so the compose-refusal arm is reachable from a test holding
+/// a deliberately tiny buffer — the same reason the capacity is a type
+/// parameter at all.
+fn relabel_into<const N: usize>(
+    title: &mut Title<N>,
+    titled: &mut Option<(u64, bool)>,
+    window: Option<&NativeWindow>,
+    state: (u64, bool),
+) -> bool {
+    if *titled == Some(state) {
+        return false;
+    }
+    let Some(text) = title.compose(state.0, state.1) else {
+        return false;
+    };
+    if let Some(window) = window {
+        window.set_title(text);
+    }
+    *titled = Some(state);
+    true
+}
+
 /// The game as the window seam sees it.
 pub struct GlideApp {
     clock: Clock,
@@ -373,17 +396,12 @@ impl GlideApp {
     /// the delivery needs the OS handle.
     fn relabel(&mut self) -> bool {
         let state = (self.world.score(), self.world.alive());
-        if self.titled == Some(state) {
-            return false;
-        }
-        let Some(title) = self.title.compose(state.0, state.1) else {
-            return false;
-        };
-        if let Some(window) = &self.window {
-            window.set_title(title);
-        }
-        self.titled = Some(state);
-        true
+        relabel_into(
+            &mut self.title,
+            &mut self.titled,
+            self.window.as_ref(),
+            state,
+        )
     }
 
     /// Turn the loop's outcome into the run's report.
@@ -590,9 +608,17 @@ mod tests {
     #[test]
     fn the_title_refuses_a_buffer_it_cannot_fit() {
         // The overflow branch, reachable through a deliberately tiny
-        // capacity — the reason the capacity is a type parameter.
+        // capacity — the reason the capacity is a type parameter — and
+        // the relabel decision that rides the refusal: no compose, no
+        // recorded state, try again next time.
         let mut tiny = Title::<8>::new();
         assert!(tiny.compose(0, true).is_none(), "eight bytes cannot fit");
+        let mut titled = None;
+        assert!(
+            !relabel_into(&mut tiny, &mut titled, None, (0, true)),
+            "a refused compose is not a relabel"
+        );
+        assert_eq!(titled, None, "and records nothing as delivered");
     }
 
     #[test]
