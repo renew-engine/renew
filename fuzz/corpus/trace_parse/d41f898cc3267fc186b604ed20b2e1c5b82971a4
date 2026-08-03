@@ -1,0 +1,2 @@
+renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=0
+e 1 key arro7-right downt(

@@ -1,0 +1,3 @@
+renew-trace 0 sample=gle ticks=2000 timestep_ns=166 budget=2 sentereed=7
+e 37e wna
+ec

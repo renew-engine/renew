@@ -1,0 +1,2 @@
+renew-trace 0 sample=g ticks=4000 timestep_ns=7 budget=5 se=gde picks=%2000 timks=280, tn
+e 

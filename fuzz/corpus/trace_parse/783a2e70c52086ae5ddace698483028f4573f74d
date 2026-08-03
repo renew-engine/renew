@@ -1,0 +1,1 @@
+renew-trace 0 sample=glide ticks=2000 timestep_ns=16666668 budget=50 timestep_ns=16666667 bu7

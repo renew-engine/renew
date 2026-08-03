@@ -1,0 +1,2 @@
+renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666667 budget=0 seed=0
+e 11 pointer 0x402900000$000000 0x40

@@ -1,0 +1,4 @@
+renew-trace 0 sample=glide ticks=2000 timestep_ns=16666667 budget=5 seed=7
+e 37 key space down
+renew-trace 38 key wn
+e 76 ke=iny sppu

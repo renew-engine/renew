@@ -1,0 +1,3 @@
+renew-trace 0 sample=glie ticks=4000 timestep_ns=16666667 budget=5 seed=7
+e 27 key space$$own
+e 38 keye 501

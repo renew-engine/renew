@@ -1,0 +1,3 @@
+renew-trace 0 sample=giee ticks=2000 timestep_ns=166667 budget=1 seed=3
+e 37 key spac#e dkcp
+e 65

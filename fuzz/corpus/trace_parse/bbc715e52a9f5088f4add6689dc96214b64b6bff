@@ -1,0 +1,4 @@
+renew-trace 0 sample=nput_echo ticks=20 timestep_ns=7 budget=5 seed=0n
+e 5 button left down
+e 5 button left up
+e 9 close

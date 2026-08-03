@@ -1,0 +1,4 @@
+renew-trace 0 sample=inpc ticks=20 timestep_ns=166666 budget=5 seed=0
+e 1 key arrow-down down
+e 5 button left down
+e 58 wheel 0x000000(0 5 bclose

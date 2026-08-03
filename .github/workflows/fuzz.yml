@@ -6,8 +6,9 @@
 # which is why this runs on a schedule and reports instead.
 #
 # Short runs on a schedule are a smoke test, not a campaign: they catch a
-# harness that stopped building and shallow input bugs. Finding deep ones
-# needs a corpus that outlives a job, which is a later change.
+# harness that stopped building and shallow input bugs. The committed
+# corpus is the memory that outlives a job -- every run starts from it,
+# and the stable workspace replays it as a merge gate.
 name: Fuzz
 
 on:
@@ -37,9 +38,23 @@ jobs:
       - name: Check the harness licences
         working-directory: fuzz
         run: cargo deny --config ../deny.toml check licenses
-      - name: Run ${{ matrix.target }}
+      - name: Run ${{ matrix.target }} from the committed corpus
         working-directory: fuzz
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=120 -print_final_stats=1
+        # The directory is corpus-in and findings-out: the run starts
+        # from everything already recorded instead of rediscovering the
+        # magic numbers, and new coverage lands beside it.
+        run: cargo fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=120 -print_final_stats=1
+      # Growth is the interesting output of a healthy run. It leaves the
+      # runner as an artifact a human inspects, minimizes, and commits --
+      # re-commits are manual and event-driven, never a bot's.
+      - name: Upload the corpus with any growth
+        # always(): a crashing run's growth is the most interesting of
+        # all -- the default success condition would drop exactly it.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
       # A crash is the whole point of the job, so the input that caused it
       # has to leave the runner. Without this the log says a crash happened
       # and the bytes that caused it are deleted with the workspace.

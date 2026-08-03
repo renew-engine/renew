@@ -1,0 +1,4 @@
+renew-trace 0 sample=glyde ticks=2000 timestep_ns=16666667 budget=5 seed=p
+e 77 kdownwn
+e 417 key down
+ekeup

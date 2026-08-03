@@ -1,0 +1,4 @@
+renew-trace 0 sample=inpueo ticks=20 timestep_ns=6667 budget=2 seed=0
+e 1 key arrow-down down
+e 4 button left down
+e 5 wheel 0x0000000 0x4180

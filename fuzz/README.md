@@ -27,6 +27,22 @@ fuzzer works past the magic number and the header into the entry table,
 where uniform random bytes essentially never land. That is the difference:
 not a first line of defence, a deeper one.
 
+## The committed corpus
+
+`corpus/<target>/` is the fuzzers' memory: every committed input is one
+the coverage-guided search found worth keeping, minimized by
+`cargo fuzz cmin`. Runs start from it (locally and on the schedule),
+and the scheduled job uploads the grown corpus as an artifact —
+**re-commits are manual and event-driven, and every one carries the
+same two steps as the first commit**: `cargo fuzz cmin <target>
+corpus/<target>` to minimize, then a vocabulary sweep over the bytes
+before staging — mutation inserts arbitrary bytes, so grown inputs are
+treated as untrusted text until swept, every time, not just once. The stable workspace replays every committed input in a
+merge-gating test beside each parser, so "zero known crashes over the
+recorded corpus" is a claim a gating run makes. A crash input, when
+one ever exists, additionally becomes a permanent named regression
+test beside the parser it broke — independent of the corpus.
+
 ## Running one
 
 ```

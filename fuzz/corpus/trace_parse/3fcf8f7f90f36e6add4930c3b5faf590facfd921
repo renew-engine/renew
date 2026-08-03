@@ -1,0 +1,5 @@
+renew-trace 0 sample=glide ticks=2000 timestep_ns=17 budget=5 seed=7
+e 37 key space down
+e 38 key space up
+e 75 key space down
+ c

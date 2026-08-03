@@ -1,0 +1,2 @@
+renew-trace 0 sample=e ticks=200 timestep_ns=166 budget=5 smed=
+e  u

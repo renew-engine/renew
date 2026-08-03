@@ -1,0 +1,1 @@
+renew-trace 0 sample=glide ticks=2000 timestep_ns=16667 budget=5 sg7t=5 secks=20

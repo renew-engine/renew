@@ -1,0 +1,5 @@
+renew-trace 0 sample=in_echo ticks=20 timestep_ns=16666667 budget=500000
+e 11 redraw
+e 12 key arrow-right down repBat
+
+ key 

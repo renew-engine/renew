@@ -1,0 +1,21 @@
+renew-trace 0 sample=glide ticks=2000 timestep_ns=16666667 budget=5 seed=7
+e 37 key space up
+e 153 key space down
+e 154 key space up
+e 192 key space down
+e 193 key space up
+e 231 key space down
+e 232 key space up
+e 270 key space down
+e 271 key space up
+e 309 key space down
+e 310 key space up
+e 377 key space down
+e 378 key space up
+e 416 key space down
+e 417 key space up
+e 437 key space down
+e 438 key space up
+e 458 key space wn
+e 480 keytpac- up
+ace dow sp

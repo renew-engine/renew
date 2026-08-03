@@ -1,0 +1,4 @@
+renew-trace 0 sample=inut_echo ticks=20 timestep_ns=167 budget=5 eed=0
+e 1 key arrow-right up
+e 7 key arrow-down up
+e 8 wheel 0x00spacu0 0xight down  e
