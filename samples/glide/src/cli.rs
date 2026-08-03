@@ -23,7 +23,11 @@ pub struct Options {
     pub window: bool,
     /// The windowed run's tick bound: `None` plays until closed; the
     /// headless `frames` default must not leak into an interactive
-    /// session, so this is derived from an EXPLICIT --frames only.
+    /// session, so this is derived from an EXPLICIT --frames only. The
+    /// bound lands at the first frame boundary at or after N ticks —
+    /// plans are never cut mid-frame, so the digest line's counts and
+    /// the world always agree; a lagging frame may overshoot by at most
+    /// the step budget minus one.
     pub window_ticks: Option<u64>,
 }
 
@@ -128,6 +132,40 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         window,
         window_ticks,
     })
+}
+
+#[cfg(test)]
+mod window_flag_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, SampleError> {
+        parse_args(args.iter().map(ToString::to_string))
+    }
+
+    #[test]
+    fn a_bare_window_run_is_unbounded() {
+        // The centerpiece: the headless default of 2000 frames must not
+        // leak into an interactive session and silently end it mid-play.
+        let options = parse(&["--window"]).expect("bare --window parses");
+        assert!(options.window);
+        assert_eq!(options.window_ticks, None, "no bound unless asked for");
+    }
+
+    #[test]
+    fn an_explicit_frames_bounds_the_window_in_ticks() {
+        let options = parse(&["--window", "--frames", "30"]).expect("parses");
+        assert_eq!(options.window_ticks, Some(30));
+    }
+
+    #[test]
+    fn seed_stays_legal_beside_window() {
+        // The positive half the per-flag seen-set exists for: refusing
+        // trace flags must not take --seed down with them.
+        let options = parse(&["--window", "--seed", "3"]).expect("parses");
+        assert!(options.window);
+        assert_eq!(options.seed, 3);
+        assert_eq!(options.window_ticks, None, "seed alone adds no bound");
+    }
 }
 
 /// A repeated flag silently last-winning is the same defect as a

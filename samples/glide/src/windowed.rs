@@ -321,8 +321,16 @@ impl GlideApp {
 
     /// The update the seam asks for, as a pure function of the frame's
     /// timestamp — the testable core.
+    ///
+    /// The tick bound is checked at frame boundaries, never mid-plan:
+    /// every absorbed plan is fully executed, so the digest line's tick
+    /// count and the world can never disagree. The cost is a bounded
+    /// overshoot of at most the step budget minus one on a lagging
+    /// frame, documented where the flag is.
     fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
-        if let Some(frame) = &mut self.frame {
+        if !self.done()
+            && let Some(frame) = &mut self.frame
+        {
             let plan = frame.begin_frame(now);
             // Capture the edge before it retires, count it, spend one
             // per step: a press on a zero-step frame survives to the
@@ -332,16 +340,12 @@ impl GlideApp {
                 .pending_flaps
                 .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
             for _step in plan.steps() {
-                let bound = self.ticks_wanted;
-                if bound.is_some_and(|bound| self.world.tick() >= bound) {
-                    break;
-                }
                 self.world.step(self.pending_flaps > 0);
                 self.pending_flaps = self.pending_flaps.saturating_sub(1);
             }
             self.input.advance();
             self.stats.absorb(&plan);
-            self.relabel();
+            let _ = self.relabel();
             if self.drawn_since_update {
                 self.last_progress = now;
             }
@@ -363,18 +367,23 @@ impl GlideApp {
     }
 
     /// Relabel the window when the score or the terminal state changes;
-    /// otherwise the OS hears nothing.
-    fn relabel(&mut self) {
+    /// otherwise the OS hears nothing. Returns whether a compose
+    /// happened, so the change-only gate is a tested fact rather than a
+    /// lane-only one; composing is tracked even windowless, and only
+    /// the delivery needs the OS handle.
+    fn relabel(&mut self) -> bool {
         let state = (self.world.score(), self.world.alive());
         if self.titled == Some(state) {
-            return;
+            return false;
         }
-        if let Some(title) = self.title.compose(state.0, state.1)
-            && let Some(window) = &self.window
-        {
+        let Some(title) = self.title.compose(state.0, state.1) else {
+            return false;
+        };
+        if let Some(window) = &self.window {
             window.set_title(title);
-            self.titled = Some(state);
         }
+        self.titled = Some(state);
+        true
     }
 
     /// Turn the loop's outcome into the run's report.
@@ -633,12 +642,51 @@ mod tests {
     }
 
     #[test]
-    fn the_tick_bound_stops_the_steps_mid_plan() {
+    fn the_tick_bound_stops_at_the_frame_boundary_and_the_line_stays_true() {
+        // The bound never cuts a plan: the lagging frame's three steps
+        // all execute (a bounded overshoot the flag documents), and the
+        // stats agree with the world — the digest line cannot contradict
+        // itself.
         let mut app = app();
         app.ticks_wanted = Some(1);
         let mut control = LoopControl::default();
         app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
-        assert_eq!(app.world.tick(), 1, "the bound break fired inside the plan");
+        assert_eq!(app.world.tick(), 3, "the lagging plan finished whole");
+        assert_eq!(
+            app.stats.ticks(),
+            app.world.tick(),
+            "absorbed and executed are the same number"
+        );
+        assert!(app.done(), "the bound is reached at the boundary");
+        // A further update steps nothing: done at entry skips the plan.
+        app.update_at(Timestamp::from_nanos(6 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 3, "no ticks after the bound");
+    }
+
+    #[test]
+    fn a_latched_close_steps_no_further_ticks() {
+        // The close click is honored before any catch-up burst: done at
+        // entry means the plan is never begun.
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.event(WindowEvent::CloseRequested);
+        app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 0, "no ticks after the close");
+    }
+
+    #[test]
+    fn the_title_composes_on_change_and_only_on_change() {
+        // The change-only gate, as a tested fact: first sight composes,
+        // repetition does not, a score or death change does.
+        let mut app = app();
+        assert!(app.relabel(), "first sight composes");
+        assert!(!app.relabel(), "unchanged state is silent");
+        for _ in 0..240 {
+            app.world.step(false);
+        }
+        assert!(!app.world.alive(), "gravity won");
+        assert!(app.relabel(), "death recomposes");
+        assert!(!app.relabel(), "and then silence again");
     }
 
     #[test]
@@ -721,28 +769,25 @@ mod tests {
     }
 
     #[test]
-    fn the_event_arms_latch_release_and_forward() {
+    fn focus_loss_forgets_the_held_key_so_a_new_press_registers() {
+        // The observable consequence of release_all, which a deleted
+        // arm would fail: without it the key is still "held" and the
+        // second press is no transition — no new edge, a dropped input.
         let mut app = app();
         let mut control = LoopControl::default();
-        // Focus loss clears held input: a press followed by Focused(false)
-        // must not flap.
         press(&mut app);
+        app.update_at(Timestamp::from_nanos(STEP / 8), &mut control);
+        assert_eq!(app.pending_flaps, 1, "the first press banked");
         app.event(WindowEvent::Focused(false));
-        app.update_at(Timestamp::from_nanos(STEP), &mut control);
-        assert_eq!(app.world.tick(), 1);
-        // The edge fired before the release_all, so the press itself
-        // still counts once — what must NOT happen is a stuck hold
-        // producing more flaps later.
-        let flaps_now = app.pending_flaps;
-        app.update_at(Timestamp::from_nanos(2 * STEP), &mut control);
+        press(&mut app);
+        app.update_at(Timestamp::from_nanos(STEP / 4), &mut control);
         assert_eq!(
-            app.pending_flaps,
-            flaps_now.saturating_sub(1).min(flaps_now),
-            "no new edges appear after focus loss"
+            app.pending_flaps, 2,
+            "focus loss forgot the held key, so the re-press is a real new              edge — with the release_all arm deleted the key stays held and              this press is no transition at all"
         );
         // The close latch ends the run.
         app.event(WindowEvent::CloseRequested);
-        app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
+        app.update_at(Timestamp::from_nanos(STEP), &mut control);
         assert!(app.close_requested);
     }
 

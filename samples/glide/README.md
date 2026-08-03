@@ -46,7 +46,7 @@ Two crates. `world/` is the simulation — a pure fixed-step function of
 seed and per-tick input, forbidden by the workspace structure rules
 from reaching a clock, a file or a window at any dependency depth.
 This crate is the driver: it maps input to the world's one action
-through the same bindings a windowed mode will use, runs the loop on a
+through the same bindings the windowed mode uses, runs the loop on a
 synthetic clock, and owns every file that is read or written.
 
 Traces index events by tick from zero, exactly as the loader returns

@@ -274,6 +274,17 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
+      # The other direction: the game's window feature builds, lints,
+      # and tests. No graph guard -- the build itself proves the WSI
+      # stack is reachable, and the absence guards belong to the default
+      # graph, where they already stand. Display-less-safe: no test
+      # opens a window. Clippy rides here because the canonical lint
+      # never compiles feature-gated code the default graph omits.
+      - name: Build, lint, and test the game with its window feature
+        run: |
+          cargo build -p renew-sample-glide --features window
+          cargo clippy -p renew-sample-glide --features window --all-targets -- -D warnings
+          cargo test -p renew-sample-glide --features window
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"

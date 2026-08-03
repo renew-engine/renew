@@ -1,6 +1,6 @@
 //! Driving the world from a trace: the fixed-step loop on a synthetic
 //! clock, events delivered by tick, input resolved through the same map
-//! a windowed mode will use.
+//! the windowed mode uses.
 
 use renew_event::{KeyCode, WindowEvent};
 use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
