@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use renew_rhi::{
-    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc,
+    AdapterKind, Blend, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc,
     SamplerDesc, TargetFormat, TextureDesc, Validation, builtin,
 };
 
@@ -146,11 +146,13 @@ fn triangle_matches_structure_and_the_committed_golden() {
             height: SIZE,
         })
         .expect("offscreen target");
+    // `Blend::Opaque` spelled out where the default normally stands:
+    // the committed golden below is the proof that the explicit variant
+    // and the default are the same bytes.
     let pipeline = device
-        .create_pipeline(&PipelineDesc::new(
-            builtin::TRIANGLE,
-            TargetFormat::Rgba8Unorm,
-        ))
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm).blend(Blend::Opaque),
+        )
         .expect("triangle pipeline");
     target
         .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))

@@ -69,6 +69,15 @@ pub(crate) struct BufferInner {
     /// Host address of the whole mapped allocation.
     pub(crate) mapped: *mut u8,
     /// Distance between slot regions, `>= capacity`, `SLOT_ALIGN`ed.
+    /// The offscreen path is synchronous and lives in slot zero, so the
+    /// only reader of a nonzero offset is the presentation path.
+    #[cfg_attr(
+        not(feature = "present"),
+        allow(
+            dead_code,
+            reason = "read only by the presentation path's slot addressing"
+        )
+    )]
     pub(crate) slot_stride: u64,
     /// Per-frame capacity in bytes, as the caller asked for it.
     pub(crate) capacity: usize,
