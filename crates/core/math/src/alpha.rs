@@ -122,14 +122,16 @@ mod tests {
     #[test]
     fn one_nanosecond_short_of_a_step_never_reaches_one() {
         for step_nanos in [16_666_667u64, 33_333_333, 1_000_000_000, 4] {
-            let alpha = Alpha::new(step_nanos - 1, step(step_nanos));
+            // Bound before asserting, rather than inside the failure
+            // message: an argument that is only evaluated on failure is a
+            // line the coverage gate can never see executed.
+            let alpha = Alpha::new(step_nanos - 1, step(step_nanos)).get();
             assert!(
-                alpha.get() < 1.0,
-                "at a {step_nanos} ns step, alpha reached {} — a renderer would draw a \
-                 full tick ahead of the state it interpolates from",
-                alpha.get()
+                alpha < 1.0,
+                "at a {step_nanos} ns step, alpha reached {alpha} — a renderer would draw \
+                 a full tick ahead of the state it interpolates from"
             );
-            assert!(alpha.get() >= 0.0);
+            assert!(alpha >= 0.0, "at a {step_nanos} ns step, alpha was {alpha}");
         }
     }
 
