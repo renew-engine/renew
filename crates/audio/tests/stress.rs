@@ -13,11 +13,22 @@
 //! because that is the engine's only thread-spawning door, tests
 //! included.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use renew_audio::{MixerConfig, mixer, wav};
 use renew_platform::thread;
 
 const RATE: u32 = 48_000;
-const PUSHES: usize = 20_000;
+
+/// How many pushes the producer keeps going until it has had *accepted*.
+/// Far past the ring's capacity, so reaching it is only possible if the
+/// consumer made room many times over.
+const ACCEPTED_TARGET: usize = 2_000;
+
+/// The producer's attempt ceiling, so a ring that never drains fails with
+/// a message instead of hanging until the harness kills it.
+const ATTEMPT_CEILING: usize = 20_000_000;
 
 fn wav_bytes(frames: u32) -> Vec<u8> {
     let data_len = frames * 2;
@@ -51,43 +62,69 @@ fn a_flooding_producer_and_a_draining_callback_do_not_race() {
     let (handle, mut mix) = mixer(MixerConfig::new(2, RATE));
     let id = mix.load(&parsed);
 
+    let done = Arc::new(AtomicBool::new(false));
+
     // The producer runs on its own thread, pushing far faster than any
     // game would, so the try-lock's contended path is taken constantly
-    // rather than never.
-    let producer = thread::spawn_named("audio-stress-producer", move || {
-        let mut accepted = 0usize;
-        for _ in 0..PUSHES {
-            if handle.play(id) {
-                accepted += 1;
+    // rather than never. It stops on a count of *accepted* pushes, not
+    // of attempts: the target is what makes the meeting a fact of the
+    // test's construction rather than a measurement taken afterwards.
+    // Attempts are ceilinged only so a ring that stopped draining
+    // reports that instead of hanging.
+    let producer = {
+        let done = Arc::clone(&done);
+        thread::spawn_named("audio-stress-producer", move || {
+            let mut accepted = 0usize;
+            let mut attempts = 0usize;
+            while accepted < ACCEPTED_TARGET && attempts < ATTEMPT_CEILING {
+                attempts += 1;
+                if handle.play(id) {
+                    accepted += 1;
+                }
+                std::hint::spin_loop();
             }
-            std::hint::spin_loop();
-        }
-        accepted
-    })
-    .expect("the platform crate can spawn a named thread");
+            done.store(true, Ordering::Release);
+            (accepted, attempts)
+        })
+        .expect("the platform crate can spawn a named thread")
+    };
 
     // Meanwhile the consumer behaves like a callback: fill, again,
-    // again, with no coordination beyond the ring itself.
+    // again, with no coordination beyond the ring itself — until the
+    // producer says it is finished. Driven by the producer's progress
+    // rather than by an iteration count, because an iteration count is
+    // a guess about relative thread speed, and the two threads run at
+    // whatever speed the machine and its instrumentation allow.
     let mut out = vec![0.0f32; 256];
-    for _ in 0..PUSHES {
+    let mut fills = 0usize;
+    while !done.load(Ordering::Acquire) {
         mix.fill(&mut out);
+        fills += 1;
         assert!(
             out.iter().all(|sample| sample.is_finite()),
             "a mixed buffer must never carry NaN or infinity"
         );
     }
 
-    let accepted = producer.join().expect("the producer finished");
+    let (accepted, attempts) = producer.join().expect("the producer finished");
     // Not `accepted > 0` — the ring starts empty, so the first sixty-four
     // pushes are accepted whatever the consumer does, and that assertion
     // would hold even if `fill` never drained anything at all. What
     // actually proves the two sides met is acceptance far past the
     // ring's own capacity: every push beyond it needed a drain to have
-    // made room.
+    // made room, and the target is thirty times the capacity.
+    //
+    // This is an equality rather than a threshold. The producer stops
+    // *because* it reached the target, so the only way to arrive here
+    // short of it is the ceiling — a ring that stopped making room.
+    assert_eq!(
+        accepted, ACCEPTED_TARGET,
+        "the producer gave up after {attempts} attempts with {accepted} accepted, so the \
+         ring stopped making room while the consumer was still draining it"
+    );
     assert!(
-        accepted > renew_audio::MAX_VOICES * 100,
-        "the ring accepted {accepted} of {PUSHES} pushes — too few to have been drained \
-         repeatedly, so the consumer never met the producer"
+        fills > 0,
+        "the consumer never ran a single callback, so nothing was drained concurrently"
     );
 
     // Whatever is still queued drains without complaint, and the mixer
