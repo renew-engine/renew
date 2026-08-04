@@ -374,3 +374,136 @@ impl Div for Fixed {
         self.saturating_div(other)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Fixed, round_div};
+    use crate::saturations;
+
+    #[test]
+    fn absolute_value_saturates_at_the_bottom_of_the_range() {
+        assert_eq!(Fixed::from_int(-3).abs(), Fixed::from_int(3));
+        assert_eq!(Fixed::from_int(3).abs(), Fixed::from_int(3));
+        assert_eq!(Fixed::ZERO.abs(), Fixed::ZERO);
+        // MIN has no positive counterpart, which is the one input where
+        // this cannot answer exactly.
+        let before = saturations();
+        assert_eq!(Fixed::MIN.abs(), Fixed::MAX);
+        assert_eq!(saturations().0, before.0 + 1, "the clamp must be counted");
+    }
+
+    #[test]
+    fn signum_reports_whole_units() {
+        assert_eq!(Fixed::from_int(-9).signum(), Fixed::from_int(-1));
+        assert_eq!(Fixed::ZERO.signum(), Fixed::ZERO);
+        assert_eq!(Fixed::from_ratio(1, 1000).signum(), Fixed::ONE);
+    }
+
+    #[test]
+    fn min_max_and_clamp_agree_with_the_ordering() {
+        let low = Fixed::from_int(-2);
+        let high = Fixed::from_int(5);
+        assert_eq!(low.min(high), low);
+        assert_eq!(low.max(high), high);
+        assert_eq!(Fixed::from_int(9).clamp(low, high), high);
+        assert_eq!(Fixed::from_int(-9).clamp(low, high), low);
+        assert_eq!(Fixed::from_int(1).clamp(low, high), Fixed::from_int(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Fixed::clamp needs low <= high")]
+    fn clamp_refuses_an_inverted_range() {
+        let _ = Fixed::ZERO.clamp(Fixed::ONE, Fixed::ZERO);
+    }
+
+    #[test]
+    #[should_panic(expected = "Fixed::from_ratio needs a nonzero denominator")]
+    fn a_ratio_over_zero_is_refused() {
+        let _ = Fixed::from_ratio(1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Fixed division by zero")]
+    fn division_by_zero_is_refused() {
+        let _ = Fixed::ONE.saturating_div(Fixed::ZERO);
+    }
+
+    #[test]
+    #[should_panic(expected = "Fixed::sqrt of a negative value")]
+    fn the_square_root_of_a_negative_is_refused() {
+        let _ = Fixed::from_int(-1).sqrt();
+    }
+
+    /// The checked forms answer instead of clamping, which is what a caller
+    /// wanting to handle overflow rather than be told about it asks for.
+    #[test]
+    fn the_checked_forms_report_rather_than_saturate() {
+        assert_eq!(Fixed::ONE.checked_add(Fixed::ONE), Some(Fixed::from_int(2)));
+        assert_eq!(Fixed::MAX.checked_add(Fixed::ONE), None);
+        assert_eq!(Fixed::ONE.checked_sub(Fixed::ONE), Some(Fixed::ZERO));
+        assert_eq!(Fixed::MIN.checked_sub(Fixed::ONE), None);
+        assert_eq!(
+            Fixed::from_int(3).checked_mul(Fixed::from_int(4)),
+            Some(Fixed::from_int(12))
+        );
+        assert_eq!(Fixed::MAX.checked_mul(Fixed::MAX), None);
+
+        // And they do not touch the counter: a caller asking the question
+        // wants the answer, not a diagnostic about having asked.
+        let before = saturations();
+        let _ = Fixed::MAX.checked_add(Fixed::ONE);
+        let _ = Fixed::MAX.checked_mul(Fixed::MAX);
+        assert_eq!(saturations(), before);
+    }
+
+    #[test]
+    fn subtraction_and_negation_saturate_at_both_ends() {
+        assert_eq!(Fixed::from_int(5) - Fixed::from_int(3), Fixed::from_int(2));
+        assert_eq!(-Fixed::from_int(3), Fixed::from_int(-3));
+        let before = saturations();
+        assert_eq!(Fixed::MAX - Fixed::MIN, Fixed::MAX);
+        assert_eq!(-Fixed::MIN, Fixed::MAX);
+        assert_eq!(saturations().0, before.0 + 2);
+    }
+
+    /// The whole and fractional parts of a negative value both carry the
+    /// sign, which is the convention `i64` division already has and the one
+    /// a reader will assume.
+    #[test]
+    fn the_parts_of_a_negative_value_carry_its_sign() {
+        let value = Fixed::from_ratio(-7, 2);
+        assert_eq!(value.trunc_int(), -3);
+        assert_eq!(value.fract(), Fixed::from_ratio(-1, 2));
+    }
+
+    /// Ratios round to nearest with ties away from zero, symmetrically, so
+    /// a negative constant is the negation of its positive twin.
+    #[test]
+    fn ratios_round_symmetrically() {
+        assert_eq!(Fixed::from_ratio(-981, 100), -Fixed::from_ratio(981, 100));
+        assert_eq!(Fixed::from_ratio(981, -100), -Fixed::from_ratio(981, 100));
+        assert_eq!(Fixed::from_ratio(1, 2), Fixed::from_bits(1 << 15));
+    }
+
+    /// The rounding helper on its own, over the sign quadrants and the tie,
+    /// because every constructor and both of the rounded operators go
+    /// through one of these.
+    #[test]
+    fn the_rounding_helper_is_symmetric_and_rounds_ties_away_from_zero() {
+        assert_eq!(round_div(7, 2), 4);
+        assert_eq!(round_div(-7, 2), -4);
+        assert_eq!(round_div(7, -2), -4);
+        assert_eq!(round_div(-7, -2), 4);
+        assert_eq!(round_div(5, 2), 3, "a tie rounds away from zero");
+        assert_eq!(round_div(-5, 2), -3, "and symmetrically");
+        assert_eq!(round_div(4, 2), 2, "an exact quotient is untouched");
+    }
+
+    /// Division saturates like everything else rather than wrapping.
+    #[test]
+    fn division_saturates_when_the_quotient_does_not_fit() {
+        let before = saturations();
+        assert_eq!(Fixed::MAX.saturating_div(Fixed::EPSILON), Fixed::MAX);
+        assert_eq!(saturations().0, before.0 + 1);
+    }
+}
