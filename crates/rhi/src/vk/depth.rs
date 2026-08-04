@@ -16,6 +16,17 @@ use crate::vk::offscreen::{creation, image_memory_type};
 /// path.
 pub(crate) const CHAIN_NAMES: &str = "D32_SFLOAT, D24_UNORM_S8_UINT";
 
+/// Destroy a depth image that never finished creation: no memory bound
+/// or view built yet, nothing recorded against it.
+fn destroy_partial_image(shared: &Rc<DeviceShared>, image: vk::Image) {
+    // SAFETY: image live, nothing bound or recorded against it.
+    unsafe {
+        shared
+            .device
+            .destroy_image(image, Some(&shared.alloc_cbs()));
+    }
+}
+
 /// One depth attachment image with its memory and view.
 pub(crate) struct DepthResources {
     pub(crate) image: vk::Image,
@@ -83,14 +94,7 @@ impl DepthResources {
         }
         .map_err(|code| creation("vkCreateImage(depth)", code))?;
 
-        let destroy_image = |shared: &Rc<DeviceShared>| {
-            // SAFETY: image live, nothing bound or recorded against it.
-            unsafe {
-                shared
-                    .device
-                    .destroy_image(image, Some(&shared.alloc_cbs()));
-            }
-        };
+        let destroy_image = |shared: &Rc<DeviceShared>| destroy_partial_image(shared, image);
 
         // SAFETY: image live.
         let requirements = unsafe { shared.device.get_image_memory_requirements(image) };
@@ -128,9 +132,10 @@ impl DepthResources {
         // accounting will want is exactly what was asked of the driver.
         renew_diag::info!(
             target: "renew-rhi",
-            "depth image: {}x{}, {} bytes device memory",
+            "depth image: {}x{} {:?}, {} bytes device memory",
             extent.width,
             extent.height,
+            format,
             requirements.size
         );
         // SAFETY: image and memory live; offset 0 within an allocation

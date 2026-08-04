@@ -32,10 +32,6 @@ impl TargetFormat {
     }
 }
 
-/// Pipeline construction parameters. The SPIR-V is borrowed byte
-/// slices — [`crate::builtin`] provides the embedded v0 shaders.
-///
-/// `#[non_exhaustive]`, so it is built through [`PipelineDesc::new`]
 /// One per-instance vertex attribute, in declaration order.
 ///
 /// Closed and small on purpose: these are the shapes the instanced-quad
@@ -66,6 +62,10 @@ impl InstanceAttribute {
     }
 }
 
+/// Pipeline construction parameters. The SPIR-V is borrowed byte
+/// slices — [`crate::builtin`] provides the embedded v0 shaders.
+///
+/// `#[non_exhaustive]`, so it is built through [`PipelineDesc::new`]
 /// rather than as a struct literal. Every field this will grow — vertex
 /// input, blend state, depth state, push-constant ranges — is optional
 /// with a defined absence, so each can arrive as a builder method
@@ -724,7 +724,7 @@ impl Device {
                 Some(format) => Some(format),
                 None => {
                     return Err(PipelineError::DepthUnsupported {
-                        chain: "D32_SFLOAT, D24_UNORM_S8_UINT",
+                        chain: crate::vk::depth::CHAIN_NAMES,
                     });
                 }
             },

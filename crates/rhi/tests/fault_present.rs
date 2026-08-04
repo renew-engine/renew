@@ -530,8 +530,10 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
 /// The scenarios past both tables. S1 and S2 run unfaulted; S3 arms a
 // COMPOUND fault through the same path the ladder uses, but does not
 // fit the table's one-call shape; S4 arms the teardown wait-idle fault
-// and reads the diag channel, the only observable a Drop has.
-const UNFAULTED_SCENARIOS: usize = 4;
+// and reads the diag channel, the only observable a Drop has; S5-S7
+// are the window half of the depth creation ladder, guarded on the
+// adapter offering a depth format.
+const UNFAULTED_SCENARIOS: usize = 7;
 /// How many scenarios there are in total.
 const SCENARIOS: usize = LADDER.len() + QUIRKS.len() + UNFAULTED_SCENARIOS;
 
@@ -681,6 +683,34 @@ fn present_case(
     body: impl FnOnce(&Device, Result<WindowTarget, TargetError>) -> Verdict,
 ) -> Verdict {
     with_fault(fault, || target_case(extent, window, body))
+}
+
+/// One rung of the window half of the depth creation ladder: the named
+/// call fails during chain build — on this path the depth image's
+/// create, allocate and bind are the first of their names, so no
+/// ordinal is needed — target creation reports the depth call by name,
+/// and a second build on the same device proves the partial-chain
+/// unwinder left it whole. Skips (Ok) on an adapter with no depth
+/// format, where the guarded calls never happen.
+fn depth_creation_case(extent: Extent, window: &NativeWindow, fault: &str) -> Verdict {
+    present_case(extent, window, fault, |device, target| {
+        if device.depth_format_name().is_none() {
+            eprintln!("SKIP: adapter offers no chain depth format");
+            return Ok(());
+        }
+        match target {
+            Err(TargetError::Creation { call, .. }) if call.contains("(depth)") => {}
+            Err(TargetError::OutOfDeviceMemory { call }) if call.contains("(depth)") => {}
+            Ok(_) => return Err("the build succeeded despite the fault".to_string()),
+            Err(other) => return Err(wrong("a depth-named creation failure", &other)),
+        }
+        // The fault is spent: the unwinder left a device that builds.
+        let rebuilt = device
+            .create_window_target(window.clone(), extent)
+            .map_err(|error| format!("recovery build failed: {error}"))?;
+        drop(rebuilt);
+        Ok(())
+    })
 }
 
 /// Every quirk scenario: arm the response mutation, then run the case.
@@ -1177,7 +1207,7 @@ impl FaultApp {
             // Drop owns this window's first — the faulted one; the
             // spine's follows, unfaulted. R1's resize case and S3's
             // compound arm each own separate windows, untouched.
-            _ => (
+            3 => (
                 "S4 target-teardown/wait-idle-failure",
                 present_case(
                     size,
@@ -1190,6 +1220,29 @@ impl FaultApp {
                         recorded("wait-idle at window-target teardown failed")
                     },
                 ),
+            ),
+            // S5-S7: the window half of the depth creation ladder. On
+            // this path the chain's own images come from the swapchain,
+            // so the depth image's vkCreateImage, vkAllocateMemory and
+            // vkBindImageMemory are the FIRST of their names — no
+            // ordinal needed (the depth view is not pinnable here: its
+            // vkCreateImageView ordinal floats with the driver-chosen
+            // swapchain image count, and its failure arm is driven on
+            // the offscreen twin). Each proves creation fails cleanly
+            // AND the partial chain's unwinder leaves the device
+            // rebuilding: a second target on the same device builds and
+            // goes dormant-or-usable per protocol, validation clean.
+            4 => (
+                "S5 depth-image-creation-fails",
+                depth_creation_case(size, window, "vkCreateImage=ERROR_OUT_OF_HOST_MEMORY"),
+            ),
+            5 => (
+                "S6 depth-memory-allocation-fails",
+                depth_creation_case(size, window, "vkAllocateMemory=ERROR_OUT_OF_DEVICE_MEMORY"),
+            ),
+            _ => (
+                "S7 depth-image-bind-fails",
+                depth_creation_case(size, window, "vkBindImageMemory=ERROR_OUT_OF_HOST_MEMORY"),
             ),
         }
     }

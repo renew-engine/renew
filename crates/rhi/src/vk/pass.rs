@@ -131,7 +131,8 @@ pub enum StoreOp {
 pub enum ClearValue {
     /// A color attachment's clear.
     Color(Color),
-    /// A depth attachment's clear, in `[0, 1]`.
+    /// A depth attachment's clear — finite and in `[0, 1]`, asserted
+    /// at `render`.
     Depth(f32),
 }
 
@@ -177,8 +178,9 @@ impl<'a> Item<'a> {
 pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
     assert!(
         !desc.passes.is_empty(),
-        "a frame needs at least one pass: an empty frame would present undefined contents"
+        "a frame needs at least one pass: an empty frame records nothing, and on the window          path would present contents nothing ever defined"
     );
+    let mut depth_used = false;
     for (index, pass) in desc.passes.iter().enumerate() {
         assert!(
             pass.color.len() == 1,
@@ -193,13 +195,22 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                 "pass 0: LoadOp::Load on a frame's first pass loads undefined contents — \
                  every frame's first use of the attachment starts undefined"
             );
-            if let Some(depth) = &pass.depth {
+        }
+        if let Some(depth) = &pass.depth {
+            // The color first-use is always pass 0 (every pass carries
+            // color); the depth first-use is the frame's first
+            // depth-CARRYING pass, whatever its index — that is where
+            // the walk transitions the image from UNDEFINED, so that is
+            // where a Load reads garbage.
+            if !depth_used {
                 assert!(
                     !matches!(depth.load, LoadOp::Load),
-                    "pass 0: LoadOp::Load on the frame's first depth use loads undefined \
-                     contents"
+                    "pass {index}: LoadOp::Load on the frame's first depth use loads \
+                     undefined contents — the depth image transitions from UNDEFINED at \
+                     its first carrying pass"
                 );
             }
+            depth_used = true;
         }
         if let LoadOp::Clear(value) = color.load {
             assert!(
@@ -216,6 +227,16 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                 "pass {index}: a depth attachment clears to ClearValue::Depth, not \
                  ClearValue::Color"
             );
+            if let ClearValue::Depth(depth_value) = value {
+                // The documented range, asserted: an out-of-range or
+                // non-finite depth clear is invalid usage the driver may
+                // answer with anything.
+                assert!(
+                    depth_value.is_finite() && (0.0..=1.0).contains(&depth_value),
+                    "pass {index}: a depth clear must be finite and in [0, 1], got \
+                     {depth_value}"
+                );
+            }
         }
         for item in pass.items {
             assert!(

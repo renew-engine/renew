@@ -34,10 +34,10 @@ struct SmokeApp {
     device: Option<Device>,
     target: Option<WindowTarget>,
     pipeline: Option<renew_rhi::RenderPipeline>,
-    /// A depth-testing triangle for the frame's second pass, `None`
-    /// when the adapter offers no depth format (depth-free presenting
-    /// still runs; the device suite's probe is what makes the strict
-    /// lane refuse such an adapter).
+    /// A depth-testing triangle for the frame's depth passes, `None`
+    /// when the adapter offers no depth format — a reported skip of the
+    /// depth passes off the strict lane, a failure on it (the exercise
+    /// must not go silently vacuous where it is the point).
     depth_pipeline: Option<renew_rhi::RenderPipeline>,
     size: Extent,
     frames: u32,
@@ -180,7 +180,14 @@ impl WindowApp for SmokeApp {
                     return;
                 }
             }
+        } else if strict {
+            // On the lane that exists to run this, a depth-free run
+            // would be the exercise silently going vacuous.
+            self.failure =
+                Some("no depth format: the depth exercise cannot run on this lane".to_string());
+            return;
         } else {
+            eprintln!("SKIP depth passes: adapter offers no chain depth format");
             None
         };
         self.device = Some(device);

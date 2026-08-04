@@ -803,6 +803,9 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
         "the first pass's clear survives the Load where nothing drew"
     );
 
+    // Teardown first, oracle second: destruction-time findings count.
+    drop(target);
+    drop(pipeline);
     assert_no_validation_errors(&device);
     Ok(())
 }

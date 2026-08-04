@@ -461,20 +461,23 @@ impl WindowTarget {
     /// # Panics
     ///
     /// The frame-shape contract is asserted before any fence is waited
-    /// or written: a frame needs at least one pass; a pass carries
-    /// exactly one color attachment; `LoadOp::Load` is refused on the
-    /// first pass; clear values must match their attachment's kind; an
-    /// item's pipeline depth state must match its pass; and one buffer
-    /// feeds at most one item per frame. Frame data longer than its
-    /// buffer's per-frame capacity also panics through a retained
-    /// assertion: the length bounds a copy into mapped device memory,
-    /// which makes it a memory-safety boundary rather than a contract
-    /// nicety.
+    /// or written — among its refusals: a frame needs at least one
+    /// pass; a pass carries exactly one color attachment;
+    /// `LoadOp::Load` is refused on an attachment's first use in the
+    /// frame; clear values must match their attachment's kind and a
+    /// depth clear its documented range; an item's pipeline depth state
+    /// must match its pass; one buffer feeds at most one item per
+    /// frame, and a frame carries at most the retention table's width
+    /// of distinct buffers. Frame data longer than its buffer's
+    /// per-frame capacity also panics through a retained assertion: the
+    /// length bounds a copy into mapped device memory, which makes it a
+    /// memory-safety boundary rather than a contract nicety.
     ///
     /// # Errors
     ///
     /// [`TargetError::DepthUnsupported`] when a pass carries depth and
-    /// the adapter refused the whole format chain;
+    /// the adapter refused the whole format chain — returned before any
+    /// frame work begins, so the target is untouched.
     /// [`TargetError::Timeout`] when the GPU exceeds the watchdog;
     /// [`TargetError::DeviceLost`] on device loss; submission errors
     /// otherwise — any such mid-frame failure also tears the swapchain

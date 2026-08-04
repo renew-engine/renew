@@ -224,11 +224,19 @@ impl SpriteRenderer {
     /// [`attachment`] for the matching color attachment — and the
     /// borrows end at the `render` call:
     ///
-    /// ```ignore
-    /// let color = [renew_render2d::attachment(SKY)];
-    /// let items = [renderer.item()];
-    /// let passes = [Pass::new(&color, &items)];
-    /// target.render(&RenderDesc::new(&passes))?;
+    /// ```no_run
+    /// use renew_render2d::SpriteRenderer;
+    /// use renew_rhi::{Color, OffscreenTarget, Pass, RenderDesc, TargetError};
+    /// fn frame(
+    ///     renderer: &SpriteRenderer,
+    ///     target: &mut OffscreenTarget,
+    ///     sky: Color,
+    /// ) -> Result<(), TargetError> {
+    ///     let color = [renew_render2d::attachment(sky)];
+    ///     let items = [renderer.item()];
+    ///     let passes = [Pass::new(&color, &items)];
+    ///     target.render(&RenderDesc::new(&passes))
+    /// }
     /// ```
     ///
     /// Zero pushed sprites is a zero-instance draw — a legal empty
