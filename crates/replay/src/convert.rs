@@ -62,30 +62,34 @@ const fn key_to_trace(code: KeyCode) -> TraceKey {
         KeyCode::KeyA => TraceKey::KeyA,
         KeyCode::KeyS => TraceKey::KeyS,
         KeyCode::KeyD => TraceKey::KeyD,
-        // Every other physical key already arrived here unidentified;
-        // the trace records that faithfully rather than refusing, because
-        // a key this build does not name is still input that happened.
-        _ => TraceKey::Unidentified,
+        // A key this build does not name is still input that happened,
+        // so the trace records it faithfully rather than refusing. Named
+        // rather than wildcarded: the vocabulary is exhaustive, so a new
+        // key must arrive here as a compile error and be decided on, not
+        // fall into this arm because it was the only one left.
+        KeyCode::Unidentified => TraceKey::Unidentified,
     }
 }
 
-/// `None` for a button this build has no name for.
+/// Every button this build knows, which since the vocabulary became
+/// exhaustive is every button there is.
 ///
-/// The wildcard is required because the vocabulary is non-exhaustive, and
-/// it **refuses** rather than folding an unknown button into `Other`. A
-/// silent fold would be the writer-side drop this whole module exists to
-/// prevent: every future button would record as the same one, and the
-/// recording would be wrong in a way nothing could detect.
-const fn button_to_trace(button: PointerButton) -> Option<TraceButton> {
-    Some(match button {
+/// This returned `Option` while the vocabulary was non-exhaustive, so the
+/// required wildcard could **refuse** rather than fold an unknown button
+/// into `Other` — a silent fold would have been the writer-side drop this
+/// module exists to prevent. The refusal is now the compiler's: a new
+/// button breaks this match, here, and somebody decides what it records
+/// as. The `Option` went with the wildcard, because a `None` no caller
+/// can receive is a branch every caller still has to write.
+const fn button_to_trace(button: PointerButton) -> TraceButton {
+    match button {
         PointerButton::Left => TraceButton::Left,
         PointerButton::Right => TraceButton::Right,
         PointerButton::Middle => TraceButton::Middle,
         PointerButton::Back => TraceButton::Back,
         PointerButton::Forward => TraceButton::Forward,
         PointerButton::Other(index) => TraceButton::Other(index),
-        _ => return None,
-    })
+    }
 }
 
 /// Encode one event, or refuse it by name.
@@ -113,9 +117,9 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
             pressed,
             repeat,
         },
-        WindowEvent::PointerButton { button, pressed } => match button_to_trace(button) {
-            Some(button) => TraceEvent::PointerButton { button, pressed },
-            None => return Err(Unencodable { shape }),
+        WindowEvent::PointerButton { button, pressed } => TraceEvent::PointerButton {
+            button: button_to_trace(button),
+            pressed,
         },
         // The float-bearing shapes are the only ones that can fail on
         // their payload rather than their kind: the trace format holds
@@ -133,9 +137,6 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
             Some(scale) => TraceEvent::ScaleFactorChanged { scale },
             None => return Err(Unencodable { shape }),
         },
-        // Never `=> {}`. A wildcard that drops is how a recording starts
-        // lying about what happened.
-        _ => return Err(Unencodable { shape }),
     };
     Ok(encoded)
 }

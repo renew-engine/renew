@@ -74,11 +74,6 @@ file = "crates/core/platform/src/window.rs"
 lines = [651]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
-[[exempt]]
-file = "crates/replay/src/convert.rs"
-lines = [87, 118, 138]
-reason = "The wildcard arms that a non-exhaustive vocabulary forces a downstream crate to write, and the refusal one of them feeds. Every variant that exists today has its own arm above, so these are unreachable until the vocabulary grows - which is exactly when they must already be there, because the compiler will not report the new variant as unhandled in this crate. They refuse rather than folding an unknown event into a neighbouring one, so a recording can never quietly claim something that did not happen."
-
 
 [[exempt]]
 file = "crates/asset/src/write.rs"
@@ -97,7 +92,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [726, 727, 728]
+lines = [724, 725, 726]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
