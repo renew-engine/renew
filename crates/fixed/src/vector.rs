@@ -158,10 +158,12 @@ impl Vec2 {
             Fixed::from_bits(self.x.to_bits() << shift),
             Fixed::from_bits(self.y.to_bits() << shift),
         );
+        // Non-zero after the check above, and rescaling is what makes that
+        // true: the largest component carries 38 significant bits, so its
+        // square alone exceeds 2^60 and the length cannot round to zero.
+        // Before rescaling this needed a second zero check, and that check
+        // was the bug — it turned a short direction into no direction.
         let length = scaled.length();
-        if length == Fixed::ZERO {
-            return None;
-        }
         Some(Self::new(
             scaled.x.saturating_div(length),
             scaled.y.saturating_div(length),
@@ -290,10 +292,12 @@ impl Vec3 {
             Fixed::from_bits(self.y.to_bits() << shift),
             Fixed::from_bits(self.z.to_bits() << shift),
         );
+        // Non-zero after the check above, and rescaling is what makes that
+        // true: the largest component carries 38 significant bits, so its
+        // square alone exceeds 2^60 and the length cannot round to zero.
+        // Before rescaling this needed a second zero check, and that check
+        // was the bug — it turned a short direction into no direction.
         let length = scaled.length();
-        if length == Fixed::ZERO {
-            return None;
-        }
         Some(Self::new(
             scaled.x.saturating_div(length),
             scaled.y.saturating_div(length),
