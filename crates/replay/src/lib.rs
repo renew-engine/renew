@@ -27,7 +27,12 @@
 //! convention, and baking one driver's convention into the shared loader
 //! would silently impose it on every future consumer.
 
-#![deny(clippy::print_stdout, clippy::print_stderr)]
+// The determinism rule in the language standard: a simulation crate does not
+// perform floating-point arithmetic whose result can reach digested state.
+// Denied here rather than left to review — the lint covers operators only, so
+// it is necessary and not sufficient, but what it does cover it covers with
+// teeth.
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 pub mod convert;
 mod load;

@@ -212,7 +212,20 @@ impl FramePlan {
         // rounds up to 1.0 at 1 Hz. An alpha of 1.0 is a renderer popping
         // a full tick ahead of the state it interpolates from — a bug
         // that would have been hunted in the renderer for a week.
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        // The crate denies float arithmetic, as every simulation crate
+        // does. This is the one exemption the language standard names,
+        // and it is taken here rather than at the crate root so that the
+        // exemption is visible where it applies and a second one cannot
+        // appear without a second `allow`. It is sound because the
+        // result is presentation output: alpha is derived from two
+        // integers, is consumed only by rendering, and never re-enters
+        // world state or a digest — a property `alpha_carries_no_state_
+        // the_digest_does_not_absorb` in tests/determinism.rs asserts.
+        #[allow(
+            clippy::float_arithmetic,
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation
+        )]
         let ratio = (self.remainder.get() as f64 / self.dt.nanos().get() as f64) as f32;
         Alpha(ratio.min(LARGEST_BELOW_ONE))
     }

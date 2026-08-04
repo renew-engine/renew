@@ -79,7 +79,17 @@
 
 // This crate reports; it does not print. Diagnostics belong to the caller,
 // which is what keeps the dependency list empty.
-#![deny(clippy::print_stdout, clippy::print_stderr)]
+// The determinism rule in the language standard: a simulation crate does not
+// perform floating-point arithmetic whose result can reach digested state.
+// Denied here rather than left to review — the lint covers operators only, so
+// it is necessary and not sufficient, but what it does cover it covers with
+// teeth.
+//
+// This crate is the one holding an exemption: the interpolation factor in
+// `Schedule::step` is computed in floats. It carries the `allow` at the
+// expression itself, so the exemption is visible where it is taken and a
+// second one cannot be added without writing a second `allow`.
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 mod digest;
 mod report;
