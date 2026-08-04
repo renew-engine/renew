@@ -240,6 +240,32 @@ impl Fixed {
         }
     }
 
+    /// Divide, or `None` for a zero divisor or a result that would not fit.
+    ///
+    /// The form to reach for wherever a divisor comes from data rather than
+    /// from a literal — a ray direction, a difference of two positions, a
+    /// time of impact. [`Fixed::saturating_div`] asserts on zero because a
+    /// literal zero divisor is a programming error; a *computed* zero is an
+    /// ordinary value that geometry produces constantly, and asserting on it
+    /// would put a panic on a path that runs every frame.
+    #[must_use]
+    pub const fn checked_div(self, other: Self) -> Option<Self> {
+        if other.0 == 0 {
+            return None;
+        }
+        let rounded = round_div_i128((self.0 as i128) << FRAC_BITS, other.0 as i128);
+        if rounded > i64::MAX as i128 || rounded < i64::MIN as i128 {
+            None
+        } else {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the branches above establish the value is in range"
+            )]
+            let narrowed = rounded as i64;
+            Some(Self(narrowed))
+        }
+    }
+
     /// Multiply, or `None` if the result would not fit.
     ///
     /// `const`, and therefore not counted: a compile-time context has no
@@ -453,6 +479,32 @@ mod tests {
         let before = saturations();
         let _ = Fixed::MAX.checked_add(Fixed::ONE);
         let _ = Fixed::MAX.checked_mul(Fixed::MAX);
+        assert_eq!(saturations(), before);
+    }
+
+    /// The divisor a ray direction or a position difference produces is
+    /// often zero, and that is data rather than a mistake — so there is a
+    /// form that answers instead of asserting.
+    #[test]
+    fn checked_division_answers_where_the_asserting_form_refuses() {
+        assert_eq!(
+            Fixed::from_int(6).checked_div(Fixed::from_int(3)),
+            Some(Fixed::from_int(2))
+        );
+        assert_eq!(Fixed::ONE.checked_div(Fixed::ZERO), None);
+        assert_eq!(Fixed::ZERO.checked_div(Fixed::ZERO), None);
+        // A quotient too large to represent is reported, not clamped.
+        assert_eq!(Fixed::MAX.checked_div(Fixed::EPSILON), None);
+        // Rounds the same way the asserting form does, so swapping between
+        // them never changes a value.
+        assert_eq!(
+            Fixed::from_int(7).checked_div(Fixed::from_int(2)),
+            Some(Fixed::from_int(7).saturating_div(Fixed::from_int(2)))
+        );
+        // And touches no counter: asking is not saturating.
+        let before = saturations();
+        let _ = Fixed::MAX.checked_div(Fixed::EPSILON);
+        let _ = Fixed::ONE.checked_div(Fixed::ZERO);
         assert_eq!(saturations(), before);
     }
 
