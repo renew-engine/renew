@@ -395,6 +395,23 @@ mod tests {
         ]
     }
 
+    /// The bound set is a list rather than a number, and this is what
+    /// says so: a row with no leg is a target promised and never proved.
+    #[test]
+    fn the_expected_architectures_come_from_the_target_rows() {
+        let arches = super::expected_arches();
+        assert_eq!(arches.len(), super::TARGETS.len());
+        for (platform, arch) in super::TARGETS {
+            assert!(
+                arches.contains(&arch),
+                "{platform} binds {arch} and the expected set omits it"
+            );
+        }
+        // Not a set: two rows may share an instruction set, and
+        // collapsing them would let two legs satisfy three rows.
+        assert!(arches.len() > 1);
+    }
+
     #[test]
     fn three_agreeing_targets_pass() {
         let verdict = compare(&three("0x1", "0x1", "0x1"), &ARCHES);
