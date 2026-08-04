@@ -1,0 +1,34 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate is simulation-designated: its state is the collider set, and a
+# contact array it produces reaches a state hash directly. Every tripwire
+# below closes a route by which something outside the inputs could reach that
+# hash — a clock, a thread, a file, or a hasher that seeds itself.
+#
+# The float deny is at the crate root, beside the sentence explaining it.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a step advances by its configured timestep and never by the wall clock; reading one would make the world a function of when it ran" },
+    { path = "std::time::SystemTime::now", reason = "same reason as Instant::now, and this one is not even monotonic" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded until a deterministic parallel-scheduling contract exists" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::read", reason = "geometry arrives through the caller's operations, never from a path this crate chose" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, and nothing behind a reproducibility contract may" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same reason as RandomState: self-seeding entropy has no place here" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary — and iteration order here is contact order" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
