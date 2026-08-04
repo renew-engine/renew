@@ -168,6 +168,17 @@ impl FramePlan {
         self.steps
     }
 
+    /// The timestep this plan was cut against.
+    ///
+    /// Public because the digest absorbs it: anything reconstructing
+    /// what was hashed — a test, a comparison lane, a tool diffing two
+    /// runs — needs every field that went in, and a digested field with
+    /// no accessor is one a consumer has to guess at.
+    #[must_use]
+    pub const fn dt(&self) -> Timestep {
+        self.dt
+    }
+
     /// The tick index of the first step, which is also the loop's tick
     /// count before this frame.
     #[must_use]

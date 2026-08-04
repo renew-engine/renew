@@ -29,7 +29,7 @@ const ORIGIN: u64 = 1_000_000_000;
 /// pure `u64` arithmetic with an explicit little-endian absorption order,
 /// so it should hold on every platform; "should" is not evidence, and the
 /// first three-platform run is.
-const FROZEN_SCHEDULE_DIGEST: u64 = 0x8154_30d5_7cc1_5744;
+const FROZEN_SCHEDULE_DIGEST: u64 = 0x5d29_0b68_1d14_462c;
 
 /// The canonical hostile trace, as absolute timestamps from `origin`.
 ///
@@ -239,13 +239,20 @@ fn eight_runs_of_one_trace_produce_one_world_state() {
 #[test]
 fn alpha_carries_no_state_the_digest_does_not_absorb() {
     // The digested fields of a plan, exactly as `absorb_plan` folds
-    // them: first tick, step count, dropped, remainder. All integers.
-    fn digested(plan: &FramePlan) -> (u64, u32, u64, u64) {
+    // them: first tick, step count, dropped, remainder, timestep. All
+    // integers. The timestep is the one that makes this a property
+    // rather than a coincidence — alpha is remainder over timestep, and
+    // until the digest absorbed the divisor, two plans it could not
+    // tell apart could still disagree on alpha. Nothing in the tree
+    // could build that pair, a loop's timestep being fixed at
+    // construction, which is precisely why the gap went unnoticed.
+    fn digested(plan: &FramePlan) -> (u64, u32, u64, u64, u64) {
         (
             plan.first_tick(),
             plan.step_count(),
             plan.dropped(),
             plan.remainder().get(),
+            plan.dt().nanos().get(),
         )
     }
 
