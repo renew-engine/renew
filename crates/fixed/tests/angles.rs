@@ -14,9 +14,20 @@ use renew_fixed::{Angle, Fixed, Vec2};
 /// Raw units per whole number in `Fixed`.
 const ONE: f64 = 65536.0;
 
-/// The measured worst error of the table, in units in the last place. Stated
-/// as a constant so a regression moves this number rather than hiding.
-const WORST_ULP: f64 = 1.02;
+/// The bound the table is asserted to hold, in units in the last place.
+///
+/// **Measured worst: 1.0322**, over a three-million-point sweep of the whole
+/// circle. The bound sits just above it so that ordinary rounding noise does
+/// not redden the lane while a real regression still does.
+///
+/// It was 1.02 first, from the generator that chose the table size — whose
+/// sweep stepped in even fractions of a table entry and never landed on the
+/// worst points. Property testing found one within three thousand cases, on
+/// a lane running a configuration that had nothing to do with angles. **A
+/// measurement is only as good as the points it visits**, which is the second
+/// time in this crate that a too-regular sample certified a number that was
+/// not true.
+const WORST_ULP: f64 = 1.05;
 
 /// Binary angle units in a full turn, as an exactly representable `f64`.
 ///

@@ -15,7 +15,7 @@
 //! reached by symmetry. Linear interpolation between entries, rounded rather
 //! than truncated.
 //!
-//! **Measured worst error: 1.014 units in the last place** over a dense sweep
+//! **Measured worst error: 1.0322 units in the last place** over a three-million-point sweep
 //! of the whole circle, against a double-precision reference. That is the
 //! floor for a table of any size — the entries themselves are rounded to half
 //! a unit, interpolating between two of them inherits that, and the

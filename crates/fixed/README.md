@@ -103,7 +103,7 @@ lands on the cardinal angles exactly.
 
 `sin` and `cos` read a 513-entry quarter-turn table with rounded linear
 interpolation, the other three quadrants coming from symmetry. **Measured
-worst error: 1.014 units in the last place**, over a dense sweep of the whole
+worst error: 1.0322 units in the last place**, over a sweep of the whole
 circle against a double-precision reference. That is the floor for a table of
 any size — its entries are each rounded to half a unit, interpolating between
 two inherits that, and the interpolation rounds once more. Sixteen times the
