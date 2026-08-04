@@ -173,6 +173,31 @@ proptest! {
         prop_assert_eq!(a.distance(b), b.distance(a));
         prop_assert_eq!(a.lerp(b, Fixed::ZERO), a);
         prop_assert_eq!(a.lerp(b, Fixed::ONE), b);
+        // Interior interpolation, not only the endpoints: a lerp that
+        // returned an endpoint everywhere would satisfy the two above.
+        let midpoint = a.lerp(b, Fixed::from_ratio(1, 2));
+        prop_assert!(
+            midpoint.distance(a).to_bits() <= a.distance(b).to_bits() + 2
+                && midpoint.distance(b).to_bits() <= a.distance(b).to_bits() + 2,
+            "the midpoint left the segment"
+        );
+
+        // Normalising and sliding, the two operations the 2D properties
+        // cover and this one reached only through its endpoints.
+        if let Some(unit) = a.normalize() {
+            let error = (unit.length().to_bits() - Fixed::ONE.to_bits()).abs();
+            prop_assert!(error <= 512, "3D normalize off by {error} raw units");
+
+            let slid = b.slide_along(unit);
+            let magnitude = b.length().to_bits() >> 16;
+            let tolerance = 64 * (magnitude + 1);
+            prop_assert!(
+                slid.dot(unit).to_bits().abs() <= tolerance,
+                "3D slide left a residual along the normal"
+            );
+        } else {
+            prop_assert_eq!(a, Vec3::ZERO);
+        }
     }
 }
 
