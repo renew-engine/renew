@@ -1,0 +1,30 @@
+[package]
+name = "renew-fixed"
+description = "Fixed-point arithmetic for simulation code that must reproduce bit-for-bit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The fixed-point number type simulation is written in: Q47.16 in an i64, with no float in any signature and no dependencies."
+maturity = "bootstrap"
+core = false
+extension_points = []
+# Not `true`, and the reason is worth a comment because it looks wrong on the
+# crate physics is written in. The float-closure rule asks of a crate a
+# simulation *reaches* only that its root denies float arithmetic. Declaring
+# `simulation = true` additionally imposes the platform-closure walk and the
+# cross-target comparison's obligations, which belong to code that has state to
+# reproduce; a stateless number type has none. `renew-event` is the same shape.
+simulation = false
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true

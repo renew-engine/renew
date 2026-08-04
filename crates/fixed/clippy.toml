@@ -1,0 +1,38 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate is not simulation-designated — it holds no state to reproduce —
+# but it is the arithmetic every simulation is written in, so the same
+# tripwires apply for the same reason: a value this type produces reaches a
+# state hash, and anything non-deterministic that leaked in here would
+# reach one too, one call further along.
+#
+# The float deny is at the crate root rather than here, where it sits beside
+# the sentence explaining it.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "arithmetic reads no clock; a number type that consulted one would make every result a function of when it ran" },
+    { path = "std::time::SystemTime::now", reason = "arithmetic reads no clock; a number type that consulted one would make every result a function of when it ran" },
+    { path = "std::thread::spawn", reason = "this crate has nothing to parallelise and simulation is single-threaded regardless" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, and nothing behind a reproducibility contract may" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same reason as RandomState: self-seeding entropy has no place here" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+]
+
+# The SAFETY-comment lint accepts the comment above an attribute or
+# on the statement that owns the block.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

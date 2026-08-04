@@ -274,6 +274,17 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
+      # The fixed-point arithmetic. Nothing depends on it yet -- physics is
+      # the consumer it was built for and does not exist -- so the cell is
+      # the whole workspace minus one leaf. That is the cheapest it will
+      # ever be, and adding it now means the first crate to depend on it
+      # discovers the obligation from a red lane rather than from nobody.
+      - name: Build and test without fixed-point arithmetic
+        run: |
+          sel="--workspace --exclude renew-fixed"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
+          cargo build $sel
+          cargo test $sel
       # The audio stack. The game is excluded alongside it because the
       # game's DEV graph reaches the WAV reader unconditionally -- the
       # lane's own copy of the parse that `Audio::open` performs on its
@@ -309,7 +320,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio; do
+          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
