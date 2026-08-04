@@ -222,21 +222,22 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
         if let Some(depth) = &pass.depth
             && let LoadOp::Clear(value) = depth.load
         {
+            // Kind and range in one refusal, so no arm is unreachable:
+            // a depth clear is valid exactly when it is a Depth value
+            // that is finite and in the documented range — anything
+            // else is invalid usage the driver may answer with
+            // anything.
+            let valid = match value {
+                ClearValue::Depth(depth_value) => {
+                    depth_value.is_finite() && (0.0..=1.0).contains(&depth_value)
+                }
+                _ => false,
+            };
             assert!(
-                matches!(value, ClearValue::Depth(_)),
-                "pass {index}: a depth attachment clears to ClearValue::Depth, not \
-                 ClearValue::Color"
+                valid,
+                "pass {index}: a depth attachment clears to ClearValue::Depth, finite and \
+                 in [0, 1] — got {value:?}"
             );
-            if let ClearValue::Depth(depth_value) = value {
-                // The documented range, asserted: an out-of-range or
-                // non-finite depth clear is invalid usage the driver may
-                // answer with anything.
-                assert!(
-                    depth_value.is_finite() && (0.0..=1.0).contains(&depth_value),
-                    "pass {index}: a depth clear must be finite and in [0, 1], got \
-                     {depth_value}"
-                );
-            }
         }
         for item in pass.items {
             assert!(
