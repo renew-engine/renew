@@ -98,4 +98,15 @@ fn a_loaded_mixer_fills_buffers_without_touching_the_heap() {
     if let Err(activity) = verdict {
         panic!("the mixer was loud in every window (last: {activity})");
     }
+
+    // A silent window would satisfy the counters perfectly, so the
+    // measurement is only worth its name if something was mixed inside
+    // it. One more play-and-fill on the same path, checked.
+    assert!(handle.play(short_id));
+    let mut probe = vec![0.0f32; 1024];
+    mix.fill(&mut probe);
+    assert!(
+        probe.iter().any(|sample| *sample != 0.0),
+        "the gate measured a path that produces no sound, which measures nothing"
+    );
 }

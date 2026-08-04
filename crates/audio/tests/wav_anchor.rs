@@ -99,8 +99,18 @@ fn the_canonical_file_is_laid_out_where_the_format_says() {
     // The two redundant fields, derived here the way the reader derives
     // them: bytes per frame is channels times sample width, and bytes per
     // second is that times the frame rate.
-    assert_eq!(4u16, 2 * 2, "block align is channels times sample bytes");
-    assert_eq!(176_400u32, 44_100 * 4, "byte rate is rate times block");
+    // Read from the file rather than restated: comparing two
+    // constants to each other proves arithmetic, not bytes.
+    assert_eq!(
+        u16::from_le_bytes([CANONICAL[32], CANONICAL[33]]),
+        2 * 2,
+        "block align is channels times sample bytes"
+    );
+    assert_eq!(
+        u32::from_le_bytes([CANONICAL[28], CANONICAL[29], CANONICAL[30], CANONICAL[31]]),
+        44_100 * 4,
+        "byte rate is rate times block"
+    );
 
     // The data chunk: an 8-byte header then three 4-byte frames.
     assert_eq!(&CANONICAL[36..40], b"data");

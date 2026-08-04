@@ -111,8 +111,6 @@ pub struct Mixer {
     /// Increments per accepted command; a voice keeps the value it was
     /// started with, so the lowest live sequence is the oldest voice.
     next_sequence: u64,
-    /// Scratch for one drain, allocated once so the callback does not.
-    drained: [Option<Command>; DRAIN_BATCH],
 }
 
 /// Build a mixer and the handle that feeds it.
@@ -131,7 +129,6 @@ pub fn mixer(config: MixerConfig) -> (MixerHandle, Mixer) {
             voices: [None; MAX_VOICES],
             commands: consumer,
             next_sequence: 0,
-            drained: [None; DRAIN_BATCH],
         },
     )
 }
@@ -169,7 +166,22 @@ impl Mixer {
     ///
     /// Allocates nothing, never blocks, and cannot panic: every index
     /// is derived from the same fixed tables it walks.
+    ///
+    /// # Panics
+    ///
+    /// In dev builds, when `out` is not a whole number of frames. Every
+    /// audio backend hands over whole frames, so this cannot happen
+    /// through a device — but a voice advanced by a partial frame would
+    /// land mid-frame and deliver that sound's channels swapped from
+    /// then on, silently and permanently. A debug assertion is the
+    /// cheapest place to catch a caller who fills by hand.
     pub fn fill(&mut self, out: &mut [f32]) {
+        debug_assert!(
+            out.len().is_multiple_of(self.config.channels as usize),
+            "a fill buffer must be a whole number of frames: {} samples at {} channels",
+            out.len(),
+            self.config.channels
+        );
         for sample in out.iter_mut() {
             *sample = 0.0;
         }
@@ -210,15 +222,19 @@ impl Mixer {
     }
 
     /// Take whatever the game asked for since the last callback.
+    ///
+    /// The scratch buffer is a local: a fixed-size array of `Copy`
+    /// commands lives on the stack, so this allocates nothing, and a
+    /// field would only have added a swap to keep the borrow checker
+    /// happy about draining into something the mixer owns.
     fn start_pending_sounds(&mut self) {
-        let mut scratch = std::mem::replace(&mut self.drained, [None; DRAIN_BATCH]);
+        let mut scratch = [None; DRAIN_BATCH];
         let taken = self.commands.drain(&mut scratch);
-        for slot in scratch.iter_mut().take(taken) {
-            if let Some(Command::Play(sound)) = slot.take() {
-                self.start(sound);
+        for slot in scratch.iter().take(taken) {
+            if let Some(Command::Play(sound)) = slot {
+                self.start(*sound);
             }
         }
-        self.drained = scratch;
     }
 
     /// Put `sound` on a free voice, or on the oldest playing one.
@@ -271,6 +287,16 @@ fn convert(wav: &Wav<'_>, config: MixerConfig) -> Vec<f32> {
         return Vec::new();
     }
     let source_frames = source.len() / source_channels;
+    // `Wav` is a public struct with public fields, and its own docs say
+    // a hand-built one carries none of `parse`'s promises. So this
+    // function answers for shapes a file could never contain: fewer
+    // samples than one frame needs, and a rate of zero. Both would
+    // otherwise reach arithmetic below that underflows or divides by
+    // zero — a panic on a load path whose only documented refusal is
+    // the sound-bank size.
+    if source_frames == 0 || wav.sample_rate == 0 || config.sample_rate == 0 {
+        return Vec::new();
+    }
     let ratio = f64::from(config.sample_rate) / f64::from(wav.sample_rate);
     // At least one frame out for any non-empty input: a sound short
     // enough to round to nothing would otherwise vanish silently.
@@ -415,21 +441,47 @@ mod tests {
 
     #[test]
     fn the_ninth_voice_steals_the_oldest_and_not_a_newer_one() {
-        let long = wav_bytes(64, RATE, i16::MAX / 8);
-        let parsed = wav::parse(&long).expect("wav");
+        // Two sounds of very different lengths: the identity of the
+        // stolen voice is then visible in what the buffer carries, not
+        // just in how many voices are live — a count stays at eight
+        // whichever voice is taken, which is why it cannot be the
+        // assertion.
+        let long = wav_bytes(4096, RATE, i16::MAX / 8);
+        let short = wav_bytes(8, RATE, i16::MAX / 8);
+        let long = wav::parse(&long).expect("wav");
+        let short = wav::parse(&short).expect("wav");
         let (handle, mut mix) = mixer(MixerConfig::new(1, RATE));
-        let id = mix.load(&parsed);
-        for _ in 0..MAX_VOICES {
-            assert!(handle.play(id));
+        let long_id = mix.load(&long);
+        let short_id = mix.load(&short);
+
+        // The oldest voice is a long sound; the seven after it are the
+        // short one, which ends inside the first buffer. So after one
+        // fill, exactly one voice is still live — the long one — and
+        // the ninth play must take it.
+        assert!(handle.play(long_id));
+        for _ in 1..MAX_VOICES {
+            assert!(handle.play(short_id));
         }
-        // Advance every voice by one buffer, then start one more: the
-        // steal must take a voice that has already played, so the
-        // total count stays at the maximum.
         let mut out = [0.0f32; 8];
         mix.fill(&mut out);
-        assert!(handle.play(id));
+        assert_eq!(
+            mix.live_voices(),
+            1,
+            "the seven short sounds ended inside the buffer"
+        );
+
+        // Fill every slot again so the table is full, with the long
+        // sound as the oldest survivor, then ask for one more.
+        for _ in 0..(MAX_VOICES - 1) {
+            assert!(handle.play(short_id));
+        }
+        assert!(handle.play(short_id));
         mix.fill(&mut out);
-        assert_eq!(mix.live_voices(), MAX_VOICES, "the table stays full");
+        assert_eq!(
+            mix.live_voices(),
+            0,
+            "stealing the long voice leaves only short ones, which all ended"
+        );
     }
 
     #[test]
@@ -571,6 +623,52 @@ mod tests {
             out.iter().all(|sample| *sample > 0.4),
             "a mono device takes the left channel: {out:?}"
         );
+    }
+
+    // `Wav` is public with public fields, so `load` receives shapes
+    // `parse` would never hand it. Each one below panicked before the
+    // guard: a partial frame underflowed a frame count, and a zero rate
+    // made the resampling ratio infinite and its frame count saturate.
+    #[test]
+    fn a_hand_built_sound_with_less_than_one_frame_loads_as_silence() {
+        let partial = crate::wav::Wav {
+            channels: 2,
+            sample_rate: 44_100,
+            samples: &[0, 0],
+        };
+        let (handle, mut mix) = mixer(MixerConfig::new(2, RATE));
+        let id = mix.load(&partial);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 8];
+        mix.fill(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0), "{out:?}");
+    }
+
+    #[test]
+    fn a_hand_built_sound_with_no_rate_loads_as_silence() {
+        let rateless = crate::wav::Wav {
+            channels: 1,
+            sample_rate: 0,
+            samples: &[0, 0, 1, 0],
+        };
+        let (handle, mut mix) = mixer(MixerConfig::new(1, RATE));
+        let id = mix.load(&rateless);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 4];
+        mix.fill(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0), "{out:?}");
+    }
+
+    #[test]
+    fn a_device_claiming_no_rate_at_all_mixes_silence_rather_than_hanging() {
+        let bytes = wav_bytes(4, RATE, i16::MAX / 2);
+        let parsed = wav::parse(&bytes).expect("wav");
+        let (handle, mut mix) = mixer(MixerConfig::new(1, 0));
+        let id = mix.load(&parsed);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 4];
+        mix.fill(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0), "{out:?}");
     }
 
     #[test]

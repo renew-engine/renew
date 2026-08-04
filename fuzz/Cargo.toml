@@ -19,6 +19,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 renew-asset = { path = "../crates/asset" }
+renew-audio = { path = "../crates/audio" }
 renew-trace = { path = "../crates/trace" }
 
 # Fuzzing measures the parser, not the optimiser's mood. Debug assertions
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "trace_parse"
 path = "fuzz_targets/trace_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wav"
+path = "fuzz_targets/wav.rs"
 test = false
 doc = false
 bench = false

@@ -56,6 +56,10 @@ audio = ["window", "dep:renew-audio", "renew-platform/audio-out"]
 # NORMAL graph stays free of rendering crates and the build matrix
 # carries a probe proving it.
 [dev-dependencies]
+# The committed sounds are parsed by a lane test with no device in
+# sight, so the reader is a dev dependency even when the feature that
+# plays them is off.
+renew-audio = { path = "../../crates/audio" }
 renew-render2d = { path = "../../crates/render2d" }
 renew-rhi = { path = "../../crates/rhi", default-features = false }
 

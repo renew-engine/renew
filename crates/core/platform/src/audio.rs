@@ -123,9 +123,18 @@ impl AudioDevice {
         // wrong cause on exactly the machines that have no sound card —
         // the ones where the answer has to be legible.
         if let (Err(config_error), Err(range_error)) = (&default_config, &ranges) {
+            // The device is deliberately NOT named here. A device that
+            // answers nothing about itself usually cannot describe
+            // itself either, and the sound library's `Display` for a
+            // device is fallible — a formatting error, which `format!`
+            // turns into a panic. Naming the endpoint would therefore
+            // crash on precisely the machines this arm exists to report
+            // on: the one whose speakers were unplugged between the
+            // moment the default device was taken and the moment it was
+            // asked what it supports.
             return Err(AudioError::Unavailable {
                 message: format!(
-                    "output device `{device}` answered no configuration query: \
+                    "the default output device answered no configuration query: \
                      {config_error}; {range_error}"
                 ),
             });
@@ -308,9 +317,16 @@ fn classify(kind: cpal::ErrorKind) -> Report {
 /// Handle one report from the stream: say what happened, and latch the
 /// health flag when — and only when — the stream is actually gone.
 ///
-/// This runs on the audio library's thread but outside the buffer
-/// deadline, so formatting a diagnostic here is legal. The contract that
-/// forbids allocation binds the fill callback, not this one.
+/// This runs on the audio library's thread, **inside** the loop that
+/// services buffers — the backends report an underrun and then recover
+/// on the next iteration, so a slow report here is a report delivered
+/// between a missed period and its repair. The diagnostic call is still
+/// the right thing: the engine's diag emit path defers formatting to
+/// whichever sink is installed and allocates nothing itself. What that
+/// buys depends on the sink, and a sink that formats into a `String`
+/// and takes a lock would be doing it here, on this thread. Said out
+/// loud because the earlier note claimed this ran outside the deadline,
+/// which the backends' own loops disprove.
 fn report(healthy: &AtomicBool, error: &cpal::Error) {
     match classify(error.kind()) {
         Report::Rerouted => {

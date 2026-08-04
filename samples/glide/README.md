@@ -2,7 +2,8 @@
 
 A small complete game, headless-first: the glide world driven by
 scripted traces or a recorded replay — and, behind the `window`
-feature, playable in a window with the score in the title.
+feature, playable in a window with the score in the title. Behind
+`audio`, it makes sounds while you play.
 
 ## Running it
 
@@ -35,6 +36,21 @@ nothing ever compares a wall-clock run against a scripted one. Flap
 edges ride a saturating counter consumed one per fixed step — a press
 on a frame that plans no steps survives to the next, and two presses
 with two due steps deliver two flaps.
+
+`--features audio` adds sound: a flap when the world consumes one, a
+tone per pipe cleared, a buzz on death. The feature requires `window`
+structurally, because sound is wired into the windowed driver and a
+headless run is the one whose bytes are compared. What is played is
+derived per simulation tick rather than per frame, so a frame that
+catches up several ticks keeps their order — clear a pipe and die in
+the same frame, and that is the order you hear — and a press buffered
+before a crash stays silent, because the world could not consume it.
+
+The three sounds live in `sounds/` and the generator that wrote them
+lives in `examples/make_sounds.rs`; bytes and generator change together
+in one commit, and `sounds/README.md` carries the record. A machine
+with no sound card plays the game in silence and says so once at
+close, which is not a failed run.
 
 `--replay-trace` owns the whole run — the header carries the seed and
 the length — so the flags it would contradict are refused by name

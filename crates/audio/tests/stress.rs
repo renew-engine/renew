@@ -78,9 +78,16 @@ fn a_flooding_producer_and_a_draining_callback_do_not_race() {
     }
 
     let accepted = producer.join().expect("the producer finished");
+    // Not `accepted > 0` — the ring starts empty, so the first sixty-four
+    // pushes are accepted whatever the consumer does, and that assertion
+    // would hold even if `fill` never drained anything at all. What
+    // actually proves the two sides met is acceptance far past the
+    // ring's own capacity: every push beyond it needed a drain to have
+    // made room.
     assert!(
-        accepted > 0,
-        "a full run must have accepted commands; the ring answered no to all {PUSHES}"
+        accepted > renew_audio::MAX_VOICES * 100,
+        "the ring accepted {accepted} of {PUSHES} pushes — too few to have been drained \
+         repeatedly, so the consumer never met the producer"
     );
 
     // Whatever is still queued drains without complaint, and the mixer

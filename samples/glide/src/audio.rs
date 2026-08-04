@@ -69,6 +69,11 @@ impl Audio {
     /// retried: the alternative is a game thread waiting on an audio
     /// thread, and a missing blip is cheaper than a missed frame.
     pub fn play(&self, sounds: TickSounds) {
+        // Most ticks produce nothing; leaving early keeps the common
+        // case to one comparison rather than three.
+        if sounds.silent() {
+            return;
+        }
         if sounds.flap {
             let _ = self.handle.play(self.flap);
         }
