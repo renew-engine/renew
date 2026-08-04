@@ -190,6 +190,40 @@ fn the_tolerance_makes_near_misses_into_candidates() {
     );
 }
 
+/// **A pair is canonical however the sweep reached it.** Every other test here
+/// places bodies in the same order as their handles, so the collider opening
+/// an interval always outranks the ones already active — which exercises one
+/// side of the ordering and leaves the other side untested. Laying the world
+/// out backwards is what reaches it.
+#[test]
+fn a_pair_names_its_lower_collider_first_whichever_arrives_last() {
+    let mut entities = Entities::new();
+    let handles: Vec<_> = (0..3).map(|_| entities.spawn()).collect();
+    let mut world = World::new();
+    // Descending in x, ascending in handle: the *last* interval to open
+    // belongs to the *lowest* collider.
+    for (step, &handle) in handles.iter().enumerate() {
+        let x = 4 - 2 * i32::try_from(step).unwrap_or(0);
+        world.create_body(handle, BodyKind::Kinematic, at(x, 0));
+        world.add_shape(handle, box_shape(1), Transform::IDENTITY, Filter::ALL);
+    }
+
+    let mut broadphase = Broadphase::new();
+    broadphase.rebuild(&world, NO_TOLERANCE);
+    let pairs = broadphase.pairs();
+    assert_eq!(pairs.len(), 2, "each tile touches its neighbour");
+    for &(low, high) in pairs {
+        assert!(
+            low < high,
+            "a pair must name its lower collider first even when that one \
+             opened its interval last"
+        );
+    }
+    for window in pairs.windows(2) {
+        assert!(window[0] < window[1], "and the pairs still ascend");
+    }
+}
+
 /// Rebuilding is idempotent, which is what makes the structure derived state
 /// rather than something a save has to carry.
 #[test]

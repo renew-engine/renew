@@ -161,11 +161,8 @@ mod tests {
         // At an eighth turn a unit square reaches sqrt(2) along each axis,
         // which is 92682 raw units.
         let expected = 92_682i64;
-        assert!(
-            (turned.max.x.to_bits() - expected).abs() <= 4,
-            "reached {} raw, expected about {expected}",
-            turned.max.x.to_bits()
-        );
+        let reached = turned.max.x.to_bits();
+        assert!((reached - expected).abs() <= 4, "reached {reached} raw");
     }
 
     #[test]
