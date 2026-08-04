@@ -30,7 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@cargo-fuzz
+      # The tool named explicitly: the @tool-name tag shorthand resolved
+      # with an empty tool once already -- the action's own warning names
+      # the failure mode -- and an install that silently installs nothing
+      # fails two steps later with a misleading message.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       # The licence policy is checked here rather than at the root: these
       # harnesses are a separate workspace, so the root check never
       # resolves their dependencies and cannot see the term this allows.
