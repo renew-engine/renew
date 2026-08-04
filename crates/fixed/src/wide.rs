@@ -132,24 +132,50 @@ impl Fixed {
     }
 }
 
+/// Saturate, and count it — the same contract the narrow arithmetic has.
+///
+/// **These counted nothing until a review pointed it out.** A `Wide` sum that
+/// overflowed clamped in silence, which matters more here than anywhere else:
+/// this type exists so geometry can stop worrying about overflow, and a
+/// caller asserting the saturation count is zero across a step would have
+/// been told nothing about the path it was told to use.
+///
+/// Reachable rather than theoretical: three squared full-range products
+/// summed is 3·2¹²⁶, which an `i128` does not hold.
+fn counted(value: i128, saturated: bool) -> Wide {
+    if saturated {
+        crate::saturation::record();
+    }
+    Wide(value)
+}
+
 impl core::ops::Add for Wide {
     type Output = Self;
     fn add(self, other: Self) -> Self {
-        Self(self.0.saturating_add(other.0))
+        match self.0.checked_add(other.0) {
+            Some(value) => counted(value, false),
+            None => counted(if self.0 > 0 { i128::MAX } else { i128::MIN }, true),
+        }
     }
 }
 
 impl core::ops::Sub for Wide {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
-        Self(self.0.saturating_sub(other.0))
+        match self.0.checked_sub(other.0) {
+            Some(value) => counted(value, false),
+            None => counted(if self.0 > 0 { i128::MAX } else { i128::MIN }, true),
+        }
     }
 }
 
 impl core::ops::Neg for Wide {
     type Output = Self;
     fn neg(self) -> Self {
-        Self(self.0.saturating_neg())
+        match self.0.checked_neg() {
+            Some(value) => counted(value, false),
+            None => counted(i128::MAX, true),
+        }
     }
 }
 
@@ -206,6 +232,43 @@ mod tests {
                 "wide and narrow multiply disagreed on {a}/4 * {b}/8"
             );
         }
+    }
+
+    /// The counter must see a wide saturation, or a caller's assertion about
+    /// a step's saturation count is blind to the path this type provides.
+    /// It counted nothing at all until a review asked.
+    #[test]
+    fn a_wide_overflow_is_counted_like_a_narrow_one() {
+        let huge = Fixed::MAX.wide_mul(Fixed::MAX);
+        let before = crate::saturations();
+        let _ = huge + huge + huge;
+        assert!(
+            crate::saturations().0 > before.0,
+            "a wide sum that overflowed reported nothing"
+        );
+        // And an ordinary sum reports nothing, so the counter means something.
+        let small = Fixed::ONE.wide_mul(Fixed::ONE);
+        let quiet = crate::saturations();
+        let _ = small + small - small;
+        assert_eq!(crate::saturations(), quiet);
+
+        // Subtraction and negation too, since each has its own arm and a
+        // counter fitted to one of three operations reports a third of the
+        // truth.
+        let very_negative = Fixed::MIN.wide_mul(Fixed::MAX);
+        let floored = very_negative + very_negative + very_negative;
+        let before_sub = crate::saturations();
+        let _ = floored - huge;
+        assert!(
+            crate::saturations().0 > before_sub.0,
+            "a wide subtraction that overflowed reported nothing"
+        );
+        let before_neg = crate::saturations();
+        let _ = -floored;
+        assert!(
+            crate::saturations().0 > before_neg.0,
+            "negating the bottom of the range reported nothing"
+        );
     }
 
     #[test]
