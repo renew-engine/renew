@@ -73,6 +73,13 @@ name = "window_smoke"
 harness = false
 required-features = ["window"]
 
+# Touching a real device: compiled only where the seam is, and written
+# so that a machine with a sound card and a machine without one are
+# both a pass, told apart by the environment.
+[[test]]
+name = "audio_open"
+required-features = ["audio-out"]
+
 # Provoking an OS thread refusal needs a process whose RUST_MIN_STACK is
 # unsatisfiable, so this binary re-runs itself as a child; the default
 # harness spawns a thread per test and would be refused before reaching
