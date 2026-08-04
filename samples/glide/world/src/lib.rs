@@ -366,20 +366,39 @@ impl World {
     /// is exactly the part everyone forgets: two worlds differing only
     /// there digest identically until the next spawn, then diverge with
     /// nothing to explain it.
+    ///
+    /// **Nothing here is pointer-width.** Slot counts and store lengths
+    /// are `usize` at their source and are narrowed to `u32` before they
+    /// are absorbed, so the same run digests identically on a target
+    /// with a different pointer size. Both are bounded by `u32::MAX` by
+    /// their own types' contracts — a world with four billion pipes has
+    /// other problems — so the narrowing loses nothing.
+    ///
+    /// What remains implicit, stated rather than pretended away: the
+    /// entity allocator's free list is not directly observable through
+    /// its public surface, so its ORDER is not absorbed. It is not
+    /// hidden state in the dangerous sense — the next spawn reflects it
+    /// in a slot number this digest does absorb — but a reader auditing
+    /// this for totality should know it is reached one tick late rather
+    /// than immediately.
     fn absorb(&mut self) {
         let (rng_state, rng_increment) = self.rng.parts();
+        let highest_slot = u32::try_from(self.entities.capacity()).unwrap_or(u32::MAX);
+        let live_entities = u32::try_from(self.entities.len()).unwrap_or(u32::MAX);
+        let live_pipes = u32::try_from(self.body.len()).unwrap_or(u32::MAX);
         self.digest = self
             .digest
             .absorb_u64(rng_state)
             .absorb_u64(rng_increment)
-            .absorb_u64(self.entities.capacity() as u64)
+            .absorb_u32(highest_slot)
+            .absorb_u32(live_entities)
             .absorb_bytes(&self.last_gap_y.to_le_bytes())
             .absorb_u64(self.tick)
             .absorb_bytes(&self.bird_y.to_le_bytes())
             .absorb_bytes(&self.bird_velocity.to_le_bytes())
             .absorb_u64(self.score)
             .absorb_u64(u64::from(self.alive))
-            .absorb_u64(self.body.len() as u64);
+            .absorb_u32(live_pipes);
         for (slot, pipe) in self.body.iter() {
             let generation = self.pipe.get(slot).map_or(0, |entity| entity.generation());
             self.digest = self

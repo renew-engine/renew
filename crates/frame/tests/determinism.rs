@@ -221,3 +221,68 @@ fn eight_runs_of_one_trace_produce_one_world_state() {
         assert_eq!(simulate(), (world, schedule, state), "run {index} diverged");
     }
 }
+
+/// E5 — the property the alpha exemption rests on.
+///
+/// Alpha is the one float this crate computes, and this crate is
+/// simulation-designated, so the language standard names it an
+/// exemption rather than covering it by rule. The exemption is only
+/// honest if alpha carries no state of its own: it must be derivable
+/// from the integers the digest already absorbs, so that a machine
+/// agreeing on the digest agrees on alpha too.
+///
+/// Stated as a property rather than by recomputing the formula — which
+/// would only assert that the implementation equals itself: **if the
+/// digest cannot tell two plans apart, neither can alpha.** The day
+/// somebody smooths alpha across frames, or seeds it, or lets it
+/// accumulate, that stops being true and this test says so.
+#[test]
+fn alpha_carries_no_state_the_digest_does_not_absorb() {
+    // The digested fields of a plan, exactly as `absorb_plan` folds
+    // them: first tick, step count, dropped, remainder. All integers.
+    fn digested(plan: &FramePlan) -> (u64, u32, u64, u64) {
+        (
+            plan.first_tick(),
+            plan.step_count(),
+            plan.dropped(),
+            plan.remainder().get(),
+        )
+    }
+
+    // Two independent walks over the same hostile trace produce plans
+    // pairwise equal in their digested fields; alpha must agree
+    // wherever they do. Two walks rather than one because a plan
+    // compared against itself proves nothing about derivation.
+    let (left, _) = run(ORIGIN);
+    let (right, _) = run(ORIGIN);
+    assert!(!left.is_empty(), "the trace produced no plans");
+
+    let mut compared = 0;
+    for (a, b) in left.iter().zip(right.iter()) {
+        if digested(a) == digested(b) {
+            assert_eq!(
+                a.alpha().get().to_bits(),
+                b.alpha().get().to_bits(),
+                "two plans the digest cannot distinguish disagree on alpha, \
+                 so alpha holds state the digest does not cover"
+            );
+            compared += 1;
+        }
+    }
+    assert_eq!(
+        compared,
+        left.len(),
+        "the two walks diverged in their digested fields, which is a \
+         determinism failure before it is an alpha question"
+    );
+
+    // The other direction, so the test cannot pass by comparing
+    // nothing: somewhere in this trace, two plans DO differ in their
+    // digested fields, and there alpha is free to differ too.
+    let distinct = left.iter().any(|plan| digested(plan) != digested(&left[0]));
+    assert!(
+        distinct,
+        "every plan in the trace digests identically; the comparison above \
+         is vacuous"
+    );
+}
