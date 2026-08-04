@@ -678,6 +678,14 @@ mod tests {
     // by hand can, so dev builds refuse it by name.
     #[test]
     fn a_buffer_that_is_not_whole_frames_is_refused_by_name() {
+        // The guard is a debug assertion, so release builds compile it
+        // out — deliberately: the check exists to catch a caller during
+        // development, and the audio thread should not pay for it in a
+        // shipped game. A release run of this suite (the benchmark lane
+        // is one) therefore has nothing to observe.
+        if !cfg!(debug_assertions) {
+            return;
+        }
         let (_handle, mut mix) = mixer(MixerConfig::new(2, RATE));
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
