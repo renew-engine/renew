@@ -104,14 +104,15 @@ impl DepthResources {
                 .instance
                 .get_physical_device_memory_properties(shared.physical)
         };
-        let Some(type_index) = image_memory_type(&memory_properties, requirements.memory_type_bits)
-        else {
-            destroy_image(shared);
-            return Err(TargetError::Creation {
+        // Eager `ok_or`, matching the color image's site: the refusal
+        // value is built unconditionally and the arm carries no code of
+        // its own.
+        let type_index = image_memory_type(&memory_properties, requirements.memory_type_bits)
+            .ok_or(TargetError::Creation {
                 call: "depth image memory type",
                 code: 0,
-            });
-        };
+            })
+            .inspect_err(|_| destroy_image(shared))?;
         let alloc = vk::MemoryAllocateInfo::default()
             .allocation_size(requirements.size)
             .memory_type_index(type_index);

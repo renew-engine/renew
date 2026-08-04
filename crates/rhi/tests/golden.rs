@@ -725,8 +725,12 @@ fn depth_test_keeps_the_near_quad_in_either_draw_order() -> Result<(), Box<dyn s
 /// The pass-ordering oracle: pass 1 clears and draws A; pass 2 LOADS
 /// the image and draws B — where they overlap B wins, where only A
 /// reached the pixels survive the Load, binding `LoadOp::Load` and the
-/// between-pass barrier in one computed image. No committed artifact:
-/// exact quad interiors on flat colours are adapter-independent.
+/// between-pass barrier in one computed image. Where the adapter offers
+/// a depth format, both passes also carry a cleared depth attachment,
+/// so the between-pass depth barrier records in the same frame (each
+/// pass clears its own depth; nothing loads depth across passes). No
+/// committed artifact: exact quad interiors on flat colours are
+/// adapter-independent.
 #[test]
 fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::error::Error>> {
     const SIZE: u32 = 64;
@@ -742,19 +746,22 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
-            .instance_input(builtin::INSTANCED_LAYOUT),
-    )?;
+    let with_depth = device.depth_format_name().is_some();
+    let mut desc = PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+        .instance_input(builtin::INSTANCED_DEPTH_LAYOUT);
+    if with_depth {
+        desc = desc.depth_state(DepthState::read_write());
+    }
+    let pipeline = device.create_pipeline(&desc)?;
     // One buffer per item: one buffer, one item, per frame is the
     // contract, and this frame carries two items.
-    let buffer_a = device.create_buffer(24, renew_rhi::BufferUsage::PerFrame)?;
-    let buffer_b = device.create_buffer(24, renew_rhi::BufferUsage::PerFrame)?;
-    // Quads are 0.25 NDC wide (half-width 0.125): A at x -0.1 covers
-    // NDC [-0.225, 0.025], B at x +0.1 covers [-0.025, 0.225] — pixel
-    // columns ~25..32, ~32..39, overlapping at the centre column.
-    let bytes_a = instance([-0.1, 0.0], [1.0, 0.0, 0.0, 1.0]);
-    let bytes_b = instance([0.1, 0.0], [0.0, 0.0, 1.0, 1.0]);
+    let buffer_a = device.create_buffer(32, renew_rhi::BufferUsage::PerFrame)?;
+    let buffer_b = device.create_buffer(32, renew_rhi::BufferUsage::PerFrame)?;
+    // Quads are 0.5 NDC wide (half-width 0.25): A at x -0.2 covers
+    // NDC [-0.45, 0.05], B at x +0.2 covers [-0.05, 0.45] — pixel
+    // columns ~17..33, ~30..46, overlapping around the centre column.
+    let bytes_a = depth_instance([-0.2, 0.0], 0.5, [1.0, 0.0, 0.0, 1.0]);
+    let bytes_b = depth_instance([0.2, 0.0], 0.5, [0.0, 0.0, 1.0, 1.0]);
     let black = Color::new(0.0, 0.0, 0.0, 1.0);
 
     let color = clear(black);
@@ -763,7 +770,14 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
         [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer_a, &bytes_a, 1))];
     let items_b =
         [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer_b, &bytes_b, 1))];
-    let passes = [Pass::new(&color, &items_a), Pass::new(&load, &items_b)];
+    let mut pass_a = Pass::new(&color, &items_a);
+    let mut pass_b = Pass::new(&load, &items_b);
+    if with_depth {
+        let fresh = Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+        pass_a = pass_a.depth(fresh);
+        pass_b = pass_b.depth(fresh);
+    }
+    let passes = [pass_a, pass_b];
     target.render(&RenderDesc::new(&passes))?;
 
     let mut pixels = vec![0u8; target.byte_len()];

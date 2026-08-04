@@ -253,26 +253,28 @@ impl WindowApp for SmokeApp {
                     }
                     None => &[],
                 };
-                // Two passes wherever a depth format exists: the
-                // textured pass, then a pass that Loads its result and
-                // draws the depth-tested triangle over it — multi-pass,
-                // color Load, and the per-slot depth image, all on the
-                // window path under Required validation.
+                // Three passes wherever a depth format exists: the
+                // textured pass, then two passes that Load the color
+                // result and draw the depth-tested triangle, each
+                // clearing its own depth — multi-pass, color Load, the
+                // per-slot depth image's first use AND its between-pass
+                // barrier, all on the window path under Required
+                // validation.
                 let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
                 let depth_items_storage;
-                let passes_two;
+                let passes_three;
                 let passes_one;
                 let passes: &[Pass<'_>] = if let Some(depth_pipeline) = self.depth_pipeline.as_ref()
                 {
                     depth_items_storage = [Item::new(depth_pipeline)];
-                    passes_two = [
+                    let fresh =
+                        Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+                    passes_three = [
                         Pass::new(&color, items),
-                        Pass::new(&load, &depth_items_storage).depth(Attachment::new(
-                            LoadOp::Clear(ClearValue::Depth(1.0)),
-                            StoreOp::Discard,
-                        )),
+                        Pass::new(&load, &depth_items_storage).depth(fresh),
+                        Pass::new(&load, &depth_items_storage).depth(fresh),
                     ];
-                    &passes_two
+                    &passes_three
                 } else {
                     passes_one = [Pass::new(&color, items)];
                     &passes_one

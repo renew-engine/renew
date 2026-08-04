@@ -358,5 +358,11 @@ mod tests {
         let raw = unsafe { vk_clear_depth(&depth).depth_stencil };
         assert_eq!(raw.depth.to_bits(), 0.5f32.to_bits());
         assert_eq!(raw.stencil, 0);
+        // A Load carries no clear: the converters hand the driver a
+        // zeroed value it is required to ignore.
+        let load = Attachment::new(LoadOp::Load, StoreOp::Store);
+        // SAFETY: as above.
+        let raw = unsafe { vk_clear_depth(&load).depth_stencil };
+        assert_eq!(raw.depth.to_bits(), 0.0f32.to_bits());
     }
 }

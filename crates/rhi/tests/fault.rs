@@ -448,6 +448,40 @@ fn every_driver_failure_ladder_behaves() {
             false,
         ),
     ];
+    // The depth half of the bring-up unwinder, ordinal-pinned: the
+    // depth image is created last in the build, after the color image
+    // (create/bind/view ordinal 1) and the readback allocation
+    // (vkAllocateMemory ordinal 2), so its calls are the second — or
+    // for memory the third — of their names. Runs only where the
+    // adapter offers a depth format; a depthless adapter never makes
+    // ordinal 2 of these calls, and the guard keeps the armed fault
+    // from silently outliving the scenario.
+    let depth_ladder: &[(&str, &str, &str, bool)] = &[
+        (
+            "B12",
+            "vkCreateImage=ERROR_OUT_OF_HOST_MEMORY@2",
+            "vkCreateImage(depth)",
+            false,
+        ),
+        (
+            "B13",
+            "vkAllocateMemory=ERROR_OUT_OF_DEVICE_MEMORY@3",
+            "vkAllocateMemory(depth)",
+            true,
+        ),
+        (
+            "B14",
+            "vkBindImageMemory=ERROR_OUT_OF_HOST_MEMORY@2",
+            "vkBindImageMemory(depth)",
+            false,
+        ),
+        (
+            "B15",
+            "vkCreateImageView=ERROR_OUT_OF_HOST_MEMORY@2",
+            "vkCreateImageView(depth)",
+            false,
+        ),
+    ];
     for &(name, fault, call, device_memory) in offscreen_ladder {
         verdicts.push(device_case(name, fault, |device| {
             let failed = device.create_offscreen_target(SIZE);
@@ -481,6 +515,42 @@ fn every_driver_failure_ladder_behaves() {
                     &recovered.extent(),
                 ));
             }
+            let color = clear(CLEAR);
+            recovered
+                .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
+                .map_err(|error| format!("{name}: recovery render failed: {error}"))
+        }));
+    }
+    for &(name, fault, call, device_memory) in depth_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            if device.depth_format_name().is_none() {
+                eprintln!("SKIP {name}: adapter offers no depth format");
+                return Ok(());
+            }
+            let failed = device.create_offscreen_target(SIZE);
+            match failed {
+                Err(error) => {
+                    if device_memory {
+                        match &error {
+                            TargetError::OutOfDeviceMemory { call: got } if *got == call => {}
+                            other => {
+                                return Err(wrong(
+                                    name,
+                                    &format!("OutOfDeviceMemory({call})"),
+                                    other,
+                                ));
+                            }
+                        }
+                    } else {
+                        creation_named(name, call, &error)?;
+                    }
+                }
+                Ok(_) => return Err(format!("{name}: the build succeeded despite the fault")),
+            }
+            // The fault is spent: the unwinder left a working device.
+            let mut recovered = device
+                .create_offscreen_target(SIZE)
+                .map_err(|error| format!("{name}: recovery build failed: {error}"))?;
             let color = clear(CLEAR);
             recovered
                 .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
