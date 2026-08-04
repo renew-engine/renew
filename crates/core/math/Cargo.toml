@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Vector, matrix, quaternion, and bounding-box value types with documented memory layout."
+purpose = "Vector, matrix, quaternion, and bounding-box value types with documented memory layout, and the render interpolation factor."
 maturity = "internal"
 core = true
 extension_points = []

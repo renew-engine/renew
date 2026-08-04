@@ -11,9 +11,6 @@
 
 use crate::time::{Nanos, StepBudget, Timestamp, Timestep};
 
-/// The largest `f32` strictly below one, `0.999_999_94`.
-const LARGEST_BELOW_ONE: f32 = f32::from_bits(0x3F7F_FFFF);
-
 /// The fixed-timestep schedule: a passive integer state machine.
 ///
 /// It never reads a clock — it *cannot*, having no dependency that offers
@@ -195,6 +192,16 @@ impl FramePlan {
 
     /// Elapsed time carried into the next frame; always below
     /// [`FramePlan::timestep`].
+    ///
+    /// This and [`FramePlan::timestep`] are the exact rational a renderer
+    /// interpolates by — `renew_math::Alpha::new(remainder, timestep)`
+    /// turns them into a blend factor. **The division deliberately does
+    /// not happen here.** This crate is simulation-designated and
+    /// contains no floating-point arithmetic at all; a ratio computed in
+    /// this crate would be the single exception to that, and an exception
+    /// defended by the cost of removing it is one that becomes permanent.
+    /// A consumer that wants the exact rational never goes through a
+    /// float.
     #[must_use]
     pub const fn remainder(&self) -> Nanos {
         self.remainder
@@ -203,42 +210,6 @@ impl FramePlan {
     #[must_use]
     pub const fn timestep(&self) -> Timestep {
         self.dt
-    }
-
-    /// Render interpolation in `[0, 1)`: how far past the last executed
-    /// step the frame stands, as a fraction of the timestep.
-    ///
-    /// Never an input to simulation, and deliberately excluded from the
-    /// schedule digest — it is a pure function of two integers that *are*
-    /// digested, so hashing it would only make the oracle float-dependent.
-    /// [`FramePlan::remainder`] and [`FramePlan::timestep`] stay public so
-    /// a consumer that wants the exact rational never goes through the
-    /// float at all.
-    #[must_use]
-    pub fn alpha(&self) -> Alpha {
-        // The `f64` intermediate and the explicit bound are both
-        // load-bearing, and neither is defensive. Measured: the naive
-        // `rem as f32 / dt as f32` returns exactly 1.0 at 30 Hz
-        // (dt = 33_333_333, rem = dt - 1), and the `f64` division still
-        // rounds up to 1.0 at 1 Hz. An alpha of 1.0 is a renderer popping
-        // a full tick ahead of the state it interpolates from — a bug
-        // that would have been hunted in the renderer for a week.
-        // The crate denies float arithmetic, as every simulation crate
-        // does. This is the one exemption the language standard names,
-        // and it is taken here rather than at the crate root so that the
-        // exemption is visible where it applies and a second one cannot
-        // appear without a second `allow`. It is sound because the
-        // result is presentation output: alpha is derived from two
-        // integers, is consumed only by rendering, and never re-enters
-        // world state or a digest — a property `alpha_carries_no_state_
-        // the_digest_does_not_absorb` in tests/determinism.rs asserts.
-        #[allow(
-            clippy::float_arithmetic,
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation
-        )]
-        let ratio = (self.remainder.get() as f64 / self.dt.nanos().get() as f64) as f32;
-        Alpha(ratio.min(LARGEST_BELOW_ONE))
     }
 }
 
@@ -297,26 +268,9 @@ impl ExactSizeIterator for Steps {}
 
 impl core::iter::FusedIterator for Steps {}
 
-/// The render interpolation factor, in `[0, 1)`.
-///
-/// A newtype with no arithmetic surface: the name is the contract. It is
-/// a hint for the renderer and never an input to simulation.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct Alpha(f32);
-
-impl Alpha {
-    /// Exactly on a step boundary.
-    pub const ZERO: Self = Self(0.0);
-
-    #[must_use]
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Alpha, FrameLoop, LARGEST_BELOW_ONE, StepBudget, Timestamp, Timestep};
+    use super::{FrameLoop, StepBudget, Timestamp, Timestep};
     use crate::time::Nanos;
     use core::num::{NonZeroU32, NonZeroU64};
 
@@ -545,24 +499,32 @@ mod tests {
         assert_eq!(plan.steps().count(), 2);
     }
 
+    /// What this crate hands a renderer, now that the division lives in
+    /// `renew-math`: the exact rational, as two integers.
+    ///
+    /// Three tests stood here and asserted alpha's own behaviour — zero
+    /// on a boundary, one half between steps, and a rounding table
+    /// proving the clamp below one is mandatory rather than defensive.
+    /// They moved to `renew-math` beside the type, where they cover the
+    /// whole `(step, remainder)` domain instead of only the pairs a loop
+    /// can produce. What belongs here is the loop's half of the contract.
     #[test]
-    fn alpha_is_zero_on_a_step_boundary_and_proportional_between_steps() {
+    fn the_remainder_is_the_exact_position_between_two_steps() {
         let mut frame = loop_at_60hz();
+
+        // On a boundary: nothing pending, so nothing to interpolate.
         let plan = frame.begin_frame(at(DT));
-        assert_eq!(plan.alpha(), Alpha::ZERO);
-        assert!((plan.alpha().get() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(plan.remainder(), Nanos::from_nanos(0));
+        assert_eq!(plan.timestep().nanos().get(), DT);
 
+        // Half a step past it, exactly — no rounding anywhere, because
+        // no division has happened yet.
         let plan = frame.begin_frame(at(DT + DT / 2));
-        let alpha = plan.alpha().get();
-        assert!((alpha - 0.5).abs() < 1e-6, "alpha was {alpha}");
-    }
+        assert_eq!(plan.remainder(), Nanos::from_nanos(DT / 2));
 
-    /// The rounding table the interpolation contract fixes, as a test. A naive
-    /// `rem as f32 / dt as f32` returns exactly 1.0 for the 30 Hz row, and
-    /// the `f64` intermediate alone still returns 1.0 for the 1 Hz row —
-    /// so the explicit bound is mandatory, not defensive.
-    #[test]
-    fn alpha_never_reaches_one_even_one_nanosecond_short_of_a_step() {
+        // And one nanosecond short of a whole step, which is the pair
+        // that used to make a naive `f32` division return exactly one.
+        // Here it is just an integer, and an exact one.
         for dt in [
             16_666_667_u64,
             4_166_667,
@@ -572,21 +534,12 @@ mod tests {
         ] {
             let mut frame = FrameLoop::new(timestep(dt), budget(1), at(0));
             let plan = frame.begin_frame(at(dt - 1));
-            let alpha = plan.alpha().get();
             assert_eq!(plan.remainder(), Nanos::from_nanos(dt - 1));
-            assert!(alpha < 1.0, "dt {dt} produced alpha {alpha}");
-            assert!(alpha <= LARGEST_BELOW_ONE);
-            assert!(alpha > 0.999_99, "dt {dt} produced alpha {alpha}");
+            assert!(
+                plan.remainder().get() < plan.timestep().nanos().get(),
+                "the remainder must stay a proper fraction of the step"
+            );
         }
-    }
-
-    /// Asserted on bit patterns rather than values: the next representable
-    /// `f32` above the bound is exactly one, so nothing lies between them
-    /// and the clamp loses no resolution a renderer could use.
-    #[test]
-    fn the_bound_is_the_largest_float_below_one() {
-        assert_eq!(LARGEST_BELOW_ONE.to_bits(), 0x3F7F_FFFF);
-        assert_eq!(LARGEST_BELOW_ONE.to_bits() + 1, 1.0_f32.to_bits());
     }
 
     /// The parity oracle for absorbing hello-engine's `Accumulator`: its

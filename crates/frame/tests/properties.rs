@@ -12,7 +12,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
-use renew_frame::{Alpha, FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
+use renew_frame::{FrameLoop, FrameStats, StepBudget, Timestamp, Timestep};
 
 // Test helpers (called only from #[test] fns): the tests-only expect
 // allowance covers #[test] fns, not their helpers; this allow extends it,
@@ -79,7 +79,12 @@ proptest! {
             due_total += u64::from(plan.step_count()) + plan.dropped();
             prop_assert_eq!(frame.tick(), executed);
             prop_assert_eq!(frame.remainder(), plan.remainder());
-            prop_assert!((0.0..1.0).contains(&plan.alpha().get()));
+            // The invariant a renderer's blend factor rests on,
+            // stated where it is produced rather than where it is
+            // divided: the remainder is always a proper fraction of
+            // the timestep, so `Alpha::new` of the two can only
+            // land in `[0, 1)`.
+            prop_assert!(plan.remainder().get() < plan.timestep().nanos().get());
         }
 
         prop_assert_eq!(submitted, due_total * dt + frame.remainder().get());
@@ -110,7 +115,7 @@ proptest! {
             prop_assert!(plan.remainder().get() < dt);
             prop_assert_eq!(plan.first_tick(), before);
             prop_assert_eq!(frame.tick(), before + u64::from(plan.step_count()));
-            prop_assert!((0.0..1.0).contains(&plan.alpha().get()));
+            prop_assert!(plan.remainder().get() < plan.timestep().nanos().get());
         }
     }
 
@@ -132,16 +137,20 @@ proptest! {
         prop_assert_eq!(plan.step_count(), 0);
         prop_assert_eq!(plan.dropped(), 0);
         prop_assert_eq!(plan.remainder().get(), 0);
-        prop_assert_eq!(plan.alpha(), Alpha::ZERO);
     }
 
-    /// Alpha over the whole `(timestep, remainder)` domain. A loop that
-    /// never reaches a step has a bank equal to its remainder, so
-    /// generating `fraction % dt` sweeps every representable pair —
-    /// including the one-nanosecond-short cases where a naive `f32`
-    /// division returns exactly 1.0.
+    /// What this crate promises a renderer, over the whole
+    /// `(timestep, remainder)` domain: the remainder is a *proper*
+    /// fraction of the timestep. That integer invariant is what makes a
+    /// blend factor built from the pair land in `[0, 1)`; the factor's
+    /// own behaviour is `renew-math`'s property to state, and it does,
+    /// over the same domain and over pairs no loop can produce.
+    ///
+    /// A loop that never reaches a step has a bank equal to its
+    /// remainder, so generating `fraction % dt` sweeps every
+    /// representable pair — including the one-nanosecond-short cases.
     #[test]
-    fn alpha_stays_in_the_unit_interval_for_every_timestep_and_remainder(
+    fn the_remainder_is_always_a_proper_fraction_of_the_timestep(
         dt in 1u64..=u64::MAX,
         fraction in 0u64..=u64::MAX,
     ) {
@@ -154,21 +163,18 @@ proptest! {
         let plan = frame.begin_frame(Timestamp::from_nanos(remainder));
         prop_assert_eq!(plan.step_count(), 0);
         prop_assert_eq!(plan.remainder().get(), remainder);
-
-        let alpha = plan.alpha().get();
-        prop_assert!(alpha >= 0.0, "dt {} rem {} gave {}", dt, remainder, alpha);
-        prop_assert!(alpha < 1.0, "dt {} rem {} gave {}", dt, remainder, alpha);
+        prop_assert!(plan.remainder().get() < plan.timestep().nanos().get());
     }
 
-    /// The assumption the digest exclusion rests on: alpha is a function
-    /// of the remainder and the timestep and of nothing else. Two plans
-    /// that land on the same remainder must agree even though one arrived
-    /// through a stall — different tick, different step count, thousands
-    /// of refused steps. Alpha is also monotone in the remainder, so
-    /// interpolating further between two steps never moves the renderer
-    /// backwards.
+    /// The pair a renderer interpolates from depends on the remainder and
+    /// the timestep and on nothing else. Two plans that land on the same
+    /// remainder must present identically even though one arrived through
+    /// a stall — different tick, different step count, hundreds of
+    /// refused steps. This is the property the digest exclusion rests on,
+    /// kept here after the division moved out, because it is a statement
+    /// about *plans*, not about arithmetic.
     #[test]
-    fn alpha_is_a_function_of_the_remainder_and_the_timestep_alone(
+    fn the_presented_pair_is_a_function_of_the_remainder_and_timestep_alone(
         dt in 2u64..=1_000_000_000,
         fraction in 0u64..=u64::MAX,
     ) {
@@ -184,11 +190,7 @@ proptest! {
         prop_assert_ne!(stalled.first_tick(), calm.first_tick());
         prop_assert_ne!(stalled.step_count(), calm.step_count());
         prop_assert!(stalled.dropped() > 0);
-        prop_assert_eq!(stalled.alpha(), calm.alpha());
-
-        let mut later = FrameLoop::new(timestep(dt), budget(1), Timestamp::from_nanos(0));
-        let ahead = later.begin_frame(Timestamp::from_nanos(remainder.max(dt / 2)));
-        prop_assert!(ahead.alpha() >= calm.alpha());
+        prop_assert_eq!(stalled.timestep().nanos(), calm.timestep().nanos());
     }
 
     /// Identical input traces produce identical plans, identical loop

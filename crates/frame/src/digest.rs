@@ -244,8 +244,15 @@ mod tests {
         assert_eq!(slow.dropped(), fast.dropped());
         assert_eq!(slow.remainder().get(), fast.remainder().get());
         assert_ne!(slow.dt().nanos(), fast.dt().nanos());
-        // And the consequence that made the gap matter.
-        assert_ne!(slow.alpha().get().to_bits(), fast.alpha().get().to_bits());
+        // And the consequence that made the gap matter: the same
+        // remainder over two different divisors is two different
+        // interpolation factors, so a renderer would have drawn these two
+        // plans differently while the digest called them the same.
+        assert_ne!(
+            slow.remainder().get() * fast.dt().nanos().get(),
+            fast.remainder().get() * slow.dt().nanos().get(),
+            "cross-multiplied, the two ratios must differ"
+        );
 
         assert_ne!(
             StateHash::new().absorb_plan(&slow),

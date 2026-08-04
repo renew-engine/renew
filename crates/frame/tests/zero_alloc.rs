@@ -40,7 +40,9 @@ fn frame_body(
             .wrapping_add(step.tick)
             .wrapping_add(step.sim_time.get());
     }
-    *sink = sink.wrapping_add(u64::from(plan.alpha().get().to_bits()));
+    *sink = sink
+        .wrapping_add(plan.remainder().get())
+        .wrapping_add(plan.timestep().nanos().get());
     stats.absorb(&plan);
     timing.record(Nanos::from_nanos(now % 4_000_000), plan.step_count() > 0);
 }

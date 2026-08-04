@@ -32,6 +32,7 @@ path = "src/main.rs"
 
 [dependencies]
 renew-frame = { path = "../../crates/frame" }
+renew-math = { path = "../../crates/core/math" }
 renew-platform = { path = "../../crates/core/platform", default-features = false }
 renew-rhi = { path = "../../crates/rhi", default-features = false }
 

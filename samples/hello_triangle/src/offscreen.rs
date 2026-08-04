@@ -7,9 +7,8 @@
 //! processes and machines. The one clock it does read brackets each
 //! frame for the timing summary, which is recorded and never gated.
 
-use renew_frame::{
-    Alpha, FrameLoop, FrameStats, FrameTiming, Nanos, StepBudget, Timestamp, Timestep,
-};
+use renew_frame::{FrameLoop, FrameStats, FrameTiming, Nanos, StepBudget, Timestamp, Timestep};
+use renew_math::Alpha;
 use renew_platform::Clock;
 use renew_rhi::{
     AdapterInfo, Device, DeviceDesc, Extent, Item, Pass, PipelineDesc, RenderDesc, RenderPipeline,
@@ -144,7 +143,10 @@ impl HeadlessRun {
         for step in plan.steps() {
             self.world.step(step);
         }
-        let clear = clear_color(&self.world, plan.alpha());
+        let clear = clear_color(
+            &self.world,
+            Alpha::new(plan.remainder().get(), plan.timestep().nanos()),
+        );
         // The frame, composed on this stack: one pass, cleared to the
         // world's colour, drawing the triangle when a pipeline exists.
         // The borrows end at the render call.

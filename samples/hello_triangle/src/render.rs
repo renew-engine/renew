@@ -1,6 +1,6 @@
 //! Where a frame goes, and the colour it goes there with.
 
-use renew_frame::Alpha;
+use renew_math::Alpha;
 use renew_rhi::{
     Attachment, ClearValue, Color, LoadOp, OffscreenTarget, RenderDesc, StoreOp, TargetError,
     TargetFormat,
@@ -111,7 +111,8 @@ pub fn clear_color(world: &World, alpha: Alpha) -> Color {
 mod tests {
     use super::clear_color;
     use crate::world::World;
-    use renew_frame::{Alpha, Nanos, Step};
+    use renew_frame::{Nanos, Step};
+    use renew_math::Alpha;
     use renew_rhi::Color;
 
     fn stepped(seed: u64, steps: u64) -> World {
@@ -150,7 +151,7 @@ mod tests {
             renew_frame::Timestamp::from_nanos(0),
         );
         let plan = frame.begin_frame(renew_frame::Timestamp::from_nanos(8_333_333));
-        let alpha = plan.alpha();
+        let alpha = Alpha::new(plan.remainder().get(), plan.timestep().nanos());
         assert!(alpha.get() > 0.49 && alpha.get() < 0.51, "{alpha:?}");
         let colour = clear_color(&world, alpha);
         let low = 8.0 / 255.0;

@@ -14,9 +14,8 @@
 //!   cannot exit the loop where it arrives. It is latched, and `update`
 //!   acts on it. That is the seam's requirement, not a sample quirk.
 
-use renew_frame::{
-    Alpha, FrameLoop, FrameStats, FrameTiming, Nanos, StepBudget, Timestamp, Timestep,
-};
+use renew_frame::{FrameLoop, FrameStats, FrameTiming, Nanos, StepBudget, Timestamp, Timestep};
+use renew_math::Alpha;
 use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, NativeWindow, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef,
@@ -364,7 +363,7 @@ impl TriangleApp {
             for step in plan.steps() {
                 self.world.step(step);
             }
-            self.alpha = plan.alpha();
+            self.alpha = Alpha::new(plan.remainder().get(), plan.timestep().nanos());
             self.stats.absorb(&plan);
             // The measured cost of one loop iteration. Nothing sleeps
             // here (the seam polls), so the interval between updates is
