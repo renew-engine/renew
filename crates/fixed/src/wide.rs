@@ -251,6 +251,24 @@ mod tests {
         let quiet = crate::saturations();
         let _ = small + small - small;
         assert_eq!(crate::saturations(), quiet);
+
+        // Subtraction and negation too, since each has its own arm and a
+        // counter fitted to one of three operations reports a third of the
+        // truth.
+        let very_negative = Fixed::MIN.wide_mul(Fixed::MAX);
+        let floored = very_negative + very_negative + very_negative;
+        let before_sub = crate::saturations();
+        let _ = floored - huge;
+        assert!(
+            crate::saturations().0 > before_sub.0,
+            "a wide subtraction that overflowed reported nothing"
+        );
+        let before_neg = crate::saturations();
+        let _ = -floored;
+        assert!(
+            crate::saturations().0 > before_neg.0,
+            "negating the bottom of the range reported nothing"
+        );
     }
 
     #[test]
