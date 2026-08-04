@@ -43,7 +43,6 @@
 
 /// The engine's event vocabulary, translated from the OS.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub enum WindowEvent {
     /// The user asked to close the window; the app decides what happens
     /// (typically by requesting exit through the loop's control handle).
@@ -86,7 +85,6 @@ pub enum WindowEvent {
 // what a hash map cannot offer, since its iteration order varies
 // between runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
 pub enum KeyCode {
     Escape,
     Space,
@@ -104,7 +102,6 @@ pub enum KeyCode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
 pub enum PointerButton {
     Left,
     Right,
@@ -118,19 +115,26 @@ pub enum PointerButton {
 
 /// One value of every shape [`WindowEvent`] can take.
 ///
-/// The event vocabulary is `#[non_exhaustive]`, which binds every crate
-/// except this one: downstream matches must carry a wildcard arm, so the
-/// compiler will never tell a consumer that a new variant is unhandled.
-/// A consumer that translates events — into a file format, a script
-/// binding, a replay log — would therefore start silently dropping the
-/// new one, and nothing would fail until someone noticed the output was
-/// wrong.
+/// **The vocabulary is exhaustive, so the compiler is the primary guard
+/// and this list is the backstop.** It used to be the other way round.
+/// These enums carried `#[non_exhaustive]`, which forced every downstream
+/// match to write a wildcard — so a consumer translating events into a
+/// file format or a replay log would have started silently dropping a new
+/// variant, and nothing would have failed until someone noticed the
+/// output was wrong. This slice and its test existed to move that failure
+/// somewhere a compiler could still speak.
 ///
-/// This list, and the exhaustive match beside it, move that failure to
-/// where the compiler can still speak: adding a variant breaks the build
-/// **here**, in the crate that owns the enum, at the moment it is added.
-/// A consumer then iterates this slice and asserts it handles every
-/// entry, which turns "did we remember?" into a test rather than a habit.
+/// The attribute is gone (2026-08-04). Adding a variant now breaks the
+/// build at every match that must handle it, in every crate, which is
+/// what the list was approximating by hand. It was bought to protect
+/// consumers outside this workspace; there are none, and the protection
+/// cost the compiler's own report.
+///
+/// The list stays because it is still useful and no longer load-bearing:
+/// a consumer iterating it gets a table-driven test of its own coverage,
+/// and `shape_index` still names a shape in a refusal message. Neither
+/// is now the only thing standing between a new variant and a silent
+/// drop.
 ///
 /// The values are arbitrary. Only the shapes matter.
 pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[

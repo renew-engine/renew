@@ -350,7 +350,6 @@ impl SamplerDesc {
 
 /// Texel selection between sample points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Filter {
     /// The nearest texel. Exact, and what a sprite atlas wants.
     Nearest,
@@ -360,7 +359,6 @@ pub enum Filter {
 
 /// What a sample outside `[0, 1]` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum AddressMode {
     /// The edge texel, repeated.
     ClampToEdge,
