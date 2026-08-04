@@ -282,3 +282,130 @@ proptest! {
         }
     }
 }
+
+/// **A box first and a circle second**, which is the same geometry reversed —
+/// and a separate code path, because solving it in one order and flipping is
+/// what stops two implementations of the same test from drifting apart.
+#[test]
+fn a_box_against_a_circle_is_the_reverse_of_a_circle_against_a_box() {
+    let circle_at = Transform::at(Vec2::new(Fixed::from_ratio(3, 2), Fixed::ZERO));
+    let forward = collide(circle(1), circle_at, square(1), at(0, 0)).expect("overlapping");
+    let reversed = collide(square(1), at(0, 0), circle(1), circle_at).expect("overlapping");
+
+    close(
+        forward.normal.x + reversed.normal.x,
+        Fixed::ZERO,
+        "normals oppose",
+    );
+    close(
+        forward.normal.y + reversed.normal.y,
+        Fixed::ZERO,
+        "normals oppose",
+    );
+    close(
+        forward.deepest(),
+        reversed.deepest(),
+        "same depth either way",
+    );
+    // The box is first, so its normal points toward the circle: +x.
+    close(reversed.normal.x, Fixed::ONE, "box toward circle");
+}
+
+/// Capsules are declared and not yet implemented. Reporting "no contact" for
+/// them would be a lie a caller acts on, so the gap is visible here rather
+/// than silent — and this test is what will fail when the arm is filled in,
+/// which is the reminder to delete it.
+#[test]
+fn a_capsule_reports_nothing_because_it_is_not_implemented_yet() {
+    let capsule = Shape::Capsule {
+        radius: Fixed::ONE,
+        half_height: Fixed::ONE,
+    };
+    assert!(collide(capsule, at(0, 0), square(1), at(0, 0)).is_none());
+    assert!(collide(square(1), at(0, 0), capsule, at(0, 0)).is_none());
+    assert!(collide(capsule, at(0, 0), capsule, at(0, 0)).is_none());
+}
+
+/// A circle inside a box leaves through whichever face is nearest, and all
+/// four are candidates. Testing only one of them leaves three sign branches
+/// that no test has ever run.
+#[test]
+fn a_circle_inside_a_box_can_leave_through_any_of_the_four_faces() {
+    let small = Shape::Circle {
+        radius: Fixed::from_ratio(1, 4),
+    };
+    // Nearest face, expected outward normal from the circle toward the box.
+    let cases = [
+        (Fixed::from_ratio(4, 5), Fixed::ZERO, -1, 0),
+        (-Fixed::from_ratio(4, 5), Fixed::ZERO, 1, 0),
+        (Fixed::ZERO, Fixed::from_ratio(4, 5), 0, -1),
+        (Fixed::ZERO, -Fixed::from_ratio(4, 5), 0, 1),
+    ];
+    for (x, y, nx, ny) in cases {
+        let inside = Transform::at(Vec2::new(x, y));
+        let manifold = collide(small, inside, square(1), at(0, 0)).expect("inside the box");
+        close(manifold.normal.x, Fixed::from_int(nx), "normal x");
+        close(manifold.normal.y, Fixed::from_int(ny), "normal y");
+        assert!(manifold.deepest() > Fixed::ZERO, "inside means penetrating");
+    }
+}
+
+/// **A sweep over rotations and offsets**, which is where the shapes the
+/// hand-written cases never think of live: deep corner overlaps whose clipped
+/// face leaves no point in front of the reference surface, and shallow ones
+/// that leave both.
+///
+/// It asserts the invariants rather than specific numbers, and then asserts
+/// that it actually exercised both manifold sizes — a sweep that only ever
+/// produced one shape would be checking half of what it claims to.
+#[test]
+fn a_sweep_of_rotated_overlaps_holds_every_invariant() {
+    let sq = square(1);
+    let mut singles = 0u32;
+    let mut pairs = 0u32;
+
+    for turn in 0..32u32 {
+        for xi in -24i64..25 {
+            for yi in -24i64..25 {
+                let other = Transform::new(
+                    Vec2::new(Fixed::from_bits(xi * 8192), Fixed::from_bits(yi * 8192)),
+                    Angle::from_bits(turn.wrapping_mul(u32::MAX / 32)),
+                );
+                let Some(manifold) = collide(sq, at(0, 0), sq, other) else {
+                    continue;
+                };
+
+                assert!(
+                    manifold.count == 1 || manifold.count == 2,
+                    "a manifold carries one or two points, not {}",
+                    manifold.count
+                );
+                for point in manifold.points() {
+                    assert!(
+                        point.depth >= Fixed::ZERO,
+                        "negative depth {} at turn {turn}, offset ({xi}, {yi})",
+                        point.depth.to_bits()
+                    );
+                }
+                // The normal has to be usable as a direction, or a caller
+                // sliding along it moves the wrong distance.
+                let length = manifold.normal.length();
+                let error = (length - Fixed::ONE).to_bits().abs();
+                assert!(
+                    error <= 64,
+                    "normal length {} raw at turn {turn}, offset ({xi}, {yi})",
+                    length.to_bits()
+                );
+
+                if manifold.count == 1 {
+                    singles += 1;
+                } else {
+                    pairs += 1;
+                }
+            }
+        }
+    }
+
+    assert!(singles > 0, "the sweep never produced a one-point manifold");
+    assert!(pairs > 0, "the sweep never produced a two-point manifold");
+}
