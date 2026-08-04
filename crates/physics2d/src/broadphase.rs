@@ -62,13 +62,21 @@ impl Broadphase {
         self.pairs.clear();
 
         for collider in world.colliders() {
-            let (Some((shape, _, filter)), Some(transform), Some(kind)) = (
-                world.shape(collider),
-                world.world_transform(collider),
-                world.kind(collider.handle),
-            ) else {
-                continue;
-            };
+            // `colliders()` yields only live colliders, so each lookup below
+            // succeeds by construction. Written as a `let ... else` that
+            // panics rather than one that skips, because a skip here would
+            // silently drop a collider out of the broadphase and the world
+            // would quietly stop colliding — a defensive `continue` cannot be
+            // reached and would hide the bug that reached it.
+            let (shape, _, filter) = world
+                .shape(collider)
+                .unwrap_or_else(|| unreachable!("a live collider has a shape"));
+            let transform = world
+                .world_transform(collider)
+                .unwrap_or_else(|| unreachable!("a live collider has a transform"));
+            let kind = world
+                .kind(collider.handle)
+                .unwrap_or_else(|| unreachable!("a live collider has a body"));
             // Inflated by the contact tolerance, so a pair separated by less
             // than it still reaches narrowphase — a contact at depth zero is
             // one the vocabulary requires, and it cannot be generated from a
@@ -105,56 +113,22 @@ impl Broadphase {
                 .then_with(|| left.cmp(&right))
         });
 
-        for slot in 0..self.endpoints.len() {
-            let Some(&endpoint) = self.endpoints.get(slot) else {
-                continue;
-            };
-            if endpoint.begin {
-                self.propose(endpoint.record);
-                self.active.push(endpoint.record);
-            } else if let Some(position) = self
-                .active
-                .iter()
-                .position(|&candidate| candidate == endpoint.record)
-            {
-                // The active set is unordered — the pairs it produces are a
-                // set, and they are sorted below — so removing cheaply here
-                // costs nothing that is observable.
-                self.active.swap_remove(position);
-            }
-        }
+        // Four disjoint field borrows, which is why this is a free function
+        // rather than a method: it lets the sweep read the records and write
+        // the pairs without an index dance whose bounds checks could never
+        // fail and could never be tested either.
+        sweep(
+            &self.records,
+            &self.endpoints,
+            &mut self.active,
+            &mut self.pairs,
+        );
 
         // **Emitted order is over the pair, not over the sweep.** Stating the
         // obligation this way is what lets a different structure — a grid, a
         // tree, three swept axes — produce the same output, and what stops the
         // swept axis leaking into a contact array.
         self.pairs.sort_unstable();
-    }
-
-    fn propose(&mut self, incoming: usize) {
-        let Some(&entering) = self.records.get(incoming) else {
-            return;
-        };
-        for slot in 0..self.active.len() {
-            let Some(&other) = self.active.get(slot) else {
-                continue;
-            };
-            let Some(&resident) = self.records.get(other) else {
-                continue;
-            };
-            if !eligible(entering, resident) {
-                continue;
-            }
-            if !entering.bounds.overlaps(resident.bounds) {
-                continue;
-            }
-            let pair = if entering.collider < resident.collider {
-                (entering.collider, resident.collider)
-            } else {
-                (resident.collider, entering.collider)
-            };
-            self.pairs.push(pair);
-        }
     }
 
     /// The candidate pairs, lower collider first, in ascending pair order.
@@ -167,6 +141,42 @@ impl Broadphase {
     #[must_use]
     pub fn collider_count(&self) -> usize {
         self.records.len()
+    }
+}
+
+/// Walk the sorted endpoints, proposing a pair for every overlapping resident
+/// as each interval opens.
+fn sweep(
+    records: &[Record],
+    endpoints: &[Endpoint],
+    active: &mut Vec<usize>,
+    pairs: &mut Vec<(Collider, Collider)>,
+) {
+    for endpoint in endpoints {
+        let entering = records[endpoint.record];
+        if endpoint.begin {
+            for &other in active.iter() {
+                let resident = records[other];
+                if eligible(entering, resident) && entering.bounds.overlaps(resident.bounds) {
+                    // Canonical order, lower collider first, so a pair reads
+                    // the same however the sweep happened to reach it.
+                    pairs.push(if entering.collider < resident.collider {
+                        (entering.collider, resident.collider)
+                    } else {
+                        (resident.collider, entering.collider)
+                    });
+                }
+            }
+            active.push(endpoint.record);
+        } else if let Some(position) = active
+            .iter()
+            .position(|&candidate| candidate == endpoint.record)
+        {
+            // The active set is unordered — the pairs it produces are a set,
+            // and they are sorted afterwards — so removing cheaply here costs
+            // nothing observable.
+            active.swap_remove(position);
+        }
     }
 }
 
