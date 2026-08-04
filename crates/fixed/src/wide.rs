@@ -37,12 +37,12 @@ impl Wide {
     pub const ZERO: Self = Self(0);
 
     /// The raw Q95.32 pattern.
-    #[must_use]
-    pub const fn from_bits(raw: i128) -> Self {
-        Self(raw)
-    }
-
-    /// The raw pattern back out.
+    ///
+    /// There is no `from_bits` counterpart, deliberately. A `Wide` is an
+    /// intermediate rather than state: it is produced by a multiply and
+    /// consumed by a root, a comparison or a narrowing, and nothing
+    /// serialises one. An unused constructor is a promise to keep working
+    /// that nobody asked for.
     #[must_use]
     pub const fn to_bits(self) -> i128 {
         self.0
