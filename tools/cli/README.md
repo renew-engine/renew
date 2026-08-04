@@ -20,12 +20,15 @@ commands:
   modules    list every module with its maturity, from the manifests
   asset-pack     build an asset pack from a directory of files
   asset-inspect  list an asset pack's entries, optionally verifying them
+  determinism    emit this target's simulation digests, or compare several targets'
   doctor     check the development environment
 
 options:
   --json            emit one machine-readable JSON document on stdout
   --report <path>   (coverage only, required) the llvm-cov JSON export to read
   --smoke           (bench only) run each benchmark once, without statistics
+  --emit <path>     (determinism only) write this target's digests here
+  --compare <path>  (determinism only, repeatable) a target report to compare
 ```
 
 `bench --smoke` is a second fixed entry in the command table (every bench
@@ -243,3 +246,49 @@ on stdout:
   the active toolchain against `rust-toolchain.toml` and takes its version
   floor from the workspace manifest's `rust-version`, rather than
   hardcoding either.
+
+## The cross-platform determinism gate
+
+Every other determinism check in this repository compares a run to itself,
+or to a constant this repository minted. Both prove an unseeded generator
+absent; neither can prove the *target* did not matter, because both halves
+of those comparisons ran on one target.
+
+`determinism` is the only place that claim is tested, and it is two modes
+because the claim needs two machines.
+
+```
+renew determinism --emit leg.json
+```
+
+runs the pinned simulations — four glide configurations, each contributing
+both the frame schedule's digest and the world's — and writes what this
+target saw, together with its architecture and the exact `rustc --version`
+that built it. Digests are hex **strings**, not JSON numbers: a `u64`
+exceeds what a JSON number is guaranteed to carry exactly, and a reader
+that silently rounded one would report two different states as identical,
+which is the single failure this gate exists to prevent.
+
+```
+renew determinism --compare linux.json --compare windows.json --compare macos.json
+```
+
+holds them against each other. It exits 0 only when every target agrees
+over a non-empty digest set. Everything else is exit 1, and the reasons
+are deliberately separated:
+
+- **Diverged** — the targets ran the same inputs and reached different
+  state. This is the finding the gate exists to produce, and the message
+  names the digest, both values, and both architectures.
+- **Inconclusive** — the comparison could not be made, and *this is a
+  failure, not a pass*. A leg is missing, a leg carries no digests, the
+  reported architecture set does not match the one the tool binds, or two
+  legs were built by different compilers. The toolchain check outranks the
+  digest comparison on purpose: two compilers producing two digests is not
+  evidence of a portability bug, and reporting it as one sends somebody
+  hunting something that is not there.
+
+The architecture set is matched row for row rather than counted. Three
+legs on one instruction set satisfy a count of three and prove strictly
+less than the tool claims, so a runner fleet that quietly changes
+architecture fails here rather than passing while measuring less.

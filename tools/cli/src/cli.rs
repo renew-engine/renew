@@ -19,11 +19,12 @@ pub enum Command {
     Doctor,
     Record,
     Replay,
+    Determinism,
 }
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Configure,
         Self::Build,
         Self::Test,
@@ -37,6 +38,7 @@ impl Command {
         Self::Modules,
         Self::AssetPack,
         Self::AssetInspect,
+        Self::Determinism,
         Self::Doctor,
     ];
 
@@ -58,6 +60,7 @@ impl Command {
             Self::Doctor => "doctor",
             Self::Record => "record",
             Self::Replay => "replay",
+            Self::Determinism => "determinism",
         }
     }
 
@@ -102,6 +105,9 @@ impl Command {
             Self::Doctor => "check the development environment",
             Self::Record => "run a sample, writing the input it saw to a file",
             Self::Replay => "run a sample from a recorded input file",
+            Self::Determinism => {
+                "emit this target's simulation digests, or compare several targets'"
+            }
         }
     }
 
@@ -143,6 +149,14 @@ pub struct Invocation {
     /// against its recorded digest. Off by default because it reads every
     /// byte, where listing reads only the table.
     pub verify: bool,
+    /// `determinism` only (parse enforces): the target reports to hold
+    /// against each other.
+    pub compare: Vec<String>,
+    /// `determinism` only (parse enforces): where to write this target's
+    /// report. Exactly one of this and [`Invocation::compare`] is set —
+    /// the two modes are one subcommand because they are two halves of
+    /// one claim, and parsing refuses both together and neither.
+    pub emit: Option<String>,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -216,6 +230,16 @@ impl std::error::Error for ParseError {}
 /// does not answer to it (including `record --input` and `replay
 /// --output`, each of which names the other's flag), `record` or `replay`
 /// without one, and any sample-taking subcommand without a sample.
+// The scanner is one long match over flag literals, and it is long
+// because the flag set is. Splitting it would put half the flags in one
+// place and half in another with nothing to say which half a new one
+// belongs to — the linter's line count is measuring the size of the
+// command line, not a structure problem, so the allowance is taken here
+// with the reason rather than by raising the cap for the whole crate.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per flag; splitting the match would scatter the flag set"
+)]
 pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut command = None;
     let mut json = false;
@@ -226,6 +250,8 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut pack: Option<String> = None;
     let mut from: Option<String> = None;
     let mut verify = false;
+    let mut compare: Vec<String> = Vec::new();
+    let mut emit: Option<String> = None;
     let mut sample: Option<String> = None;
     let mut sample_args: Vec<String> = Vec::new();
     // The separator, if it comes at all, comes immediately after the
@@ -264,6 +290,24 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--input"))?;
                 trace = Some(("--input", path.clone()));
             }
+            // The first repeatable value flag in this parser. Repeating
+            // accumulates rather than overwriting, because the number of
+            // reports IS the thing the comparison checks — a flag that
+            // silently kept the last one would turn three targets into
+            // one and report agreement.
+            "--compare" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--compare"))?;
+                compare.push(path.clone());
+            }
+            // Its own flag rather than `--output`, which belongs to
+            // `record` and means "write the input you saw here". This
+            // writes a target's digests, and a reader who had to know the
+            // subcommand to know what a flag meant would be right to
+            // complain.
+            "--emit" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--emit"))?;
+                emit = Some(path.clone());
+            }
             // Same reason as `--report`: the value is consumed here so a
             // path can never be mistaken for a subcommand.
             "--pack" => {
@@ -301,6 +345,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     if help {
         return Ok(Parsed::Help { json });
     }
+    check_determinism_ownership(command, emit.as_deref(), &compare)?;
     check_combination(
         command,
         smoke,
@@ -309,6 +354,8 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         sample.as_deref(),
     )?;
     check_asset_combination(command, pack.as_deref(), from.as_deref(), verify)?;
+    check_determinism_mode(command, emit.as_deref(), &compare)?;
+
     match command {
         Some(command) => Ok(Parsed::Run(Invocation {
             command,
@@ -321,9 +368,67 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             pack,
             from,
             verify,
+            compare,
+            emit,
         })),
         None => Err(ParseError::NoCommand),
     }
+}
+
+/// `--emit` and `--compare` belong to `determinism` and nothing else.
+///
+/// Separate from [`check_combination`] for the reason its neighbour
+/// already records: that function carries five parameters and reads as a
+/// list of rules only while it does.
+fn check_determinism_ownership(
+    command: Option<Command>,
+    emit: Option<&str>,
+    compare: &[String],
+) -> Result<(), ParseError> {
+    if command == Some(Command::Determinism) {
+        return Ok(());
+    }
+    if emit.is_some() {
+        return Err(ParseError::UnexpectedArgument("--emit".to_string()));
+    }
+    if !compare.is_empty() {
+        return Err(ParseError::UnexpectedArgument("--compare".to_string()));
+    }
+    Ok(())
+}
+
+/// The determinism subcommand's requirement: exactly one mode.
+///
+/// Split from [`check_determinism_ownership`] and called after every
+/// other ownership rule, because this module's ordering convention is
+/// that "this flag is not yours" always precedes "you are missing one".
+/// Together in one function, `determinism --smoke` reported the missing
+/// mode instead of the stray flag, and `run --emit x` reported a missing
+/// sample instead of a flag that is not `run`'s.
+fn check_determinism_mode(
+    command: Option<Command>,
+    emit: Option<&str>,
+    compare: &[String],
+) -> Result<(), ParseError> {
+    if command != Some(Command::Determinism) {
+        return Ok(());
+    }
+    // Neither is a subcommand asked to do nothing; both is a subcommand
+    // asked to do two things, and choosing one silently is how a lane
+    // emits when it meant to compare.
+    if emit.is_some() && !compare.is_empty() {
+        return Err(ParseError::UnexpectedArgument(
+            "--emit with --compare: one run either reports a target or holds several              against each other"
+                .to_string(),
+        ));
+    }
+    if emit.is_none() && compare.is_empty() {
+        return Err(ParseError::MissingOption {
+            command: "determinism",
+            option: "--emit <path> or --compare <path>...",
+        });
+    }
+    Ok(())
 }
 
 /// The asset subcommands' own flag rules.
@@ -468,6 +573,8 @@ pub fn usage() -> String {
         "  --pack <path>     (asset-pack, asset-inspect; required) the pack file\n",
         "  --from <dir>      (asset-pack only, required) the directory to pack\n",
         "  --verify          (asset-inspect only) check each entry against its digest\n",
+        "  --emit <path>     (determinism only) write this target's digests here\n",
+        "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
         "  --help, -h        print this text; `renew help` does the same\n",
         "\nEverything after `run <sample>` goes to the sample untouched, including\n",
         "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
@@ -503,6 +610,8 @@ mod tests {
             pack: None,
             from: None,
             verify: false,
+            compare: Vec::new(),
+            emit: None,
         }
     }
 
@@ -559,6 +668,16 @@ mod tests {
                         ..plain(command)
                     },
                 ),
+                // Emit rather than compare: both modes are covered by
+                // their own tests below, and this one is about the name
+                // round-tripping, so it takes the shorter line.
+                Command::Determinism => (
+                    vec![name, "--emit", "leg.json"],
+                    Invocation {
+                        emit: Some("leg.json".to_string()),
+                        ..plain(command)
+                    },
+                ),
                 Command::Record | Command::Replay => {
                     // Whichever flag this one owns, taken from the same
                     // table the parser consults, so the two cannot drift.
@@ -582,6 +701,93 @@ mod tests {
                 "command `{name}` did not round-trip"
             );
         }
+    }
+
+    /// The two modes are one subcommand, and parsing is what keeps them
+    /// from becoming three: neither is a run asked to do nothing, both is
+    /// a run asked to do two things, and choosing one silently is how a
+    /// lane emits when it meant to compare.
+    #[test]
+    fn determinism_takes_exactly_one_mode() {
+        assert_eq!(
+            parse(&arguments(&["determinism", "--emit", "leg.json"])),
+            Ok(Parsed::Run(Invocation {
+                emit: Some("leg.json".to_string()),
+                ..plain(Command::Determinism)
+            }))
+        );
+
+        // Repeating accumulates rather than overwrites: how many reports
+        // there are IS what the comparison checks, and a flag that kept
+        // only the last would turn three targets into one and report
+        // agreement.
+        assert_eq!(
+            parse(&arguments(&[
+                "determinism",
+                "--compare",
+                "a.json",
+                "--compare",
+                "b.json",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                compare: vec!["a.json".to_string(), "b.json".to_string()],
+                ..plain(Command::Determinism)
+            }))
+        );
+
+        let both = parse(&arguments(&[
+            "determinism",
+            "--emit",
+            "leg.json",
+            "--compare",
+            "a.json",
+        ]));
+        assert!(
+            matches!(both, Err(ParseError::UnexpectedArgument(_))),
+            "{both:?}"
+        );
+
+        let neither = parse(&arguments(&["determinism"]));
+        assert_eq!(
+            neither,
+            Err(ParseError::MissingOption {
+                command: "determinism",
+                option: "--emit <path> or --compare <path>...",
+            })
+        );
+    }
+
+    /// Both flags belong to `determinism` and to nothing else. Derived
+    /// from `Command::ALL` like the other ownership tests here, so a
+    /// subcommand added later cannot quietly escape the rejection.
+    #[test]
+    fn the_determinism_flags_are_refused_on_every_other_subcommand() {
+        for command in all_except(Command::Determinism) {
+            for flag in ["--emit", "--compare"] {
+                let line = vec![command.name(), flag, "leg.json"];
+                let parsed = parse(&arguments(&line));
+                let name = command.name();
+                assert!(
+                    matches!(&parsed, Err(ParseError::UnexpectedArgument(named)) if named == flag),
+                    "`{name} {flag}` should be refused by name, got {parsed:?}"
+                );
+            }
+        }
+    }
+
+    /// A flag that takes a path consumes it, so a path can never be read
+    /// as a subcommand — and a flag given without one is named rather
+    /// than silently ignored.
+    #[test]
+    fn the_determinism_flags_refuse_a_missing_value() {
+        assert_eq!(
+            parse(&arguments(&["determinism", "--emit"])),
+            Err(ParseError::MissingValue("--emit"))
+        );
+        assert_eq!(
+            parse(&arguments(&["determinism", "--compare"])),
+            Err(ParseError::MissingValue("--compare"))
+        );
     }
 
     #[test]

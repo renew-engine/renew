@@ -77,7 +77,8 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
         | Command::Doctor
         | Command::Run
         | Command::Record
-        | Command::Replay => &[],
+        | Command::Replay
+        | Command::Determinism => &[],
     }
 }
 

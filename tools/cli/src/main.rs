@@ -13,8 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode};
 use std::time::Instant;
 
+use std::collections::BTreeMap;
+use std::fs;
+
 use renew_cli::cli::{self, Command, Invocation, Parsed};
 use renew_cli::coverage::{self, Outcome};
+use renew_cli::determinism;
 use renew_cli::doctor::{self, Facts};
 use renew_cli::json::{self, Value};
 use renew_cli::plan;
@@ -65,6 +69,22 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.json,
         ),
         Command::Run | Command::Record | Command::Replay => run_sample(invocation),
+        // Dispatched explicitly, and the wildcard below is why it has to
+        // be. A subcommand that falls through to `run_steps` runs an
+        // empty step list and reports `ok` in exit code and envelope
+        // alike — for a gate whose whole purpose is refusing to pass
+        // vacuously, being forgotten here is the worst available bug and
+        // the compiler cannot catch it.
+        Command::Determinism => {
+            if invocation.compare.is_empty() {
+                run_determinism_emit(
+                    invocation.emit.as_deref().unwrap_or_default(),
+                    invocation.json,
+                )
+            } else {
+                run_determinism_compare(&invocation.compare, invocation.json)
+            }
+        }
         _ => run_steps(invocation),
     }
 }
@@ -965,6 +985,138 @@ fn run_steps(invocation: &Invocation) -> ExitCode {
         }
     }
     runner.finish()
+}
+
+/// The simulations the cross-platform lane compares, and the exact
+/// arguments that pin them.
+///
+/// Each entry names a run whose every output is a function of the flags
+/// beside it. Widening this list widens what the claim covers; it is a
+/// list rather than one run because a single configuration
+/// exercises one path through the world, and a divergence in a path the
+/// list never walks is a divergence the lane never sees.
+const PINNED_RUNS: [(&str, &[&str]); 4] = [
+    (
+        "glide/seed-7-600",
+        &["--seed", "7", "--frames", "600", "--json"],
+    ),
+    (
+        "glide/seed-7-2000",
+        &["--seed", "7", "--frames", "2000", "--json"],
+    ),
+    (
+        "glide/seed-99-600",
+        &["--seed", "99", "--frames", "600", "--json"],
+    ),
+    (
+        "glide/sink-1500",
+        &[
+            "--seed",
+            "3",
+            "--frames",
+            "1500",
+            "--input-trace",
+            "sink",
+            "--json",
+        ],
+    ),
+];
+
+/// Run the pinned simulations and write this target's report.
+///
+/// Every run contributes two digests — the frame schedule's and the
+/// world's — because the sample already computes both and a lane that
+/// dropped one would be proving half of what it claims.
+fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
+    let runner = match Runner::anchored("determinism", json_mode) {
+        Ok(runner) => runner,
+        Err(exit) => return exit,
+    };
+
+    // The toolchain that built the binaries being compared. Read from
+    // the compiler rather than from a file, because a file records an
+    // intention and this has to record what actually ran.
+    let toolchain = match probe("rustc", &["--version"], Some(&runner.root)) {
+        Ok((true, text)) => text.trim().to_string(),
+        Ok((false, _)) | Err(_) => {
+            return runner.fail(
+                "could not read `rustc --version`, and a comparison that cannot name its \
+                 compiler is inconclusive rather than passing",
+            );
+        }
+    };
+
+    let mut digests = BTreeMap::new();
+    for (name, args) in PINNED_RUNS {
+        let mut invocation = vec!["run", "--quiet", "--package", "renew-sample-glide", "--"];
+        invocation.extend_from_slice(args);
+        let (ok, stdout) = match probe("cargo", &invocation, Some(&runner.root)) {
+            Ok(result) => result,
+            Err(error) => return runner.fail(&format!("could not start `{name}`: {error}")),
+        };
+        if !ok {
+            return runner.fail(&format!(
+                "the pinned run `{name}` failed, so this target contributes nothing and \
+                 the comparison must not be told otherwise"
+            ));
+        }
+        match determinism::digests_from_output(name, &stdout) {
+            Ok(pairs) => digests.extend(pairs),
+            Err(message) => return runner.fail(&message),
+        }
+    }
+
+    let leg = determinism::Leg {
+        origin: output_path.to_string(),
+        os: env::consts::OS.to_string(),
+        arch: env::consts::ARCH.to_string(),
+        toolchain,
+        digests,
+    };
+    let rendered = determinism::render_leg(&leg);
+    if let Err(error) = fs::write(output_path, &rendered) {
+        return runner.fail(&format!("could not write `{output_path}`: {error}"));
+    }
+    println!(
+        "wrote {} digests for {}/{} to {output_path}",
+        leg.digests.len(),
+        leg.os,
+        leg.arch
+    );
+    runner.finish()
+}
+
+/// Hold several targets' reports against each other.
+fn run_determinism_compare(paths: &[String], json_mode: bool) -> ExitCode {
+    let runner = match Runner::anchored("determinism", json_mode) {
+        Ok(runner) => runner,
+        Err(exit) => return exit,
+    };
+
+    let arches = determinism::expected_arches();
+
+    let mut legs = Vec::new();
+    for path in paths {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            // A missing artifact is a leg that did not report, which is
+            // an untested target — never an absent objection.
+            Err(error) => return runner.fail(&format!("could not read `{path}`: {error}")),
+        };
+        match determinism::parse_leg(path, &text) {
+            Ok(leg) => legs.push(leg),
+            Err(message) => return runner.fail(&message),
+        }
+    }
+
+    let verdict = determinism::compare(&legs, &arches);
+    let report = determinism::describe(&verdict);
+    if verdict.is_pass() {
+        println!("{report}");
+        runner.finish()
+    } else {
+        runner.fail(&report)
+    }
 }
 
 /// Build and run one sample, then hand it the rest of the command line.

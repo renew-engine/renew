@@ -112,3 +112,56 @@ fn replay_refuses_a_file_that_is_not_a_trace() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// The machine-readable face of the same run.
+///
+/// The cross-platform comparison reads this, not the human line, so a
+/// change that broke it would take the only gate that proves this
+/// simulation is portable with it — and would do so silently, because
+/// every other test here reads the line built for a person.
+#[test]
+fn the_json_face_carries_the_same_digests_as_the_line() {
+    let human = digest_line(&["--seed", "7", "--frames", "600"]);
+    let json = run(&["--seed", "7", "--frames", "600", "--json"]);
+    assert!(json.success, "the json run failed: {}", json.stderr);
+    let object = json
+        .stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| line.starts_with('{'))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !object.is_empty(),
+        "no JSON object on stdout: {}",
+        json.stdout
+    );
+
+    // Every hash the comparison collects, present and identical to the
+    // human line's. Compared by extracting from both rather than by
+    // recomputing, so a change to either face that left the other behind
+    // fails here.
+    for field in ["schedule_hash", "state_hash"] {
+        let from_line = human
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix(&format!("{field}=")))
+            .unwrap_or_else(|| panic!("the human line carries no {field}: {human}"));
+        let quoted = format!("\"{field}\":\"{from_line}\"");
+        assert!(
+            object.contains(&quoted),
+            "the JSON face is missing {quoted}; it reads {object}"
+        );
+    }
+
+    // Digests are strings, not numbers: a u64 exceeds what a JSON number
+    // carries exactly, and a reader that rounded one would call two
+    // different states identical.
+    assert!(
+        object.contains("\"schema_version\":1"),
+        "the document must name its schema: {object}"
+    );
+    assert!(
+        !object.contains("schedule_hash\":0x"),
+        "hashes must be quoted strings: {object}"
+    );
+}

@@ -51,9 +51,19 @@ const TRACE_BYTE_LIMIT: usize = 1 << 20;
 /// The last line on stdout is always the digest line the determinism
 /// gate compares.
 pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
+    // Whether the run was asked for JSON is a property of the arguments,
+    // and `run` consumes them — so it is read here, from a second parse
+    // that cannot disagree with the first because it is the same parser.
+    // A parse failure is reported by `run` below, not twice.
+    let args: Vec<String> = args.into_iter().collect();
+    let json = crate::cli::parse_args(args.iter().cloned()).is_ok_and(|options| options.json);
     match run(args) {
         Ok(report) => {
-            println!("{}", report.digest_line());
+            if json {
+                println!("{}", report.json_line());
+            } else {
+                println!("{}", report.digest_line());
+            }
             0
         }
         Err(SampleError::Usage(message)) => {
