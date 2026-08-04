@@ -66,6 +66,31 @@ fn bring_up_reports_an_adapter_and_stays_clean() {
     assert_no_validation_errors(&device);
 }
 
+// The probe: on the CI rendering lane (`RENEW_GOLDEN=1`) a depth format
+// must exist — depth-carrying work is planned against this chain, and
+// the lane exists to prove the rendering path, so an adapter that
+// refuses both formats must redden it rather than silently narrowing
+// what the lane proves. Elsewhere, no-format is a reportable fact.
+#[test]
+fn the_adapter_reports_its_depth_format() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    if let Some(name) = device.depth_format_name() {
+        assert!(
+            name == "D32_SFLOAT" || name == "D24_UNORM_S8_UINT",
+            "the chosen format must come from the chain, got {name}"
+        );
+    } else {
+        assert!(
+            std::env::var_os("RENEW_GOLDEN").is_none_or(|v| v != "1"),
+            "the rendering lane's adapter must offer a depth format"
+        );
+        eprintln!("SKIP: adapter offers no chain depth format");
+    }
+    assert_no_validation_errors(&device);
+}
+
 #[test]
 fn validation_off_bring_up_works() {
     match Device::new(&DeviceDesc {
