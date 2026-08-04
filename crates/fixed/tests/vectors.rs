@@ -182,12 +182,22 @@ proptest! {
         // for any residual under 182 raw units while claiming to prove the
         // residual was none. Measured on components, the true worst over
         // this domain is 2 raw units — nonzero in about half of all cases.
-        let slid = (-normal).slide_along(normal);
-        let residual = slid.x.to_bits().abs().max(slid.y.to_bits().abs());
-        prop_assert!(
-            residual <= 2,
-            "sliding into the normal moved {residual} raw units, past the bound"
-        );
+        // **The bound is proportional to the displacement, not constant.**
+        // A previous version asserted two raw units flat, measured with a
+        // displacement of exactly one unit — a number taken at one point
+        // and stated as a property. Across magnitudes the residual scales
+        // linearly: 2 raw at a displacement of one unit, 116 at a hundred,
+        // 11603 at ten thousand.
+        for units in [1i32, 10, 1000] {
+            let push = normal * Fixed::from_int(-units);
+            let slid = push.slide_along(normal);
+            let residual = slid.x.to_bits().abs().max(slid.y.to_bits().abs());
+            let allowed = 2 + push.length().to_bits() / 32768;
+            prop_assert!(
+                residual <= allowed,
+                "at {units} units the slide left {residual} raw, past {allowed}"
+            );
+        }
     }
 
     #[test]
