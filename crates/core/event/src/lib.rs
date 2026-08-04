@@ -33,7 +33,13 @@
 
 // Diagnostics are not this crate's job; the standard output macros are
 // banned by construction, not convention.
-#![deny(clippy::print_stdout, clippy::print_stderr)]
+// Simulation crates deny float arithmetic, and the rule is only worth
+// anything if it holds across a simulation's whole dependency closure --
+// a crate that computes floats is no less able to do so one edge away.
+// This crate is in that closure (the input crate's vocabulary), so it
+// carries the deny too, and does so without changing a line: nothing
+// here is a float.
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 /// The engine's event vocabulary, translated from the OS.
 #[derive(Debug, Clone, Copy, PartialEq)]
