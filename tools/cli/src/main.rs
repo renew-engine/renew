@@ -1060,27 +1060,9 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
                  the comparison must not be told otherwise"
             ));
         }
-        let Some(line) = stdout
-            .lines()
-            .rev()
-            .find(|line| line.trim_start().starts_with('{'))
-        else {
-            return runner.fail(&format!(
-                "the pinned run `{name}` printed no JSON object; a lane that accepted this \
-                 would compare an empty digest set against another empty one"
-            ));
-        };
-        let report = match renew_cli::json::parse(line) {
-            Ok(report) => report,
-            Err(error) => {
-                return runner.fail(&format!("`{name}` printed unreadable JSON: {error:?}"));
-            }
-        };
-        for field in ["schedule_hash", "state_hash"] {
-            let Some(value) = report.get(field).and_then(Value::as_str) else {
-                return runner.fail(&format!("`{name}`'s report carries no `{field}`"));
-            };
-            digests.insert(format!("{name}/{field}"), value.to_string());
+        match determinism::digests_from_output(name, &stdout) {
+            Ok(pairs) => digests.extend(pairs),
+            Err(message) => return runner.fail(&message),
         }
     }
 

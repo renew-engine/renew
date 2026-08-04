@@ -367,6 +367,48 @@ fn escape(text: &str) -> String {
     text.replace('\\', r"\\").replace('"', "\\\"")
 }
 
+/// Pull the digests a pinned run reported out of what it printed.
+///
+/// The pure half of `--emit`: everything between "a child process wrote
+/// some bytes" and "the report holds two digests". Separated from the
+/// orchestration around it because the orchestration spawns four cargo
+/// runs and cannot be reached by a unit test, while every way this can go
+/// wrong can be — a run that printed nothing, printed something that is
+/// not JSON, or printed JSON missing a hash the comparison needs.
+///
+/// `name` labels the run and prefixes every digest, so two runs that
+/// disagree can be told apart by which configuration produced them.
+///
+/// # Errors
+///
+/// Returns a reason naming the run whenever its output cannot yield both
+/// digests. Never returns a partial set: a report missing one hash is a
+/// report proving half of what it claims, and half is reported as none.
+pub fn digests_from_output(name: &str, stdout: &str) -> Result<Vec<(String, String)>, String> {
+    let Some(line) = stdout
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| line.starts_with('{'))
+    else {
+        return Err(format!(
+            "the pinned run `{name}` printed no JSON object; a lane that accepted this \
+             would compare an empty digest set against another empty one"
+        ));
+    };
+    let report = crate::json::parse(line)
+        .map_err(|error| format!("`{name}` printed unreadable JSON: {error:?}"))?;
+
+    let mut digests = Vec::new();
+    for field in ["schedule_hash", "state_hash"] {
+        let Some(value) = report.get(field).and_then(crate::json::Value::as_str) else {
+            return Err(format!("`{name}`'s report carries no `{field}`"));
+        };
+        digests.push((format!("{name}/{field}"), value.to_string()));
+    }
+    Ok(digests)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Leg, Verdict, compare, describe, parse_leg, render_leg};
@@ -410,6 +452,83 @@ mod tests {
         // Not a set: two rows may share an instruction set, and
         // collapsing them would let two legs satisfy three rows.
         assert!(arches.len() > 1);
+    }
+
+    const SAMPLE_LINE: &str = concat!(
+        r#"{"schema_version":1,"sample":"glide","seed":7,"source":"soar","frames":600,"#,
+        r#""ticks":600,"dropped":0,"score":3,"alive":true,"#,
+        r#""schedule_hash":"0x55ce27c8dcb97c4d","state_hash":"0xe191d32ff48fb06a"}"#
+    );
+
+    #[test]
+    fn a_runs_output_yields_both_of_its_digests_prefixed_by_the_run() {
+        let digests = super::digests_from_output("glide/seed-7", SAMPLE_LINE).expect("parses");
+        assert_eq!(
+            digests,
+            vec![
+                (
+                    "glide/seed-7/schedule_hash".to_string(),
+                    "0x55ce27c8dcb97c4d".to_string()
+                ),
+                (
+                    "glide/seed-7/state_hash".to_string(),
+                    "0xe191d32ff48fb06a".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// The object is found by scanning backwards, so a run that logged
+    /// before it reported still yields its digests — and a run that
+    /// logged after would too.
+    #[test]
+    fn chatter_around_the_object_does_not_hide_it() {
+        let noisy = format!(
+            "   Compiling something
+warning: unused
+{SAMPLE_LINE}
+"
+        );
+        assert!(super::digests_from_output("run", &noisy).is_ok());
+    }
+
+    /// Every way a run can fail to report, named rather than defaulted.
+    /// A partial set is reported as none: a report missing one hash
+    /// proves half of what it claims, and half must not reach the
+    /// comparison as if it were whole.
+    #[test]
+    fn a_run_that_did_not_report_is_refused_by_name() {
+        let cases = [
+            ("silent", String::new()),
+            (
+                "chatter only",
+                "   Compiling glide
+"
+                .to_string(),
+            ),
+            (
+                "not json",
+                "{not json at all
+"
+                .to_string(),
+            ),
+            (
+                "no schedule hash",
+                SAMPLE_LINE.replace("schedule_hash", "other_hash"),
+            ),
+            (
+                "no state hash",
+                SAMPLE_LINE.replace("state_hash", "other_hash"),
+            ),
+        ];
+        for (label, stdout) in cases {
+            let error = super::digests_from_output("glide/seed-7", &stdout)
+                .expect_err("a run that did not report must be refused");
+            assert!(
+                error.contains("glide/seed-7"),
+                "the `{label}` case must name the run: {error}"
+            );
+        }
     }
 
     #[test]
