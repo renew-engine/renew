@@ -232,6 +232,43 @@ fn the_slide_residual_scales_with_the_displacement() {
             worst <= permitted,
             "at magnitude {magnitude} the residual was {worst}, past the permitted {permitted}"
         );
+
+        // **And in three dimensions**, which the vocabulary says inherits this
+        // property unchanged while the assertion covered only `Vec2`. It is a
+        // different code path — three products summed rather than two — and
+        // the constant term is a per-component rounding allowance, so a third
+        // component is exactly where a slope that was fitted rather than
+        // derived would start to fail.
+        let mut worst_3d = 0i64;
+        for (dx, dy, dz) in [
+            (1i32, 2i32, 2i32),
+            (2, 3, 6),
+            (1, 1, 1),
+            (7, 4, 4),
+            (1, 1, 100),
+            (99, 1, 1),
+        ] {
+            let normal = Vec3::new(
+                Fixed::from_int(dx),
+                Fixed::from_int(dy),
+                Fixed::from_int(dz),
+            )
+            .normalize()
+            .expect("non-zero direction");
+            let push = Vec3::new(
+                Fixed::from_bits(normal.x.to_bits() * magnitude),
+                Fixed::from_bits(normal.y.to_bits() * magnitude),
+                Fixed::from_bits(normal.z.to_bits() * magnitude),
+            );
+            let residual = push.slide_along(normal);
+            worst_3d = worst_3d.max(residual.x.to_bits().abs());
+            worst_3d = worst_3d.max(residual.y.to_bits().abs());
+            worst_3d = worst_3d.max(residual.z.to_bits().abs());
+        }
+        assert!(
+            worst_3d <= permitted,
+            "at magnitude {magnitude} the 3D residual was {worst_3d}, past {permitted}"
+        );
     }
 }
 
@@ -310,5 +347,98 @@ fn a_rate_exact_in_nanoseconds_need_not_be_exact_in_the_number_type() {
     assert!(
         !exact_in_nanos(1024),
         "but not a second, so the exact rates stop at 512 Hz"
+    );
+}
+
+/// A timestep is exact in the number type exactly when its nanosecond count
+/// is a multiple of 1 953 125, which is the condition in the units a caller
+/// actually sets — a timestep is a nanosecond count, not a rate.
+///
+/// The derivation, checked below rather than trusted: raw = ns · 2¹⁶ / 10⁹,
+/// and 10⁹ = 2⁹ · 5⁹, so raw = ns · 2⁷ / 5⁹. Since 2⁷ and 5⁹ are coprime, that
+/// is an integer exactly when 5⁹ = 1 953 125 divides ns.
+#[test]
+fn a_timestep_is_exact_exactly_when_its_nanoseconds_divide_by_the_fifth_power() {
+    let billion = 1_000_000_000i128;
+    let one = i128::from(ONE);
+    let condition = 1_953_125i128;
+
+    // 5⁹ · 2⁹ = 10⁹, which is the factorisation the condition comes from.
+    assert_eq!(condition * 512, billion, "5^9 times 2^9 is a second");
+
+    let exact = |nanos: i128| nanos * one % billion == 0;
+
+    // The condition decides it, in both directions, across the range a game
+    // would ever use — including rates that are exact in nanoseconds and not
+    // in the number type, which is the trap this replaces.
+    for hz in [1i128, 24, 30, 50, 60, 64, 100, 120, 125, 128, 240, 256, 512] {
+        if billion % hz != 0 {
+            continue; // not representable as whole nanoseconds at all
+        }
+        let nanos = billion / hz;
+        assert_eq!(
+            exact(nanos),
+            nanos % condition == 0,
+            "{hz} Hz ({nanos} ns): the multiple-of-1953125 condition must decide exactness"
+        );
+    }
+
+    // And the two the vocabulary names explicitly.
+    assert_eq!(billion / 512, condition, "512 Hz is exactly one multiple");
+    assert!(
+        (billion / 125) % condition != 0,
+        "125 Hz divides a second and is not exact in the number type"
+    );
+}
+
+/// The segmentation cap delivers the property it is introduced for.
+///
+/// **The version this replaces did not.** It inverted only the proportional
+/// term of the residual bound, dropping the constant and the iteration count,
+/// so at a segment of exactly the cap the residual was two raw units *past*
+/// the stop-short it was meant to stay inside — and a segment is not one
+/// iteration, so the real accumulation was N times that.
+///
+/// The relation asserted here is the whole point: N slide iterations at the
+/// capped displacement must fit inside `skin − tolerance`.
+#[test]
+fn the_segmentation_cap_keeps_n_iterations_inside_the_stop_short() {
+    // L_max = 8192 · ((skin − tolerance)/N − 2), all raw.
+    let cap = |skin: i64, tolerance: i64, n: i64| 8192 * ((skin - tolerance) / n - 2);
+
+    for &(skin, tolerance) in &[(65536i64, 1024i64), (4096, 64), (1024, 16), (600, 8)] {
+        for n in [1i64, 2, 4, 8, 16] {
+            let clearance = skin - tolerance;
+            if clearance <= 2 * n {
+                // The stated precondition: below it the cap is not positive
+                // and the operation cannot make progress.
+                assert!(
+                    cap(skin, tolerance, n) <= 0,
+                    "with clearance {clearance} and {n} iterations the cap must be unusable"
+                );
+                continue;
+            }
+            let l_max = cap(skin, tolerance, n);
+            assert!(l_max > 0, "above the precondition the cap must be positive");
+
+            // The residual bound is 2 + L/8192 raw per slide iteration, and
+            // N of them must fit the stop-short.
+            let residual_per_iteration = 2 + l_max / 8192;
+            assert!(
+                n * residual_per_iteration <= clearance,
+                "skin {skin}, tolerance {tolerance}, {n} iterations: {n} × {residual_per_iteration} \
+                 exceeds the stop-short {clearance}"
+            );
+        }
+    }
+
+    // And the cap that was written before: it fails the same relation, which
+    // is what makes this test a decision rather than a restatement.
+    let old_cap = |skin: i64, tolerance: i64| 8192 * (skin - tolerance);
+    let (skin, tolerance, n) = (65536i64, 1024i64, 4i64);
+    let old_residual = 2 + old_cap(skin, tolerance) / 8192;
+    assert!(
+        n * old_residual > skin - tolerance,
+        "the superseded cap must fail the relation, or nothing was fixed"
     );
 }
