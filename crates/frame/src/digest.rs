@@ -75,12 +75,24 @@ impl StateHash {
     /// hashing it would add no information and would make the oracle
     /// float-dependent. An unstated exclusion is how a determinism oracle
     /// goes quietly vacuous, so it is stated.
+    ///
+    /// **The timestep was not absorbed until it was checked.** The
+    /// sentence above was written when this folded four fields, none of
+    /// them the timestep, so the exclusion it justified rested on a
+    /// premise that was false: two plans with equal first tick, step
+    /// count, dropped count and remainder, cut against different
+    /// timesteps, digested identically and had different alphas. Nothing
+    /// in the tree could produce that pair, since a loop's timestep is
+    /// fixed at construction — which is exactly why it survived. A digest
+    /// justified by a claim that happens to hold is a digest waiting for
+    /// the day it stops.
     #[must_use]
     pub const fn absorb_plan(self, plan: &FramePlan) -> Self {
         self.absorb_u64(plan.first_tick())
             .absorb_u32(plan.step_count())
             .absorb_u64(plan.dropped())
             .absorb_u64(plan.remainder().get())
+            .absorb_u64(plan.dt().nanos().get())
     }
 
     #[must_use]
@@ -100,6 +112,7 @@ mod tests {
     use super::StateHash;
     use crate::schedule::FrameLoop;
     use crate::time::{StepBudget, Timestamp, Timestep};
+    use core::num::NonZeroU64;
 
     /// The published FNV-1a-64 vector for "a", pinning the constants and
     /// the byte order against a source outside this repository.
@@ -174,7 +187,8 @@ mod tests {
             .absorb_u64(plan.first_tick())
             .absorb_u32(plan.step_count())
             .absorb_u64(plan.dropped())
-            .absorb_u64(plan.remainder().get());
+            .absorb_u64(plan.remainder().get())
+            .absorb_u64(plan.dt().nanos().get());
         assert_eq!(StateHash::new().absorb_plan(&plan), by_hand);
     }
 
@@ -195,6 +209,48 @@ mod tests {
         assert_ne!(
             StateHash::new().absorb_plan(&base),
             StateHash::new().absorb_plan(&next)
+        );
+    }
+
+    /// The timestep is absorbed, asserted the only way that means
+    /// anything: **two plans agreeing in every other absorbed field and
+    /// differing only in timestep.** Elapsed time is chosen per loop so
+    /// both cut three steps and leave the same remainder, which is what
+    /// makes the timestep the sole difference — and their alphas differ,
+    /// since alpha is that shared remainder over two different divisors.
+    /// That pair is exactly what digested identically before the field
+    /// was folded in.
+    ///
+    /// The first version of this test built its two plans from one
+    /// elapsed time and two rates, so they differed in step count and
+    /// remainder as well. It passed with the absorption deleted —
+    /// measured, not assumed — which is the whole reason it is written
+    /// this way now.
+    #[test]
+    fn two_timesteps_agreeing_in_every_other_field_do_not_share_a_digest() {
+        // Three steps and a one-millisecond remainder, at two rates.
+        let plan_at = |step_nanos: u64| {
+            let dt = Timestep::from_nanos(NonZeroU64::new(step_nanos).expect("positive"));
+            let mut frame = FrameLoop::new(dt, StepBudget::DEFAULT, Timestamp::from_nanos(0));
+            frame.begin_frame(Timestamp::from_nanos(3 * step_nanos + 1_000_000))
+        };
+        let slow = plan_at(20_000_000);
+        let fast = plan_at(10_000_000);
+
+        // The premise, asserted rather than assumed: everything the
+        // digest absorbed before the timestep joined it agrees.
+        assert_eq!(slow.first_tick(), fast.first_tick());
+        assert_eq!(slow.step_count(), fast.step_count());
+        assert_eq!(slow.dropped(), fast.dropped());
+        assert_eq!(slow.remainder().get(), fast.remainder().get());
+        assert_ne!(slow.dt().nanos(), fast.dt().nanos());
+        // And the consequence that made the gap matter.
+        assert_ne!(slow.alpha().get().to_bits(), fast.alpha().get().to_bits());
+
+        assert_ne!(
+            StateHash::new().absorb_plan(&slow),
+            StateHash::new().absorb_plan(&fast),
+            "two plans differing only in timestep digested the same, so the oracle cannot              see the loop's rate and alpha carries an input it does not cover"
         );
     }
 
