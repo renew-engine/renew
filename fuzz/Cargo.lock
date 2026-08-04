@@ -80,11 +80,16 @@ name = "renew-asset"
 version = "0.1.0"
 
 [[package]]
+name = "renew-audio"
+version = "0.1.0"
+
+[[package]]
 name = "renew-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "renew-asset",
+ "renew-audio",
  "renew-trace",
 ]
 

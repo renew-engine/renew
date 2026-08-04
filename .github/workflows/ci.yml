@@ -288,7 +288,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay; do
+          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
@@ -361,6 +361,52 @@ jobs:
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
           done
           cargo build $sel
+
+  # The feature-gated audio halves. They need a job rather than a cell
+  # because the sound library compiles a different backend per platform
+  # — ALSA here, WASAPI there — and a lane that built only one would let
+  # the other rot until someone ran it by hand. The canonical lint never
+  # sees feature-gated code, so clippy rides along, exactly as it does
+  # for the window feature.
+  #
+  # Neither runner has a sound card, which is the point rather than a
+  # gap: RENEW_AUDIO_ABSENT turns the deviceless answer into an
+  # assertion that a device-open must report itself unavailable by name.
+  # macOS is left out deliberately — its backend is the one the engine
+  # cannot test on any runner it has, and claiming otherwise by adding a
+  # leg that compiles but never opens anything would be the emptier
+  # kind of green.
+  audio:
+    name: Audio (mixer, reader, and the device seam)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The sound library builds against ALSA on Linux; the runner
+      # carries the library but not its headers. Windows needs nothing:
+      # WASAPI ships with the SDK.
+      - name: Install the Linux audio headers
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+      - name: Build, lint, and test the audio halves
+        run: |
+          cargo build -p renew-audio
+          cargo clippy -p renew-audio --all-targets -- -D warnings
+          cargo test -p renew-audio
+          cargo build -p renew-platform --features audio-out
+          cargo clippy -p renew-platform --features audio-out --all-targets -- -D warnings
+          cargo test -p renew-platform --features audio-out
+          cargo build -p renew-sample-glide --features audio
+          cargo clippy -p renew-sample-glide --features audio --all-targets -- -D warnings
+          cargo test -p renew-sample-glide --features audio
+        env:
+          RENEW_AUDIO_ABSENT: "1"
 
   rendering:
     name: Rendering (software Vulkan)

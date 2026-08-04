@@ -23,6 +23,8 @@ use renew_rhi::{
 };
 use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 
+#[cfg(feature = "audio")]
+use crate::audio::Audio;
 use crate::cli::{Options, Report};
 use crate::scene::{SceneSprite, Tile, scene};
 use crate::{SampleError, scripted};
@@ -185,6 +187,13 @@ pub struct GlideApp {
     device: Option<Device>,
     target: Option<WindowTarget>,
     renderer: Option<SpriteRenderer>,
+    /// The sound half, when this build has one and a device opened.
+    /// A run whose machine has no audio keeps playing in silence.
+    #[cfg(feature = "audio")]
+    audio: Option<Audio>,
+    /// Why this run has no sound, when it has none.
+    #[cfg(feature = "audio")]
+    muted: Option<String>,
     size: Extent,
     presented: u64,
     close_requested: bool,
@@ -206,6 +215,10 @@ impl GlideApp {
             world: World::new(options.seed),
             input: scripted::input_map(),
             pending_flaps: 0,
+            #[cfg(feature = "audio")]
+            audio: None,
+            #[cfg(feature = "audio")]
+            muted: None,
             stats: FrameStats::new(),
             scene_scratch: Vec::new(),
             title: Title::new(),
@@ -266,6 +279,16 @@ impl GlideApp {
         self.device = Some(device);
         self.target = Some(target);
         self.renderer = Some(renderer);
+        #[cfg(feature = "audio")]
+        {
+            // A machine with no sound card is a machine that plays in
+            // silence, not a failed run: bring-up says why once and
+            // moves on.
+            match Audio::open() {
+                Ok(audio) => self.audio = Some(audio),
+                Err(reason) => self.muted = Some(reason),
+            }
+        }
         Ok(())
     }
 
@@ -370,8 +393,33 @@ impl GlideApp {
                 .pending_flaps
                 .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
             for _step in plan.steps() {
-                self.world.step(self.pending_flaps > 0);
+                // Readings around the tick: the world exposes no
+                // events, so the difference across a step is what
+                // happened in it.
+                let flap_passed = self.pending_flaps > 0;
+                let before_alive = self.world.alive();
+                let before_score = self.world.score();
+                self.world.step(flap_passed);
                 self.pending_flaps = self.pending_flaps.saturating_sub(1);
+                #[cfg(feature = "audio")]
+                {
+                    let sounds = crate::sound::tick_sounds(
+                        before_alive,
+                        flap_passed,
+                        before_score,
+                        self.world.alive(),
+                        self.world.score(),
+                    );
+                    if let Some(audio) = &self.audio {
+                        audio.play(sounds);
+                    }
+                }
+                #[cfg(not(feature = "audio"))]
+                {
+                    // Read in both builds so a silent build cannot
+                    // drift away from the sounding one.
+                    let _ = (before_alive, before_score, flap_passed);
+                }
             }
             self.input.advance();
             self.stats.absorb(&plan);
@@ -423,6 +471,17 @@ impl GlideApp {
         }
         if let Some(failure) = self.failure {
             return Err(failure);
+        }
+        // Sound is not a gate: a run that played silently is a
+        // complete run, and the only thing owed is saying so. Said
+        // here, once, rather than every frame the stream is missing.
+        #[cfg(feature = "audio")]
+        {
+            if let Some(reason) = &self.muted {
+                eprintln!("sound: silent this run ({reason})");
+            } else if self.audio.as_ref().is_some_and(|audio| !audio.healthy()) {
+                eprintln!("sound: the device stopped mid-run; the rest was silent");
+            }
         }
         Ok(Report {
             seed: self.seed,

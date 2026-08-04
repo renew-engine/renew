@@ -5,7 +5,10 @@
 //!
 //! - **This crate is the doorway, not a hallway.** Engine code never
 //!   touches `std::time`, `std::fs`, or `std::thread` directly; it takes
-//!   a [`Clock`], calls [`fs`], or spawns through [`thread`].
+//!   a [`Clock`], calls [`fs`], or spawns through [`thread`]. The same
+//!   holds for the devices behind the feature-gated seams: the window
+//!   and the sound card are reached only through `window` and `audio`,
+//!   and neither lets its third-party vocabulary out.
 //! - **No ambient state.** A [`Clock`] is a value the caller owns and
 //!   passes; there is no global "current time", and nothing here reads
 //!   configuration from the environment.
@@ -36,6 +39,13 @@ mod clock;
 pub use renew_event as event;
 pub mod fs;
 pub mod thread;
+
+/// Audio output: the default device, a negotiated stream shape, and a
+/// callback the operating system's audio thread drives. Behind the
+/// `audio-out` feature, which is off by default — a build that plays
+/// nothing compiles no audio stack at all.
+#[cfg(feature = "audio-out")]
+pub mod audio;
 
 #[cfg(feature = "window")]
 pub mod window;

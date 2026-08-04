@@ -109,3 +109,8 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 file = "crates/rhi/src/vk/swapchain.rs"
 lines = [1202]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
+
+[[exempt]]
+file = "crates/audio/src/mixer.rs"
+lines = [197, 198]
+reason = "The arm that clears a voice whose sound index is missing. A voice is only ever created from an identifier the mixer already resolved against its own table, and the table only grows, so no input reaches this. It is retained because the alternative is indexing directly, which puts a panic on the audio callback - the one thread in the engine where a panic is an abort in a real-time deadline rather than a diagnosable failure. Unreachable on purpose, kept on purpose."

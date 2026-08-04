@@ -1,8 +1,8 @@
 # renew-platform
 
 The engine's only doorway to the operating system: a monotonic clock,
-whole-file I/O, named threads, and the window — each a thin, explicit
-seam.
+whole-file I/O, named threads, the window, and audio output — each a
+thin, explicit seam.
 
 - `Clock` — a value the caller owns, anchored at `start()`, reporting
   integer nanoseconds (`elapsed_nanos`, saturating at ~584 years). No
@@ -42,6 +42,18 @@ seam.
   the point of the split; headless environments at runtime get a
   recoverable `LoopUnavailable`. The loop runs on the main thread only
   (every desktop platform requires it).
+- `audio` (default-**off** `audio-out` feature) — the default output
+  device, a negotiated stream shape, and a fill callback the OS audio
+  thread drives. Bring-up is two phases because the shape has to be
+  known before anything can be built to produce it: `open` reports
+  channels and sample rate, `start` takes the callback. `f32` only, no
+  device enumeration, and no audio-library type in any signature. A
+  machine with no sound card gets a recoverable `Unavailable`, and
+  `healthy()` reports whether the stream is still playing — a route
+  change or an underrun leaves it true, because those are survivable
+  and reporting a muted run over audible sound would be a lie. The
+  feature is off by default: a build that plays nothing compiles no
+  audio stack at all.
 
 ## Contract
 

@@ -1,0 +1,42 @@
+[package]
+name = "renew-audio"
+description = "The audio mixer and WAV reader: a fixed-voice mixer that fills an interleaved buffer, and a reader that trusts nothing a file's header claims"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Sound as arithmetic: a fixed-voice mixer with no steady-state allocation, a command ring a game thread can push into while an audio thread drains it, and a WAV reader that validates every field before it is used. Carrying the samples to a device belongs to the platform crate."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[features]
+# Enabled by instrumented (sanitizer) test runs: allocation counting is
+# invalid by construction when the runtime itself allocates.
+sanitized = []
+
+# Deliberately empty, for the same reason the asset pack's is. This
+# crate turns bytes into sounds and sounds into a buffer; it never opens
+# a file, never names a device, and never reads a clock. That keeps the
+# untrusted-input surface to one function and makes the reader fuzzable
+# with no filesystem.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.11"
+# The allocation gate counts what the engine's own allocator sees; the
+# crate itself never names it.
+renew-memory = { path = "../core/memory" }
+# The stress test spawns its producer through the engine's one thread
+# seam -- the crate's own lint wall bans `std::thread::spawn`, with no
+# test exemption. Default features off: a headless dev graph has no
+# business compiling the windowing stack (the job pool's precedent).
+renew-platform = { path = "../core/platform", default-features = false }
+
+[lints]
+workspace = true

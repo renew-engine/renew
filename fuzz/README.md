@@ -1,7 +1,7 @@
 # renew-fuzz
 
-Fuzz harnesses for the two parsers that read data the engine did not
-write: the asset pack reader and the input-trace codec.
+Fuzz harnesses for the three parsers that read data the engine did not
+write: the asset pack reader, the input-trace codec, and the WAV reader.
 
 ## Why this is a separate workspace
 
