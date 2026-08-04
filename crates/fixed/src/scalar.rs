@@ -499,6 +499,22 @@ mod tests {
         assert_eq!(round_div(4, 2), 2, "an exact quotient is untouched");
     }
 
+    /// The operators are the ergonomic surface and the named forms are the
+    /// documented ones; nothing but this asserts they are the same
+    /// arithmetic. A `Mul` that reached for the shift while
+    /// `saturating_mul` rounded would pass every other test in this file.
+    #[test]
+    fn the_operators_delegate_to_the_named_forms() {
+        let a = Fixed::from_ratio(7, 3);
+        let b = Fixed::from_ratio(-11, 5);
+        assert_eq!(a * b, a.saturating_mul(b));
+        assert_eq!(a / b, a.saturating_div(b));
+        assert_eq!(a + b, Fixed::from_bits(a.to_bits() + b.to_bits()));
+        assert_eq!(a - b, Fixed::from_bits(a.to_bits() - b.to_bits()));
+        // And the operators saturate, since they are the same code path.
+        assert_eq!(Fixed::MAX * Fixed::MAX, Fixed::MAX);
+    }
+
     /// Division saturates like everything else rather than wrapping.
     #[test]
     fn division_saturates_when_the_quotient_does_not_fit() {
