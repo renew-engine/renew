@@ -1678,8 +1678,22 @@ fn a_rustup_that_cannot_name_its_toolchain_still_counts_as_found() {
     });
     fs::copy(env!("CARGO_BIN_EXE_renew"), &stand_in).expect("stand-in binary should copy");
 
-    let output = run_with_path(inside_the_workspace(), &directory, &["doctor", "--json"])
+    // Retried, bounded: the harness runs tests in parallel, and a
+    // sibling test's child process forked between this copy's
+    // open-for-write and its close inherits the write handle for a
+    // moment — the doctor's probe then reports the stand-in as busy
+    // (ETXTBSY). The window closes when the sibling execs; a real
+    // failure reproduces on every attempt and still fails.
+    let mut output = run_with_path(inside_the_workspace(), &directory, &["doctor", "--json"])
         .expect("binary should spawn");
+    for _ in 0..5 {
+        if !String::from_utf8_lossy(&output.stdout).contains("executable file busy") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        output = run_with_path(inside_the_workspace(), &directory, &["doctor", "--json"])
+            .expect("binary should spawn");
+    }
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let envelope = validated_envelope(stdout.trim(), "doctor")
