@@ -154,6 +154,22 @@ mod window_flag_tests {
     }
 
     #[test]
+    fn the_json_flag_is_off_by_default_and_refuses_repetition() {
+        // Off unless asked: the human line is what a person running the
+        // sample expects to see, and a flag that flipped the default
+        // would break every eye reading it.
+        assert!(!parse(&[]).expect("a bare run parses").json);
+        assert!(parse(&["--json"]).expect("--json parses").json);
+        // Repetition is refused like every other flag here, so a caller
+        // who typed it twice is told rather than quietly obliged.
+        let error = parse(&["--json", "--json"]).expect_err("a repeat is refused");
+        assert!(
+            matches!(error, SampleError::Usage(ref m) if m.contains("--json")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_bare_window_run_is_unbounded() {
         // The centerpiece: the headless default of 2000 frames must not
         // leak into an interactive session and silently end it mid-play.
