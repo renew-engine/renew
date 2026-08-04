@@ -999,6 +999,23 @@ mod tests {
     }
 
     #[test]
+    fn float_closure_skips_a_dependency_it_was_handed_no_shape_for() {
+        // The walk resolves each name through `shapes`, and a name with no
+        // shape is skipped rather than assumed guilty. That branch is not
+        // decoration: the metadata scan can drop a package whose manifest
+        // failed to parse, and its schema failure is already its own
+        // finding — truncating this walk into a second, wrong one would
+        // report the same problem twice under a rule that is not about it.
+        let shapes = [float_sim("world", &["vanished"], true, true, &[])];
+        assert!(
+            !evaluate(&shapes)
+                .iter()
+                .any(|finding| finding.rule == "float-closure"),
+            "a name with no shape must be skipped, not reported as a float crate"
+        );
+    }
+
+    #[test]
     fn float_closure_says_nothing_about_a_crate_that_is_not_a_simulation() {
         let shapes = [
             float_sim("tool", &["maths"], false, true, &[]),
