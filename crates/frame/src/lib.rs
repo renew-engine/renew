@@ -30,7 +30,8 @@
 //!     for step in plan.steps() {
 //!         let _ = (step.tick, step.dt, step.sim_time); // advance the world here
 //!     }
-//!     let _alpha = plan.alpha(); // render between steps with this
+//!     // Render between steps with `renew_math::Alpha::new(...)`,
+//!     // built from `plan.remainder()` and `plan.timestep()`.
 //!     stats.absorb(&plan);
 //! }
 //!
@@ -85,10 +86,12 @@
 // it is necessary and not sufficient, but what it does cover it covers with
 // teeth.
 //
-// This crate is the one holding an exemption: the interpolation factor in
-// `Schedule::step` is computed in floats. It carries the `allow` at the
-// expression itself, so the exemption is visible where it is taken and a
-// second one cannot be added without writing a second `allow`.
+// This crate held the tree's only exemption: the interpolation factor was
+// computed here, with an `allow` at the expression. It is gone. The
+// factor moved to `renew-math` — a crate a simulation is mechanically
+// forbidden from reaching — and this crate now performs no floating-point
+// arithmetic at all. There is no `allow` below, and adding one would be a
+// change to the language standard, not a local decision.
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 mod digest;
@@ -98,5 +101,5 @@ mod time;
 
 pub use digest::StateHash;
 pub use report::{FrameStats, FrameStatsJson, FrameTiming, FrameTimingJson};
-pub use schedule::{Alpha, FrameLoop, FramePlan, Step, Steps};
+pub use schedule::{FrameLoop, FramePlan, Step, Steps};
 pub use time::{Nanos, StepBudget, Timestamp, Timestep};

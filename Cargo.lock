@@ -1754,6 +1754,7 @@ name = "renew-sample-hello-triangle"
 version = "0.1.0"
 dependencies = [
  "renew-frame",
+ "renew-math",
  "renew-memory",
  "renew-platform",
  "renew-rhi",

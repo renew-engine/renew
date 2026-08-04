@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Fixed-timestep frame scheduling: the deterministic accumulator, the step budget that bounds a stall, and the interpolation factor for rendering between steps."
+purpose = "Fixed-timestep frame scheduling: the deterministic accumulator, the step budget that bounds a stall, and the exact rational a renderer interpolates by, as integers."
 maturity = "bootstrap"
 core = false
 extension_points = []

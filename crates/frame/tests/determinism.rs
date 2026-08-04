@@ -222,30 +222,38 @@ fn eight_runs_of_one_trace_produce_one_world_state() {
     }
 }
 
-/// E5 — the property the alpha exemption rests on.
+/// E5 — everything a renderer can read off a plan is digested.
 ///
-/// Alpha is the one float this crate computes, and this crate is
-/// simulation-designated, so the language standard names it an
-/// exemption rather than covering it by rule. The exemption is only
-/// honest if alpha carries no state of its own: it must be derivable
-/// from the integers the digest already absorbs, so that a machine
-/// agreeing on the digest agrees on alpha too.
+/// **This test used to guard an exemption that no longer exists.** Alpha
+/// was computed here, in a simulation-designated crate, and was the one
+/// piece of floating-point arithmetic anywhere in it; the exemption was
+/// justified by alpha being derivable from digested integers, and this
+/// test asserted exactly that. The type moved to `renew-math` and the
+/// exemption is gone, so what remains to assert is the half that was
+/// always the load-bearing one: **a plan carries nothing a renderer uses
+/// that the digest does not cover.**
 ///
-/// Stated as a property rather than by recomputing the formula — which
-/// would only assert that the implementation equals itself: **if the
-/// digest cannot tell two plans apart, neither can alpha.** The day
-/// somebody smooths alpha across frames, or seeds it, or lets it
-/// accumulate, that stops being true and this test says so.
+/// That is what makes the digest an honest presentation oracle. Two
+/// machines agreeing on the digest agree on what their renderers will
+/// draw, because the pair a renderer interpolates from — the remainder
+/// and the timestep — is inside the hash rather than beside it.
+///
+/// Stated as a property over two independent walks rather than by
+/// recomputing the fields, which would only assert the implementation
+/// equals itself.
 #[test]
-fn alpha_carries_no_state_the_digest_does_not_absorb() {
+fn nothing_a_renderer_reads_off_a_plan_escapes_the_digest() {
     // The digested fields of a plan, exactly as `absorb_plan` folds
     // them: first tick, step count, dropped, remainder, timestep. All
-    // integers. The timestep is the one that makes this a property
-    // rather than a coincidence — alpha is remainder over timestep, and
-    // until the digest absorbed the divisor, two plans it could not
-    // tell apart could still disagree on alpha. Nothing in the tree
+    // integers.
+    //
+    // The timestep is in that list because of a defect this test's
+    // ancestor could not see. Alpha is remainder over timestep, and the
+    // digest did not absorb the divisor — so two plans it could not tell
+    // apart could disagree on what a renderer drew. Nothing in the tree
     // could build that pair, a loop's timestep being fixed at
-    // construction, which is precisely why the gap went unnoticed.
+    // construction, which is precisely why it went unnoticed through
+    // several readings.
     fn digested(plan: &FramePlan) -> (u64, u32, u64, u64, u64) {
         (
             plan.first_tick(),
@@ -256,9 +264,17 @@ fn alpha_carries_no_state_the_digest_does_not_absorb() {
         )
     }
 
+    // What a renderer reads: the exact rational it interpolates by.
+    // Both halves are in the digested tuple above, which is the whole
+    // claim — asserted rather than asserted-by-inspection, so that a
+    // field added to one and not the other fails here.
+    fn presented(plan: &FramePlan) -> (u64, u64) {
+        (plan.remainder().get(), plan.dt().nanos().get())
+    }
+
     // Two independent walks over the same hostile trace produce plans
-    // pairwise equal in their digested fields; alpha must agree
-    // wherever they do. Two walks rather than one because a plan
+    // pairwise equal in their digested fields; the presented pair must
+    // agree wherever they do. Two walks rather than one because a plan
     // compared against itself proves nothing about derivation.
     let (left, _) = run(ORIGIN);
     let (right, _) = run(ORIGIN);
@@ -268,10 +284,10 @@ fn alpha_carries_no_state_the_digest_does_not_absorb() {
     for (a, b) in left.iter().zip(right.iter()) {
         if digested(a) == digested(b) {
             assert_eq!(
-                a.alpha().get().to_bits(),
-                b.alpha().get().to_bits(),
-                "two plans the digest cannot distinguish disagree on alpha, \
-                 so alpha holds state the digest does not cover"
+                presented(a),
+                presented(b),
+                "two plans the digest cannot distinguish present differently, \
+                 so a renderer can see state the digest does not cover"
             );
             compared += 1;
         }
@@ -285,7 +301,7 @@ fn alpha_carries_no_state_the_digest_does_not_absorb() {
 
     // The other direction, so the test cannot pass by comparing
     // nothing: somewhere in this trace, two plans DO differ in their
-    // digested fields, and there alpha is free to differ too.
+    // digested fields, and there the presented pair is free to differ.
     let distinct = left.iter().any(|plan| digested(plan) != digested(&left[0]));
     assert!(
         distinct,

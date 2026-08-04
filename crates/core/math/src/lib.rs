@@ -1,5 +1,8 @@
 //! Linear algebra value types: vectors, a column-major matrix, a
-//! quaternion, and an axis-aligned bounding box, all `f32`.
+//! quaternion, and an axis-aligned bounding box, all `f32` — plus
+//! [`Alpha`], the render interpolation factor, which lives here because
+//! this is the crate a simulation is mechanically forbidden from
+//! reaching.
 //!
 //! # Contract
 //!
@@ -22,11 +25,13 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod aabb;
+mod alpha;
 mod mat4;
 mod quat;
 mod vec;
 
 pub use aabb::Aabb3;
+pub use alpha::Alpha;
 pub use mat4::Mat4;
 pub use quat::Quat;
 pub use vec::{Vec2, Vec3, Vec4};

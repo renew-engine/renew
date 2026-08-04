@@ -12,9 +12,11 @@
 //! a zero's sign). Edge-domain behavior is covered by targeted unit tests
 //! in the crate, not by these laws.
 
+use core::num::NonZeroU64;
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
-use renew_math::{Aabb3, Mat4, Quat, Vec3};
+
+use renew_math::{Aabb3, Alpha, Mat4, Quat, Vec3};
 
 /// Finite, moderately sized components: large enough to explore, small
 /// enough that tolerance properties are well-conditioned. See the module
@@ -182,6 +184,85 @@ proptest! {
         prop_assert!(
             (left.transform_point(point) - right.transform_point(point)).length() / scale
                 < 1e-3
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// Alpha — the render interpolation factor.
+//
+// These two properties moved here with the type. They used to live in
+// the frame crate and be driven through a `FrameLoop`, which could only
+// reach the (timestep, remainder) pairs a loop actually produces. Stated
+// directly against the constructor they cover the whole domain,
+// including pairs no loop can build — which is the domain the type's
+// contract is written over.
+// ---------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 4096,
+        rng_algorithm: proptest::test_runner::RngAlgorithm::ChaCha,
+        ..ProptestConfig::default()
+    })]
+
+    /// The contract, over every representable pair: never below zero,
+    /// never at or above one. The interesting region is one nanosecond
+    /// short of a whole step, where a naive `f32` division returns
+    /// exactly `1.0` — a renderer drawing a full tick ahead of the state
+    /// it interpolates from.
+    #[test]
+    fn alpha_stays_in_the_unit_interval_for_every_timestep_and_remainder(
+        step in 1u64..=u64::MAX,
+        fraction in 0u64..=u64::MAX,
+    ) {
+        let remainder = fraction % step;
+        let alpha = Alpha::new(remainder, NonZeroU64::new(step).expect("nonzero")).get();
+        prop_assert!(alpha >= 0.0, "step {} rem {} gave {}", step, remainder, alpha);
+        prop_assert!(alpha < 1.0, "step {} rem {} gave {}", step, remainder, alpha);
+    }
+
+    /// The clamp holds where the caller does not: a remainder at or past
+    /// the step still cannot escape the range. The frame loop never
+    /// produces this, and a type whose whole contract is a range must not
+    /// depend on its caller to keep it.
+    #[test]
+    fn alpha_cannot_escape_the_range_even_on_an_out_of_contract_remainder(
+        step in 1u64..=u64::MAX,
+        remainder in 0u64..=u64::MAX,
+    ) {
+        let alpha = Alpha::new(remainder, NonZeroU64::new(step).expect("nonzero")).get();
+        prop_assert!((0.0..1.0).contains(&alpha), "step {} rem {} gave {}", step, remainder, alpha);
+    }
+
+    /// Monotone in the remainder: interpolating further between two
+    /// steps never moves the renderer backwards. Stated at the type
+    /// rather than through a loop, so it covers pairs a loop cannot
+    /// reach.
+    #[test]
+    fn alpha_never_decreases_as_the_remainder_grows(
+        step in 2u64..=1_000_000_000,
+        fraction in 0u64..=u64::MAX,
+    ) {
+        let step_nz = NonZeroU64::new(step).expect("nonzero");
+        let low = fraction % step;
+        let high = low.max(step / 2);
+        prop_assert!(Alpha::new(high, step_nz) >= Alpha::new(low, step_nz));
+    }
+
+    /// A pure function of its two arguments — the property the frame
+    /// digest's exclusion of alpha rests on. Same pair, same bits, every
+    /// time, with no state anywhere to carry a difference.
+    #[test]
+    fn alpha_is_a_pure_function_of_its_two_arguments(
+        step in 1u64..=u64::MAX,
+        fraction in 0u64..=u64::MAX,
+    ) {
+        let step_nz = NonZeroU64::new(step).expect("nonzero");
+        let remainder = fraction % step;
+        prop_assert_eq!(
+            Alpha::new(remainder, step_nz).get().to_bits(),
+            Alpha::new(remainder, step_nz).get().to_bits()
         );
     }
 }
