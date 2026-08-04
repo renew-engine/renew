@@ -29,6 +29,11 @@ pub struct Options {
     /// the world always agree; a lagging frame may overshoot by at most
     /// the step budget minus one.
     pub window_ticks: Option<u64>,
+    /// Print the run's report as one JSON object instead of the digest
+    /// line. Same facts, machine-readable — what the cross-platform
+    /// comparison lane collects, and what a human line should never be
+    /// parsed for.
+    pub json: bool,
 }
 
 /// Parse, refusing combinations that would silently ignore a flag.
@@ -43,6 +48,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
     let mut input_trace = String::from("soar");
     let mut record_trace = None;
     let mut replay_trace = None;
+    let mut json = false;
     let mut window = false;
     // Per-flag tracking, not one folded bool: refusing an explicit
     // trace flag beside --window while keeping an explicit seed needs
@@ -73,6 +79,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
             "--window" => {
                 refuse_repeat("--window", window)?;
                 window = true;
+            }
+            "--json" => {
+                refuse_repeat("--json", json)?;
+                json = true;
             }
             "--record-trace" => {
                 refuse_repeat("--record-trace", record_trace.is_some())?;
@@ -131,6 +141,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         replay_trace,
         window,
         window_ticks,
+        json,
     })
 }
 
@@ -195,6 +206,39 @@ pub struct Report {
 }
 
 impl Report {
+    /// The same facts as [`Report::digest_line`], as one JSON object.
+    ///
+    /// The comparison lane reads this rather than the human line, for the
+    /// reason every tool in this tree emits both: a line built for a
+    /// person changes when a person's needs change, and a gate that
+    /// parses one breaks silently when it does. `schema_version` is here
+    /// from the first release because a consumer that cannot tell which
+    /// shape it is holding has to guess.
+    ///
+    /// Hashes are hex strings, not numbers. A `u64` digest exceeds what
+    /// JSON's number type is guaranteed to carry exactly, and a consumer
+    /// that silently rounds one would compare two digests as equal that
+    /// are not — which is the single failure this whole lane exists to
+    /// prevent.
+    #[must_use]
+    pub fn json_line(&self) -> String {
+        format!(
+            "{{\"schema_version\":1,\"sample\":\"{SAMPLE}\",\"seed\":{},\
+             \"source\":\"{}\",\"frames\":{},\"ticks\":{},\"dropped\":{},\
+             \"score\":{},\"alive\":{},\"schedule_hash\":\"{:#018x}\",\
+             \"state_hash\":\"{:#018x}\"}}",
+            self.seed,
+            self.source,
+            self.stats.frames(),
+            self.stats.ticks(),
+            self.stats.steps_dropped(),
+            self.world.score(),
+            self.world.alive(),
+            self.stats.schedule_hash(),
+            self.world.digest().finish(),
+        )
+    }
+
     /// The one line every run prints on stdout, and the exact string
     /// the cross-process determinism gate compares.
     #[must_use]

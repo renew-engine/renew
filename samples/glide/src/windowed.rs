@@ -536,6 +536,7 @@ mod tests {
             replay_trace: None,
             window: true,
             window_ticks: None,
+            json: false,
         };
         let mut app = GlideApp::new(&options);
         // Anchor the schedule by hand: these tests say what time it is,
@@ -725,6 +726,7 @@ mod tests {
             replay_trace: None,
             window: true,
             window_ticks: None,
+            json: false,
         };
         let mut app = GlideApp::new(&options);
         let mut control = LoopControl::default();
@@ -806,6 +808,7 @@ mod tests {
             replay_trace: None,
             window: true,
             window_ticks: None,
+            json: false,
         };
         let app = GlideApp::new(&options);
         assert!(matches!(
@@ -893,6 +896,7 @@ mod tests {
             replay_trace: None,
             window: true,
             window_ticks: None,
+            json: false,
         };
         // Success: a report with the window's source.
         let app = GlideApp::new(&options);

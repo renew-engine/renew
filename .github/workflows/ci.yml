@@ -730,3 +730,81 @@ jobs:
       # rule itself unit-tested and the failure message specific.
       - name: Check coverage against the exemption manifest
         run: cargo run --package renew-cli --bin renew -- coverage --report target/coverage.json
+
+  # Determinism is only a property of a program if it survives the machine
+  # the program runs on. Every other determinism check in this repository
+  # compares a run to itself, or to a constant this repository minted —
+  # both of which prove an unseeded generator absent and neither of which
+  # can prove the target did not matter, because both halves ran on one
+  # target.
+  #
+  # These two jobs are the only place that claim is actually tested. Each
+  # leg runs the pinned simulations on its own target and reports what it
+  # saw; the comparison holds the reports against each other. A leg that
+  # cannot run reports nothing, and reporting nothing is a failure rather
+  # than an absent objection.
+  determinism-emit:
+    name: Determinism (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Never fail-fast: one target diverging is exactly the finding this
+      # pair exists to produce, and cancelling the others would throw
+      # away the evidence of which ones agreed.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Emit this target's digests
+        run: cargo run --package renew-cli --bin renew -- determinism --emit leg.json
+      - name: Show what this target reported
+        shell: bash
+        run: cat leg.json
+      # One artifact per leg: upload-artifact@v4 requires distinct names,
+      # and the runner label is what distinguishes them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.os }}
+          path: leg.json
+          if-no-files-found: error
+
+  determinism-compare:
+    name: Determinism (cross-platform comparison)
+    runs-on: ubuntu-latest
+    needs: [determinism-emit]
+    # `needs` on a failed job SKIPS this one, and GitHub reports a skipped
+    # required job as neutral rather than failed — which is how a
+    # comparison that never ran can read as a comparison that passed.
+    # `always()` runs it regardless, and the first step below turns the
+    # upstream result back into a failure explicitly.
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Refuse to compare when a leg did not finish
+        if: needs.determinism-emit.result != 'success'
+        run: |
+          echo "the emit legs concluded '${{ needs.determinism-emit.result }}', so at least"
+          echo "one target reported nothing. A missing target is an untested target, not a"
+          echo "passing one, and this job fails rather than comparing what remains."
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: determinism-*
+          path: legs
+      - name: Show what arrived
+        run: find legs -type f -print -exec cat {} +
+      # The comparison itself is a workspace subcommand, not shell in this
+      # file: it is unit-tested, a developer can reproduce a red lane
+      # locally with the same command, and its refusals — a missing leg, an
+      # empty digest set, an architecture set that does not match the
+      # target list, two legs on different compilers — live where tests can
+      # reach them. A gate whose logic exists only in CI configuration is a
+      # gate no test can hold to account.
+      - name: Compare every target against every other
+        run: |
+          cargo run --package renew-cli --bin renew -- determinism \
+            --compare legs/determinism-ubuntu-latest/leg.json \
+            --compare legs/determinism-windows-latest/leg.json \
+            --compare legs/determinism-macos-latest/leg.json

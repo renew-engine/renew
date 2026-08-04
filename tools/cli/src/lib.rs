@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod coverage;
+pub mod determinism;
 pub mod doctor;
 pub mod json;
 pub mod plan;
