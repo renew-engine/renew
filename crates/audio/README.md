@@ -69,6 +69,13 @@ corpus. The allocation gate measures fill-and-play windows it first
 proves are mixing; a stress test runs a flooding producer against a
 draining callback, which is what the scheduled sanitizer runs judge.
 
+The recorded fuzz corpus is replayed as a merge gate: every committed
+input under `fuzz/corpus/wav/` feeds `wav::parse` (result discarded) in
+a stable test that fails loudly if the corpus is missing or below its
+committed floor. A crash input, when one ever exists, additionally
+becomes a permanent named regression test beside this suite,
+independent of the corpus.
+
 ## Manifest
 
 Machine-readable fields — maturity, dependencies, core status — live in
