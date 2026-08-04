@@ -107,6 +107,16 @@ impl Verdict {
 /// somebody hunting a bug that is not there.
 #[must_use]
 pub fn compare(legs: &[Leg], expected_arches: &[&str]) -> Verdict {
+    // First, because a comparison of nothing is the one failure that
+    // most resembles success. Placing it after the checks below would
+    // leave it unreachable — the count check catches an empty slice — and
+    // an unreachable refusal is a refusal nobody can test.
+    let Some(reference) = legs.first() else {
+        return Verdict::Inconclusive(vec![
+            "no reports were supplied, so there was nothing to compare".to_string(),
+        ]);
+    };
+
     let mut blocked = Vec::new();
 
     if expected_arches.is_empty() {
@@ -171,16 +181,6 @@ pub fn compare(legs: &[Leg], expected_arches: &[&str]) -> Verdict {
     if !blocked.is_empty() {
         return Verdict::Inconclusive(blocked);
     }
-
-    let Some(reference) = legs.first() else {
-        // Unreachable while `expected_arches` is non-empty, since an
-        // empty `legs` would have failed the count check above. Reported
-        // rather than unwrapped, because "unreachable" is a claim about
-        // today's callers.
-        return Verdict::Inconclusive(vec![
-            "no legs were supplied, so there was nothing to compare".to_string(),
-        ]);
-    };
 
     let mut divergences = Vec::new();
     for leg in legs.iter().skip(1) {
@@ -428,14 +428,15 @@ mod tests {
     #[test]
     fn one_disagreeing_target_is_named_with_its_value() {
         let verdict = compare(&three("0x1", "0x1", "0xdead"), &ARCHES);
-        let Verdict::Diverged(items) = &verdict else {
-            panic!("expected divergence, got {verdict:?}");
-        };
         assert!(!verdict.is_pass());
-        assert_eq!(items.len(), 1, "{items:?}");
-        assert!(items[0].contains("macos.json"), "{}", items[0]);
-        assert!(items[0].contains("0xdead"), "{}", items[0]);
-        assert!(items[0].contains("aarch64"), "{}", items[0]);
+        // Read through `describe`, which is what a person staring at a red
+        // lane actually sees. Destructuring would test the shape and leave
+        // the rendering — the part with a reader — untested.
+        let text = describe(&verdict);
+        assert!(text.contains("DIVERGED"), "{text}");
+        assert!(text.contains("macos.json"), "{text}");
+        assert!(text.contains("0xdead"), "{text}");
+        assert!(text.contains("aarch64"), "{text}");
     }
 
     /// The check this lane's whole credibility rests on. A comparison of
@@ -448,13 +449,9 @@ mod tests {
         legs[1].digests = BTreeMap::new();
         let verdict = compare(&legs, &ARCHES);
         assert!(!verdict.is_pass());
-        let Verdict::Inconclusive(reasons) = &verdict else {
-            panic!("expected inconclusive, got {verdict:?}");
-        };
-        assert!(
-            reasons.iter().any(|r| r.contains("windows.json")),
-            "{reasons:?}"
-        );
+        let text = describe(&verdict);
+        assert!(text.contains("INCONCLUSIVE"), "{text}");
+        assert!(text.contains("windows.json"), "{text}");
     }
 
     #[test]
@@ -475,10 +472,9 @@ mod tests {
         legs[2].arch = "x86_64".to_string();
         let verdict = compare(&legs, &ARCHES);
         assert!(!verdict.is_pass());
-        let Verdict::Inconclusive(reasons) = &verdict else {
-            panic!("expected inconclusive, got {verdict:?}");
-        };
-        assert!(reasons.iter().any(|r| r.contains("aarch64")), "{reasons:?}");
+        let text = describe(&verdict);
+        assert!(text.contains("INCONCLUSIVE"), "{text}");
+        assert!(text.contains("aarch64"), "{text}");
     }
 
     /// Two compilers producing two digests is not evidence of a
@@ -489,10 +485,12 @@ mod tests {
         let mut legs = three("0x1", "0x1", "0xdead");
         legs[2].toolchain = "rustc 1.98.0".to_string();
         let verdict = compare(&legs, &ARCHES);
-        let Verdict::Inconclusive(reasons) = &verdict else {
-            panic!("a toolchain mismatch must outrank the digest difference: {verdict:?}");
-        };
-        assert!(reasons.iter().any(|r| r.contains("1.98.0")), "{reasons:?}");
+        let text = describe(&verdict);
+        assert!(
+            text.contains("INCONCLUSIVE"),
+            "a toolchain mismatch must outrank the digest difference: {text}"
+        );
+        assert!(text.contains("1.98.0"), "{text}");
     }
 
     /// A leg that ran fewer simulations would otherwise narrow the
@@ -504,13 +502,43 @@ mod tests {
             .digests
             .insert("frame/schedule".to_string(), "0x2".to_string());
         let verdict = compare(&legs, &ARCHES);
-        let Verdict::Diverged(items) = &verdict else {
-            panic!("expected divergence, got {verdict:?}");
-        };
-        assert!(
-            items.iter().any(|i| i.contains("frame/schedule")),
-            "{items:?}"
-        );
+        let text = describe(&verdict);
+        assert!(text.contains("DIVERGED"), "{text}");
+        assert!(text.contains("frame/schedule"), "{text}");
+    }
+
+    /// The other direction of the same check. A *later* leg carrying a
+    /// digest the reference lacks is just as much a set difference, and
+    /// covering only one direction would let half of it through.
+    #[test]
+    fn a_leg_that_ran_an_extra_simulation_is_a_divergence_too() {
+        let mut legs = three("0x1", "0x1", "0x1");
+        legs[2]
+            .digests
+            .insert("frame/schedule".to_string(), "0x2".to_string());
+        let verdict = compare(&legs, &ARCHES);
+        let text = describe(&verdict);
+        assert!(text.contains("DIVERGED"), "{text}");
+        assert!(text.contains("frame/schedule"), "{text}");
+    }
+
+    /// The version must be a JSON number. A string `"1"` is a document
+    /// written by something that does not share this shape, and reading
+    /// it anyway is how a comparison compares the wrong things.
+    #[test]
+    fn a_schema_version_that_is_not_a_number_is_refused() {
+        for bad in [r#""1""#, "null", "true", r#"{"a":1}"#] {
+            let text = format!(
+                concat!(
+                    r#"{{"schema_version": {}, "os": "linux", "arch": "x86_64", "#,
+                    r#""toolchain": "rustc 1.97.0", "digests": {{"a": "0x1"}}}}"#
+                ),
+                bad
+            );
+            let error = parse_leg("leg.json", &text)
+                .expect_err("a non-numeric schema version must be refused");
+            assert!(error.contains("schema_version"), "{error}");
+        }
     }
 
     #[test]
@@ -521,7 +549,9 @@ mod tests {
 
     #[test]
     fn no_legs_at_all_is_inconclusive() {
-        assert!(!compare(&[], &ARCHES).is_pass());
+        let verdict = compare(&[], &ARCHES);
+        assert!(!verdict.is_pass());
+        assert!(describe(&verdict).contains("nothing to compare"));
     }
 
     /// Written and read by hand, so the round trip is the only thing
