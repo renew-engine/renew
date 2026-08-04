@@ -18,9 +18,30 @@ const ONE: f64 = 65536.0;
 /// as a constant so a regression moves this number rather than hiding.
 const WORST_ULP: f64 = 1.02;
 
+/// Binary angle units in a full turn, as an exactly representable `f64`.
+///
+/// Written as a literal rather than computed. The first version built it with
+/// `mul_add` — a linter's suggestion for `a * b + c`, taken without thinking
+/// about where it was — and **`mul_add` fuses on targets with FMA and does not
+/// on targets without**, so the reference itself differed between machines and
+/// the accuracy test passed on Windows while failing on Linux.
+///
+/// A test whose reference is platform-dependent cannot check a claim about
+/// platform independence. That the failure surfaced at all is the
+/// cross-platform lane working; that it was introduced by following a lint
+/// into a numerically sensitive expression is the part worth remembering.
+const FULL_TURN: f64 = 4_294_967_296.0;
+
 /// The reference: what the angle means, as a real number.
+///
+/// Every step here is exact except the last: a `u32` converts to `f64`
+/// exactly, dividing by a power of two is exact, and only the multiply by tau
+/// rounds — once, and identically on every target, because IEEE 754 defines
+/// multiplication. The remaining `sin` below is the platform's own, whose
+/// cross-target variation is on the order of 1e-16 relative and therefore
+/// eleven orders of magnitude below anything this test can see.
 fn radians(angle: Angle) -> f64 {
-    f64::from(angle.to_bits()) / f64::from(u32::MAX).mul_add(1.0, 1.0) * core::f64::consts::TAU
+    f64::from(angle.to_bits()) / FULL_TURN * core::f64::consts::TAU
 }
 
 /// The difference between what the table gave and what the reference says,
