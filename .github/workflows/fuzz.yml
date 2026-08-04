@@ -49,7 +49,12 @@ jobs:
         # The directory is corpus-in and findings-out: the run starts
         # from everything already recorded instead of rediscovering the
         # magic numbers, and new coverage lands beside it.
-        run: cargo fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=120 -print_final_stats=1
+        # +nightly explicitly: the repository pins stable via
+        # rust-toolchain.toml, and that directory override outranks the
+        # job's installed default -- the inner build inherits nightly
+        # through the toolchain environment only when the outer call
+        # names it.
+        run: cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=120 -print_final_stats=1
       # Growth is the interesting output of a healthy run. It leaves the
       # runner as an artifact a human inspects, minimizes, and commits --
       # re-commits are manual and event-driven, never a bot's.
