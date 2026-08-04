@@ -47,6 +47,18 @@ impl ShapeIndex {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// An index from a raw position.
+    ///
+    /// Needed because a shape index is *saved* state: it is half of every
+    /// collider identity, so a caller restoring a world has to be able to
+    /// name the same collider it named before. An index that names nothing is
+    /// not an error — every operation refuses it the same way it refuses a
+    /// hole.
+    #[must_use]
+    pub const fn from_raw(position: u32) -> Self {
+        Self(position)
+    }
 }
 
 /// What identifies a collider: a body and one of its shapes.
