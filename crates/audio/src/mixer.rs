@@ -671,6 +671,32 @@ mod tests {
         assert!(out.iter().all(|sample| *sample == 0.0), "{out:?}");
     }
 
+    // The precondition that keeps a voice on the frame grid. A buffer
+    // that is not whole frames would advance a cursor mid-frame and
+    // deliver that sound's channels swapped from then on — silently,
+    // and for the rest of the run. No backend does it; a caller filling
+    // by hand can, so dev builds refuse it by name.
+    #[test]
+    fn a_buffer_that_is_not_whole_frames_is_refused_by_name() {
+        let (_handle, mut mix) = mixer(MixerConfig::new(2, RATE));
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut odd = [0.0f32; 3];
+            mix.fill(&mut odd);
+        }));
+        std::panic::set_hook(hook);
+        let payload = refused.expect_err("three samples is not whole frames at two channels");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(
+            message.contains("whole number of frames"),
+            "refused, but not by name: {message:?}"
+        );
+    }
+
     #[test]
     fn a_dropped_handle_leaves_the_mixer_playing_what_it_has() {
         let bytes = wav_bytes(4, RATE, i16::MAX / 2);
