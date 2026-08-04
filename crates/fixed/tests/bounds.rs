@@ -1,14 +1,21 @@
 //! The bounds the geometry vocabulary quotes, asserted rather than argued.
 //!
 //! Every number in here was, at some point, written down after being measured
-//! at a single point and then stated as if it were a property. Six of six such
-//! figures turned out to be wrong — each derived correctly for an operation
-//! that was not the one being described. The cure is not more care while
-//! writing prose: it is that a figure quoted anywhere has an assertion here
-//! that fails when it stops being true.
+//! at a single point and then stated as if it were a property. **Eleven such
+//! figures have turned out to be wrong**, each derived correctly for an
+//! operation that was not the one being described. The cure is not more care
+//! while writing prose: it is that a figure quoted anywhere has an assertion
+//! here that fails when it stops being true.
 //!
 //! Each test is named for the claim it decides. A claim with no test here is
 //! a claim nobody has checked.
+//!
+//! **And one of the eleven was wrong in this file**, which is the honest limit
+//! of the technique: the world-bound assertion re-derived the algebra behind
+//! the bound and reproduced the algebra's own mistake, because the same hand
+//! wrote the claim and the check. An assertion about a bound should *exercise*
+//! the bound — require the arithmetic to fail one side of it and hold at it —
+//! rather than recompute the reasoning that produced it.
 
 use renew_fixed::{Fixed, Vec2, Vec3};
 
@@ -391,54 +398,73 @@ fn a_timestep_is_exact_exactly_when_its_nanoseconds_divide_by_the_fifth_power() 
     );
 }
 
-/// The segmentation cap delivers the property it is introduced for.
+/// **Cutting a displacement into segments does not bound slide creep**, and
+/// this test exists to stop the idea being re-invented.
 ///
-/// **The version this replaces did not.** It inverted only the proportional
-/// term of the residual bound, dropping the constant and the iteration count,
-/// so at a segment of exactly the cap the residual was two raw units *past*
-/// the stop-short it was meant to stay inside — and a segment is not one
-/// iteration, so the real accumulation was N times that.
+/// The reasoning that produced it looked sound. The residual per slide
+/// iteration is `2 + L/8192` raw — affine — so a long displacement creeps
+/// more than a short one; cap the length of a piece and the creep per piece
+/// is capped too. Both halves are true and the conclusion does not follow.
 ///
-/// The relation asserted here is the whole point: N slide iterations at the
-/// capped displacement must fit inside `skin − tolerance`.
+/// **The proportional term is scale-invariant under cutting.** `k` segments of
+/// `L/k` contribute `k · (L/k)/8192 = L/8192` — exactly what one segment of
+/// `L` contributes. Nothing is saved. And **the constant term gets strictly
+/// worse**: each segment pays its own `2` raw per iteration, so more segments
+/// means more creep, not less.
+///
+/// So creep is a function of the distance travelled, full stop. Bounding the
+/// final clearance needs the clearance re-established *between* segments —
+/// a depenetration step, which costs real work — or it needs the guarantee
+/// stated as proportional to distance rather than as a constant. That is a
+/// decision for an implementation that can measure it, not for prose.
 #[test]
-fn the_segmentation_cap_keeps_n_iterations_inside_the_stop_short() {
-    // L_max = 8192 · ((skin − tolerance)/N − 2), all raw.
-    let cap = |skin: i64, tolerance: i64, n: i64| 8192 * ((skin - tolerance) / n - 2);
+fn segmentation_does_not_bound_slide_creep() {
+    // Total creep over a displacement cut into `segments` pieces, with `n`
+    // slide iterations available in each.
+    let creep = |displacement: i64, segments: i64, n: i64| {
+        let piece = displacement / segments;
+        segments * n * (2 + piece / 8192)
+    };
 
-    for &(skin, tolerance) in &[(65536i64, 1024i64), (4096, 64), (1024, 16), (600, 8)] {
-        for n in [1i64, 2, 4, 8, 16] {
-            let clearance = skin - tolerance;
-            if clearance <= 2 * n {
-                // The stated precondition: below it the cap is not positive
-                // and the operation cannot make progress.
-                assert!(
-                    cap(skin, tolerance, n) <= 0,
-                    "with clearance {clearance} and {n} iterations the cap must be unusable"
-                );
-                continue;
-            }
-            let l_max = cap(skin, tolerance, n);
-            assert!(l_max > 0, "above the precondition the cap must be positive");
+    let displacement = 100 * ONE; // a hundred units
 
-            // The residual bound is 2 + L/8192 raw per slide iteration, and
-            // N of them must fit the stop-short.
-            let residual_per_iteration = 2 + l_max / 8192;
-            assert!(
-                n * residual_per_iteration <= clearance,
-                "skin {skin}, tolerance {tolerance}, {n} iterations: {n} × {residual_per_iteration} \
-                 exceeds the stop-short {clearance}"
-            );
-        }
+    // The proportional part is unchanged by cutting, and the total only rises.
+    let whole = creep(displacement, 1, 4);
+    for segments in [2i64, 4, 10, 50] {
+        let cut = creep(displacement, segments, 4);
+        assert!(
+            cut >= whole,
+            "cutting into {segments} pieces gave {cut} raw against {whole} for one —              segmentation must never reduce creep, or this test has the arithmetic wrong"
+        );
     }
-
-    // And the cap that was written before: it fails the same relation, which
-    // is what makes this test a decision rather than a restatement.
-    let old_cap = |skin: i64, tolerance: i64| 8192 * (skin - tolerance);
-    let (skin, tolerance, n) = (65536i64, 1024i64, 4i64);
-    let old_residual = 2 + old_cap(skin, tolerance) / 8192;
     assert!(
-        n * old_residual > skin - tolerance,
-        "the superseded cap must fail the relation, or nothing was fixed"
+        creep(displacement, 50, 4) > creep(displacement, 1, 4),
+        "more segments must cost more, because each pays the constant term again"
     );
+
+    // And the cap that was written on the strength of the false conclusion
+    // fails the property it was introduced to deliver, in every configuration
+    // the vocabulary suggests. A body stops at a clearance of `skin`; the
+    // property demands it end no closer than `skin - tolerance`; so the creep
+    // budget is `tolerance`, and the cap budgeted `skin - tolerance` instead.
+    let cap = |skin: i64, tolerance: i64, n: i64| 8192 * ((skin - tolerance) / n - 2);
+    for &(skin, tolerance, n) in &[
+        (65536i64, 1024i64, 4i64),
+        (4096, 64, 8),
+        (1024, 16, 4),
+        (600, 8, 2),
+    ] {
+        let l_max = cap(skin, tolerance, n);
+        let accumulated = n * (2 + l_max / 8192);
+        let final_clearance = skin - accumulated;
+        assert!(
+            final_clearance < skin - tolerance,
+            "the superseded cap must fail the property, or nothing was learned"
+        );
+        // What it actually delivers: the contact tolerance, not the stop-short.
+        assert_eq!(
+            final_clearance, tolerance,
+            "skin {skin}, tolerance {tolerance}, {n} iterations"
+        );
+    }
 }
