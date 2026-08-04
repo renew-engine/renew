@@ -144,9 +144,23 @@ proptest! {
         let error = (normal.length().to_bits() - Fixed::ONE.to_bits()).abs();
         prop_assert!(error <= 4, "short direction gave a normal off by {error}");
 
-        // Pressed straight into it, a body must not move.
-        let push = -normal;
-        prop_assert_eq!(push.slide_along(normal).length(), Fixed::ZERO);
+        // Pressed straight into it, a body barely moves — and "barely" is
+        // measured on the components, which is exact, rather than on the
+        // length, which is not.
+        //
+        // **The previous version of this assertion was vacuous.** It read
+        // `push.slide_along(normal).length() == ZERO`, and `length` goes
+        // through `length_squared`, where a residual of k raw units squares
+        // to k²/65536 and rounds to zero for every k up to 181. So it passed
+        // for any residual under 182 raw units while claiming to prove the
+        // residual was none. Measured on components, the true worst over
+        // this domain is 2 raw units — nonzero in about half of all cases.
+        let slid = (-normal).slide_along(normal);
+        let residual = slid.x.to_bits().abs().max(slid.y.to_bits().abs());
+        prop_assert!(
+            residual <= 2,
+            "sliding into the normal moved {residual} raw units, past the bound"
+        );
     }
 
     #[test]
