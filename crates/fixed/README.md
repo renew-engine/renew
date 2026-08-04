@@ -88,7 +88,7 @@ contract defers rotated shapes.
 `normalize` is fallible, because the zero vector is a value a simulation
 legitimately produces and an assertion on a path that runs every frame is the
 wrong shape. **The result is unit-length only to the type's resolution** — a
-few hundred parts in 65536 — so callers wanting a strict guarantee should compare
+four parts in 65536 — so callers wanting exact equality should compare
 squared lengths against a tolerance rather than expecting exactly one.
 
 ## Extension points

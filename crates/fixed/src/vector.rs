@@ -10,6 +10,28 @@ use core::ops::{Add, Mul, Neg, Sub};
 
 use crate::Fixed;
 
+/// How far to shift a direction left so normalising it keeps its precision.
+///
+/// Normalising is unchanged by scaling, and **shifting a fixed-point value left is
+/// exact** — no rounding, no loss. So a short direction is scaled up before
+/// its length is taken, which is the difference between a normal that is
+/// unit to a thousandth of a percent and one that is forty per cent wrong.
+///
+/// The target is 2³⁸ for the largest component: big enough that squaring
+/// keeps every significant bit, small enough that three squared components
+/// summed stay inside what the type holds (3 × 2⁶⁰ < 2⁶²).
+fn normalising_shift(largest: u64) -> u32 {
+    // A value with `k` significant bits has `64 - k` leading zeros, so
+    // shifting by `64 - k - 26` leaves it with 38. The 26 was 25 in the
+    // first version, which targets 2^39 rather than 2^38 — and three
+    // squared 2^39 components summed overflow an i64, so 3D normalisation
+    // saturated and returned a normal a quarter of a per cent off unit.
+    // Caught by a property test whose generator had just been widened to
+    // reach short vectors; the arithmetic was one bit out and the comment
+    // above was right all along.
+    largest.leading_zeros().saturating_sub(26)
+}
+
 /// A two-dimensional vector.
 ///
 /// # Contract
@@ -110,20 +132,39 @@ impl Vec2 {
     /// coincident points — and refusing it would put an assertion on a path
     /// that runs every frame.
     ///
-    /// **The result is unit-length only to the type's resolution.** Each
-    /// component is rounded, so the length of the result may differ from one
-    /// by up to about 2⁻¹⁵. Callers that need an exact guarantee should
-    /// compare squared lengths against a tolerance rather than expecting
-    /// exactly [`Fixed::ONE`].
+    /// **The result is unit-length to within four parts in 65536**, which is
+    /// asserted by a property test over every magnitude including the
+    /// shortest. Callers wanting an exact equality should compare squared
+    /// lengths against a tolerance rather than expecting [`Fixed::ONE`].
+    ///
+    /// The direction is scaled up before its length is taken, and that is
+    /// not an optimisation. Shifting a fixed-point value left is exact, and
+    /// without it a short direction is divided by a length that rounded to
+    /// something far too coarse: before this, a direction of 41 raw units
+    /// came back as a normal forty-one per cent too long, and anything whose
+    /// components were all below 181 raw had no direction at all.
     #[must_use]
     pub fn normalize(self) -> Option<Self> {
-        let length = self.length();
+        let largest = self
+            .x
+            .to_bits()
+            .unsigned_abs()
+            .max(self.y.to_bits().unsigned_abs());
+        if largest == 0 {
+            return None;
+        }
+        let shift = normalising_shift(largest);
+        let scaled = Self::new(
+            Fixed::from_bits(self.x.to_bits() << shift),
+            Fixed::from_bits(self.y.to_bits() << shift),
+        );
+        let length = scaled.length();
         if length == Fixed::ZERO {
             return None;
         }
         Some(Self::new(
-            self.x.saturating_div(length),
-            self.y.saturating_div(length),
+            scaled.x.saturating_div(length),
+            scaled.y.saturating_div(length),
         ))
     }
 
@@ -234,14 +275,29 @@ impl Vec3 {
     /// See [`Vec2::normalize`] on how close to unit the result is.
     #[must_use]
     pub fn normalize(self) -> Option<Self> {
-        let length = self.length();
+        let largest = self
+            .x
+            .to_bits()
+            .unsigned_abs()
+            .max(self.y.to_bits().unsigned_abs())
+            .max(self.z.to_bits().unsigned_abs());
+        if largest == 0 {
+            return None;
+        }
+        let shift = normalising_shift(largest);
+        let scaled = Self::new(
+            Fixed::from_bits(self.x.to_bits() << shift),
+            Fixed::from_bits(self.y.to_bits() << shift),
+            Fixed::from_bits(self.z.to_bits() << shift),
+        );
+        let length = scaled.length();
         if length == Fixed::ZERO {
             return None;
         }
         Some(Self::new(
-            self.x.saturating_div(length),
-            self.y.saturating_div(length),
-            self.z.saturating_div(length),
+            scaled.x.saturating_div(length),
+            scaled.y.saturating_div(length),
+            scaled.z.saturating_div(length),
         ))
     }
 

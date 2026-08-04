@@ -11,8 +11,24 @@ use renew_fixed::{Fixed, Vec2, Vec3};
 /// Components modest enough that squaring cannot saturate, so a property
 /// about geometry is not silently a property about the clamp. Squarable range
 /// is about 1.2e7 units; a few thousand is far inside it.
+///
+/// **Spanning magnitudes, and that is the whole point.** The first version of
+/// this generator drew uniformly from the full range, which meant it produced
+/// short vectors essentially never — and short vectors were where `normalize`
+/// was catastrophically wrong: a direction of (181, 313) raw came back as a
+/// "unit" vector forty-one per cent too long, and every property here passed.
+/// A generator that cannot reach the broken region is a generator that
+/// certifies the bug.
 fn coordinate() -> impl Strategy<Value = Fixed> {
-    (-4096i64 * 65536..4096i64 * 65536).prop_map(Fixed::from_bits)
+    prop_oneof![
+        // Tiny: below the point where a squared component used to round to
+        // zero. This is the band that was broken.
+        3 => (-300i64..300).prop_map(Fixed::from_bits),
+        // Sub-unit, where a normal from two nearly-coincident points lands.
+        3 => (-65536i64..65536).prop_map(Fixed::from_bits),
+        // Ordinary game-scale coordinates.
+        2 => (-4096i64 * 65536..4096i64 * 65536).prop_map(Fixed::from_bits),
+    ]
 }
 
 fn vec2() -> impl Strategy<Value = Vec2> {
@@ -97,10 +113,40 @@ proptest! {
         // is the honest bound. That is about half a percent, which is why
         // the contract tells callers to compare squared lengths against a
         // tolerance rather than expecting exactly one.
+        // Four raw units out of 65536 — six thousandths of a per cent.
+        // This was 512 while `normalize` divided a short vector by its own
+        // rounded-to-zero length; rescaling first earned the tighter bound,
+        // and the bound is what would catch a regression to the old way.
         prop_assert!(
-            error <= 512,
+            error <= 4,
             "normalized {a:?} to length {length:?}, off by {error} raw units"
         );
+    }
+
+    /// **The regression this file exists to prevent from returning.** Every
+    /// non-zero direction has a direction, however short — and pushing
+    /// straight into the normal derived from it must move nothing at all.
+    /// Before `normalize` rescaled, a direction shorter than 256 raw units
+    /// had no length at all, and one of 41 raw units came back as a normal
+    /// that let a body slide 1.4 units per step through the wall it was
+    /// pressed against.
+    #[test]
+    fn even_the_shortest_directions_normalise_and_stop_a_slide(
+        x in -400i64..400,
+        y in -400i64..400,
+    ) {
+        prop_assume!(x != 0 || y != 0);
+        let direction = Vec2::new(Fixed::from_bits(x), Fixed::from_bits(y));
+        let normal = direction.normalize();
+        prop_assert!(normal.is_some(), "{direction:?} has a direction and got none");
+        let normal = normal.expect("checked above");
+
+        let error = (normal.length().to_bits() - Fixed::ONE.to_bits()).abs();
+        prop_assert!(error <= 4, "short direction gave a normal off by {error}");
+
+        // Pressed straight into it, a body must not move.
+        let push = -normal;
+        prop_assert_eq!(push.slide_along(normal).length(), Fixed::ZERO);
     }
 
     #[test]
@@ -186,7 +232,7 @@ proptest! {
         // cover and this one reached only through its endpoints.
         if let Some(unit) = a.normalize() {
             let error = (unit.length().to_bits() - Fixed::ONE.to_bits()).abs();
-            prop_assert!(error <= 512, "3D normalize off by {error} raw units");
+            prop_assert!(error <= 4, "3D normalize off by {error} raw units");
 
             let slid = b.slide_along(unit);
             let magnitude = b.length().to_bits() >> 16;
