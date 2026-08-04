@@ -137,3 +137,26 @@ fn the_json_envelope_names_the_subcommand_that_ran() {
     assert!(stdout.contains("\"schema_version\""), "{stdout}");
     assert!(!json.status.success(), "one leg is not three: {stdout}");
 }
+
+/// A report that exists and is not a report. Distinct from a missing one
+/// on purpose: the reasons a comparison cannot run are worth telling
+/// apart, and "I could not read this" sends its reader somewhere
+/// different from "this was not there".
+#[test]
+fn a_malformed_report_exits_non_zero_and_names_the_file() {
+    let dir = scratch("malformed").expect("scratch");
+    let path = dir.join("broken.json");
+    fs::write(&path, "{ this is not a report").expect("write");
+    let output =
+        run(&["determinism", "--compare", &path.to_string_lossy()]).expect("the binary runs");
+    assert!(
+        !output.status.success(),
+        "a malformed report must not exit 0"
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("broken.json"), "{text}");
+}

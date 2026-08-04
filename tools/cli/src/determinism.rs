@@ -164,17 +164,15 @@ pub fn compare(legs: &[Leg], expected_arches: &[&str]) -> Verdict {
 
     // Toolchain: a mismatch is inconclusive, never a quiet pass and never
     // reported as divergence.
-    if let Some(first) = legs.first() {
-        for leg in legs {
-            if leg.toolchain != first.toolchain {
-                blocked.push(format!(
-                    "leg `{}` built with `{}` and leg `{}` with `{}` — determinism is \
-                     claimed for one toolchain version, so this comparison is \
-                     inconclusive rather than failing",
-                    first.origin, first.toolchain, leg.origin, leg.toolchain
-                ));
-                break;
-            }
+    for leg in legs {
+        if leg.toolchain != reference.toolchain {
+            blocked.push(format!(
+                "leg `{}` built with `{}` and leg `{}` with `{}` — determinism is \
+                 claimed for one toolchain version, so this comparison is \
+                 inconclusive rather than failing",
+                reference.origin, reference.toolchain, leg.origin, leg.toolchain
+            ));
+            break;
         }
     }
 

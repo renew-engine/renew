@@ -114,3 +114,8 @@ reason = "The depthless-adapter side of chain population, where no per-slot dept
 file = "crates/audio/src/mixer.rs"
 lines = [197, 198]
 reason = "The arm that clears a voice whose sound index is missing. A voice is only ever created from an identifier the mixer already resolved against its own table, and the table only grows, so no input reaches this. It is retained because the alternative is indexing directly, which puts a panic on the audio callback - the one thread in the engine where a panic is an abort in a real-time deadline rather than a diagnosable failure. Unreachable on purpose, kept on purpose."
+
+[[exempt]]
+file = "tools/cli/src/main.rs"
+lines = [80, 81, 82, 1030, 1031, 1032, 1033, 1039, 1040, 1042, 1043, 1044, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077, 1078, 1079, 1080, 1082, 1086]
+reason = "The emit half of determinism: it spawns four cargo runs of the game and reads what they printed, so reaching it from a test would mean building and running the whole sample under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."

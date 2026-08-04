@@ -709,32 +709,30 @@ mod tests {
     /// lane emits when it meant to compare.
     #[test]
     fn determinism_takes_exactly_one_mode() {
-        let emit = parse(&arguments(&["determinism", "--emit", "leg.json"]));
         assert_eq!(
-            emit.map(|parsed| match parsed {
-                Parsed::Run(invocation) => invocation.emit,
-                Parsed::Help { .. } => None,
-            }),
-            Ok(Some("leg.json".to_string()))
+            parse(&arguments(&["determinism", "--emit", "leg.json"])),
+            Ok(Parsed::Run(Invocation {
+                emit: Some("leg.json".to_string()),
+                ..plain(Command::Determinism)
+            }))
         );
 
-        let compare = parse(&arguments(&[
-            "determinism",
-            "--compare",
-            "a.json",
-            "--compare",
-            "b.json",
-        ]));
+        // Repeating accumulates rather than overwrites: how many reports
+        // there are IS what the comparison checks, and a flag that kept
+        // only the last would turn three targets into one and report
+        // agreement.
         assert_eq!(
-            compare.map(|parsed| match parsed {
-                Parsed::Run(invocation) => invocation.compare,
-                Parsed::Help { .. } => Vec::new(),
-            }),
-            // Repeating accumulates rather than overwrites: how many
-            // reports there are IS what the comparison checks, and a flag
-            // that kept only the last would turn three targets into one
-            // and report agreement.
-            Ok(vec!["a.json".to_string(), "b.json".to_string()])
+            parse(&arguments(&[
+                "determinism",
+                "--compare",
+                "a.json",
+                "--compare",
+                "b.json",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                compare: vec!["a.json".to_string(), "b.json".to_string()],
+                ..plain(Command::Determinism)
+            }))
         );
 
         let both = parse(&arguments(&[
@@ -768,10 +766,10 @@ mod tests {
             for flag in ["--emit", "--compare"] {
                 let line = vec![command.name(), flag, "leg.json"];
                 let parsed = parse(&arguments(&line));
+                let name = command.name();
                 assert!(
                     matches!(&parsed, Err(ParseError::UnexpectedArgument(named)) if named == flag),
-                    "`{} {flag}` should be refused by name, got {parsed:?}",
-                    command.name()
+                    "`{name} {flag}` should be refused by name, got {parsed:?}"
                 );
             }
         }
