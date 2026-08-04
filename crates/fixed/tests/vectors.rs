@@ -83,12 +83,39 @@ proptest! {
         prop_assert!(c.dot(b).to_bits().abs() <= tolerance, "not perpendicular to b");
     }
 
+    /// The narrow squared length still agrees with the dot product — and
+    /// the *length* no longer goes through either, which is the point.
     #[test]
     fn length_squared_agrees_with_the_dot_product(a in vec2()) {
         prop_assert_eq!(a.length_squared(), a.dot(a));
-        // And the length is the floored root of it, which is the scalar's
-        // property lifted.
-        prop_assert_eq!(a.length(), a.length_squared().sqrt());
+
+        // `length` is computed at full width now, so it is exact where
+        // narrowing first would have lost the vector entirely. The two
+        // agree everywhere the narrow square does not underflow, and where
+        // it does, the wide one is right and the narrow one is zero.
+        let wide = a.length();
+        let narrow = a.length_squared().sqrt();
+        if a.length_squared() == Fixed::ZERO && a != Vec2::ZERO {
+            prop_assert!(
+                wide > Fixed::ZERO,
+                "a non-zero vector must have a length: the narrow square                  underflowed and the wide one must not"
+            );
+        } else {
+            let difference = (wide.to_bits() - narrow.to_bits()).abs();
+            prop_assert!(difference <= 256, "the two paths differ by {difference}");
+        }
+    }
+
+    /// The full-width square is what the narrow one cannot be: exact.
+    #[test]
+    fn the_wide_square_never_underflows_for_a_non_zero_vector(
+        x in -400i64..400,
+        y in -400i64..400,
+    ) {
+        prop_assume!(x != 0 || y != 0);
+        let v = Vec2::new(Fixed::from_bits(x), Fixed::from_bits(y));
+        prop_assert!(v.length_squared_wide().to_bits() > 0);
+        prop_assert!(v.length() > Fixed::ZERO, "a real direction has a real length");
     }
 
     #[test]

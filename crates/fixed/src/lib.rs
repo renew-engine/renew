@@ -35,8 +35,10 @@ mod angle;
 mod saturation;
 mod scalar;
 mod vector;
+mod wide;
 
 pub use angle::Angle;
 pub use saturation::{Saturations, saturations};
 pub use scalar::Fixed;
 pub use vector::{Vec2, Vec3};
+pub use wide::Wide;

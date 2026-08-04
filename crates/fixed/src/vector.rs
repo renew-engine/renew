@@ -113,10 +113,26 @@ impl Vec2 {
         self.dot(self)
     }
 
+    /// The squared length at full width, which cannot overflow and cannot
+    /// round.
+    ///
+    /// The form to compare with. [`Vec2::length_squared`] narrows to a
+    /// `Fixed` and therefore has a floor: a vector whose components are all
+    /// below 182 raw units squares to *zero* there, which is how a direction
+    /// can appear to have no length at all. Nothing is lost here.
+    #[must_use]
+    pub fn length_squared_wide(self) -> crate::Wide {
+        self.x.wide_mul(self.x) + self.y.wide_mul(self.y)
+    }
+
     /// The length, floored to the representable value below the exact one.
+    ///
+    /// Computed through the full-width square, so it is exact for short
+    /// vectors where narrowing first would have lost them entirely — a
+    /// one-raw-unit vector has length one here and had length zero before.
     #[must_use]
     pub fn length(self) -> Fixed {
-        self.length_squared().sqrt()
+        self.length_squared_wide().sqrt()
     }
 
     /// The distance to another point.
@@ -279,10 +295,16 @@ impl Vec3 {
         self.dot(self)
     }
 
-    /// The length, floored.
+    /// The squared length at full width. See [`Vec2::length_squared_wide`].
+    #[must_use]
+    pub fn length_squared_wide(self) -> crate::Wide {
+        self.x.wide_mul(self.x) + self.y.wide_mul(self.y) + self.z.wide_mul(self.z)
+    }
+
+    /// The length, floored. Computed through the full-width square.
     #[must_use]
     pub fn length(self) -> Fixed {
-        self.length_squared().sqrt()
+        self.length_squared_wide().sqrt()
     }
 
     /// The distance to another point.
