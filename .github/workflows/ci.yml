@@ -274,6 +274,27 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
+      # The audio stack. The game is excluded alongside it because the
+      # game's DEV graph reaches the WAV reader unconditionally -- the
+      # lane's own copy of the parse that `Audio::open` performs on its
+      # way to a device, which exists precisely so a regenerated sound
+      # is checked somewhere other than a machine with speakers. Its
+      # normal graph does not, and the second guard below is what says
+      # so rather than assuming it.
+      - name: Build and test without audio
+        run: |
+          sel="--workspace --exclude renew-audio --exclude renew-sample-glide"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-audio $sel
+          cargo build $sel
+          cargo test $sel
+          # The game without its `audio` feature is the default
+          # configuration, and the mixer must be absent from it -- the
+          # feature is the only edge, so a dependency that stopped being
+          # optional would show up here and nowhere else. Dev edges are
+          # excluded deliberately: the test copy of the parse is
+          # supposed to be there.
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-audio -p renew-sample-glide
+          cargo build -p renew-sample-glide
       # The other direction: the game's window feature builds, lints,
       # and tests. No graph guard -- the build itself proves the WSI
       # stack is reachable, and the absence guards belong to the default
