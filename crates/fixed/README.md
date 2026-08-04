@@ -91,6 +91,33 @@ wrong shape. **The result is unit-length only to the type's resolution** — a
 four parts in 65536 — so callers wanting exact equality should compare
 squared lengths against a tolerance rather than expecting exactly one.
 
+## Angles and rotation
+
+`Angle` is a binary angle: **a full turn is 2³² units**, so an angle is a
+`u32` and wrapping is exact integer overflow. That is the reason for the
+representation rather than a convenience. In radians the modulus is 2π, which
+is irrational and therefore not representable, so every wrap would lose
+precision and two machines wrapping at different moments would drift apart.
+Here, adding a full turn is the identity, exactly, forever — and `from_degrees`
+lands on the cardinal angles exactly.
+
+`sin` and `cos` read a 513-entry quarter-turn table with rounded linear
+interpolation, the other three quadrants coming from symmetry. **Measured
+worst error: 1.0322 units in the last place**, over a sweep of the whole
+circle against a double-precision reference. That is the floor for a table of
+any size — its entries are each rounded to half a unit, interpolating between
+two inherits that, and the interpolation rounds once more. Sixteen times the
+entries buys 0.03 of a unit, which is why the table is 2 KB rather than 32.
+
+The table is generated, not hand-written, and a test checks every entry
+against the reference. That test is the only place in this crate's world that
+uses floating point, and deliberately: the shipped code has none, and the
+proof that its table is right needs one.
+
+`Vec2::rotate` follows. Note that `perpendicular` is *not* the same as
+rotating by a quarter turn — it is exact, where rotation rounds — so the
+quarter turn keeps its own operation.
+
 ## Extension points
 
 None. This is a value type; it has no trait to implement and no runtime
