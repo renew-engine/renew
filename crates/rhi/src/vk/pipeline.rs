@@ -7,7 +7,6 @@ use std::rc::Rc;
 
 use ash::vk;
 
-use crate::config::Color;
 use crate::error::PipelineError;
 use crate::vk::buffer::Buffer;
 use crate::vk::device::{Device, DeviceShared};
@@ -118,6 +117,11 @@ pub struct PipelineDesc<'a> {
     /// as long as the set points at them, without the caller having to
     /// sequence drops correctly.
     pub texture: Option<(Rc<Texture>, Rc<Sampler>)>,
+    /// Depth testing, or `None` for the depth-free pipelines every
+    /// depthless pass records. A pipeline carrying this can only draw
+    /// inside a pass that carries a depth attachment, and the reverse —
+    /// the targets assert the match by name.
+    pub depth_state: Option<DepthState>,
 }
 
 /// How a pipeline's output is combined with what the target already
@@ -193,6 +197,7 @@ impl<'a> PipelineDesc<'a> {
             blend: Blend::Opaque,
             texture: None,
             instance_input: None,
+            depth_state: None,
         }
     }
 
@@ -226,52 +231,26 @@ impl<'a> PipelineDesc<'a> {
         self.texture = Some((texture, sampler));
         self
     }
-}
 
-/// Everything one frame needs, for either target.
-///
-/// **One type, not one per target.** `RenderPipeline` already crosses
-/// both targets carrying a field only one of them can satisfy, and each
-/// target refuses a mismatch itself with a `debug_assert!` beside its
-/// device check. So "one descriptor, target-specific fields validated at
-/// the target" is the pattern this crate already uses for the closest
-/// analogue it has, and splitting this one would leave two conventions
-/// for one question.
-///
-/// **`#[non_exhaustive]`, and this is the whole point of the type.** The
-/// old signature took the clear colour and the pipeline positionally,
-/// which meant every frame-level parameter that arrived later broke every
-/// caller. Several are already known to be coming: an in-flight policy, a
-/// load operation, a viewport, a colour-space override. Each of those is
-/// now a builder method that touches nothing.
-///
-/// Passing a field a target cannot satisfy is a contract violation rather
-/// than a recoverable condition -- the caller has asked for something
-/// incoherent, not something that failed -- so targets assert rather than
-/// returning an error, exactly as they already do for pipeline format.
-#[derive(Clone, Copy)]
-#[non_exhaustive]
-pub struct RenderDesc<'a> {
-    /// The colour the target is cleared to before drawing.
-    pub clear: Color,
-    /// The pipeline to draw with, or `None` to clear only.
-    pub pipeline: Option<&'a RenderPipeline>,
-    /// Per-frame bytes and the instanced draw they feed, or `None` for
-    /// the byte-free frame every existing caller records.
-    pub frame_data: Option<FrameData<'a>>,
+    /// Test (and per `depth`, write) the pass's depth attachment. The
+    /// compare op is `LESS_OR_EQUAL` in v0.
+    #[must_use]
+    pub fn depth_state(mut self, depth: DepthState) -> Self {
+        self.depth_state = Some(depth);
+        self
+    }
 }
 
 /// Per-frame bytes and the instanced draw they feed.
 ///
 /// **`#[non_exhaustive]` with a constructor, per the descriptor pattern
-/// this crate uses everywhere** -- the fields a pass model will add
-/// (first instance, a vertex offset) arrive as builders touching no
-/// existing caller.
+/// this crate uses everywhere** -- room to grow (a first-instance or
+/// vertex-offset field) without touching existing callers.
 ///
 /// The bytes are written into the buffer's region for the frame being
-/// recorded, *after* that slot's fence wait -- the one point where "no
-/// submit is reading this region" is a fact. The draw stays counts and
-/// offsets: `instances` here, the vertex count from the pipeline's
+/// recorded, *after* the point where "no submit is reading this region"
+/// is a proven fact on the target recording it. The draw stays counts
+/// and offsets: `instances` here, the vertex count from the pipeline's
 /// shaders, the slot offset chosen by the target.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
@@ -298,47 +277,38 @@ impl<'a> FrameData<'a> {
     }
 }
 
-impl fmt::Debug for RenderDesc<'_> {
-    /// Reports *whether* a pipeline is bound, not which one.
-    /// `RenderPipeline` has no `Debug` -- a Vulkan handle's address is
-    /// not information -- and presence is the part a reader debugging a
-    /// frame actually wants.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RenderDesc")
-            .field("clear", &self.clear)
-            .field("pipeline", &self.pipeline.map(|_| "bound"))
-            .finish_non_exhaustive()
-    }
+/// Whether a pipeline tests and writes the pass's depth attachment.
+///
+/// `#[non_exhaustive]` with constructors: the compare op is fixed
+/// `LESS_OR_EQUAL` in v0 and arrives as a builder when a consumer needs
+/// another.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct DepthState {
+    /// Fragments failing the depth test are discarded.
+    pub test: bool,
+    /// Surviving fragments write their depth.
+    pub write: bool,
 }
 
-impl<'a> RenderDesc<'a> {
-    /// A frame that clears and draws nothing.
-    ///
-    /// The clear colour is positional because a frame has no meaningful
-    /// "no clear" state today -- the load operation is unconditionally a
-    /// clear in both backends. When that becomes configurable it arrives
-    /// as a builder method, and this constructor keeps its meaning.
+impl DepthState {
+    /// Test against and write the depth attachment — the common case.
     #[must_use]
-    pub fn new(clear: Color) -> Self {
+    pub fn read_write() -> Self {
         Self {
-            clear,
-            pipeline: None,
-            frame_data: None,
+            test: true,
+            write: true,
         }
     }
 
-    /// Draw with this pipeline after clearing.
+    /// Test without writing — geometry that respects depth but leaves
+    /// no footprint in it.
     #[must_use]
-    pub fn pipeline(mut self, pipeline: &'a RenderPipeline) -> Self {
-        self.pipeline = Some(pipeline);
-        self
-    }
-
-    /// Carry per-frame bytes and an instanced draw in this frame.
-    #[must_use]
-    pub fn frame_data(mut self, data: FrameData<'a>) -> Self {
-        self.frame_data = Some(data);
-        self
+    pub fn test_only() -> Self {
+        Self {
+            test: true,
+            write: false,
+        }
     }
 }
 
@@ -500,6 +470,9 @@ pub struct RenderPipeline {
     layout: vk::PipelineLayout,
     pub(crate) format: TargetFormat,
     pub(crate) vertex_count: u32,
+    /// Whether this pipeline carries depth state — the targets assert
+    /// it matches the pass it draws in.
+    pub(crate) depth: bool,
     descriptors: Option<Descriptors>,
     /// Kept alive because the descriptor set points at them. Never read
     /// through — the set holds the handles the GPU uses, and these hold
@@ -516,7 +489,14 @@ impl Drop for RenderPipeline {
         // sampler it points at, which `_bound` releases after this
         // returns.
         unsafe {
-            let _ = self.shared.device.device_wait_idle();
+            // Best-effort quiesce; failure is logged, never a panic (D5)
+            // — the diag record is the only observable this path has.
+            if let Err(code) = self.shared.device.device_wait_idle() {
+                renew_diag::error!(
+                    target: "renew-rhi",
+                    "wait-idle at pipeline teardown failed: {code:?}"
+                );
+            }
             self.shared
                 .device
                 .destroy_pipeline(self.pipeline, Some(&self.shared.alloc_cbs()));
@@ -736,6 +716,20 @@ impl Device {
         desc: &PipelineDesc<'_>,
     ) -> Result<RenderPipeline, PipelineError> {
         let shared = &self.shared;
+        // Checked before anything is created so this failure path owns
+        // nothing. The environment declined, not the caller — a Result,
+        // never an assert.
+        let depth_format = match desc.depth_state {
+            Some(_) => match shared.depth_format {
+                Some(format) => Some(format),
+                None => {
+                    return Err(PipelineError::DepthUnsupported {
+                        chain: "D32_SFLOAT, D24_UNORM_S8_UINT",
+                    });
+                }
+            },
+            None => None,
+        };
         let vs_words = crate::spirv::words_from_bytes("vertex", desc.vertex_spirv)?;
         let fs_words = crate::spirv::words_from_bytes("fragment", desc.fragment_spirv)?;
 
@@ -893,8 +887,19 @@ impl Device {
         let formats = [desc.target_format.to_vk()];
         let mut rendering =
             vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+        if let Some(format) = depth_format {
+            rendering = rendering.depth_attachment_format(format);
+        }
+        // Compare op fixed LESS_OR_EQUAL in v0; another op arrives as a
+        // builder on `DepthState` when a consumer needs it.
+        let depth_stencil = desc.depth_state.map(|state| {
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(state.test)
+                .depth_write_enable(state.write)
+                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        });
 
-        let info = vk::GraphicsPipelineCreateInfo::default()
+        let mut info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
@@ -905,6 +910,9 @@ impl Device {
             .dynamic_state(&dynamic)
             .layout(layout)
             .push_next(&mut rendering);
+        if let Some(depth_stencil) = &depth_stencil {
+            info = info.depth_stencil_state(depth_stencil);
+        }
 
         // SAFETY: category 2: device live; every array the create info
         // references is a local outliving the call.
@@ -947,6 +955,7 @@ impl Device {
             layout,
             format: desc.target_format,
             vertex_count: desc.vertex_count,
+            depth: desc.depth_state.is_some(),
             descriptors,
             _bound: desc.texture.clone(),
         })
@@ -987,25 +996,14 @@ mod tests {
         assert_eq!(desc.address, AddressMode::ClampToEdge);
     }
 
-    /// The unbound case, asserted on its content rather than merely run.
-    ///
-    /// A test that only *calls* `Debug` satisfies a line-coverage gate
-    /// while proving nothing -- which is the failure mode a 100% gate
-    /// invites. This asserts the two claims the impl actually makes: the
-    /// clear colour is reported, and the pipeline field says whether one
-    /// is bound rather than naming a handle.
+    /// The two constructors are decisions, so they are asserted: the
+    /// common case tests and writes, the read-only case tests without
+    /// leaving a footprint.
     #[test]
-    fn the_debug_form_reports_an_unbound_pipeline_as_none() {
-        let desc = RenderDesc::new(Color::new(0.25, 0.5, 0.75, 1.0));
-        let shown = format!("{desc:?}");
-        assert!(shown.contains("RenderDesc"), "{shown}");
-        assert!(
-            shown.contains("0.25"),
-            "the clear colour should be visible: {shown}"
-        );
-        assert!(shown.contains("pipeline: None"), "{shown}");
-        // `finish_non_exhaustive` renders the trailing `..`, which is the
-        // signal to a reader that the struct grows.
-        assert!(shown.contains(".."), "{shown}");
+    fn the_depth_state_constructors_mean_what_they_say() {
+        let both = DepthState::read_write();
+        assert!(both.test && both.write);
+        let read = DepthState::test_only();
+        assert!(read.test && !read.write);
     }
 }

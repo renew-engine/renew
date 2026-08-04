@@ -74,8 +74,9 @@ pub use error::{DeviceError, PipelineError, TargetError};
 pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::offscreen::OffscreenTarget;
+pub use vk::pass::{Attachment, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
 pub use vk::pipeline::{
-    AddressMode, Blend, Filter, FrameData, InstanceAttribute, PipelineDesc, RenderDesc,
+    AddressMode, Blend, DepthState, Filter, FrameData, InstanceAttribute, PipelineDesc,
     RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat,
 };
 #[cfg(feature = "present")]
@@ -106,6 +107,14 @@ pub mod builtin {
     /// Fragment stage SPIR-V passing the instance colour through.
     pub static INSTANCED_FS_SPV: &[u8] = include_bytes!("../shaders/instanced.frag.spv");
 
+    /// Vertex stage SPIR-V for the instanced quad with per-instance
+    /// depth.
+    pub static INSTANCED_DEPTH_VS_SPV: &[u8] =
+        include_bytes!("../shaders/instanced_depth.vert.spv");
+    /// Fragment stage SPIR-V passing the instance colour through.
+    pub static INSTANCED_DEPTH_FS_SPV: &[u8] =
+        include_bytes!("../shaders/instanced_depth.frag.spv");
+
     /// The instanced quad: six expanded vertices per instance, placement
     /// and colour from the one vertex buffer at instance rate. The
     /// matching layout is [`INSTANCED_LAYOUT`]; shader and slice describe
@@ -119,6 +128,24 @@ pub mod builtin {
     /// The instance layout `INSTANCED` consumes: centre, then colour.
     pub const INSTANCED_LAYOUT: &[crate::InstanceAttribute] = &[
         crate::InstanceAttribute::Vec2,
+        crate::InstanceAttribute::Vec4,
+    ];
+
+    /// The instanced quad with per-instance depth: six expanded
+    /// vertices per instance; placement, depth and colour from the one
+    /// vertex buffer at instance rate. The matching layout is
+    /// [`INSTANCED_DEPTH_LAYOUT`]; shader and slice describe the same
+    /// bytes and change together.
+    pub const INSTANCED_DEPTH: Shaders<'static> = Shaders {
+        vertex: INSTANCED_DEPTH_VS_SPV,
+        fragment: INSTANCED_DEPTH_FS_SPV,
+        vertex_count: 6,
+    };
+
+    /// The instance layout `INSTANCED_DEPTH` consumes: (centre.xy,
+    /// depth, unused), then colour.
+    pub const INSTANCED_DEPTH_LAYOUT: &[crate::InstanceAttribute] = &[
+        crate::InstanceAttribute::Vec4,
         crate::InstanceAttribute::Vec4,
     ];
 

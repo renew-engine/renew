@@ -1,29 +1,43 @@
 # renew-rhi
 
 The engine's only doorway to the GPU: device bring-up, render targets,
-and the v0 clear-and-triangle draw path, over Vulkan. Correctness is
-provable headless — the offscreen target renders and reads back pixels
-without a window or a display server, and the golden-image tests attest
-the bytes.
+and the v0 draw path, over Vulkan. A frame is described, not scripted:
+the caller composes a `RenderDesc` — a list of `Pass`es, each with one
+color attachment, an optional depth attachment, and `Item`s (a pipeline
+plus optional per-frame bytes) drawn in order — on its own stack, and
+hands it to a target's `render`. Correctness is provable headless — the
+offscreen target renders and reads back pixels without a window or a
+display server, and the golden-image tests attest the bytes.
 
 - `Device` — the GPU context, built from a plain-data `DeviceDesc`
   (validation policy: `Off` / `IfAvailable` / `Required`). Deterministic
   adapter choice: discrete > integrated > virtual > software, then
   lowest device id; requires Vulkan 1.3 dynamic rendering and
   synchronization2 plus a graphics queue.
-- `OffscreenTarget` — a fixed-size RGBA8 image with synchronous
-  `render(clear, Option<&RenderPipeline>)` and CPU readback
-  (`read_back_into`). The correctness spine.
+- `OffscreenTarget` — a fixed-size RGBA8 image with a synchronous
+  `render(&RenderDesc)` and CPU readback (`read_back_into`). The
+  correctness spine.
 - `WindowTarget` (feature `present`, default on) — surface + swapchain
-  over an opaque window handle; `render` returns `Presented` or
-  `NeedsResize` (resizes and minimized windows are protocol outcomes,
-  never errors). One frame in flight, FIFO presentation.
-- `RenderPipeline` — two SPIR-V stages and no vertex buffers, with an
-  optional sampled texture bound at creation. `builtin` carries the
-  embedded shader bundles — a colored triangle and a textured
-  full-target quad — each pairing its stages with the vertex count they
-  generate, so the two cannot be mismatched (sources and compile record
-  in [shaders/](shaders/README.md)).
+  over an opaque window handle; `render(&RenderDesc)` returns
+  `Presented` or `NeedsResize` (resizes and minimized windows are
+  protocol outcomes, never errors). Two frames in flight, FIFO
+  presentation.
+- `RenderDesc` / `Pass` / `Attachment` / `Item` — the frame vocabulary.
+  Attachments carry their load and store ops (`LoadOp::Clear` holds its
+  `ClearValue`, so a clear value without a clearing load is
+  unrepresentable); depth is a per-target internal image a pass opts
+  into, sized and owned by the target. Malformed frames — no passes, a
+  first-pass `Load`, a clear value of the wrong kind, a depth-testing
+  pipeline in a depthless pass, two items naming one buffer — are
+  refused by named assertions before any GPU call.
+- `RenderPipeline` — two SPIR-V stages, optional per-instance vertex
+  input, an optional sampled texture bound at creation, and optional
+  `DepthState` (test/write, compare fixed `LESS_OR_EQUAL`). `builtin`
+  carries the embedded shader bundles — a colored triangle, a textured
+  full-target quad, and instanced quads with and without per-instance
+  depth — each pairing its stages with the vertex count they generate,
+  so the two cannot be mismatched (sources and compile record in
+  [shaders/](shaders/README.md)).
 - `Texture` — a sampled RGBA8 image, filled once from host bytes during
   creation and immutable thereafter.
 - `Sampler` — filter and address mode; `SamplerDesc::atlas()` is
@@ -45,16 +59,15 @@ the bytes.
   length check is retained in release builds; it guards memory safety).
 - **Validation is evidence, and the lanes are uneven.** The device
   suite brings devices up with `Validation::Required` and mechanically
-  asserts zero validation errors at teardown; the fault suite runs
+  asserts zero validation errors at teardown; the present smoke suite
+  runs its window target under `Validation::Required` too, so both
+  target kinds sit under the strict oracle. The fault suite runs
   `IfAvailable` with one `Required` scenario, and the golden and
-  present suites run `IfAvailable`. **No `Required` lane constructs a
-  window target**, so the strict validation oracle covers the offscreen
-  path only. Golden tests pin exact bytes on the CI-pinned software
-  rasterizer.
+  present-allocation suites run `IfAvailable`. Golden tests pin exact
+  bytes on the CI-pinned software rasterizer.
 - **Steady-state frames allocate nothing** on the engine side — pinned
-  by an allocation-counting integration test **that builds an offscreen
-  target only**. The window render path has no allocation gate; the
-  contract covers it, the test does not. Driver host allocations
+  by allocation-counting integration tests on **both** targets (the
+  offscreen gate and the window-path gate). Driver host allocations
   are instrumented separately through `VkAllocationCallbacks` into a
   per-device ledger (`host_allocation_stats`), diagnostics only.
 
@@ -81,10 +94,11 @@ presents frames where a display exists.
 
 ## Status
 
-Early-stage: the surface is exactly device + two target kinds + one
-pipeline shape + one sampled texture — no vertex buffers, no depth, no
-MSAA, one fixed descriptor layout (a combined image sampler at set 0,
-binding 0) — grown only when a consumer demands it. The `[package.metadata.renew]` table
+Early-stage: the surface is exactly device + two target kinds + the
+pass vocabulary + one pipeline shape + one sampled texture — instanced
+vertex input and target-owned depth exist; no MSAA, no image identity
+on attachments, one fixed descriptor layout (a combined image sampler
+at set 0, binding 0) — grown only when a consumer demands it. The `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
 metadata. Contract lints live in [clippy.toml](clippy.toml): thread
 spawning, clock reads, and filesystem access are rejected at lint time.

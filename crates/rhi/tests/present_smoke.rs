@@ -13,9 +13,18 @@ use renew_platform::window::{
 use std::rc::Rc;
 
 use renew_rhi::{
-    Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PresentOutcome, RenderDesc,
-    SamplerDesc, TargetError, TextureDesc, Validation, WindowTarget, builtin,
+    Attachment, ClearValue, Color, DepthState, Device, DeviceDesc, DeviceError, Extent, Item,
+    LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, SamplerDesc, StoreOp, TargetError,
+    TextureDesc, Validation, WindowTarget, builtin,
 };
+
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
 
 const FRAMES_WANTED: u32 = 10;
 /// Poll-loop iterations before declaring the run wedged.
@@ -25,6 +34,11 @@ struct SmokeApp {
     device: Option<Device>,
     target: Option<WindowTarget>,
     pipeline: Option<renew_rhi::RenderPipeline>,
+    /// A depth-testing triangle for the frame's second pass, `None`
+    /// when the adapter offers no depth format (depth-free presenting
+    /// still runs; the device suite's probe is what makes the strict
+    /// lane refuse such an adapter).
+    depth_pipeline: Option<renew_rhi::RenderPipeline>,
     size: Extent,
     frames: u32,
     updates: u32,
@@ -41,6 +55,7 @@ impl SmokeApp {
             device: None,
             target: None,
             pipeline: None,
+            depth_pipeline: None,
             size: Extent {
                 width: 0,
                 height: 0,
@@ -149,9 +164,29 @@ impl WindowApp for SmokeApp {
                 return;
             }
         };
+        // The depth exercise's pipeline: every frame's second pass
+        // carries the target's depth image, so a run past the in-flight
+        // count renders both slots' depth images — the per-slot
+        // first-use transitions and between-frame behavior execute
+        // where sync validation (Required, above) can judge them.
+        let depth_pipeline = if device.depth_format_name().is_some() {
+            match device.create_pipeline(
+                &PipelineDesc::new(builtin::TRIANGLE, target.format())
+                    .depth_state(DepthState::read_write()),
+            ) {
+                Ok(pipeline) => Some(pipeline),
+                Err(error) => {
+                    self.failure = Some(format!("depth pipeline failed: {error}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
+        self.depth_pipeline = depth_pipeline;
     }
 
     fn event(&mut self, event: WindowEvent) {
@@ -168,7 +203,7 @@ impl WindowApp for SmokeApp {
                 let Some(target) = &mut self.target else {
                     return;
                 };
-                let clear = Color::new(0.1, 0.2, 0.3, 1.0);
+                let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
                 if self.frames == 5 && !self.cycled {
                     // Dormant cycle mid-run: a zero-extent resize tears
                     // the swapchain down, a dormant render reports
@@ -192,7 +227,8 @@ impl WindowApp for SmokeApp {
                         self.failure = Some("dormant target reports a size".to_string());
                         return;
                     }
-                    match target.render(&RenderDesc::new(clear)) {
+                    let color = clear(clear_color);
+                    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                         Ok(PresentOutcome::NeedsResize) => {}
                         Ok(PresentOutcome::Presented) => {
                             self.failure = Some("dormant target presented".to_string());
@@ -208,10 +244,39 @@ impl WindowApp for SmokeApp {
                         return;
                     }
                 }
-                let mut desc = RenderDesc::new(clear);
-                if let Some(pipeline) = self.pipeline.as_ref() {
-                    desc = desc.pipeline(pipeline);
-                }
+                let color = clear(clear_color);
+                let items_storage;
+                let items: &[Item<'_>] = match self.pipeline.as_ref() {
+                    Some(pipeline) => {
+                        items_storage = [Item::new(pipeline)];
+                        &items_storage
+                    }
+                    None => &[],
+                };
+                // Two passes wherever a depth format exists: the
+                // textured pass, then a pass that Loads its result and
+                // draws the depth-tested triangle over it — multi-pass,
+                // color Load, and the per-slot depth image, all on the
+                // window path under Required validation.
+                let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+                let depth_items_storage;
+                let passes_two;
+                let passes_one;
+                let passes: &[Pass<'_>] = if let Some(depth_pipeline) = self.depth_pipeline.as_ref()
+                {
+                    depth_items_storage = [Item::new(depth_pipeline)];
+                    passes_two = [
+                        Pass::new(&color, items),
+                        Pass::new(&load, &depth_items_storage).depth(Attachment::new(
+                            LoadOp::Clear(ClearValue::Depth(1.0)),
+                            StoreOp::Discard,
+                        )),
+                    ];
+                    &passes_two
+                } else {
+                    passes_one = [Pass::new(&color, items)];
+                    &passes_one
+                };
                 // The ring must actually cycle. A ring stuck on slot
                 // zero is still *correct* -- every frame just waits its
                 // own fence and the pipeline serialises -- so no other
@@ -219,7 +284,7 @@ impl WindowApp for SmokeApp {
                 // slots were used and check at the end that more than
                 // one was.
                 self.slots_seen |= 1u32 << target.frame_slot();
-                match target.render(&desc) {
+                match target.render(&RenderDesc::new(passes)) {
                     Ok(PresentOutcome::Presented) => self.frames += 1,
                     Ok(PresentOutcome::NeedsResize) => {
                         if let Err(error) = target.resize(self.size) {
@@ -264,6 +329,7 @@ fn main() {
     // findings from destruction are counted in the verdict.
     drop(app.target.take());
     drop(app.pipeline.take());
+    drop(app.depth_pipeline.take());
     let report = app.device.as_ref().map(Device::validation_report);
 
     match run {

@@ -1,7 +1,10 @@
 //! Where a frame goes, and the colour it goes there with.
 
 use renew_frame::Alpha;
-use renew_rhi::{Color, OffscreenTarget, RenderDesc, TargetError, TargetFormat};
+use renew_rhi::{
+    Attachment, ClearValue, Color, LoadOp, OffscreenTarget, RenderDesc, StoreOp, TargetError,
+    TargetFormat,
+};
 #[cfg(feature = "window")]
 use renew_rhi::{PresentOutcome, WindowTarget};
 
@@ -17,11 +20,12 @@ use crate::world::World;
 /// dependency.
 ///
 /// **Not boxed, deliberately.** The window variant is the larger of the
-/// two and grew when the target gained a frame ring — 320 bytes against
-/// 96. Boxing would trade 224 bytes of stack, on a value held exactly
-/// once for the lifetime of the sample, for a heap allocation at creation
-/// and a pointer chase on **every frame**. That is the wrong direction on
-/// the one path this crate is here to measure, and the allocation gate on
+/// two and grew again when the target gained per-slot buffer retention
+/// — 472 bytes against 200 (measured on `x86_64` Windows). Boxing would
+/// trade 272 bytes of stack, on a value held exactly once for the
+/// lifetime of the sample, for a heap allocation at creation and a
+/// pointer chase on **every frame**. That is the wrong direction on the
+/// one path this crate is here to measure, and the allocation gate on
 /// the window path now watches it.
 #[expect(
     clippy::large_enum_variant,
@@ -66,6 +70,15 @@ impl Surface {
                 .map(|outcome| outcome == PresentOutcome::Presented),
         }
     }
+}
+
+/// The one color attachment every frame here renders into: cleared to
+/// `clear`, stored. The frame itself is composed at each call site —
+/// the borrows in a composed frame end at the render call, so nothing
+/// stores it.
+#[must_use]
+pub fn clear_attachment(clear: Color) -> Attachment {
+    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
 }
 
 /// The clear colour for a frame standing `alpha` of the way past the

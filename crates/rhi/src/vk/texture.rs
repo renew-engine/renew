@@ -149,8 +149,15 @@ impl Drop for Partial<'_> {
         // flight to wait for, and this runs on every upload.
         if self.fence.is_some() {
             // SAFETY: device live via the spine `Rc`; blocking until
-            // every queue is idle.
-            let _ = unsafe { device.device_wait_idle() };
+            // every queue is idle. Best-effort quiesce; failure is
+            // logged, never a panic (D5) — the diag record is the only
+            // observable this path has.
+            if let Err(code) = unsafe { device.device_wait_idle() } {
+                renew_diag::error!(
+                    target: "renew-rhi",
+                    "wait-idle at upload teardown failed: {code:?}"
+                );
+            }
         }
         // SAFETY: category 2 (ash dispatch): every handle in an
         // `Option` here was created by this module with these callbacks

@@ -24,9 +24,18 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use renew_rhi::{
-    AdapterKind, Blend, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, RenderDesc,
-    SamplerDesc, TargetFormat, TextureDesc, Validation, builtin,
+    AdapterKind, Attachment, Blend, ClearValue, Color, DepthState, Device, DeviceDesc, DeviceError,
+    Extent, Item, LoadOp, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp, TargetFormat,
+    TextureDesc, Validation, builtin,
 };
+
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
 
 fn strict() -> bool {
     std::env::var_os("RENEW_GOLDEN").is_some_and(|v| v == "1")
@@ -107,9 +116,9 @@ fn clear_is_byte_exact_everywhere() {
         })
         .expect("offscreen target");
     // 51/255, 102/255, 153/255: unambiguous UNORM conversions.
-    let clear = Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0);
+    let color = clear(Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0));
     target
-        .render(&RenderDesc::new(clear))
+        .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
         .expect("clear render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -154,8 +163,11 @@ fn triangle_matches_structure_and_the_committed_golden() {
             &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm).blend(Blend::Opaque),
         )
         .expect("triangle pipeline");
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let items = [Item::new(&pipeline)];
+    let passes = [Pass::new(&color, &items)];
     target
-        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
+        .render(&RenderDesc::new(&passes))
         .expect("triangle render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -163,7 +175,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
     // Determinism self-check: the same frame twice is the same bytes,
     // on every adapter — the cheap local form of the golden property.
     target
-        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
+        .render(&RenderDesc::new(&passes))
         .expect("second triangle render");
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);
@@ -376,8 +388,11 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     // A clear colour that appears nowhere in the atlas, so a quad that
     // failed to cover the target would show as unwritten rather than
     // blending into a plausible result.
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let items = [Item::new(&pipeline)];
+    let passes = [Pass::new(&color, &items)];
     target
-        .render(&RenderDesc::new(Color::new(1.0, 0.0, 1.0, 1.0)).pipeline(&pipeline))
+        .render(&RenderDesc::new(&passes))
         .expect("textured render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -413,7 +428,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     // happily with the keep-alive deleted. Rendering once more after the
     // caller's handles are gone is what makes the claim testable.
     target
-        .render(&RenderDesc::new(Color::new(1.0, 0.0, 1.0, 1.0)).pipeline(&pipeline))
+        .render(&RenderDesc::new(&passes))
         .expect("render after the caller dropped its handles");
     target.read_back_into(&mut pixels);
     let texel = &ATLAS[..4];
@@ -478,15 +493,14 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
     let mut bytes = instance([-0.5, -0.5], [1.0, 0.0, 0.0, 1.0]);
     bytes.extend(instance([0.5, 0.5], [0.0, 0.0, 1.0, 1.0]));
 
-    let desc = RenderDesc::new(Color {
+    let color = clear(Color {
         r: 0.0,
         g: 0.0,
         b: 0.0,
         a: 1.0,
-    })
-    .pipeline(&pipeline)
-    .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 2));
-    target.render(&desc)?;
+    });
+    let items = [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 2))];
+    target.render(&RenderDesc::new(&[Pass::new(&color, &items)]))?;
 
     let mut pixels = vec![0u8; (extent.width * extent.height * 4) as usize];
     target.read_back_into(&mut pixels);
@@ -508,15 +522,8 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
 
     // Second frame, same buffer, different bytes: green replaces red.
     let bytes = instance([-0.5, -0.5], [0.0, 1.0, 0.0, 1.0]);
-    let desc = RenderDesc::new(Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 1.0,
-    })
-    .pipeline(&pipeline)
-    .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1));
-    target.render(&desc)?;
+    let items = [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1))];
+    target.render(&RenderDesc::new(&[Pass::new(&color, &items)]))?;
     target.read_back_into(&mut pixels);
     assert_eq!(
         at(&pixels, extent.width, 16, 16),
@@ -527,6 +534,259 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
         at(&pixels, extent.width, 48, 48),
         [0, 0, 0, 255],
         "one instance now: the second quad is gone"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One depth-instance record, packed exactly as `INSTANCED_DEPTH_LAYOUT`
+/// declares: (centre.xy, depth, unused) vec4, colour vec4. The layout
+/// slice, the shader's locations and this function describe the same
+/// bytes.
+fn depth_instance(centre: [f32; 2], depth: f32, colour: [f32; 4]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(32);
+    for v in [centre[0], centre[1], depth, 0.0] {
+        bytes.extend_from_slice(&v.to_ne_bytes());
+    }
+    for v in colour {
+        bytes.extend_from_slice(&v.to_ne_bytes());
+    }
+    bytes
+}
+
+/// The depth-test oracle: two fully overlapping quads at decisively
+/// separated depths (far above D24/D32 quantization), drawn far-first
+/// AND near-first — the near quad wins both ways, which only a working
+/// depth test produces; painter's order would let the far quad win the
+/// second frame. Structural on every adapter; committed golden on the
+/// pinned lane. The pass's depth attachment stores nothing
+/// (`StoreOp::Discard`) — arm-covered here, not semantics-verified,
+/// because nothing in this suite ever loads depth across passes.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two draw orders plus the committed-golden ritual; splitting hides the symmetry"
+)]
+fn depth_test_keeps_the_near_quad_in_either_draw_order() -> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 64;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    if device.depth_format_name().is_none() {
+        assert!(
+            !strict(),
+            "the rendering lane's adapter must offer a depth format"
+        );
+        eprintln!("SKIP: adapter offers no chain depth format");
+        return Ok(());
+    }
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+            .instance_input(builtin::INSTANCED_DEPTH_LAYOUT)
+            .depth_state(DepthState::read_write()),
+    )?;
+    let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+    let far = depth_instance([0.0, 0.0], 0.75, [1.0, 0.0, 0.0, 1.0]);
+    let near = depth_instance([0.0, 0.0], 0.25, [0.0, 0.0, 1.0, 1.0]);
+    let far_first: Vec<u8> = [far.clone(), near.clone()].concat();
+    let near_first: Vec<u8> = [near, far].concat();
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let depth_attachment = Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    let color = clear(black);
+    let items =
+        [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer, &far_first, 2))];
+    let pass = Pass::new(&color, &items).depth(depth_attachment);
+    target.render(&RenderDesc::new(&[pass]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "far-first: the near quad wins on top"
+    );
+    assert_eq!(at(&pixels, 0, 0), [0, 0, 0, 255], "corner stays clear");
+
+    let items =
+        [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer, &near_first, 2))];
+    let pass = Pass::new(&color, &items).depth(depth_attachment);
+    target.render(&RenderDesc::new(&[pass]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "near-first: the far quad must FAIL the depth test — painter's order would paint it"
+    );
+    assert_eq!(at(&pixels, 0, 0), [0, 0, 0, 255], "corner stays clear");
+
+    // Teardown first, oracle second: destruction-time findings count.
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+
+    // Exact comparison only on the strict lane, as G2: any other
+    // rasterizer proves structure above, not bytes.
+    let adapter = device.adapter();
+    if adapter.kind != AdapterKind::SoftwareRasterizer {
+        assert!(
+            !strict(),
+            "RENEW_GOLDEN=1 but the selected adapter is {:?} ({}) — the \
+             rendering lane must run on the pinned software rasterizer",
+            adapter.kind,
+            adapter.name
+        );
+        eprintln!(
+            "SKIP exact-golden: adapter {:?} ({}) is not a software rasterizer",
+            adapter.kind, adapter.name
+        );
+        return Ok(());
+    }
+    if !strict() {
+        eprintln!(
+            "SKIP exact-golden: software rasterizer {} outside the pinned lane \
+             (set RENEW_GOLDEN=1 only where the stack matches the golden's provenance)",
+            adapter.name
+        );
+        return Ok(());
+    }
+
+    let dir = goldens_dir();
+    let golden = dir.join("depth-64x64.rgba");
+    let rendered_hash = fnv1a(&pixels);
+    let provenance = format!(
+        "depth-64x64.rgba — RGBA8, tightly packed, row-major, {SIZE}x{SIZE}\n\
+         the near-first frame of the depth oracle (blue near quad over red far)\n\
+         fnv1a-64 of the pixel bytes: {rendered_hash:#018x}\n\
+         rendered by: {} (kind {:?}, vendor {:#06x}, device {:#06x}, driver {})\n\
+         depth format: {}\n\
+         shaders: crates/rhi/shaders (see its compile record)\n\
+         ritual: the test never writes the canonical file above — it writes\n\
+         *.candidate.rgba and fails; a human inspects the candidate (a .ppm\n\
+         is written beside it), renames it to the canonical name, and commits\n\
+         it with this sidecar. To refresh: delete the canonical file, rerun\n\
+         on the pinned software rasterizer, repeat the ritual.\n",
+        adapter.name,
+        adapter.kind,
+        adapter.vendor_id,
+        adapter.device_id,
+        adapter.driver_version,
+        device.depth_format_name().unwrap_or("(none)")
+    );
+
+    if !golden.exists() {
+        std::fs::create_dir_all(&dir).expect("create goldens dir");
+        let candidate = dir.join("depth-64x64.candidate.rgba");
+        std::fs::write(&candidate, &pixels).expect("write golden candidate");
+        write_ppm(&dir.join("depth-64x64.candidate.ppm"), &pixels, SIZE, SIZE)
+            .expect("write candidate ppm");
+        std::fs::write(dir.join("depth-64x64.provenance.txt"), provenance)
+            .expect("write provenance sidecar");
+        panic!(
+            "golden is missing; candidate written to {} (fnv1a {rendered_hash:#018x}) — \
+             inspect the .ppm, rename the candidate to the canonical name, and commit \
+             it with its sidecar. This test never passes until a human does that.",
+            candidate.display()
+        );
+    }
+
+    let expected = std::fs::read(&golden).expect("read committed golden");
+    if pixels != expected {
+        let actual = dir.join("depth-64x64.actual.rgba");
+        std::fs::write(&actual, &pixels).expect("write actual for diffing");
+        write_ppm(&dir.join("depth-64x64.actual.ppm"), &pixels, SIZE, SIZE)
+            .expect("write actual ppm");
+        let first_diff = pixels
+            .iter()
+            .zip(expected.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(usize::MAX);
+        panic!(
+            "rendered bytes diverge from the golden: first difference at byte {first_diff}, \
+             lengths {} vs {}, fnv1a {rendered_hash:#018x} vs {:#018x}; actual written to {}",
+            pixels.len(),
+            expected.len(),
+            fnv1a(&expected),
+            actual.display()
+        );
+    }
+    Ok(())
+}
+
+/// The pass-ordering oracle: pass 1 clears and draws A; pass 2 LOADS
+/// the image and draws B — where they overlap B wins, where only A
+/// reached the pixels survive the Load, binding `LoadOp::Load` and the
+/// between-pass barrier in one computed image. No committed artifact:
+/// exact quad interiors on flat colours are adapter-independent.
+#[test]
+fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 64;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+            .instance_input(builtin::INSTANCED_LAYOUT),
+    )?;
+    // One buffer per item: one buffer, one item, per frame is the
+    // contract, and this frame carries two items.
+    let buffer_a = device.create_buffer(24, renew_rhi::BufferUsage::PerFrame)?;
+    let buffer_b = device.create_buffer(24, renew_rhi::BufferUsage::PerFrame)?;
+    // Quads are 0.25 NDC wide (half-width 0.125): A at x -0.1 covers
+    // NDC [-0.225, 0.025], B at x +0.1 covers [-0.025, 0.225] — pixel
+    // columns ~25..32, ~32..39, overlapping at the centre column.
+    let bytes_a = instance([-0.1, 0.0], [1.0, 0.0, 0.0, 1.0]);
+    let bytes_b = instance([0.1, 0.0], [0.0, 0.0, 1.0, 1.0]);
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+
+    let color = clear(black);
+    let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+    let items_a =
+        [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer_a, &bytes_a, 1))];
+    let items_b =
+        [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer_b, &bytes_b, 1))];
+    let passes = [Pass::new(&color, &items_a), Pass::new(&load, &items_b)];
+    target.render(&RenderDesc::new(&passes))?;
+
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, 27, SIZE / 2),
+        [255, 0, 0, 255],
+        "where only pass 1 drew, the Load preserved its pixels"
+    );
+    assert_eq!(
+        at(&pixels, 32, SIZE / 2),
+        [0, 0, 255, 255],
+        "where both drew, the second pass wins"
+    );
+    assert_eq!(
+        at(&pixels, 36, SIZE / 2),
+        [0, 0, 255, 255],
+        "where only pass 2 drew"
+    );
+    assert_eq!(
+        at(&pixels, 0, 0),
+        [0, 0, 0, 255],
+        "the first pass's clear survives the Load where nothing drew"
     );
 
     assert_no_validation_errors(&device);
@@ -552,15 +812,15 @@ fn oversized_frame_data_is_a_retained_contract_check() -> Result<(), Box<dyn std
     let buffer = device.create_buffer(8, renew_rhi::BufferUsage::PerFrame)?;
     let bytes = [0u8; 9];
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let desc = RenderDesc::new(Color {
+        let color = clear(Color {
             r: 0.0,
             g: 0.0,
             b: 0.0,
             a: 1.0,
-        })
-        .pipeline(&pipeline)
-        .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1));
-        let _ = target.render(&desc);
+        });
+        let items =
+            [Item::new(&pipeline).frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1))];
+        let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
     }));
     assert!(
         refused.is_err(),

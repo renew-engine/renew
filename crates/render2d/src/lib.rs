@@ -10,12 +10,13 @@
 //!   carry their alpha multiplied into their color channels; the
 //!   pipeline composites `src + dst * (1 - src.a)`. Bytes that break
 //!   the convention composite wrong, visibly, not unsafely.
-//! - **All allocations happen at creation.** `begin`/`push`/`desc`
+//! - **All allocations happen at creation.** `begin`/`push`/`item`
 //!   allocate nothing; the crate's gate measures it.
-//! - **Target-agnostic.** [`SpriteRenderer::desc`] returns the
-//!   rendering crate's own frame descriptor; the caller hands it to
-//!   whichever target it holds. This crate never renders, never
-//!   presents, and never touches a window.
+//! - **Target-agnostic.** [`SpriteRenderer::item`] returns the
+//!   rendering crate's own draw item and [`attachment`] the matching
+//!   color attachment; the caller composes the frame on its own stack
+//!   and hands it to whichever target it holds. This crate never
+//!   renders, never presents, and never touches a window.
 //!
 //! The pure half ([`Canvas`], [`Region`], [`Sprite`], the ortho and UV
 //! maps) lives apart from the device half ([`SpriteRenderer`]) so the
@@ -30,4 +31,4 @@ mod fill;
 mod gpu;
 
 pub use fill::{Canvas, Region, Sprite};
-pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer};
+pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer, attachment};

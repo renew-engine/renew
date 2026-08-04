@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 
 use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
-    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, TargetFormat, Validation,
+    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
+    Validation,
 };
 use renew_sample_glide::{SceneSprite, Tile, scene, world_at};
 use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH, World};
@@ -160,16 +161,16 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
         };
         renderer.push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
     }
-    target
-        .render(&renderer.desc(SKY))
-        .map_err(|error| error.to_string())?;
+    let color = [renew_render2d::attachment(SKY)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
+    let frame = RenderDesc::new(&passes);
+    target.render(&frame).map_err(|error| error.to_string())?;
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
     // Determinism self-check: the same frame twice is the same bytes.
-    target
-        .render(&renderer.desc(SKY))
-        .map_err(|error| error.to_string())?;
+    target.render(&frame).map_err(|error| error.to_string())?;
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);
     if pixels != second {

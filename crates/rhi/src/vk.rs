@@ -14,9 +14,12 @@
 pub mod alloc;
 pub mod buffer;
 pub mod debug;
+pub mod depth;
 pub mod device;
 pub mod offscreen;
+pub mod pass;
 pub mod pipeline;
 #[cfg(feature = "present")]
 pub mod swapchain;
 pub mod texture;
+pub mod transition;

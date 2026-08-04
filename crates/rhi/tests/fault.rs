@@ -23,9 +23,9 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use renew_rhi::{
-    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, PipelineDesc, PipelineError,
-    RenderDesc, Sampler, SamplerDesc, Shaders, TargetError, TargetFormat, Texture, TextureDesc,
-    Validation, builtin,
+    Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, Item,
+    LoadOp, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders, StoreOp,
+    TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -33,6 +33,14 @@ const SIZE: Extent = Extent {
     height: 64,
 };
 const CLEAR: Color = Color::new(0.0, 0.0, 0.0, 1.0);
+
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
 
 /// Bytes that pass this crate's structural SPIR-V gate — magic word,
 /// word-aligned, non-empty — and nothing beyond it: version word zero,
@@ -473,8 +481,9 @@ fn every_driver_failure_ladder_behaves() {
                     &recovered.extent(),
                 ));
             }
+            let color = clear(CLEAR);
             recovered
-                .render(&RenderDesc::new(CLEAR))
+                .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
         }));
     }
@@ -515,8 +524,10 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("{name}: recovery target failed: {error}"))?;
+            let color = clear(CLEAR);
+            let items = [Item::new(&pipeline)];
             target
-                .render(&RenderDesc::new(CLEAR).pipeline(&pipeline))
+                .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .map_err(|error| format!("{name}: recovery render failed: {error}"))
         }));
     }
@@ -872,13 +883,14 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("{name}: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => creation_named(name, call, &error)?,
                 Ok(()) => return Err(format!("{name}: the frame succeeded despite the fault")),
             }
             // Not wedged, not poisoned: the next frame goes through.
             target
-                .render(&RenderDesc::new(CLEAR))
+                .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
                 .map_err(|error| format!("{name}: recovery frame failed: {error}"))?;
             let mut pixels = vec![0u8; target.byte_len()];
             target.read_back_into(&mut pixels);
@@ -895,11 +907,12 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D5: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D5", "DeviceLost", &other)),
             }
-            match target.render(&RenderDesc::new(CLEAR)) {
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D5", "DeviceLost on the next frame", &other)),
             }
@@ -924,11 +937,12 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D6: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => timeout_named("D6", "vkWaitForFences", &error)?,
                 Ok(()) => return Err("D6: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(&RenderDesc::new(CLEAR)) {
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => {
                     timeout_named("D6", "target wedged by an earlier incomplete frame", &error)?;
                 }
@@ -956,12 +970,13 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D7: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(TargetError::DeviceLost) => {}
                 other => return Err(wrong("D7", "DeviceLost", &other)),
             }
             // Wedged first, so the wedge answer wins over the poison.
-            match target.render(&RenderDesc::new(CLEAR)) {
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => {
                     timeout_named("D7", "target wedged by an earlier incomplete frame", &error)?;
                 }
@@ -984,11 +999,12 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("D8: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => creation_named("D8", "vkResetFences", &error)?,
                 Ok(()) => return Err("D8: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(&RenderDesc::new(CLEAR)) {
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => {
                     timeout_named("D8", "target wedged by an earlier incomplete frame", &error)
                 }
@@ -1104,8 +1120,9 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("E5: target: {error}"))?;
+            let color = clear(CLEAR);
             target
-                .render(&RenderDesc::new(CLEAR))
+                .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
                 .map_err(|error| format!("E5: frame after a failed wait-idle: {error}"))
         },
     ));
@@ -1177,16 +1194,137 @@ fn every_driver_failure_ladder_behaves() {
             let mut target = device
                 .create_offscreen_target(SIZE)
                 .map_err(|error| format!("F1: target: {error}"))?;
-            match target.render(&RenderDesc::new(CLEAR)) {
+            let color = clear(CLEAR);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => creation_named("F1", "vkWaitForFences", &error)?,
                 Ok(()) => return Err("F1: the frame succeeded despite the fault".to_string()),
             }
-            match target.render(&RenderDesc::new(CLEAR)) {
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
                 Err(error) => {
                     timeout_named("F1", "target wedged by an earlier incomplete frame", &error)
                 }
                 Ok(()) => Err("F1: a wedged target rendered".to_string()),
             }
+        },
+    ));
+
+    // F2: the wedge arm with per-frame bytes in flight. A timed-out
+    // tail wait returns with the submit possibly still reading the
+    // bound vertex buffer, and the caller's borrow ends at that return
+    // — dropping the handle must free nothing the submit can touch,
+    // which is the retention table's whole job. The scenario is the
+    // arm's exercise: wedge, drop, and the run ends without a crash and
+    // validation-clean (device_case's closing check).
+    verdicts.push(device_case(
+        "F2 wedge/retains-frame-buffers",
+        "vkWaitForFences=TIMEOUT",
+        |device| {
+            let mut target = device
+                .create_offscreen_target(SIZE)
+                .map_err(|error| format!("F2: target: {error}"))?;
+            let instanced = device
+                .create_pipeline(
+                    &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+                        .instance_input(builtin::INSTANCED_LAYOUT),
+                )
+                .map_err(|error| format!("F2: instanced pipeline: {error}"))?;
+            let buffer = device
+                .create_buffer(24, renew_rhi::BufferUsage::PerFrame)
+                .map_err(|error| format!("F2: buffer: {error}"))?;
+            let bytes = [0u8; 24];
+            let color = clear(CLEAR);
+            let items =
+                [Item::new(&instanced).frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1))];
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &items)])) {
+                Err(error) => timeout_named("F2", "vkWaitForFences", &error)?,
+                Ok(()) => return Err("F2: the frame succeeded despite the fault".to_string()),
+            }
+            // The caller is done with its handle; the target is not.
+            drop(buffer);
+            match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
+                Err(error) => {
+                    timeout_named("F2", "target wedged by an earlier incomplete frame", &error)?;
+                }
+                Ok(()) => return Err("F2: a wedged target rendered".to_string()),
+            }
+            // Drop's quiesce is what finally proves the work ended and
+            // releases the retained memory.
+            drop(target);
+            Ok(())
+        },
+    ));
+
+    // ---- E continued: every silent teardown discard, logged ---------
+    // The layer arms when an instance is created, so each case wraps
+    // its whole scenario in `with_fault` exactly as E6 does, and each
+    // window's first wait-idle is reasoned out beside its drop. The
+    // no-ordinal spec is first-match: one wait-idle per window is
+    // faulted, the rest run clean — and E6's own premise holds in ITS
+    // window untouched, because every case here owns a separate one.
+
+    // E9: the offscreen target's teardown wait-idle fails — the diag
+    // record is the only observable.
+    verdicts.push(with_fault(
+        "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+        || {
+            teardown_case("E9 offscreen-teardown/wait-idle-failure", |device| {
+                let target = device
+                    .create_offscreen_target(SIZE)
+                    .map_err(|error| format!("target: {error}"))?;
+                clear_records();
+                // Nothing before this drop performed a wait-idle
+                // (bring-up and target creation make none), so the
+                // target's own Drop owns the window's first — the
+                // faulted one; the spine's follows, unfaulted.
+                drop(target);
+                recorded("wait-idle at offscreen teardown failed")?;
+                drop(device);
+                Ok(())
+            })
+        },
+    ));
+
+    // E10: the pipeline's teardown wait-idle fails — same contract.
+    verdicts.push(with_fault(
+        "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+        || {
+            teardown_case("E10 pipeline-teardown/wait-idle-failure", |device| {
+                let pipeline = device
+                    .create_pipeline(&pipeline_desc())
+                    .map_err(|error| format!("pipeline: {error}"))?;
+                clear_records();
+                // Pipeline creation performs no wait-idle: its Drop
+                // owns the window's first — the faulted one.
+                drop(pipeline);
+                recorded("wait-idle at pipeline teardown failed")?;
+                drop(device);
+                Ok(())
+            })
+        },
+    ));
+
+    // E11: the upload machinery's guarded teardown wait-idle fails —
+    // logged, and the texture itself still comes out whole (the wait is
+    // best-effort cleanup, not part of the upload's correctness).
+    verdicts.push(with_fault(
+        "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+        || {
+            teardown_case("E11 upload-teardown/wait-idle-failure", |device| {
+                clear_records();
+                // The upload's fence-guarded teardown inside
+                // create_texture performs the window's first wait-idle
+                // (the upload's fence wait is vkWaitForFences, another
+                // name) — the faulted one.
+                let texture = device
+                    .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+                    .map_err(|error| {
+                        format!("the upload must survive a logged failure: {error}")
+                    })?;
+                recorded("wait-idle at upload teardown failed")?;
+                drop(texture);
+                drop(device);
+                Ok(())
+            })
         },
     ));
 

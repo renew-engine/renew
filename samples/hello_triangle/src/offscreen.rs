@@ -12,13 +12,13 @@ use renew_frame::{
 };
 use renew_platform::Clock;
 use renew_rhi::{
-    AdapterInfo, Device, DeviceDesc, Extent, PipelineDesc, RenderDesc, RenderPipeline, Validation,
-    builtin,
+    AdapterInfo, Device, DeviceDesc, Extent, Item, Pass, PipelineDesc, RenderDesc, RenderPipeline,
+    Validation, builtin,
 };
 
 use crate::cli::{Options, Report};
 use crate::error::{SampleError, device_error, pipeline_error, render_error, target_error};
-use crate::render::{Surface, clear_color};
+use crate::render::{Surface, clear_attachment, clear_color};
 use crate::world::World;
 
 /// The headless image size. Small on purpose: the oracle compares every
@@ -145,11 +145,23 @@ impl HeadlessRun {
             self.world.step(step);
         }
         let clear = clear_color(&self.world, plan.alpha());
-        let mut desc = RenderDesc::new(clear);
-        if let Some(pipeline) = self.pipeline.as_ref() {
-            desc = desc.pipeline(pipeline);
-        }
-        let drawn = self.surface.render(&desc).map_err(render_error)?;
+        // The frame, composed on this stack: one pass, cleared to the
+        // world's colour, drawing the triangle when a pipeline exists.
+        // The borrows end at the render call.
+        let color = [clear_attachment(clear)];
+        let items_storage;
+        let items: &[Item<'_>] = match self.pipeline.as_ref() {
+            Some(pipeline) => {
+                items_storage = [Item::new(pipeline)];
+                &items_storage
+            }
+            None => &[],
+        };
+        let passes = [Pass::new(&color, items)];
+        let drawn = self
+            .surface
+            .render(&RenderDesc::new(&passes))
+            .map_err(render_error)?;
         self.stats.absorb(&plan);
         let cpu = self.clock.elapsed_nanos().saturating_sub(started);
         self.timing.record(Nanos::from_nanos(cpu), drawn);
@@ -170,11 +182,19 @@ impl HeadlessRun {
     /// [`SampleError::Failed`] if the renderer could not draw.
     pub fn redraw(&mut self) -> Result<(), SampleError> {
         let clear = clear_color(&self.world, Alpha::ZERO);
-        let mut desc = RenderDesc::new(clear);
-        if let Some(pipeline) = self.pipeline.as_ref() {
-            desc = desc.pipeline(pipeline);
-        }
-        self.surface.render(&desc).map_err(render_error)?;
+        let color = [clear_attachment(clear)];
+        let items_storage;
+        let items: &[Item<'_>] = match self.pipeline.as_ref() {
+            Some(pipeline) => {
+                items_storage = [Item::new(pipeline)];
+                &items_storage
+            }
+            None => &[],
+        };
+        let passes = [Pass::new(&color, items)];
+        self.surface
+            .render(&RenderDesc::new(&passes))
+            .map_err(render_error)?;
         Ok(())
     }
 

@@ -42,8 +42,9 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
-    PresentOutcome, RenderDesc, TargetError, Validation, WindowTarget, builtin,
+    Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, FrameData,
+    Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, StoreOp, TargetError, Validation,
+    WindowTarget, builtin,
 };
 
 const CLEAR: Color = Color::new(0.1, 0.2, 0.3, 1.0);
@@ -57,8 +58,53 @@ const UPDATE_BUDGET: u32 = 20_000;
 
 type Verdict = Result<(), String>;
 
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
+
 fn strict() -> bool {
     std::env::var_os("RENEW_FAULT_STRICT").is_some_and(|value| value == "1")
+}
+
+/// Records the diag channel: a teardown wait-idle that fails reports
+/// nowhere else — the last caller is gone, so the diag record *is* the
+/// observable (the offscreen fault suite's shape, for this suite's one
+/// teardown case).
+struct Capture;
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE: Capture = Capture;
+
+impl renew_diag::Sink for Capture {
+    fn write(&self, record: &renew_diag::Record<'_>) {
+        if let Ok(mut captured) = CAPTURED.lock() {
+            captured.push(format!("{} {}", record.level(), record.message()));
+        }
+    }
+}
+
+/// Forget everything recorded so far, so the scenario reads only what
+/// it caused.
+fn clear_records() {
+    if let Ok(mut captured) = CAPTURED.lock() {
+        captured.clear();
+    }
+}
+
+/// Assert some record since the last [`clear_records`] contains
+/// `needle`.
+fn recorded(needle: &str) -> Verdict {
+    match CAPTURED.lock() {
+        Ok(captured) if captured.iter().any(|line| line.contains(needle)) => Ok(()),
+        Ok(captured) => Err(format!(
+            "no diagnostic contains {needle:?}; the channel carried {captured:?}"
+        )),
+        Err(_) => Err("the capture sink is poisoned".to_string()),
+    }
 }
 
 /// Set `name` to `value`, or remove it when `value` is empty.
@@ -481,10 +527,11 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
     ),
 ];
 
-/// The two scenarios that arm nothing, run after both tables.
-// S1 and S2 run unfaulted; S3 arms a COMPOUND fault through the same
-// path the ladder uses, but does not fit the table's one-call shape.
-const UNFAULTED_SCENARIOS: usize = 3;
+/// The scenarios past both tables. S1 and S2 run unfaulted; S3 arms a
+// COMPOUND fault through the same path the ladder uses, but does not
+// fit the table's one-call shape; S4 arms the teardown wait-idle fault
+// and reads the diag channel, the only observable a Drop has.
+const UNFAULTED_SCENARIOS: usize = 4;
 /// How many scenarios there are in total.
 const SCENARIOS: usize = LADDER.len() + QUIRKS.len() + UNFAULTED_SCENARIOS;
 
@@ -495,7 +542,8 @@ fn assert_dormant(target: &mut WindowTarget) -> Verdict {
     if extent.width != 0 || extent.height != 0 {
         return Err(format!("expected a dormant target, got extent {extent:?}"));
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::NeedsResize) => Ok(()),
         other => Err(wrong("NeedsResize from a dormant target", &other)),
     }
@@ -506,7 +554,8 @@ fn assert_recovers(target: &mut WindowTarget, size: Extent) -> Verdict {
     target
         .resize(size)
         .map_err(|error| format!("recovery resize failed: {error}"))?;
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented after recovery", &other)),
     }
@@ -538,23 +587,18 @@ fn failed_quiesce_retains_frame_buffers(
         .create_buffer(64, BufferUsage::PerFrame)
         .map_err(|error| format!("per-frame buffer failed: {error}"))?;
     let bytes = [0u8; 24];
+    let color = clear(CLEAR);
 
     // Frame 1 presents and its slot retains the buffer.
-    match target.render(
-        &RenderDesc::new(CLEAR)
-            .pipeline(&pipeline)
-            .frame_data(FrameData::new(&buffer, &bytes, 1)),
-    ) {
+    let items = [Item::new(&pipeline).frame_data(FrameData::new(&buffer, &bytes, 1))];
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &items)])) {
         Ok(PresentOutcome::Presented) => {}
         other => return Err(wrong("Presented on the first frame", &other)),
     }
 
     // Frame 2: the submit fails, the abort's quiesce fails too.
-    match target.render(
-        &RenderDesc::new(CLEAR)
-            .pipeline(&pipeline)
-            .frame_data(FrameData::new(&buffer, &bytes, 1)),
-    ) {
+    let items = [Item::new(&pipeline).frame_data(FrameData::new(&buffer, &bytes, 1))];
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &items)])) {
         Err(error) => Expect::Creation("vkQueueSubmit2").matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
@@ -578,7 +622,8 @@ fn assert_poison_sticks(
     window: &NativeWindow,
     size: Extent,
 ) -> Verdict {
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(TargetError::DeviceLost) => {}
         other => return Err(wrong("DeviceLost from the next frame", &other)),
     }
@@ -745,7 +790,8 @@ fn every_frame_aborts(
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
@@ -759,7 +805,7 @@ fn every_frame_aborts(
             target.extent()
         ));
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error from the rebuilt chain", &outcome)),
     }
@@ -789,7 +835,8 @@ fn presents_at(target: &mut WindowTarget, size: Extent, stage: &str) -> Verdict 
             "expected the chosen extent {size:?} {stage}, got {extent:?}"
         ));
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong(&format!("Presented {stage}"), &other)),
     }
@@ -843,7 +890,8 @@ fn build_fails(
     let mut recovered = device
         .create_window_target(window.clone(), size)
         .map_err(|error| format!("recovery build failed: {error}"))?;
-    match recovered.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match recovered.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented after recovery", &other)),
     }
@@ -854,11 +902,12 @@ fn frame_fails_chain_survives(
     target: Result<WindowTarget, TargetError>,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::Presented) => Ok(()),
         other => Err(wrong("Presented on the next frame", &other)),
     }
@@ -870,7 +919,8 @@ fn frame_fails_goes_dormant(
     size: Extent,
 ) -> Verdict {
     let mut target = built(target)?;
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => return Err(wrong("an error", &outcome)),
     }
@@ -891,8 +941,9 @@ fn slot_reuse_fails(
 ) -> Verdict {
     let mut target = built(target)?;
     let depth = target.frames_in_flight();
+    let color = clear(CLEAR);
     for frame in 0..depth {
-        match target.render(&RenderDesc::new(CLEAR)) {
+        match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
             Ok(PresentOutcome::Presented) => {}
             other => {
                 return Err(wrong(
@@ -902,7 +953,7 @@ fn slot_reuse_fails(
             }
         }
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(error) => expect.matched(&error)?,
         Ok(outcome) => {
             return Err(wrong(
@@ -916,7 +967,8 @@ fn slot_reuse_fails(
 
 fn stale_swapchain(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
     let mut target = built(target)?;
-    match target.render(&RenderDesc::new(CLEAR)) {
+    let color = clear(CLEAR);
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Ok(PresentOutcome::NeedsResize) => {}
         other => return Err(wrong("NeedsResize", &other)),
     }
@@ -931,13 +983,14 @@ fn device_lost_on_frame(
     window: &NativeWindow,
 ) -> Verdict {
     let mut target = built(target)?;
+    let color = clear(CLEAR);
     for earlier in 1..frame {
-        match target.render(&RenderDesc::new(CLEAR)) {
+        match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
             Ok(PresentOutcome::Presented) => {}
             other => return Err(wrong(&format!("Presented on frame {earlier}"), &other)),
         }
     }
-    match target.render(&RenderDesc::new(CLEAR)) {
+    match target.render(&RenderDesc::new(&[Pass::new(&color, &[])])) {
         Err(TargetError::DeviceLost) => {}
         other => return Err(wrong(&format!("DeviceLost on frame {frame}"), &other)),
     }
@@ -1107,13 +1160,35 @@ impl FaultApp {
         match after_ladder - QUIRKS.len() {
             0 => ("S1 born-dormant", born_dormant(window, size)),
             1 => ("S2 unsupported-window-handles", unsupported_handles()),
-            _ => (
+            2 => (
                 "S3 failed-quiesce-retention",
                 present_case(
                     size,
                     window,
                     "vkQueueSubmit2=ERROR_OUT_OF_HOST_MEMORY@2,                     vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
                     |device, target| failed_quiesce_retains_frame_buffers(device, target, size),
+                ),
+            ),
+            // S4: the window target's teardown wait-idle fails — the
+            // diag record is the only observable. The no-ordinal spec
+            // is first-match, and nothing before the drop performs a
+            // wait-idle (bring-up and target creation make none; no
+            // frame is rendered, no resize runs), so the target's own
+            // Drop owns this window's first — the faulted one; the
+            // spine's follows, unfaulted. R1's resize case and S3's
+            // compound arm each own separate windows, untouched.
+            _ => (
+                "S4 target-teardown/wait-idle-failure",
+                present_case(
+                    size,
+                    window,
+                    "vkDeviceWaitIdle=ERROR_OUT_OF_HOST_MEMORY",
+                    |_, target| {
+                        let target = built(target)?;
+                        clear_records();
+                        drop(target);
+                        recorded("wait-idle at window-target teardown failed")
+                    },
                 ),
             ),
         }
@@ -1186,6 +1261,7 @@ impl WindowApp for FaultApp {
 
 fn main() {
     silence_implicit_layers();
+    renew_diag::install(&CAPTURE);
     let mut app = FaultApp::new();
     let config = WindowConfig {
         title: "renew presentation faults".to_string(),
