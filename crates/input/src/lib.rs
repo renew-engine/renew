@@ -47,7 +47,12 @@
 
 // This layer resolves state; it never reports. Diagnostics about input
 // belong to whoever is driving the loop.
-#![deny(clippy::print_stdout, clippy::print_stderr)]
+// The determinism rule in the language standard: a simulation crate does not
+// perform floating-point arithmetic whose result can reach digested state.
+// Denied here rather than left to review — the lint covers operators only, so
+// it is necessary and not sufficient, but what it does cover it covers with
+// teeth.
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 use renew_event::{KeyCode, PointerButton, WindowEvent};
 

@@ -23,6 +23,14 @@
 //! so the digest is a fact about the rules and not about anyone's
 //! floating-point unit.
 
+// The determinism rule in the language standard: a simulation crate does not
+// perform floating-point arithmetic whose result can reach digested state.
+// Denied here rather than left to review — the lint covers operators only, so
+// it is necessary and not sufficient, but what it does cover it covers with
+// teeth. This world takes it easily: every quantity it simulates is
+// fixed-point, and the deny is what keeps that true under future edits.
+#![deny(clippy::float_arithmetic)]
+
 use renew_ecs::{Entities, Entity, Store};
 use renew_frame::StateHash;
 use renew_rng::{Rng, Seed, StreamId};
