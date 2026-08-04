@@ -137,18 +137,6 @@ pub fn mixer(config: MixerConfig) -> (MixerHandle, Mixer) {
 }
 
 impl Mixer {
-    /// The buffer shape this mixer converts its sounds into.
-    #[must_use]
-    pub fn config(&self) -> MixerConfig {
-        self.config
-    }
-
-    /// How many sounds are loaded.
-    #[must_use]
-    pub fn loaded(&self) -> usize {
-        self.sounds.len()
-    }
-
     /// Load `wav`, converting it once to the device's rate and channel
     /// count, and return the identifier that plays it.
     ///
@@ -490,6 +478,98 @@ mod tests {
         assert!(
             refused.is_err(),
             "a seventeenth sound is a sizing bug, refused by name"
+        );
+    }
+
+    // An identifier from another mixer indexes a table it was never
+    // part of. Ignoring it keeps the callback total — the alternative
+    // is a panic on the one thread that must never have one.
+    #[test]
+    fn an_identifier_from_another_mixer_plays_nothing() {
+        let bytes = wav_bytes(4, RATE, i16::MAX / 2);
+        let parsed = wav::parse(&bytes).expect("wav");
+        let (_first_handle, mut first) = mixer(MixerConfig::new(1, RATE));
+        let foreign = first.load(&parsed);
+        // A second mixer with nothing loaded: the identifier is valid
+        // in the first and means nothing here.
+        let (second_handle, mut second) = mixer(MixerConfig::new(1, RATE));
+        assert!(second_handle.play(foreign));
+        let mut out = [0.0f32; 4];
+        second.fill(&mut out);
+        assert!(
+            out.iter().all(|sample| *sample == 0.0),
+            "an unknown sound must be silence, not a crash: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_sound_with_no_samples_at_all_loads_and_plays_silence() {
+        let bytes = wav_bytes(0, RATE, 0);
+        let parsed = wav::parse(&bytes).expect("an empty data chunk is a legal wav");
+        let (handle, mut mix) = mixer(MixerConfig::new(1, RATE));
+        let id = mix.load(&parsed);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 4];
+        mix.fill(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0), "{out:?}");
+    }
+
+    /// A stereo PCM16 sound, so the per-channel path is exercised with
+    /// two channels that carry different values.
+    fn stereo_wav_bytes(frames: usize, rate: u32, left: i16, right: i16) -> Vec<u8> {
+        let data_len = frames * 4;
+        let mut bytes = Vec::with_capacity(44 + data_len);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&u32::try_from(36 + data_len).expect("small").to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 4).to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&u32::try_from(data_len).expect("small").to_le_bytes());
+        for _ in 0..frames {
+            bytes.extend_from_slice(&left.to_le_bytes());
+            bytes.extend_from_slice(&right.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_stereo_sound_keeps_its_channels_apart() {
+        let bytes = stereo_wav_bytes(4, RATE, i16::MAX / 2, i16::MAX / 8);
+        let parsed = wav::parse(&bytes).expect("wav");
+        let (handle, mut mix) = mixer(MixerConfig::new(2, RATE));
+        let id = mix.load(&parsed);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 8];
+        mix.fill(&mut out);
+        // Even indices are the left channel, odd the right: the louder
+        // side must stay the louder side.
+        for frame in 0..4 {
+            assert!(
+                out[frame * 2] > out[frame * 2 + 1] * 2.0,
+                "frame {frame} lost its channel separation: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stereo_sound_folds_down_for_a_mono_device() {
+        let bytes = stereo_wav_bytes(4, RATE, i16::MAX / 2, 0);
+        let parsed = wav::parse(&bytes).expect("wav");
+        let (handle, mut mix) = mixer(MixerConfig::new(1, RATE));
+        let id = mix.load(&parsed);
+        assert!(handle.play(id));
+        let mut out = [0.0f32; 4];
+        mix.fill(&mut out);
+        assert!(
+            out.iter().all(|sample| *sample > 0.4),
+            "a mono device takes the left channel: {out:?}"
         );
     }
 

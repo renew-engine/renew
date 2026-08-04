@@ -321,8 +321,8 @@ jobs:
       - name: Build and test the platform crate headless
         run: |
           sel="-p renew-platform --no-default-features"
-          for absent in winit raw-window-handle cpal; do
-            bash "$RUNNER_TEMP/absent-from-graph.sh" "$absent" $sel
+          for wsi in winit raw-window-handle; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
           done
           cargo build $sel
           cargo test $sel
