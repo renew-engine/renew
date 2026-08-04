@@ -1,7 +1,8 @@
 //! Mechanical enforcement of the fill-and-render allocation contract:
-//! after warmup, a steady-state sprite frame — begin, push, describe,
+//! after warmup, a steady-state sprite frame — begin, push, compose,
 //! render, read back — performs no heap allocation through the Rust
-//! global allocator.
+//! global allocator. The pass composition is stack arrays, so it lives
+//! inside the measured window with the render it feeds.
 //!
 //! One test in this file, deliberately: the `#[global_allocator]` is
 //! process-wide, and a second test would race the counters.
@@ -12,8 +13,10 @@
 //! would pass vacuously the moment the fill path allocated.
 
 use renew_memory::{CountingAllocator, counters};
-use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
-use renew_rhi::{Color, Device, DeviceDesc, DeviceError, Extent, TargetFormat, Validation};
+use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer, attachment};
+use renew_rhi::{
+    Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat, Validation,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -150,7 +153,12 @@ fn steady_state_fill_and_render_allocates_nothing() {
             renderer.sprites() > 0,
             "the measured frame must be non-empty"
         );
-        target.render(&renderer.desc(clear)).expect("sprite frame");
+        let color = [attachment(clear)];
+        let items = [renderer.item()];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("sprite frame");
         target.read_back_into(pixels);
     };
 

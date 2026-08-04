@@ -24,9 +24,10 @@
 
 use std::path::{Path, PathBuf};
 
-use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
+use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer, attachment};
 use renew_rhi::{
-    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, TargetFormat, Validation,
+    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
+    Validation,
 };
 
 const SIZE: u32 = 64;
@@ -204,7 +205,12 @@ fn opaque_sprites_match_the_computed_image_exactly() {
     renderer.push(&Sprite::new(RED, 8.0, 8.0).size(16.0, 16.0));
     renderer.push(&Sprite::new(GREEN, 32.0, 8.0).size(16.0, 16.0));
     renderer.push(&Sprite::new(BLUE, 16.0, 16.0).size(16.0, 16.0));
-    target.render(&renderer.desc(CLEAR)).expect("sprite render");
+    let color = [attachment(CLEAR)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("sprite render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
     // The Debug surface reports counts, never handles.
@@ -213,7 +219,7 @@ fn opaque_sprites_match_the_computed_image_exactly() {
 
     // Determinism self-check: the same frame twice is the same bytes.
     target
-        .render(&renderer.desc(CLEAR))
+        .render(&RenderDesc::new(&passes))
         .expect("second sprite render");
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);
@@ -283,14 +289,17 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
             .size(16.0, 16.0)
             .tint([0.5, 0.5, 0.5, 0.5]),
     );
+    let color = [attachment(CLEAR)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
     target
-        .render(&renderer.desc(CLEAR))
+        .render(&RenderDesc::new(&passes))
         .expect("blended render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
     target
-        .render(&renderer.desc(CLEAR))
+        .render(&RenderDesc::new(&passes))
         .expect("second blended render");
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);

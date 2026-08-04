@@ -23,14 +23,14 @@ use renew_platform::window::{
     run_window_app,
 };
 use renew_rhi::{
-    Device, DeviceDesc, Extent, PipelineDesc, RenderDesc, RenderPipeline, TargetError, Validation,
-    builtin,
+    Device, DeviceDesc, Extent, Item, Pass, PipelineDesc, RenderDesc, RenderPipeline, TargetError,
+    Validation, builtin,
 };
 
 use crate::cli::{Options, Report};
 use crate::error::{SampleError, device_error, pipeline_error, render_error, target_error};
 use crate::readout::{self, Readout};
-use crate::render::{Surface, clear_color};
+use crate::render::{Surface, clear_attachment, clear_color};
 use crate::world::World;
 
 /// What the window is called before any measurement exists, and the text
@@ -185,15 +185,18 @@ impl TriangleApp {
 
     /// Draw the world as it stands, interpolated by the stored alpha.
     fn draw(&mut self) {
-        let Some(surface) = &mut self.surface else {
+        // Surface and pipeline are built together in `bring_up`, so
+        // either both exist or neither does — one pattern says so.
+        let (Some(surface), Some(pipeline)) = (&mut self.surface, self.pipeline.as_ref()) else {
             return;
         };
         let clear = clear_color(&self.world, self.alpha);
-        let mut desc = RenderDesc::new(clear);
-        if let Some(pipeline) = self.pipeline.as_ref() {
-            desc = desc.pipeline(pipeline);
-        }
-        let outcome = surface.render(&desc);
+        // The frame, composed on this stack; the borrows end at the
+        // render call.
+        let color = [clear_attachment(clear)];
+        let items = [Item::new(pipeline)];
+        let passes = [Pass::new(&color, &items)];
+        let outcome = surface.render(&RenderDesc::new(&passes));
         self.record_draw(outcome);
     }
 

@@ -12,8 +12,9 @@ use std::rc::Rc;
 
 use renew_memory::{CountingAllocator, counters};
 use renew_rhi::{
-    BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
-    RenderDesc, SamplerDesc, TargetFormat, TextureDesc, Validation, builtin,
+    Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, FrameData,
+    Item, LoadOp, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp, TargetFormat, TextureDesc,
+    Validation, builtin,
 };
 
 /// The engine's own counting allocator, not a local copy of one.
@@ -28,10 +29,22 @@ use renew_rhi::{
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
+
 #[test]
 #[cfg_attr(
     feature = "sanitized",
     ignore = "allocation counting is invalid under instrumented allocators"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate: fixtures, warmup, and the three measured frame shapes read top to bottom"
 )]
 fn steady_state_frames_allocate_nothing() {
     let device = match Device::new(&DeviceDesc {
@@ -98,20 +111,26 @@ fn steady_state_frames_allocate_nothing() {
     // caller array filled once, out here.
     let (instanced, buffer, instance_bytes) =
         instanced_fixture(&device).expect("instanced fixture");
-    let clear = Color::new(0.1, 0.2, 0.3, 1.0);
+    // A second per-frame buffer, so one measured frame can carry
+    // several passes with several distinct buffers — the fixed-capacity
+    // retention claim is gate-observed, not just typed. Built out here
+    // like everything else that allocates.
+    let buffer_two = device
+        .create_buffer(64, BufferUsage::PerFrame)
+        .expect("second per-frame buffer");
+    let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
     // Warmup: first frames may lazily initialize driver state.
     for _ in 0..3 {
+        let color = clear(clear_color);
+        let items = [Item::new(&pipeline)];
         target
-            .render(&RenderDesc::new(clear).pipeline(&pipeline))
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup frame");
+        let items = [Item::new(&instanced).frame_data(FrameData::new(&buffer, &instance_bytes, 1))];
         target
-            .render(
-                &RenderDesc::new(clear)
-                    .pipeline(&instanced)
-                    .frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
-            )
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup instanced frame");
         target.read_back_into(&mut pixels);
     }
@@ -122,16 +141,41 @@ fn steady_state_frames_allocate_nothing() {
     // as loud as one that allocates.
     let verdict = counters::quiet_window(5, || {
         for _ in 0..16 {
+            let color = clear(clear_color);
+            let items = [Item::new(&pipeline)];
             target
-                .render(&RenderDesc::new(clear).pipeline(&pipeline))
+                .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady frame");
+            let items =
+                [Item::new(&instanced).frame_data(FrameData::new(&buffer, &instance_bytes, 1))];
             target
-                .render(
-                    &RenderDesc::new(clear)
-                        .pipeline(&instanced)
-                        .frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
-                )
+                .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady instanced frame");
+            // The multi-pass, multi-buffer frame: two passes, three
+            // items, two distinct buffers retained in one frame — the
+            // walk's loops and the retention table's width, measured on
+            // the same zero-delta terms as the single-item frames
+            // (which stay above, so a regression names its shape).
+            let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+            let first_items = [
+                Item::new(&pipeline),
+                Item::new(&instanced).frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
+            ];
+            let second_items =
+                [
+                    Item::new(&instanced).frame_data(FrameData::new(
+                        &buffer_two,
+                        &instance_bytes,
+                        1,
+                    )),
+                ];
+            let passes = [
+                Pass::new(&color, &first_items),
+                Pass::new(&load, &second_items),
+            ];
+            target
+                .render(&RenderDesc::new(&passes))
+                .expect("steady multi-item frame");
             target.read_back_into(&mut pixels);
         }
     });

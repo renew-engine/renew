@@ -1,0 +1,11 @@
+depth-64x64.rgba — RGBA8, tightly packed, row-major, 64x64
+the near-first frame of the depth oracle (blue near quad over red far)
+fnv1a-64 of the pixel bytes: 0x4c9aec040b42a525
+rendered by: llvmpipe (LLVM 18.1.3, 256 bits) (kind SoftwareRasterizer, vendor 0x10005, device 0x0000, driver 109056003)
+depth format: D32_SFLOAT
+shaders: crates/rhi/shaders (see its compile record)
+ritual: the test never writes the canonical file above — it writes
+*.candidate.rgba and fails; a human inspects the candidate (a .ppm
+is written beside it), renames it to the canonical name, and commits
+it with this sidecar. To refresh: delete the canonical file, rerun
+on the pinned software rasterizer, repeat the ritual.

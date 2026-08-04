@@ -7,9 +7,18 @@
 //! layer skip: correctness is proven where the oracle exists.
 
 use renew_rhi::{
-    AddressMode, Color, Device, DeviceDesc, DeviceError, Extent, Filter, PipelineDesc,
-    PipelineError, RenderDesc, SamplerDesc, Shaders, TargetFormat, Validation, builtin,
+    AddressMode, Attachment, BufferUsage, ClearValue, Color, DepthState, Device, DeviceDesc,
+    DeviceError, Extent, Filter, FrameData, Item, LoadOp, Pass, PipelineDesc, PipelineError,
+    RenderDesc, SamplerDesc, Shaders, StoreOp, TargetFormat, Validation, builtin,
 };
+
+/// The one color attachment these frames render into: cleared, stored.
+fn clear(color: Color) -> [Attachment; 1] {
+    [Attachment::new(
+        LoadOp::Clear(ClearValue::Color(color)),
+        StoreOp::Store,
+    )]
+}
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
 /// for the calling test to unwrap (test-only panics live in `#[test]`
@@ -126,28 +135,26 @@ fn full_frame_cycle_clear_then_triangle() {
         ))
         .expect("triangle pipeline");
 
-    // The bound case of the descriptor's Debug form. It lives here
-    // rather than in a unit test because reporting "bound" requires a
-    // real pipeline, and building one requires a device. The unbound
-    // case is a unit test beside the impl.
-    let bound = format!(
-        "{:?}",
-        RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline)
-    );
-    assert!(
-        bound.contains("pipeline: Some(\"bound\")"),
-        "a bound pipeline should report presence, not a handle: {bound}"
-    );
+    // The shape of a composed one-item frame, pinned via the
+    // descriptor's Debug form. It lives here rather than in a unit
+    // test because building an item requires a real pipeline, and
+    // building one requires a device. The empty case is a unit test
+    // beside the impl.
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let items = [Item::new(&pipeline)];
+    let passes = [Pass::new(&color, &items)];
+    let bound = format!("{:?}", RenderDesc::new(&passes));
+    assert!(bound.contains("passes: 1"), "{bound}");
+    assert!(bound.contains("items_per_pass: [1]"), "{bound}");
 
-    let clear = Color::new(0.0, 0.0, 0.0, 1.0);
     target
-        .render(&RenderDesc::new(clear))
+        .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
         .expect("clear-only render");
     let mut cleared = vec![0u8; target.byte_len()];
     target.read_back_into(&mut cleared);
 
     target
-        .render(&RenderDesc::new(clear).pipeline(&pipeline))
+        .render(&RenderDesc::new(&passes))
         .expect("triangle render");
     let mut drawn = vec![0u8; target.byte_len()];
     target.read_back_into(&mut drawn);
@@ -180,8 +187,9 @@ fn device_churn_three_rounds() {
                 height: 32,
             })
             .expect("offscreen target");
+        let color = clear(Color::new(0.5, 0.5, 0.5, 1.0));
         target
-            .render(&RenderDesc::new(Color::new(0.5, 0.5, 0.5, 1.0)))
+            .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
             .expect("render");
         // Teardown first, oracle second: destruction-time findings
         // count in every round.
@@ -211,8 +219,10 @@ fn resources_keep_the_device_alive_past_the_handle() {
         .expect("pipeline");
     // The handle goes away; the spine lives on through the resources.
     drop(device);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let items = [Item::new(&pipeline)];
     target
-        .render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&pipeline))
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
         .expect("render after the device handle dropped");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
@@ -280,12 +290,250 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         ))
         .expect("pipeline on the other device");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = target.render(&RenderDesc::new(Color::new(0.0, 0.0, 0.0, 1.0)).pipeline(&foreign));
+        let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+        let items = [Item::new(&foreign)];
+        let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
     }));
     assert!(
         outcome.is_err(),
         "mixing objects across devices must trip the dev-build contract check"
     );
+}
+
+/// Every frame-shape refusal, driven. The contract asserts fire before
+/// any fence is waited or written, so one target serves every case and
+/// stays reusable after each panic — proven at the end by rendering a
+/// well-formed frame through the same target.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one refusal per contract clause; the list is the point"
+)]
+fn malformed_frames_are_refused_by_name() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Unorm,
+        ))
+        .expect("triangle pipeline");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+
+    // Every refusal below is supposed to panic; keep the default
+    // hook's output out of a passing run's log (the wedge test's
+    // precedent). Restored before the surviving-frame proof.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut refused =
+        |label: &str, needle: &str, frame: &dyn Fn(&mut renew_rhi::OffscreenTarget)| {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                frame(&mut target);
+            }));
+            let Err(payload) = outcome else {
+                panic!("{label}: the contract must refuse this");
+            };
+            // Refused BY NAME: the payload must carry the clause's own
+            // words, or any unrelated panic would satisfy the case.
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(
+                message.contains(needle),
+                "{label}: refused, but not by name — the payload {message:?} lacks {needle:?}"
+            );
+        };
+
+    refused(
+        "empty passes",
+        "a frame needs at least one pass",
+        &|target| {
+            let _ = target.render(&RenderDesc::new(&[]));
+        },
+    );
+    refused(
+        "zero color attachments",
+        "exactly one color attachment",
+        &|target| {
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&[], &[])]));
+        },
+    );
+    refused(
+        "two color attachments",
+        "exactly one color attachment",
+        &|target| {
+            let color = Attachment::new(LoadOp::Clear(ClearValue::Color(black)), StoreOp::Store);
+            let two = [color, color];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&two, &[])]));
+        },
+    );
+    refused(
+        "first-pass color Load",
+        "loads undefined contents",
+        &|target| {
+            let color = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &[])]));
+        },
+    );
+    refused("first-pass depth Load", "first depth use", &|target| {
+        let color = clear(black);
+        let pass = Pass::new(&color, &[]).depth(Attachment::new(LoadOp::Load, StoreOp::Discard));
+        let _ = target.render(&RenderDesc::new(&[pass]));
+    });
+    refused(
+        "depth Load on a LATER first depth-carrying pass",
+        "first depth use",
+        &|target| {
+            // The frame's first depth-carrying pass is pass 1, not pass
+            // 0 — the depth image still transitions from UNDEFINED
+            // there, so the Load must be refused at that index too.
+            let color = clear(black);
+            let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+            let first = Pass::new(&color, &[]);
+            let second =
+                Pass::new(&load, &[]).depth(Attachment::new(LoadOp::Load, StoreOp::Discard));
+            let _ = target.render(&RenderDesc::new(&[first, second]));
+        },
+    );
+    refused(
+        "a depth clear on a color attachment",
+        "clears to ClearValue::Color",
+        &|target| {
+            let color = [Attachment::new(
+                LoadOp::Clear(ClearValue::Depth(1.0)),
+                StoreOp::Store,
+            )];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &[])]));
+        },
+    );
+    refused(
+        "a color clear on a depth attachment",
+        "clears to ClearValue::Depth",
+        &|target| {
+            let color = clear(black);
+            let pass = Pass::new(&color, &[]).depth(Attachment::new(
+                LoadOp::Clear(ClearValue::Color(black)),
+                StoreOp::Discard,
+            ));
+            let _ = target.render(&RenderDesc::new(&[pass]));
+        },
+    );
+    refused(
+        "an out-of-range depth clear",
+        "finite and in [0, 1]",
+        &|target| {
+            let color = clear(black);
+            let pass = Pass::new(&color, &[]).depth(Attachment::new(
+                LoadOp::Clear(ClearValue::Depth(1.5)),
+                StoreOp::Discard,
+            ));
+            let _ = target.render(&RenderDesc::new(&[pass]));
+        },
+    );
+    refused(
+        "a non-finite depth clear",
+        "finite and in [0, 1]",
+        &|target| {
+            let color = clear(black);
+            let pass = Pass::new(&color, &[]).depth(Attachment::new(
+                LoadOp::Clear(ClearValue::Depth(f32::NAN)),
+                StoreOp::Discard,
+            ));
+            let _ = target.render(&RenderDesc::new(&[pass]));
+        },
+    );
+    refused(
+        "a depth-free pipeline in a depth-carrying pass",
+        "depth state must match the pass",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&pipeline)];
+            let pass = Pass::new(&color, &items).depth(Attachment::new(
+                LoadOp::Clear(ClearValue::Depth(1.0)),
+                StoreOp::Discard,
+            ));
+            let _ = target.render(&RenderDesc::new(&[pass]));
+        },
+    );
+    if device.depth_format_name().is_some() {
+        let depth_pipeline = device
+            .create_pipeline(
+                &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm)
+                    .depth_state(DepthState::read_write()),
+            )
+            .expect("depth pipeline");
+        refused(
+            "a depth-testing pipeline in a depthless pass",
+            "depth state must match the pass",
+            &|target| {
+                let color = clear(black);
+                let items = [Item::new(&depth_pipeline)];
+                let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+            },
+        );
+    } else {
+        eprintln!("SKIP: no depth format, the depth-pipeline half of the mismatch is untestable");
+    }
+    let instanced = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+                .instance_input(builtin::INSTANCED_LAYOUT),
+        )
+        .expect("instanced pipeline");
+    let buffer = device
+        .create_buffer(64, BufferUsage::PerFrame)
+        .expect("per-frame buffer");
+    let bytes = [0u8; 24];
+    refused(
+        "two items naming one buffer",
+        "one buffer, one item",
+        &|target| {
+            let color = clear(black);
+            let items = [
+                Item::new(&instanced).frame_data(FrameData::new(&buffer, &bytes, 1)),
+                Item::new(&instanced).frame_data(FrameData::new(&buffer, &bytes, 1)),
+            ];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    let many: Vec<renew_rhi::Buffer> = (0..9)
+        .map(|_| {
+            device
+                .create_buffer(64, BufferUsage::PerFrame)
+                .expect("boundary buffer")
+        })
+        .collect();
+    refused(
+        "a ninth distinct buffer",
+        "distinct per-frame buffers",
+        &|target| {
+            let color = clear(black);
+            let items: Vec<Item<'_>> = many
+                .iter()
+                .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    std::panic::set_hook(hook);
+
+    // The refusals fired before any GPU work: the same target still
+    // renders a well-formed frame, and validation stayed silent.
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives every refusal");
+    assert_no_validation_errors(&device);
 }
 
 #[test]

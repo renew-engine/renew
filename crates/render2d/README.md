@@ -1,8 +1,9 @@
 # renew-render2d
 
 Batched 2D sprites over the rendering crate: one atlas, one pipeline,
-one instanced draw per frame. Fill in canvas space, describe the frame,
-hand the descriptor to whichever target you hold.
+one instanced draw per frame. Fill in canvas space, take the draw as an
+item, compose the frame on your own stack, hand it to whichever target
+you hold.
 
 ## Why it is a crate
 
@@ -21,11 +22,14 @@ else, which the build matrix proves by building and testing without it.
   their alpha multiplied into their color channels, and the pipeline
   composites `src + dst * (1 - src.a)`. Bytes that break the convention
   composite wrong — visibly, not unsafely.
-- **All allocations happen at creation.** `begin`, `push`, and `desc`
+- **All allocations happen at creation.** `begin`, `push`, and `item`
   allocate nothing; a gate measures it over frames it first proves are
-  alive and drawing.
-- **This crate never renders.** `desc` returns the rendering crate's
-  own frame descriptor; targets belong to the caller. It never touches
+  alive and drawing — including the caller-side frame composition,
+  which is stack arrays and allocates nothing either.
+- **This crate never renders.** `item` returns the rendering crate's
+  own draw item and `attachment` the matching color attachment; the
+  caller composes the pass and the frame itself (the borrows end at
+  the render call), and targets belong to the caller. It never touches
   a window, a clock, or the filesystem — the lint file makes the ways
   that stops being true unwritable.
 - **Capacity is refused by name.** Pushing past the size fixed at
@@ -43,8 +47,15 @@ else, which the build matrix proves by building and testing without it.
   here is zero.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
   (premultiplied blending, nearest/clamped sampling) and the per-frame
-  buffer; `begin`/`push` fill; `desc` describes the frame for either
-  target.
+  buffer; `begin`/`push` fill; `item` is the frame's draw, for a pass
+  the caller composes with `attachment(clear)`:
+
+  ```rust
+  let color = [renew_render2d::attachment(SKY)];
+  let items = [renderer.item()];
+  let passes = [Pass::new(&color, &items)];
+  target.render(&RenderDesc::new(&passes))?;
+  ```
 
 The ortho and UV maps run on the CPU at push time — each instance
 carries its own NDC rectangle, so no uniform, matrix, or push constant

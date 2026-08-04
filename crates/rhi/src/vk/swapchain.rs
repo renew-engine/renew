@@ -1,5 +1,6 @@
 //! The window render target: surface, swapchain, and the
-//! clear-and-draw-then-present loop, one frame in flight.
+//! record-passes-then-present loop, `FRAMES_IN_FLIGHT` frames in
+//! flight.
 //!
 //! The target owns a keep-alive handle to the native window (boxed,
 //! opaque) — the platform window cannot be torn down under a live
@@ -19,8 +20,11 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use crate::config::Extent;
 use crate::error::TargetError;
 use crate::vk::buffer::BufferInner;
+use crate::vk::depth::{self, DepthResources};
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
-use crate::vk::pipeline::{RenderDesc, TargetFormat};
+use crate::vk::pass::{self, MAX_RETAINED_BUFFERS, RenderDesc};
+use crate::vk::pipeline::TargetFormat;
+use crate::vk::transition::{self, ImageUse};
 
 fn creation(call: &'static str, code: vk::Result) -> TargetError {
     match code {
@@ -68,6 +72,14 @@ struct Chain {
     /// the semaphore for image N after our fence signals, so per-image
     /// signaling is the simplest correct scheme.
     render_finished: Vec<vk::Semaphore>,
+    /// One depth image **per frame slot**, when the adapter offers a
+    /// format: two frames in flight write depth concurrently, so a
+    /// shared image would race. Chain-scoped like the semaphores —
+    /// created in `build_chain`, destroyed in `destroy_chain` — so all
+    /// layout and first-use state dies with the chain, which is what
+    /// makes the transition-from-UNDEFINED-every-frame claim true
+    /// across resize and dormancy.
+    depth: Vec<DepthResources>,
 }
 
 /// How many frames the CPU may have submitted and not yet waited for.
@@ -130,13 +142,18 @@ pub struct WindowTarget {
     pending: [bool; FRAMES_IN_FLIGHT],
     /// Buffers a slot's recorded work references, retained so a caller
     /// dropping its handle cannot free memory the submit still reads.
-    /// Cleared only when the work has PROVABLY ended — a successful
-    /// fence wait, a successful quiesce, or a lost device. Deliberately
-    /// NOT cleared beside `pending` after a failed non-lost quiesce:
-    /// `pending` answers "may I record?", retention answers "may memory
-    /// die?", and the failed-quiesce corner is where those two questions
-    /// have different answers.
-    retained: [Option<Rc<BufferInner>>; FRAMES_IN_FLIGHT],
+    /// Fixed-width per slot — the frame contract refuses more distinct
+    /// buffers than fit. Released only when the work has PROVABLY
+    /// ended: a successful fence wait, a successful quiesce, a lost
+    /// device, or the top of a copy phase whose slot either had its
+    /// fence waited this call or never submitted (the acquire-failure
+    /// early returns leave stale entries with `pending` false — the
+    /// field invariant on `pending` is what makes releasing them
+    /// sound). Deliberately NOT cleared beside `pending` after a failed
+    /// non-lost quiesce: `pending` answers "may I record?", retention
+    /// answers "may memory die?", and the failed-quiesce corner is
+    /// where those two questions have different answers.
+    retained: [[Option<Rc<BufferInner>>; MAX_RETAINED_BUFFERS]; FRAMES_IN_FLIGHT],
     /// Set when a frame aborted and the recovery quiesce FAILED without
     /// a lost device: the GPU may still be executing, so fences were not
     /// reset, flags were not cleared, the chain was not destroyed and
@@ -360,7 +377,7 @@ impl Device {
             cmds,
             fences,
             pending: [false; FRAMES_IN_FLIGHT],
-            retained: std::array::from_fn(|_| None),
+            retained: std::array::from_fn(|_| std::array::from_fn(|_| None)),
             dormant: false,
             frame: 0,
         };
@@ -435,21 +452,32 @@ impl WindowTarget {
         self.build_chain(extent)
     }
 
-    /// Clear, optionally draw one 3-vertex call, and present.
+    /// Record the frame's passes, submit once, and present.
     ///
-    /// The pipeline must come from this target's device and target
-    /// [`format`](Self::format) — contract violations, checked in dev
-    /// builds.
+    /// Every item's pipeline must come from this target's device and
+    /// target [`format`](Self::format) — contract violations, checked
+    /// in dev builds.
     ///
     /// # Panics
     ///
-    /// Frame data longer than its buffer's per-frame capacity panics
-    /// through a retained assertion: the length bounds a copy into
-    /// mapped device memory, which makes it a memory-safety boundary
-    /// rather than a contract nicety.
+    /// The frame-shape contract is asserted before any fence is waited
+    /// or written — among its refusals: a frame needs at least one
+    /// pass; a pass carries exactly one color attachment;
+    /// `LoadOp::Load` is refused on an attachment's first use in the
+    /// frame; clear values must match their attachment's kind and a
+    /// depth clear its documented range; an item's pipeline depth state
+    /// must match its pass; one buffer feeds at most one item per
+    /// frame, and a frame carries at most the retention table's width
+    /// of distinct buffers. Frame data longer than its buffer's
+    /// per-frame capacity also panics through a retained assertion: the
+    /// length bounds a copy into mapped device memory, which makes it a
+    /// memory-safety boundary rather than a contract nicety.
     ///
     /// # Errors
     ///
+    /// [`TargetError::DepthUnsupported`] when a pass carries depth and
+    /// the adapter refused the whole format chain — returned before any
+    /// frame work begins, so the target is untouched.
     /// [`TargetError::Timeout`] when the GPU exceeds the watchdog;
     /// [`TargetError::DeviceLost`] on device loss; submission errors
     /// otherwise — any such mid-frame failure also tears the swapchain
@@ -460,12 +488,6 @@ impl WindowTarget {
         reason = "one recorded frame; wait, acquire, record, submit, present read top to bottom"
     )]
     pub fn render(&mut self, desc: &RenderDesc<'_>) -> Result<PresentOutcome, TargetError> {
-        let RenderDesc {
-            clear,
-            pipeline,
-            frame_data,
-            ..
-        } = *desc;
         if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }
@@ -475,17 +497,26 @@ impl WindowTarget {
         if self.dormant {
             return Ok(PresentOutcome::NeedsResize);
         }
-        if let Some(pipeline) = pipeline {
-            debug_assert!(
-                Rc::ptr_eq(&self.shared, &pipeline.shared),
-                "pipeline and target come from different devices"
-            );
-            debug_assert!(
-                pipeline.format == self.format,
-                "pipeline targets {:?}, swapchain is {:?}",
-                pipeline.format,
-                self.format
-            );
+        pass::check_frame_contract(desc);
+        let wants_depth = desc.passes.iter().any(|pass| pass.depth.is_some());
+        if wants_depth && self.shared.depth_format.is_none() {
+            return Err(TargetError::DepthUnsupported {
+                chain: depth::CHAIN_NAMES,
+            });
+        }
+        for pass in desc.passes {
+            for item in pass.items {
+                debug_assert!(
+                    Rc::ptr_eq(&self.shared, &item.pipeline.shared),
+                    "pipeline and target come from different devices"
+                );
+                debug_assert!(
+                    item.pipeline.format == self.format,
+                    "pipeline targets {:?}, swapchain is {:?}",
+                    item.pipeline.format,
+                    self.format
+                );
+            }
         }
         // Wait for the previous frame if one is outstanding; after
         // this, the fence is unsignaled with nothing pending, so every
@@ -523,7 +554,9 @@ impl WindowTarget {
                 self.pending[frame] = false;
                 // The wait succeeded, so slot `frame`'s previous work has
                 // provably ended: the memory it read may die.
-                self.retained[frame] = None;
+                for slot in &mut self.retained[frame] {
+                    *slot = None;
+                }
             }
 
             let Some(chain) = self.chain.as_ref() else {
@@ -534,47 +567,72 @@ impl WindowTarget {
             // flags can claim nothing is outstanding after a failed
             // quiesce, and the chain check is what stands between that
             // state and a copy into memory the GPU may still read.
-            if let Some(data) = frame_data {
-                let inner = &data.buffer.inner;
-                debug_assert!(
-                    Rc::ptr_eq(&inner.shared, &self.shared),
-                    "buffer and target come from different devices"
-                );
-                let me = std::ptr::from_ref::<Self>(self) as usize;
-                match inner.owner.get() {
-                    None => inner.owner.set(Some(me)),
-                    Some(owner) => debug_assert!(
-                        owner == me,
-                        "a per-frame buffer belongs to one target: its slot regions are                          owned by whichever target last submitted against them"
-                    ),
+            //
+            // The copy phase opens by releasing the slot's table — a
+            // release site beside the three proven ones, and its proof
+            // is the field invariant, not a wait: on the path where the
+            // fence WAS waited this call, the wait's own release above
+            // already emptied the row and this is a no-op; a live entry
+            // here is a stale one left by the acquire-failure early
+            // returns below, where no submit was ever made, and
+            // `pending[frame] == false` means fence `frame` is
+            // unsignaled with nothing outstanding — the same footing as
+            // the overwrite this table's predecessor performed from this
+            // position. Clearing first also scopes the table to exactly
+            // this frame's fills.
+            for slot in &mut self.retained[frame] {
+                *slot = None;
+            }
+            let mut retained_count = 0usize;
+            for pass in desc.passes {
+                for item in pass.items {
+                    let Some(data) = &item.frame_data else {
+                        continue;
+                    };
+                    let inner = &data.buffer.inner;
+                    debug_assert!(
+                        Rc::ptr_eq(&inner.shared, &self.shared),
+                        "buffer and target come from different devices"
+                    );
+                    let me = std::ptr::from_ref::<Self>(self) as usize;
+                    match inner.owner.get() {
+                        None => inner.owner.set(Some(me)),
+                        Some(owner) => debug_assert!(
+                            owner == me,
+                            "a per-frame buffer belongs to one target: its slot regions are \
+                             owned by whichever target last submitted against them"
+                        ),
+                    }
+                    // Retained in release: this length bounds the copy
+                    // below, which makes it a memory-safety boundary,
+                    // not a contract nicety.
+                    assert!(
+                        data.bytes.len() <= inner.capacity,
+                        "frame data exceeds the buffer's per-frame capacity"
+                    );
+                    // SAFETY: the mapping covers `slot_stride *
+                    // MAX_FRAME_SLOTS` bytes; `frame < MAX_FRAME_SLOTS`
+                    // and the assert above bounds the length within one
+                    // slot region, so the write stays inside the
+                    // allocation and cannot touch a neighbouring slot.
+                    // The wait above proved no submit reads this region;
+                    // the memory is HOST_COHERENT, so no flush. The
+                    // stride is 64-aligned and doubled, far inside usize
+                    // on every supported target; the cast is a lint
+                    // formality, not a risk.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let slot_byte_offset = (inner.slot_stride * frame as u64) as usize;
+                    std::ptr::copy_nonoverlapping(
+                        data.bytes.as_ptr(),
+                        inner.mapped.add(slot_byte_offset),
+                        data.bytes.len(),
+                    );
+                    // The submit this frame records will read the region
+                    // until its fence retires; keep the memory alive
+                    // past any caller drop until that is proven.
+                    self.retained[frame][retained_count] = Some(Rc::clone(inner));
+                    retained_count += 1;
                 }
-                // Retained in release: this length bounds the copy below,
-                // which makes it a memory-safety boundary, not a contract
-                // nicety.
-                assert!(
-                    data.bytes.len() <= inner.capacity,
-                    "frame data exceeds the buffer's per-frame capacity"
-                );
-                // SAFETY: the mapping covers `slot_stride * MAX_FRAME_SLOTS`
-                // bytes; `frame < MAX_FRAME_SLOTS` and the assert above
-                // bounds the length within one slot region, so the write
-                // stays inside the allocation and cannot touch a
-                // neighbouring slot. The wait above proved no submit reads
-                // this region; the memory is HOST_COHERENT, so no flush.
-                // The stride is 64-aligned and doubled, far inside
-                // usize on every supported target; the cast is a lint
-                // formality, not a risk.
-                #[allow(clippy::cast_possible_truncation)]
-                let slot_byte_offset = (inner.slot_stride * frame as u64) as usize;
-                std::ptr::copy_nonoverlapping(
-                    data.bytes.as_ptr(),
-                    inner.mapped.add(slot_byte_offset),
-                    data.bytes.len(),
-                );
-                // The submit this frame records will read the region
-                // until its fence retires; keep the memory alive past any
-                // caller drop until that is proven.
-                self.retained[frame] = Some(Rc::clone(inner));
             }
             let acquired = self.swapchain_loader.acquire_next_image(
                 chain.swapchain,
@@ -643,19 +701,22 @@ impl WindowTarget {
                 return Err(self.abort_frame(creation("vkBeginCommandBuffer", code)));
             }
 
-            // UNDEFINED → COLOR_ATTACHMENT_OPTIMAL. The source stage is
+            // UNDEFINED → COLOR_ATTACHMENT_OPTIMAL. Deliberately NOT
+            // the pure core's first-use masks: the source stage is
             // COLOR_ATTACHMENT_OUTPUT — the same stage the acquire
             // semaphore wait is scoped to — which chains this barrier
             // after the semaphore and orders the layout transition
             // against the presentation engine's outstanding reads of
-            // this image (the classic write-after-present hazard).
+            // this image (the classic write-after-present hazard). The
+            // literal is pinned by unit test beside the core.
+            let masks = transition::acquire_chained_color_first_use();
             let to_color = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .src_access_mask(vk::AccessFlags2::NONE)
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .src_stage_mask(masks.src_stage)
+                .src_access_mask(masks.src_access)
+                .dst_stage_mask(masks.dst_stage)
+                .dst_access_mask(masks.dst_access)
+                .old_layout(masks.old_layout)
+                .new_layout(masks.new_layout)
                 .image(image)
                 .subresource_range(color_range());
             let barriers = [to_color];
@@ -664,18 +725,6 @@ impl WindowTarget {
                 &vk::DependencyInfo::default().image_memory_barriers(&barriers),
             );
 
-            let clear_value = vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [clear.r, clear.g, clear.b, clear.a],
-                },
-            };
-            let attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(view)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(clear_value);
-            let attachments = [attachment];
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: vk::Extent2D {
@@ -683,57 +732,144 @@ impl WindowTarget {
                     height: chain_extent.height,
                 },
             };
-            device.cmd_begin_rendering(
-                cmd,
-                &vk::RenderingInfo::default()
+            // The walk: for each pass, its boundary barriers from the
+            // pure core (the acquire-chained first-use above already
+            // covered pass 0's color), then its attachments, then its
+            // items in slice order. Depth transitions from UNDEFINED
+            // once per frame on this slot's own image.
+            let mut depth_in_use = false;
+            for (index, pass) in desc.passes.iter().enumerate() {
+                let mut barriers = [vk::ImageMemoryBarrier2::default(); 2];
+                let mut barrier_count = 0;
+                if index > 0 {
+                    let color_masks = transition::pass_boundary(
+                        ImageUse::ColorAttachment,
+                        ImageUse::ColorAttachment,
+                    );
+                    barriers[0] = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(color_masks.src_stage)
+                        .src_access_mask(color_masks.src_access)
+                        .dst_stage_mask(color_masks.dst_stage)
+                        .dst_access_mask(color_masks.dst_access)
+                        .old_layout(color_masks.old_layout)
+                        .new_layout(color_masks.new_layout)
+                        .image(image)
+                        .subresource_range(color_range());
+                    barrier_count = 1;
+                }
+                if pass.depth.is_some() {
+                    let depth_slot = &chain.depth[frame];
+                    let depth_masks = if depth_in_use {
+                        transition::pass_boundary(
+                            ImageUse::DepthAttachment,
+                            ImageUse::DepthAttachment,
+                        )
+                    } else {
+                        transition::pass_boundary(
+                            ImageUse::DepthAttachmentFirstUse,
+                            ImageUse::DepthAttachment,
+                        )
+                    };
+                    depth_in_use = true;
+                    barriers[barrier_count] = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(depth_masks.src_stage)
+                        .src_access_mask(depth_masks.src_access)
+                        .dst_stage_mask(depth_masks.dst_stage)
+                        .dst_access_mask(depth_masks.dst_access)
+                        .old_layout(depth_masks.old_layout)
+                        .new_layout(depth_masks.new_layout)
+                        .image(depth_slot.image)
+                        .subresource_range(depth::barrier_range(depth_slot.format));
+                    barrier_count += 1;
+                }
+                if barrier_count > 0 {
+                    device.cmd_pipeline_barrier2(
+                        cmd,
+                        &vk::DependencyInfo::default()
+                            .image_memory_barriers(&barriers[..barrier_count]),
+                    );
+                }
+
+                let color = &pass.color[0];
+                let color_attachment = vk::RenderingAttachmentInfo::default()
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(color.load.to_vk())
+                    .store_op(color.store.to_vk())
+                    .clear_value(pass::vk_clear_color(color));
+                let color_attachments = [color_attachment];
+                let depth_attachment = pass.depth.as_ref().map(|attachment| {
+                    let depth_slot = &chain.depth[frame];
+                    vk::RenderingAttachmentInfo::default()
+                        .image_view(depth_slot.view)
+                        .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .load_op(attachment.load.to_vk())
+                        .store_op(attachment.store.to_vk())
+                        .clear_value(pass::vk_clear_depth(attachment))
+                });
+                let mut rendering_info = vk::RenderingInfo::default()
                     .render_area(area)
                     .layer_count(1)
-                    .color_attachments(&attachments),
-            );
-            if let Some(pipeline) = pipeline {
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
-                // Extents are far below f32's exact-integer range; the
-                // casts are lossless in practice.
-                #[allow(clippy::cast_precision_loss)]
-                let viewport = vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: chain_extent.width as f32,
-                    height: chain_extent.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                };
-                device.cmd_set_viewport(cmd, 0, &[viewport]);
-                device.cmd_set_scissor(cmd, 0, &[area]);
-                pipeline.bind_descriptors(cmd);
-                let instances = match frame_data {
-                    Some(data) => {
-                        // A plain record-time offset — sound only because
-                        // this buffer is re-recorded every frame, so each
-                        // recording bakes in its own slot's region.
-                        device.cmd_bind_vertex_buffers(
-                            cmd,
-                            0,
-                            &[data.buffer.inner.buffer],
-                            &[data.buffer.inner.slot_stride * frame as u64],
-                        );
-                        data.instances
-                    }
-                    None => 1,
-                };
-                device.cmd_draw(cmd, pipeline.vertex_count, instances, 0, 0);
+                    .color_attachments(&color_attachments);
+                if let Some(depth_attachment) = &depth_attachment {
+                    rendering_info = rendering_info.depth_attachment(depth_attachment);
+                }
+                device.cmd_begin_rendering(cmd, &rendering_info);
+                if !pass.items.is_empty() {
+                    // Extents are far below f32's exact-integer range;
+                    // the casts are lossless in practice.
+                    #[allow(clippy::cast_precision_loss)]
+                    let viewport = vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: chain_extent.width as f32,
+                        height: chain_extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    };
+                    device.cmd_set_viewport(cmd, 0, &[viewport]);
+                    device.cmd_set_scissor(cmd, 0, &[area]);
+                }
+                for item in pass.items {
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        item.pipeline.pipeline,
+                    );
+                    item.pipeline.bind_descriptors(cmd);
+                    let instances = match &item.frame_data {
+                        Some(data) => {
+                            // A plain record-time offset — sound only
+                            // because this buffer is re-recorded every
+                            // frame, so each recording bakes in its own
+                            // slot's region.
+                            device.cmd_bind_vertex_buffers(
+                                cmd,
+                                0,
+                                &[data.buffer.inner.buffer],
+                                &[data.buffer.inner.slot_stride * frame as u64],
+                            );
+                            data.instances
+                        }
+                        None => 1,
+                    };
+                    device.cmd_draw(cmd, item.pipeline.vertex_count, instances, 0, 0);
+                }
+                device.cmd_end_rendering(cmd);
             }
-            device.cmd_end_rendering(cmd);
 
-            // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC; the signal
-            // semaphore orders presentation, so no destination stage.
+            // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC; not a pass — the
+            // terminal literal, pinned by unit test beside the core it
+            // is excluded from. The signal semaphore orders
+            // presentation, so no destination stage.
+            let masks = transition::terminal_present();
             let to_present = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-                .dst_access_mask(vk::AccessFlags2::NONE)
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_stage_mask(masks.src_stage)
+                .src_access_mask(masks.src_access)
+                .dst_stage_mask(masks.dst_stage)
+                .dst_access_mask(masks.dst_access)
+                .old_layout(masks.old_layout)
+                .new_layout(masks.new_layout)
                 .image(image)
                 .subresource_range(color_range());
             let barriers = [to_present];
@@ -853,8 +989,10 @@ impl WindowTarget {
         // unreset, flags stay pending, retained memory stays alive.
         // One rule, one place; the failed-quiesce corner is handled by
         // never arriving here.
-        for slot in &mut self.retained {
-            *slot = None;
+        for row in &mut self.retained {
+            for slot in row {
+                *slot = None;
+            }
         }
         for slot in 0..FRAMES_IN_FLIGHT {
             if self.pending[slot] {
@@ -994,6 +1132,7 @@ impl WindowTarget {
             images: Vec::new(),
             image_available: [vk::Semaphore::null(); FRAMES_IN_FLIGHT],
             render_finished: Vec::new(),
+            depth: Vec::new(),
         };
         let built = self.populate_chain(&mut chain);
         if let Err(error) = built {
@@ -1051,6 +1190,16 @@ impl WindowTarget {
             .map_err(|code| creation("vkCreateSemaphore", code))?;
             chain.render_finished.push(semaphore);
         }
+        // One depth image per frame slot, when the adapter offers a
+        // format; a partial vector on failure is torn down by
+        // `destroy_chain` like every other chain resource.
+        if let Some(format) = self.shared.depth_format {
+            for _ in 0..FRAMES_IN_FLIGHT {
+                chain
+                    .depth
+                    .push(DepthResources::create(&self.shared, chain.extent, format)?);
+            }
+        }
         Ok(())
     }
 
@@ -1061,6 +1210,9 @@ impl WindowTarget {
         let Some(chain) = self.chain.take() else {
             return;
         };
+        for depth in &chain.depth {
+            depth.destroy(&self.shared);
+        }
         // SAFETY: category 2: every handle live and created with these
         // callbacks; the GPU is idle per the caller contract; a null
         // acquire semaphore (populate failed before creating it) is a
@@ -1128,7 +1280,14 @@ impl Drop for WindowTarget {
         // after the swapchain, the window keep-alive after everything
         // (field drop).
         unsafe {
-            let _ = self.shared.device.device_wait_idle();
+            // Best-effort quiesce; failure is logged, never a panic (D5)
+            // — the diag record is the only observable this path has.
+            if let Err(code) = self.shared.device.device_wait_idle() {
+                renew_diag::error!(
+                    target: "renew-rhi",
+                    "wait-idle at window-target teardown failed: {code:?}"
+                );
+            }
         }
         // Teardown releases retained memory unconditionally: this target
         // and its ring die here, and holding memory past the owner that

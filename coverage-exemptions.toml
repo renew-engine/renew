@@ -84,3 +84,28 @@ reason = "The wildcard arms that a non-exhaustive vocabulary forces a downstream
 file = "crates/asset/src/write.rs"
 lines = [94, 95, 100, 101, 105, 106, 129, 130, 133, 134]
 reason = "The width guards on the pack's own header fields. Reaching one needs more than four billion entries, or more than four gibibytes of names or of payload in a single pack; the per-entry pair is narrower still, since a name is already bounded to 1024 bytes and a blob length is a usize widening to u64. They are checked conversions rather than casts because a silently wrapped length is a reader pointed at arbitrary bytes, and because the count field is the kind that gets widened later. Unreachable on a 64-bit target and retained for the 32-bit one the platform list does not exclude."
+
+[[exempt]]
+file = "crates/rhi/src/vk/offscreen.rs"
+lines = [368]
+reason = "The depthless-adapter arm of target creation: no depth image is built when the adapter refused the whole depth format chain. The pinned software rasterizer offers D32_SFLOAT, the format query is a void call no fault layer can mutate, and the device suite's probe asserts a format exists wherever the strict lane runs — so the arm is reachable only on hardware the lanes do not have. Its logic is one None."
+
+[[exempt]]
+file = "crates/rhi/src/vk/offscreen.rs"
+lines = [477, 478, 479]
+reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter. Same unreachability as the creation arm above: every measuring lane's adapter offers a depth format, and the query that decides it cannot be faulted. The error construction is driven by the display test in the error module; the branch condition's false side runs on every depth-carrying frame."
+
+[[exempt]]
+file = "crates/rhi/src/vk/pipeline.rs"
+lines = [726, 727, 728]
+reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
+
+[[exempt]]
+file = "crates/rhi/src/vk/swapchain.rs"
+lines = [503, 504, 505]
+reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter, window side - same unreachability as the offscreen twin: the lanes' adapters offer a depth format and the void format query cannot be faulted."
+
+[[exempt]]
+file = "crates/rhi/src/vk/swapchain.rs"
+lines = [1202]
+reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."

@@ -1,15 +1,14 @@
 //! The device half: one atlas, one pipeline, one buffer, one draw.
 //!
-//! Everything that touches `renew_rhi` lives in this module — when the
-//! pass model arrives, this file is the migration seam and `fill.rs`
-//! does not move.
+//! Everything that touches `renew_rhi` lives in this module — the
+//! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use std::rc::Rc;
 
 use renew_rhi::{
-    Blend, Buffer, BufferUsage, Color, Device, Extent, FrameData, InstanceAttribute, PipelineDesc,
-    PipelineError, RenderDesc, RenderPipeline, SamplerDesc, Shaders, TargetError, TargetFormat,
-    TextureDesc,
+    Attachment, Blend, Buffer, BufferUsage, ClearValue, Color, Device, Extent, FrameData,
+    InstanceAttribute, Item, LoadOp, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc,
+    Shaders, StoreOp, TargetError, TargetFormat, TextureDesc,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -111,7 +110,7 @@ impl From<TargetError> for Render2dError {
 /// call, in exactly the order pushed.
 ///
 /// Every allocation happens in [`SpriteRenderer::new`]; `begin`, `push`
-/// and `desc` allocate nothing, which the crate's gate measures rather
+/// and `item` allocate nothing, which the crate's gate measures rather
 /// than asserts. Holds `Rc`s into the device spine, so it is `!Send +
 /// !Sync` like everything else on it.
 pub struct SpriteRenderer {
@@ -173,7 +172,7 @@ impl SpriteRenderer {
 
     /// Start a new fill: forget every pushed sprite.
     ///
-    /// Explicit rather than folded into [`Self::desc`]: a caller that
+    /// Explicit rather than folded into [`Self::item`]: a caller that
     /// never begins accumulates, which is a legal static scene filled
     /// once; a caller that begins and pushes nothing draws a legal
     /// empty frame.
@@ -218,22 +217,47 @@ impl SpriteRenderer {
         self.max_sprites
     }
 
-    /// Everything one frame needs, for either target: clear to `clear`,
-    /// then draw every pushed sprite in push order.
+    /// This frame's draw: every pushed sprite, in push order, as one
+    /// item for a pass the caller composes.
     ///
-    /// Zero pushed sprites is a clear with a zero-instance draw — a
-    /// legal empty frame, not an error.
+    /// The caller builds the frame on its own stack — see
+    /// [`attachment`] for the matching color attachment — and the
+    /// borrows end at the `render` call:
+    ///
+    /// ```no_run
+    /// use renew_render2d::SpriteRenderer;
+    /// use renew_rhi::{Color, OffscreenTarget, Pass, RenderDesc, TargetError};
+    /// fn frame(
+    ///     renderer: &SpriteRenderer,
+    ///     target: &mut OffscreenTarget,
+    ///     sky: Color,
+    /// ) -> Result<(), TargetError> {
+    ///     let color = [renew_render2d::attachment(sky)];
+    ///     let items = [renderer.item()];
+    ///     let passes = [Pass::new(&color, &items)];
+    ///     target.render(&RenderDesc::new(&passes))
+    /// }
+    /// ```
+    ///
+    /// Zero pushed sprites is a zero-instance draw — a legal empty
+    /// frame, not an error.
     #[must_use]
-    pub fn desc(&self, clear: Color) -> RenderDesc<'_> {
+    pub fn item(&self) -> Item<'_> {
         let filled = self.count as usize * fill::INSTANCE_STRIDE;
-        RenderDesc::new(clear)
-            .pipeline(&self.pipeline)
-            .frame_data(FrameData::new(
-                &self.buffer,
-                &self.scratch[..filled],
-                self.count,
-            ))
+        Item::new(&self.pipeline).frame_data(FrameData::new(
+            &self.buffer,
+            &self.scratch[..filled],
+            self.count,
+        ))
     }
+}
+
+/// The color attachment a sprite frame renders into: cleared to
+/// `clear`, stored. The free half of the frame [`SpriteRenderer::item`]
+/// is the draw half of.
+#[must_use]
+pub fn attachment(clear: Color) -> Attachment {
+    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
 }
 
 impl core::fmt::Debug for SpriteRenderer {

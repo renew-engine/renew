@@ -30,8 +30,9 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
 use renew_rhi::{
-    Buffer, BufferUsage, Color, Device, DeviceDesc, DeviceError, Extent, FrameData, PipelineDesc,
-    PresentOutcome, RenderDesc, TargetError, Validation, WindowTarget, builtin,
+    Attachment, Buffer, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent,
+    FrameData, Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, StoreOp, TargetError,
+    Validation, WindowTarget, builtin,
 };
 
 #[global_allocator]
@@ -68,7 +69,7 @@ struct GateApp {
     /// frame carries bytes, because a gate over a byte-free frame would
     /// pass vacuously the moment the data path allocated. This is also
     /// the one automated exercise of the window path's retention ring.
-    instanced: Option<(renew_rhi::RenderPipeline, Buffer)>,
+    instanced: Option<(renew_rhi::RenderPipeline, Buffer, Buffer)>,
     size: Extent,
     presented: u32,
     updates: u32,
@@ -160,9 +161,15 @@ impl WindowApp for GateApp {
             &PipelineDesc::new(builtin::INSTANCED, target.format())
                 .instance_input(builtin::INSTANCED_LAYOUT),
         ) {
-            Ok(instanced) => match device.create_buffer(64, BufferUsage::PerFrame) {
-                Ok(buffer) => (instanced, buffer),
-                Err(error) => {
+            // Two per-frame buffers, so the multi-pass frame below can
+            // retain two distinct buffers in one slot — the fixed-width
+            // retention claim, gate-observed.
+            Ok(instanced) => match (
+                device.create_buffer(64, BufferUsage::PerFrame),
+                device.create_buffer(64, BufferUsage::PerFrame),
+            ) {
+                (Ok(buffer), Ok(buffer_two)) => (instanced, buffer, buffer_two),
+                (Err(error), _) | (_, Err(error)) => {
                     self.failure = Some(format!("per-frame buffer failed: {error}"));
                     return;
                 }
@@ -178,6 +185,10 @@ impl WindowApp for GateApp {
         self.instanced = Some(instanced);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one measured redraw arm; the three frame shapes read top to bottom"
+    )]
     fn event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::Resized { width, height } => {
@@ -201,10 +212,12 @@ impl WindowApp for GateApp {
                 // the gate passed locally and failed in CI for a reason
                 // that was never the engine's. The contract is about the
                 // render path; measure the render path.
-                // Alternate byte-free and byte-carrying frames so the
-                // gate measures both, and the ring sees the buffer on
-                // every other slot -- retain and release both run inside
-                // the measured window.
+                // Cycle three frame shapes so the gate measures each:
+                // byte-free, byte-carrying, and a two-pass frame whose
+                // items retain two distinct buffers in one slot -- the
+                // walk's loops and the retention table's width, with
+                // retain and release running inside the measured
+                // window.
                 let instance_bytes = {
                     let mut bytes = [0u8; 24];
                     for (i, v) in [0.0f32, 0.0, 0.2, 0.6, 0.9, 1.0].iter().enumerate() {
@@ -213,19 +226,70 @@ impl WindowApp for GateApp {
                     bytes
                 };
                 let before = allocations();
-                let mut desc = RenderDesc::new(clear);
-                if self.presented.is_multiple_of(2) {
-                    if let Some(pipeline) = self.pipeline.as_ref() {
-                        desc = desc.pipeline(pipeline);
+                let color = [Attachment::new(
+                    LoadOp::Clear(ClearValue::Color(clear)),
+                    StoreOp::Store,
+                )];
+                let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+                let items_storage;
+                let pair_storage;
+                let second_storage;
+                let passes_one;
+                let passes_two;
+                let passes: &[Pass<'_>] = match self.presented % 3 {
+                    0 => {
+                        if let Some(pipeline) = self.pipeline.as_ref() {
+                            items_storage = [Item::new(pipeline)];
+                            passes_one = [Pass::new(&color, &items_storage)];
+                            &passes_one
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
                     }
-                } else if let Some((instanced, buffer)) = self.instanced.as_ref() {
-                    desc = desc.pipeline(instanced).frame_data(FrameData::new(
-                        buffer,
-                        &instance_bytes,
-                        1,
-                    ));
-                }
-                let outcome = target.render(&desc);
+                    1 => {
+                        if let Some((instanced, buffer, _)) = self.instanced.as_ref() {
+                            items_storage = [Item::new(instanced).frame_data(FrameData::new(
+                                buffer,
+                                &instance_bytes,
+                                1,
+                            ))];
+                            passes_one = [Pass::new(&color, &items_storage)];
+                            &passes_one
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
+                    }
+                    _ => {
+                        if let (Some(pipeline), Some((instanced, buffer, buffer_two))) =
+                            (self.pipeline.as_ref(), self.instanced.as_ref())
+                        {
+                            pair_storage = [
+                                Item::new(pipeline),
+                                Item::new(instanced).frame_data(FrameData::new(
+                                    buffer,
+                                    &instance_bytes,
+                                    1,
+                                )),
+                            ];
+                            second_storage = [Item::new(instanced).frame_data(FrameData::new(
+                                buffer_two,
+                                &instance_bytes,
+                                1,
+                            ))];
+                            passes_two = [
+                                Pass::new(&color, &pair_storage),
+                                Pass::new(&load, &second_storage),
+                            ];
+                            &passes_two
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
+                    }
+                };
+                let outcome = target.render(&RenderDesc::new(passes));
                 let spent = allocations() - before;
                 match outcome {
                     Ok(PresentOutcome::Presented) => {

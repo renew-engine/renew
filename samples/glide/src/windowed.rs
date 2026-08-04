@@ -18,7 +18,9 @@ use renew_platform::window::{
     LoopControl, NativeWindow, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
 use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
-use renew_rhi::{Color, Device, DeviceDesc, Extent, PresentOutcome, Validation, WindowTarget};
+use renew_rhi::{
+    Color, Device, DeviceDesc, Extent, Pass, PresentOutcome, RenderDesc, Validation, WindowTarget,
+};
 use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 
 use crate::cli::{Options, Report};
@@ -282,7 +284,12 @@ impl GlideApp {
             renderer
                 .push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
         }
-        let outcome = target.render(&renderer.desc(SKY));
+        // The frame, composed on this stack; the borrows end at the
+        // render call.
+        let color = [renew_render2d::attachment(SKY)];
+        let items = [renderer.item()];
+        let passes = [Pass::new(&color, &items)];
+        let outcome = target.render(&RenderDesc::new(&passes));
         self.record_draw(outcome);
     }
 

@@ -82,6 +82,14 @@ pub enum TargetError {
     OutOfDeviceMemory {
         call: &'static str,
     },
+    /// A pass asked for depth on an adapter that offers no format in
+    /// the chain — the environment declined, not the caller, so this is
+    /// a result rather than an assertion. Depth-free rendering on the
+    /// same target keeps working.
+    DepthUnsupported {
+        /// The refused format chain, for the diagnostic.
+        chain: &'static str,
+    },
     DeviceLost,
 }
 
@@ -95,6 +103,12 @@ impl fmt::Display for TargetError {
             Self::Creation { call, code } => write!(f, "{call} failed (code {code})"),
             Self::Timeout { call } => write!(f, "{call} timed out"),
             Self::OutOfDeviceMemory { call } => write!(f, "{call}: out of device memory"),
+            Self::DepthUnsupported { chain } => {
+                write!(
+                    f,
+                    "the adapter offers no depth format in the chain ({chain})"
+                )
+            }
             Self::DeviceLost => write!(f, "device lost"),
         }
     }
@@ -112,6 +126,12 @@ pub enum PipelineError {
         stage: &'static str,
         reason: &'static str,
     },
+    /// Depth state was requested on an adapter that offers no depth
+    /// format in the chain — the environment declined, not the caller.
+    DepthUnsupported {
+        /// The refused format chain, for the diagnostic.
+        chain: &'static str,
+    },
     Creation {
         call: &'static str,
         code: i32,
@@ -123,6 +143,12 @@ impl fmt::Display for PipelineError {
         match self {
             Self::InvalidSpirv { stage, reason } => {
                 write!(f, "{stage} shader bytes rejected: {reason}")
+            }
+            Self::DepthUnsupported { chain } => {
+                write!(
+                    f,
+                    "the adapter offers no depth format in the chain ({chain})"
+                )
             }
             Self::Creation { call, code } => write!(f, "{call} failed (code {code})"),
         }
@@ -198,6 +224,20 @@ mod tests {
                 }
                 .to_string(),
                 "out of device memory",
+            ),
+            (
+                TargetError::DepthUnsupported {
+                    chain: "D32_SFLOAT, D24_UNORM_S8_UINT",
+                }
+                .to_string(),
+                "D32_SFLOAT",
+            ),
+            (
+                PipelineError::DepthUnsupported {
+                    chain: "D32_SFLOAT, D24_UNORM_S8_UINT",
+                }
+                .to_string(),
+                "D24_UNORM_S8_UINT",
             ),
             (TargetError::DeviceLost.to_string(), "device lost"),
             (
