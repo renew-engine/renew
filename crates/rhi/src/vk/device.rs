@@ -83,6 +83,11 @@ pub(crate) struct DeviceShared {
     #[cfg_attr(not(feature = "present"), allow(dead_code))]
     pub(crate) entry: ash::Entry,
     pub(crate) adapter: AdapterInfo,
+    /// The depth attachment format chosen at bring-up, `None` when the
+    /// adapter offers no format in the chain. Consulted by pipeline and
+    /// target creation; queried once because format support is a static
+    /// property of the physical device.
+    pub(crate) depth_format: Option<vk::Format>,
     pub(crate) lost: PoisonFlag,
     /// Boxed for address stability: the driver holds this pointer for
     /// the instance's whole life.
@@ -323,6 +328,12 @@ impl Device {
             .inspect_err(|_| teardown_early(&instance, debug.as_ref(), &ledger))?;
         let (physical, adapter, queue_family) = selected;
 
+        // SAFETY: category 2: instance and selected physical device
+        // live; the query has no failure mode.
+        let depth_format = select_depth_format(|format| unsafe {
+            instance.get_physical_device_format_properties(physical, format)
+        });
+
         // SAFETY: category 2: instance and physical device live.
         let device_extensions = unsafe { instance.enumerate_device_extension_properties(physical) }
             .map_err(|code| {
@@ -370,9 +381,10 @@ impl Device {
 
         renew_diag::info!(
             target: "renew-rhi",
-            "device up: {} ({:?})",
+            "device up: {} ({:?}), depth format {}",
             adapter.name,
-            adapter.kind
+            adapter.kind,
+            depth_format.map_or("unsupported", depth_name)
         );
 
         Ok(Self {
@@ -385,6 +397,7 @@ impl Device {
                 instance,
                 entry,
                 adapter,
+                depth_format,
                 lost: PoisonFlag::default(),
                 validation: validation_counters,
                 ledger,
@@ -396,6 +409,15 @@ impl Device {
     #[must_use]
     pub fn adapter(&self) -> &AdapterInfo {
         &self.shared.adapter
+    }
+
+    /// The depth attachment format chosen at bring-up, as a diagnostic
+    /// name — `None` when no format in the chain offers optimal-tiling
+    /// depth-stencil attachment use on this adapter. Depth-free
+    /// rendering is unaffected by a `None`.
+    #[must_use]
+    pub fn depth_format_name(&self) -> Option<&'static str> {
+        self.shared.depth_format.map(depth_name)
     }
 
     /// Whether the validation layer is actually active on this device
@@ -550,6 +572,41 @@ fn graphics_family(
     u32::try_from(index).ok()
 }
 
+/// The depth formats v0 will accept, best first: `D32_SFLOAT` (the
+/// full-float range), then `D24_UNORM_S8_UINT` (the near-universal
+/// fallback where D32 attachment support is missing).
+const DEPTH_FORMAT_CHAIN: [vk::Format; 2] = [vk::Format::D32_SFLOAT, vk::Format::D24_UNORM_S8_UINT];
+
+/// The chain's diagnostic names; `vk::Format`'s own Debug form covers
+/// every format and is not a stable contract, so the two names the
+/// chain can produce are spelled out.
+fn depth_name(format: vk::Format) -> &'static str {
+    match format {
+        vk::Format::D32_SFLOAT => "D32_SFLOAT",
+        vk::Format::D24_UNORM_S8_UINT => "D24_UNORM_S8_UINT",
+        _ => "(outside the chain)",
+    }
+}
+
+/// Walk [`DEPTH_FORMAT_CHAIN`] and keep the first format whose
+/// *optimal-tiling* features include depth-stencil attachment use — the
+/// tiling depth images are created with, so linear-only support must
+/// not qualify.
+///
+/// Pure over a properties source for the same reason as
+/// [`graphics_family`]: a test adapter supports what it supports —
+/// virtually always the whole chain — so the fallback and both-refused
+/// arms are provable only away from the driver.
+fn select_depth_format(
+    properties_of: impl Fn(vk::Format) -> vk::FormatProperties,
+) -> Option<vk::Format> {
+    DEPTH_FORMAT_CHAIN.into_iter().find(|format| {
+        properties_of(*format)
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+    })
+}
+
 /// Classify one adapter and produce its selection key: rank by kind
 /// first, then by lowest device ID, so selection is deterministic on
 /// any machine. Pure for the same reason as [`graphics_family`] — the
@@ -635,6 +692,67 @@ mod tests {
         assert!(flag.poisoned(), "device loss poisons");
         assert!(!flag.note(vk::Result::SUCCESS));
         assert!(flag.poisoned(), "poison is sticky");
+    }
+
+    // The depth chain, unit-covered: a test adapter virtually always
+    // supports the whole chain, so the fallback and both-refused arms
+    // would otherwise go unproven.
+    #[test]
+    fn the_depth_chain_prefers_d32_falls_back_to_d24_and_can_refuse_both() {
+        let attachment_for = |supported: &'static [vk::Format]| {
+            move |format: vk::Format| {
+                let features = if supported.contains(&format) {
+                    vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT
+                } else {
+                    vk::FormatFeatureFlags::empty()
+                };
+                vk::FormatProperties {
+                    optimal_tiling_features: features,
+                    ..Default::default()
+                }
+            }
+        };
+        assert_eq!(
+            select_depth_format(attachment_for(&DEPTH_FORMAT_CHAIN)),
+            Some(vk::Format::D32_SFLOAT),
+            "both supported: the chain's head wins"
+        );
+        assert_eq!(
+            select_depth_format(attachment_for(&[vk::Format::D24_UNORM_S8_UINT])),
+            Some(vk::Format::D24_UNORM_S8_UINT),
+            "D32 refused: the fallback is chosen"
+        );
+        assert_eq!(
+            select_depth_format(attachment_for(&[])),
+            None,
+            "both refused: no format, not a panic"
+        );
+    }
+
+    #[test]
+    fn linear_only_support_never_qualifies_a_depth_format() {
+        let linear_only = |_: vk::Format| vk::FormatProperties {
+            linear_tiling_features: vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+            ..Default::default()
+        };
+        assert_eq!(
+            select_depth_format(linear_only),
+            None,
+            "depth images are optimal-tiling; linear support is not support"
+        );
+    }
+
+    #[test]
+    fn the_chain_formats_have_stable_diagnostic_names() {
+        assert_eq!(depth_name(vk::Format::D32_SFLOAT), "D32_SFLOAT");
+        assert_eq!(
+            depth_name(vk::Format::D24_UNORM_S8_UINT),
+            "D24_UNORM_S8_UINT"
+        );
+        assert_eq!(
+            depth_name(vk::Format::R8G8B8A8_UNORM),
+            "(outside the chain)"
+        );
     }
 
     fn family(flags: vk::QueueFlags) -> vk::QueueFamilyProperties {
