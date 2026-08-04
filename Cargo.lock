@@ -1634,6 +1634,13 @@ name = "renew-event"
 version = "0.1.0"
 
 [[package]]
+name = "renew-fixed"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "renew-frame"
 version = "0.1.0"
 dependencies = [
