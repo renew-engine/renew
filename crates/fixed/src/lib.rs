@@ -31,10 +31,12 @@
 // purpose — denied rather than left to review, and there is no `allow` below.
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
+mod angle;
 mod saturation;
 mod scalar;
 mod vector;
 
+pub use angle::Angle;
 pub use saturation::{Saturations, saturations};
 pub use scalar::Fixed;
 pub use vector::{Vec2, Vec3};

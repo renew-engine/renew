@@ -202,6 +202,24 @@ impl Vec2 {
         self - self.project_onto_unit(normal)
     }
 
+    /// Rotated counter-clockwise by `angle`.
+    ///
+    /// The standard rotation, in fixed point: `(x cos − y sin, x sin + y
+    /// cos)`. Each component is two rounded products, so a rotated vector
+    /// keeps its length to a few parts in 65536 rather than exactly — the
+    /// tests state the bound.
+    ///
+    /// [`Vec2::perpendicular`] remains for the quarter turn, and is not the
+    /// same thing: it is exact, where this rounds.
+    #[must_use]
+    pub fn rotate(self, angle: crate::Angle) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        Self::new(
+            self.x.saturating_mul(cos) - self.y.saturating_mul(sin),
+            self.x.saturating_mul(sin) + self.y.saturating_mul(cos),
+        )
+    }
+
     /// Perpendicular, rotated a quarter turn counter-clockwise.
     ///
     /// Exact — a quarter turn is a swap and a negation, needing no
