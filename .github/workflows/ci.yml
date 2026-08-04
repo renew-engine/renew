@@ -285,10 +285,33 @@ jobs:
           cargo build -p renew-sample-glide --features window
           cargo clippy -p renew-sample-glide --features window --all-targets -- -D warnings
           cargo test -p renew-sample-glide --features window
+      # The audio halves, which no other lane compiles: the canonical
+      # lint never sees feature-gated code, and both features are off by
+      # default. Clippy rides here for that reason, exactly as it does
+      # for the window feature above. The runner has no sound card,
+      # which is not a gap but the point: RENEW_AUDIO_ABSENT turns the
+      # deviceless answer into an assertion instead of a shrug.
+      - name: Build, lint, and test the audio halves
+        run: |
+          # cpal builds against ALSA on Linux; the runner carries the
+          # library but not its headers.
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+          cargo build -p renew-audio
+          cargo clippy -p renew-audio --all-targets -- -D warnings
+          cargo test -p renew-audio
+          cargo build -p renew-platform --features audio-out
+          cargo clippy -p renew-platform --features audio-out --all-targets -- -D warnings
+          cargo test -p renew-platform --features audio-out
+          cargo build -p renew-sample-glide --features audio
+          cargo clippy -p renew-sample-glide --features audio --all-targets -- -D warnings
+          cargo test -p renew-sample-glide --features audio
+        env:
+          RENEW_AUDIO_ABSENT: "1"
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay; do
+          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
@@ -298,8 +321,8 @@ jobs:
       - name: Build and test the platform crate headless
         run: |
           sel="-p renew-platform --no-default-features"
-          for wsi in winit raw-window-handle; do
-            bash "$RUNNER_TEMP/absent-from-graph.sh" "$wsi" $sel
+          for absent in winit raw-window-handle cpal; do
+            bash "$RUNNER_TEMP/absent-from-graph.sh" "$absent" $sel
           done
           cargo build $sel
           cargo test $sel

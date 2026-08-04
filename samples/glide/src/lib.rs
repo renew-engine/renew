@@ -18,7 +18,13 @@
 mod cli;
 mod error;
 pub mod scene;
+// The sound derivation is pure and testable with no device, no
+// window, and no audio crate in the graph, so it compiles always;
+// only the wiring that plays its answers is gated.
+#[cfg(feature = "audio")]
+mod audio;
 mod scripted;
+pub mod sound;
 mod trace;
 #[cfg(feature = "window")]
 mod windowed;
@@ -27,6 +33,7 @@ pub use cli::{Options, Report};
 pub use error::SampleError;
 pub use scene::{SceneSprite, Tile, scene};
 pub use scripted::world_at;
+pub use sound::{TickSounds, tick_sounds};
 pub use trace::{by_name, names};
 
 /// Exit code for a command line this sample cannot honour.

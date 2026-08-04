@@ -1,6 +1,6 @@
 [package]
 name = "renew-platform"
-description = "Operating-system seams: monotonic time, whole-file I/O, named threads, and the window"
+description = "Operating-system seams: monotonic time, whole-file I/O, named threads, the window, and audio output"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, and window seams."
+purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, window, and audio-output seams."
 maturity = "internal"
 core = true
 extension_points = ["window-app"]
@@ -21,6 +21,13 @@ simulation = false
 # features and compile the entire windowing stack out.
 default = ["window"]
 window = ["dep:winit", "dep:raw-window-handle"]
+# Audio output via the platform's audio module. Default-OFF, unlike
+# `window`: a headless harness has a display server more often than it
+# has a sound card, and the callback-driven audio stack is worth
+# compiling only where something actually plays. It carries the
+# diagnostics crate with it, because the stream's error callback is the
+# one place in this crate that reports from a thread it does not own.
+audio-out = ["dep:cpal", "dep:renew-diag"]
 
 [dependencies]
 # The event vocabulary this crate re-exports as its `event` module.
@@ -45,6 +52,15 @@ winit = { version = "=0.30.13", optional = true, default-features = false, featu
 # handle traits so the renderer can create a surface without either
 # crate naming the other's internals.
 raw-window-handle = { version = "=0.6.2", optional = true }
+# Audio device and stream I/O. No default features: every optional
+# backend it offers (JACK, ASIO, PulseAudio, PipeWire) is an extra
+# dependency and an extra system package for a device this seam reaches
+# through the platform's standard host anyway.
+cpal = { version = "=0.18.1", optional = true, default-features = false }
+# Carried by `audio-out` alone: the audio thread's error callback is the
+# only reporter in this crate, so the default and headless graphs are
+# exactly what they were without it.
+renew-diag = { path = "../diag", optional = true }
 
 [lints]
 workspace = true

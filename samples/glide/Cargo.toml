@@ -30,6 +30,7 @@ renew-frame = { path = "../../crates/frame" }
 renew-input = { path = "../../crates/input" }
 renew-platform = { path = "../../crates/core/platform", default-features = false }
 renew-render2d = { path = "../../crates/render2d", optional = true }
+renew-audio = { path = "../../crates/audio", optional = true }
 renew-replay = { path = "../../crates/replay" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-sample-glide-world = { path = "world" }
@@ -45,6 +46,10 @@ window = [
     "renew-rhi/present",
     "dep:renew-render2d",
 ]
+# Make sounds while playing. Requires `window` structurally rather than
+# by prose: the wiring lives in the windowed driver, and a headless run
+# with a sound card is not a thing this game does.
+audio = ["window", "dep:renew-audio", "renew-platform/audio-out"]
 
 # The frame-capture oracle needs the GPU crates whether or not the
 # window feature is on, so they stay dev-dependencies too; the default
