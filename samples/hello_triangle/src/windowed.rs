@@ -185,22 +185,17 @@ impl TriangleApp {
 
     /// Draw the world as it stands, interpolated by the stored alpha.
     fn draw(&mut self) {
-        let Some(surface) = &mut self.surface else {
+        // Surface and pipeline are built together in `bring_up`, so
+        // either both exist or neither does — one pattern says so.
+        let (Some(surface), Some(pipeline)) = (&mut self.surface, self.pipeline.as_ref()) else {
             return;
         };
         let clear = clear_color(&self.world, self.alpha);
         // The frame, composed on this stack; the borrows end at the
         // render call.
         let color = [clear_attachment(clear)];
-        let items_storage;
-        let items: &[Item<'_>] = match self.pipeline.as_ref() {
-            Some(pipeline) => {
-                items_storage = [Item::new(pipeline)];
-                &items_storage
-            }
-            None => &[],
-        };
-        let passes = [Pass::new(&color, items)];
+        let items = [Item::new(pipeline)];
+        let passes = [Pass::new(&color, &items)];
         let outcome = surface.render(&RenderDesc::new(&passes));
         self.record_draw(outcome);
     }

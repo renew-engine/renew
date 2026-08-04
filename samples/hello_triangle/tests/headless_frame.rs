@@ -65,6 +65,17 @@ fn the_readback_holds_the_colour_the_world_computed_for_the_last_tick() {
     for (index, pixel) in pixels.chunks_exact(4).enumerate() {
         assert_eq!(pixel, expected, "pixel {index} on adapter {adapter}");
     }
+
+    // A repaint of the same tick — the clear-only frame shape, drawn
+    // again — must reproduce the same image, exactly as the triangle
+    // test proves for the drawing shape.
+    let before = run.read_back().to_vec();
+    run.redraw().expect("a clear-only repaint of the same tick");
+    assert_eq!(
+        before,
+        run.read_back(),
+        "a clear-only repaint diverged from the frame it repainted"
+    );
 }
 
 /// The anti-vacuity half: one more step is one different image. Without

@@ -53,10 +53,6 @@ impl DepthResources {
     ///
     /// The memory figure is journaled from the driver's own
     /// requirements at creation; nothing here does size arithmetic.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one linear creation ladder; splitting it hides the order the failure paths must mirror"
-    )]
     pub(crate) fn create(
         shared: &Rc<DeviceShared>,
         extent: Extent,
