@@ -101,55 +101,101 @@ fn a_wide_product_cannot_overflow_but_a_sum_of_them_can() {
     );
 }
 
-/// The world bound is set by the *subtraction*, not by the wide sum — so
-/// quoting a wide-path figure as the world bound describes a constraint that
-/// is not the binding one.
+/// The world bound differs by dimension, and the operand is the coordinate
+/// *difference* rather than the coordinate.
+///
+/// **The first version of this test squared E where the operation squares 2E,
+/// while its own failure message said "three squared maximum differences".**
+/// It therefore asserted a quantity four times too small and could not fail
+/// when the prose it was written to guard was wrong — which it was. That is
+/// the same operand confusion the whole file exists to catch, reproduced
+/// inside the catcher, because the same hand wrote the claim and the check.
+///
+/// The lesson is in the shape of what follows: an assertion about a bound
+/// must exercise the bound, not recompute the algebra that produced it.
+/// Below, the figure is decided by making the arithmetic saturate one unit
+/// past it and not saturate at it.
 #[test]
-fn the_world_bound_is_set_by_the_coordinate_subtraction() {
-    // Largest raw difference d with 3·d² inside an i128.
-    let (mut lo, mut hi) = (0i128, i128::MAX >> 1);
-    while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
-        let fits = mid
-            .checked_mul(mid)
-            .and_then(|square| square.checked_mul(3))
-            .is_some();
-        if fits {
-            lo = mid;
-        } else {
-            hi = mid - 1;
+fn the_world_bound_differs_by_dimension_and_is_measured_at_the_bound() {
+    // Largest coordinate E whose *difference* 2E survives `dimension`
+    // squared terms in the wide type.
+    let largest_safe = |dimension: i128| {
+        let (mut lo, mut hi) = (0i128, i128::from(i64::MAX) / 2);
+        while lo < hi {
+            let mid = lo + (hi - lo).div_euclid(2) + 1;
+            let fits = (2 * mid)
+                .checked_mul(2 * mid)
+                .and_then(|square| square.checked_mul(dimension))
+                .is_some();
+            if fits {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
         }
-    }
-    // The subtraction bound: two coordinates of E must differ without
-    // saturating, so E is half the range.
-    let subtraction_bound = i128::from(Fixed::MAX.to_bits() / 2);
-    let half = Fixed::from_bits(Fixed::MAX.to_bits() / 2);
-    assert!(
-        half.checked_add(half).is_some(),
-        "half the range doubles without saturating"
-    );
+        lo
+    };
+
+    let two_d = largest_safe(2);
+    let three_d = largest_safe(3);
+    let one = i128::from(ONE);
+
+    // In 2D the wide sum and the subtraction coincide exactly: the
+    // subtraction caps a coordinate at half the range, and that is also the
+    // largest coordinate whose doubled difference squares twice inside an
+    // i128. The margin is 4.3 × 10⁻¹⁹ of the range — it fits by a hair.
     assert_eq!(
-        subtraction_bound / i128::from(ONE),
-        70_368_744_177_663,
-        "coordinate bound in whole units, set by the subtraction"
+        two_d,
+        i128::from(Fixed::MAX.to_bits() / 2),
+        "in 2D the subtraction bound and the wide bound are the same figure"
+    );
+    assert_eq!(two_d / one, 70_368_744_177_663, "2D world bound, in units");
+
+    // In 3D the wide sum binds well below the subtraction — 18% lower — so
+    // a world built to the 2D figure saturates on an ordinary distance test.
+    assert_eq!(
+        three_d / one,
+        57_455_839_025_240,
+        "3D world bound, in units"
+    );
+    assert!(
+        three_d < two_d,
+        "the 3D bound must be the tighter one, or there is nothing to state"
     );
 
-    // And the point: the subtraction is the *binding* one. The wide sum
-    // permits a larger difference than the subtraction can produce, so no
-    // further tightening is needed to keep three squared differences inside
-    // the wide type — the note claiming a tightened figure was describing a
-    // constraint that does not bind.
-    assert!(
-        lo > subtraction_bound,
-        "wide-sum bound {lo} should exceed the subtraction bound {subtraction_bound}"
+    // Decided by exercising it, not by re-deriving it. At the 3D bound the
+    // mandated wide path is quiet; at the 2D figure — which the vocabulary
+    // quoted as the world bound for both dimensions — it saturates.
+    let at = Fixed::from_bits(i64::try_from(three_d).unwrap_or(i64::MAX));
+    let past = Fixed::from_bits(i64::try_from(two_d).unwrap_or(i64::MAX));
+
+    let difference = |e: Fixed| e - Fixed::from_bits(-e.to_bits());
+
+    let before = renew_fixed::saturations();
+    let quiet = difference(at);
+    let _ = Vec3::new(quiet, quiet, quiet).length_squared_wide();
+    assert_eq!(
+        renew_fixed::saturations(),
+        before,
+        "at the 3D bound the mandated wide path must not saturate"
     );
 
-    // Stated concretely, since the margin is what makes the tightening
-    // unnecessary rather than merely unproven.
-    let worst = subtraction_bound * subtraction_bound * 3;
+    let loud = difference(past);
+    let _ = Vec3::new(loud, loud, loud).length_squared_wide();
     assert!(
-        worst > 0 && worst < i128::MAX,
-        "three squared maximum differences stay inside the wide type"
+        renew_fixed::saturations().0 > before.0,
+        "at the 2D figure a 3D distance must saturate — that is why the \
+         bound is stated per dimension"
+    );
+
+    // And the 2D figure is genuinely safe in 2D, which is what makes it a
+    // bound rather than a mistake.
+    let steady = renew_fixed::saturations();
+    let _ = Vec2::new(loud, loud).length_squared_wide();
+    assert_eq!(
+        renew_fixed::saturations(),
+        steady,
+        "the 2D bound must be quiet in 2D"
     );
 }
 
