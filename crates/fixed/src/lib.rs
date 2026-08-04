@@ -33,6 +33,8 @@
 
 mod saturation;
 mod scalar;
+mod vector;
 
 pub use saturation::{Saturations, saturations};
 pub use scalar::Fixed;
+pub use vector::{Vec2, Vec3};
