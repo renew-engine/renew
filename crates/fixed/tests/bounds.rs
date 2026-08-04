@@ -221,3 +221,48 @@ fn the_sixty_hertz_timestep_converts_with_a_stated_error() {
         "drift in thousandths of a unit per minute at ten units per second"
     );
 }
+
+/// Which tick rates are exact, which is a stricter question than it looks and
+/// has a different answer in each representation.
+///
+/// A rate exact in whole nanoseconds need not be exact in Q47.16 seconds:
+/// 125 Hz divides 10⁹ evenly and does *not* divide 65536, landing on 524.288
+/// raw. Quoting it as an exact alternative — which is easy to do, because the
+/// loop's own timestep documentation quotes it correctly for the nanosecond
+/// question — offers a caller an escape from rounding that is not there.
+///
+/// End-to-end exactness needs both, so the rates are the powers of two.
+#[test]
+fn a_rate_exact_in_nanoseconds_need_not_be_exact_in_the_number_type() {
+    let billion = 1_000_000_000i128;
+    let one = i128::from(ONE);
+
+    let exact_in_nanos = |hz: i128| billion % hz == 0;
+    let exact_in_fixed = |hz: i128| one % hz == 0;
+
+    // The trap, stated as an assertion so it cannot be quoted away again.
+    assert!(exact_in_nanos(125), "125 Hz divides a second evenly");
+    assert!(
+        !exact_in_fixed(125),
+        "and does not divide 65536, so it is not exact end to end"
+    );
+    assert_eq!(one * 1000 / 125, 524_288, "125 Hz is 524.288 raw");
+
+    // The rates that are exact in both are the powers of two, and the list
+    // has a top: a second is 2⁹·5⁹ nanoseconds, so nine factors of two is
+    // all there are, even though the number type would carry sixteen.
+    for hz in [1i128, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
+        assert!(
+            exact_in_nanos(hz) && exact_in_fixed(hz),
+            "{hz} Hz should be exact in both representations"
+        );
+    }
+    assert_eq!(one / 64, 1024, "64 Hz in raw units");
+    assert_eq!(one / 512, 128, "512 Hz in raw units");
+
+    assert!(exact_in_fixed(1024), "1024 divides 65536");
+    assert!(
+        !exact_in_nanos(1024),
+        "but not a second, so the exact rates stop at 512 Hz"
+    );
+}
