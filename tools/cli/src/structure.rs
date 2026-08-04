@@ -45,6 +45,27 @@ pub struct CrateShape {
     pub engine: bool,
     /// Workspace-internal dependencies, any kind, dev included.
     pub deps: Vec<String>,
+    /// Workspace dependencies that ship: `deps` without the dev edges.
+    ///
+    /// The float-closure rule walks these rather than `deps`, because a
+    /// test framework is linked into test binaries and into nothing a
+    /// simulation ships — `proptest` computes floats and cannot put one
+    /// anywhere a digest can see it. The OS-capability rule keeps using
+    /// `deps`, dev edges included, because a test that opens a clock
+    /// through a wrapper is exactly the laundering it exists to catch.
+    pub runtime_deps: Vec<String>,
+    /// Shipping dependencies this checker cannot see inside: everything
+    /// in `runtime_deps`' position that is not a workspace member. The
+    /// closure rules are graph walks over workspace crates, so a foreign
+    /// edge is not a crate they clear — it is a crate they cannot reach,
+    /// which is a different thing and has to be reported as one.
+    pub foreign_deps: Vec<String>,
+    /// Does this crate's root deny `clippy::float_arithmetic`?
+    ///
+    /// Read from source at scan time rather than checked here, so the
+    /// rules stay pure functions of the shapes and their tests can
+    /// construct a crate that does or does not carry it.
+    pub denies_float: bool,
     /// Parsed metadata table, or the list of schema problems.
     pub meta: Result<Meta, Vec<String>>,
 }
@@ -111,23 +132,49 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
         let dir = manifest_path
             .rsplit_once('/')
             .map_or(String::new(), |(parent, _)| parent.to_string());
-        let deps = package
+        let empty: Vec<Value> = Vec::new();
+        let declared = package
             .get("dependencies")
             .and_then(Value::as_array)
-            .map(|list| {
-                list.iter()
-                    .filter_map(|dep| dep.get("name").and_then(Value::as_str))
-                    .filter(|dep_name| names.iter().any(|known| known == dep_name))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+            .unwrap_or(&empty);
+        let dep_name = |dep: &Value| dep.get("name").and_then(Value::as_str).map(str::to_string);
+        // `kind` is absent (null) for a normal dependency and carries
+        // "dev" or "build" otherwise, so absence is what ships.
+        let ships = |dep: &Value| {
+            !matches!(
+                dep.get("kind").and_then(Value::as_str),
+                Some("dev" | "development")
+            )
+        };
+        let known = |name: &String| names.iter().any(|candidate| candidate == name);
+        let deps: Vec<String> = declared.iter().filter_map(dep_name).filter(known).collect();
+        let runtime_deps: Vec<String> = declared
+            .iter()
+            .filter(|dep| ships(dep))
+            .filter_map(dep_name)
+            .filter(known)
+            .collect();
+        let mut foreign_deps: Vec<String> = declared
+            .iter()
+            .filter(|dep| ships(dep))
+            .filter_map(dep_name)
+            .filter(|candidate| !known(candidate))
+            .collect();
+        foreign_deps.sort_unstable();
+        foreign_deps.dedup();
+        // A crate root that is not there reads as "does not deny", which
+        // is the safe direction: the rule reports rather than assumes.
+        let denies_float = std::fs::read_to_string(format!("{dir}/src/lib.rs"))
+            .is_ok_and(|source| source.contains("clippy::float_arithmetic"));
         let meta = validate_meta(package);
         shapes.push(CrateShape {
             name,
             dir,
             engine,
             deps,
+            runtime_deps,
+            foreign_deps,
+            denies_float,
             meta,
         });
     }
@@ -441,6 +488,7 @@ fn edge_rules(shape: &CrateShape, meta: &Meta, shapes: &[CrateShape], findings: 
     // dependency whose own metadata failed to parse must not truncate the
     // walk and hide a path. Its schema failure is already its own finding.
     if meta.simulation {
+        float_closure_rules(shape, shapes, findings);
         let mut stack: Vec<&str> = shape.deps.iter().map(String::as_str).collect();
         let mut visited: Vec<&str> = Vec::new();
         while let Some(current) = stack.pop() {
@@ -462,6 +510,83 @@ fn edge_rules(shape: &CrateShape, meta: &Meta, shapes: &[CrateShape], findings: 
                 stack.extend(dep_shape.deps.iter().map(String::as_str));
             }
         }
+    }
+}
+
+/// Rule 9 — float closure.
+///
+/// Determinism is a property of arithmetic, and arithmetic one edge away
+/// is no less able to reach digested state than arithmetic in the crate
+/// itself. So the deny that keeps floats out of a simulation has to hold
+/// across the simulation's whole shipping closure, or it only holds where
+/// somebody remembered to write it.
+///
+/// **Stated over the closure rather than as "may not reach a crate that
+/// computes floats"**, which was the first formulation and is both
+/// undecidable and false. Undecidable because nothing declares whether a
+/// crate computes floats — no manifest field says it and no walk can
+/// infer it. False because the game's world reaches the frame loop, which
+/// computes the one interpolation factor named as an exemption, so the
+/// rule would have reddened the tree the moment it landed. The closure
+/// form asks instead a question every crate can answer about itself, and
+/// leaves named exemptions where they belong: at the expression, inside a
+/// crate that denies.
+///
+/// Two halves, and the second is the one that keeps the first honest:
+/// every workspace crate in the closure denies, **and** the closure holds
+/// no crate this checker cannot open. A dependency outside the workspace
+/// is not a crate the rule cleared; it is a crate it could not read, and
+/// reporting that as absence is the green-gate-measuring-nothing failure
+/// this tree has already paid for. There are none today, which is what
+/// makes saying so cheap.
+///
+/// Walks shipping edges — `runtime_deps`, not `deps`. A test framework is
+/// linked into test binaries and into nothing a simulation ships:
+/// `proptest` computes floats and cannot put one where a digest sees it.
+/// The OS-capability rule above keeps its dev edges, because a test
+/// reaching a clock through a wrapper is the laundering it exists to
+/// catch.
+fn float_closure_rules(shape: &CrateShape, shapes: &[CrateShape], findings: &mut Vec<Finding>) {
+    let unreadable = |owner: &str, through: &str, foreign: &str| Finding {
+        rule: "float-closure",
+        message: if owner == through {
+            format!(
+                "{owner} declares simulation = true and ships a dependency on {foreign}, which is not a workspace crate — this rule cannot read its source, so its arithmetic is unchecked"
+            )
+        } else {
+            format!(
+                "{owner}'s shipping closure reaches {through}, which depends on {foreign} outside the workspace — this rule cannot read its source, so its arithmetic is unchecked"
+            )
+        },
+    };
+
+    for foreign in &shape.foreign_deps {
+        findings.push(unreadable(&shape.name, &shape.name, foreign));
+    }
+
+    let mut stack: Vec<&str> = shape.runtime_deps.iter().map(String::as_str).collect();
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(current) = stack.pop() {
+        if seen.contains(&current) {
+            continue;
+        }
+        seen.push(current);
+        let Some(dep) = shapes.iter().find(|candidate| candidate.name == current) else {
+            continue;
+        };
+        if !dep.denies_float {
+            findings.push(Finding {
+                rule: "float-closure",
+                message: format!(
+                    "{} declares simulation = true and reaches {current} (transitively), which does not deny clippy::float_arithmetic — a float computed there is a float the simulation can digest",
+                    shape.name
+                ),
+            });
+        }
+        for foreign in &dep.foreign_deps {
+            findings.push(unreadable(&shape.name, current, foreign));
+        }
+        stack.extend(dep.runtime_deps.iter().map(String::as_str));
     }
 }
 
@@ -552,6 +677,9 @@ mod tests {
             dir: format!("/w/crates/{name}"),
             engine,
             deps: deps.iter().map(ToString::to_string).collect(),
+            runtime_deps: deps.iter().map(ToString::to_string).collect(),
+            foreign_deps: Vec::new(),
+            denies_float: true,
             meta: Ok(Meta {
                 maturity: maturity.to_string(),
                 core,
@@ -628,6 +756,9 @@ mod tests {
             dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
+            runtime_deps: Vec::new(),
+            foreign_deps: Vec::new(),
+            denies_float: true,
             meta: Err(vec!["missing field `core`".to_string()]),
         }];
         let findings = evaluate(&shapes);
@@ -710,6 +841,9 @@ mod tests {
             dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
+            runtime_deps: Vec::new(),
+            foreign_deps: Vec::new(),
+            denies_float: true,
             meta: Ok(Meta {
                 maturity: "bootstrap".to_string(),
                 core: true,
@@ -751,12 +885,148 @@ mod tests {
             dir: format!("/w/crates/{name}"),
             engine: true,
             deps: deps.iter().map(|d| (*d).to_string()).collect(),
+            runtime_deps: deps.iter().map(|d| (*d).to_string()).collect(),
+            foreign_deps: Vec::new(),
+            // Denying by default keeps every existing test a statement
+            // about the rule it was written for; the float tests below
+            // set it false deliberately.
+            denies_float: true,
             meta: Ok(Meta {
                 maturity: "bootstrap".to_string(),
                 core: false,
                 simulation,
             }),
         }
+    }
+
+    /// `sim`, with the two knobs the float-closure rule reads.
+    fn float_sim(
+        name: &str,
+        deps: &[&str],
+        simulation: bool,
+        denies_float: bool,
+        foreign: &[&str],
+    ) -> CrateShape {
+        CrateShape {
+            denies_float,
+            foreign_deps: foreign.iter().map(|d| (*d).to_string()).collect(),
+            ..sim(name, deps, simulation)
+        }
+    }
+
+    /// A dev edge is in `deps` and not in `runtime_deps` — the shape a
+    /// test-only dependency has.
+    fn dev_only(name: &str, dev: &[&str], simulation: bool) -> CrateShape {
+        CrateShape {
+            deps: dev.iter().map(|d| (*d).to_string()).collect(),
+            runtime_deps: Vec::new(),
+            ..sim(name, &[], simulation)
+        }
+    }
+
+    #[test]
+    fn float_closure_reaches_through_an_intermediate_crate() {
+        // The rule's whole reason for existing: the deny is a crate-root
+        // attribute, so it says nothing about the crate one edge away,
+        // and a float computed there reaches digested state just as well.
+        let shapes = [
+            float_sim("world", &["middle"], true, true, &[]),
+            float_sim("middle", &["maths"], false, true, &[]),
+            float_sim("maths", &[], false, false, &[]),
+        ];
+        let findings = evaluate(&shapes);
+        let found = findings
+            .iter()
+            .find(|finding| finding.rule == "float-closure")
+            .expect("the transitive float crate is reported");
+        assert!(found.message.contains("maths"), "{}", found.message);
+
+        // The same graph with the far crate denying is silent.
+        let clean = [
+            float_sim("world", &["middle"], true, true, &[]),
+            float_sim("middle", &["maths"], false, true, &[]),
+            float_sim("maths", &[], false, true, &[]),
+        ];
+        assert!(
+            !evaluate(&clean)
+                .iter()
+                .any(|finding| finding.rule == "float-closure"),
+            "every crate in the closure denies, so the rule has nothing to say"
+        );
+    }
+
+    #[test]
+    fn float_closure_ignores_a_dev_only_edge() {
+        // `proptest` computes floats and is linked into test binaries
+        // only. Reporting it would train a reader to ignore the rule, and
+        // the rule has to be readable on the day it is right.
+        let shapes = [
+            dev_only("world", &["harness"], true),
+            float_sim("harness", &[], false, false, &["proptest"]),
+        ];
+        assert!(
+            !evaluate(&shapes)
+                .iter()
+                .any(|finding| finding.rule == "float-closure"),
+            "a dev-only edge must not reach the float-closure rule"
+        );
+    }
+
+    #[test]
+    fn float_closure_reports_what_it_cannot_read() {
+        // A crate outside the workspace is not a crate this rule cleared;
+        // it is one it could not open. Reporting absence as a pass is the
+        // green-gate-measuring-nothing failure, so it is reported as what
+        // it is — both on a direct edge and through the closure.
+        let direct = [float_sim("world", &[], true, true, &["nalgebra"])];
+        let message = &evaluate(&direct)
+            .into_iter()
+            .find(|finding| finding.rule == "float-closure")
+            .expect("a foreign direct dependency is reported")
+            .message;
+        assert!(message.contains("nalgebra"), "{message}");
+
+        let indirect = [
+            float_sim("world", &["middle"], true, true, &[]),
+            float_sim("middle", &[], false, true, &["nalgebra"]),
+        ];
+        let message = &evaluate(&indirect)
+            .into_iter()
+            .find(|finding| finding.rule == "float-closure")
+            .expect("a foreign dependency in the closure is reported")
+            .message;
+        assert!(message.contains("nalgebra"), "{message}");
+    }
+
+    #[test]
+    fn float_closure_skips_a_dependency_it_was_handed_no_shape_for() {
+        // The walk resolves each name through `shapes`, and a name with no
+        // shape is skipped rather than assumed guilty. That branch is not
+        // decoration: the metadata scan can drop a package whose manifest
+        // failed to parse, and its schema failure is already its own
+        // finding — truncating this walk into a second, wrong one would
+        // report the same problem twice under a rule that is not about it.
+        let shapes = [float_sim("world", &["vanished"], true, true, &[])];
+        assert!(
+            !evaluate(&shapes)
+                .iter()
+                .any(|finding| finding.rule == "float-closure"),
+            "a name with no shape must be skipped, not reported as a float crate"
+        );
+    }
+
+    #[test]
+    fn float_closure_says_nothing_about_a_crate_that_is_not_a_simulation() {
+        let shapes = [
+            float_sim("tool", &["maths"], false, true, &[]),
+            float_sim("maths", &[], false, false, &["nalgebra"]),
+        ];
+        assert!(
+            !evaluate(&shapes)
+                .iter()
+                .any(|finding| finding.rule == "float-closure"),
+            "the rule binds simulation crates and nothing else"
+        );
     }
 
     #[test]
@@ -991,6 +1261,9 @@ mod tests {
                 dir: "/w/crates/x".to_string(),
                 engine: true,
                 deps: Vec::new(),
+                runtime_deps: Vec::new(),
+                foreign_deps: Vec::new(),
+                denies_float: true,
                 meta: Err(vec!["missing field `core`".to_string()]),
             },
         ];
