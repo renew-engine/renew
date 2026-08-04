@@ -67,6 +67,30 @@ does. The counter is thread-local, which is both what the threading standard
 already sanctions and the right shape — simulation is single-threaded, so
 per-thread is per-simulation.
 
+## Vectors
+
+`Vec2` and `Vec3` over `Fixed`, as two concrete types rather than one generic
+over dimension — the same choice the physics contract makes for the same
+reason: a dimension-generic vocabulary infects every signature with a bound,
+and writing `dot` twice costs less than every caller reading one.
+
+Two operations are worth knowing about because physics leans on them.
+
+`slide_along` removes a displacement's component along a unit normal. That is
+the whole of move-and-slide's inner step, named here so an implementation does
+not spell it out at each call site and get the sign wrong at one of them.
+
+`perpendicular` is a quarter turn, and it is **exact** — a swap and a negation,
+no trigonometry, no rounding. General rotation is not available: it needs
+trigonometric functions this type does not have, which is why the physics
+contract defers rotated shapes.
+
+`normalize` is fallible, because the zero vector is a value a simulation
+legitimately produces and an assertion on a path that runs every frame is the
+wrong shape. **The result is unit-length only to the type's resolution** — a
+four parts in 65536 — so callers wanting exact equality should compare
+squared lengths against a tolerance rather than expecting exactly one.
+
 ## Extension points
 
 None. This is a value type; it has no trait to implement and no runtime
