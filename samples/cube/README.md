@@ -287,6 +287,15 @@ triangle crossing `w = 0` cannot be divided at all — and inside a room,
 with walls behind you, that is not a corner case. It also means the mesh
 never re-uploads when the camera moves.
 
+**Distance fades toward the horizon colour**, which is the only depth cue
+a flat-shaded room has beyond the outline where two faces meet -- without
+it a near wall and a far one are the same grey and the space reads as a
+paper cut-out. It is computed from clip `w`, not from depth: after a
+perspective projection `w` is the distance along the view direction while
+depth is compressed toward the near plane, so a fade driven by depth turns
+the whole room to fog a few blocks in. That is not a hypothetical; it was
+the first picture.
+
 **The free camera is explicit, never accumulated.** Two points on a
 command line, not mouse deltas: a picture that depended on how somebody
 moved their hand could not be compared, and these pictures are committed.

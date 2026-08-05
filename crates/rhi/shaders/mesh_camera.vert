@@ -38,6 +38,16 @@ layout(location = 4) in vec4 view_projection_2;
 layout(location = 5) in vec4 view_projection_3;
 
 layout(location = 0) out vec4 fragment_colour;
+// How far away this vertex is, as a fraction of the distance at which
+// the fade is complete.
+//
+// **Computed here because `w` is linear in view distance and depth is
+// not.** After a perspective projection `gl_Position.w` is the distance
+// along the view direction, while `gl_FragCoord.z` is compressed toward
+// the near plane -- with a near plane of a twentieth of a block, depth
+// passes 0.99 within a few blocks and a fade driven by it turns the whole
+// room to fog. That was not a guess; it was the first picture.
+layout(location = 1) out float fragment_fade;
 
 void main() {
     mat4 view_projection = mat4(
@@ -48,4 +58,9 @@ void main() {
     );
     gl_Position = view_projection * vec4(vertex_position, 1.0);
     fragment_colour = vertex_colour;
+    // The distance at which the fade is complete, in world units. A
+    // little over the arena's diagonal, so its far corner is faint
+    // rather than lost.
+    const float FADE_DISTANCE = 48.0;
+    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
 }

@@ -171,6 +171,10 @@ pub mod builtin {
     /// multiplied by a matrix supplied as per-instance input.
     pub static MESH_CAMERA_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.vert.spv");
 
+    /// The camera-aware mesh fragment stage: the vertex colour, faded
+    /// with distance so a flat-shaded room reads as a space.
+    pub static MESH_CAMERA_FS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.frag.spv");
+
     /// The mesh pair: clip-space positions and colours read per vertex,
     /// walked by an index buffer.
     ///
@@ -214,7 +218,7 @@ pub mod builtin {
     /// per-instance one is [`MESH_CAMERA_INSTANCE_LAYOUT`].
     pub const MESH_CAMERA: crate::MeshShaders<'static> = crate::MeshShaders {
         vertex: MESH_CAMERA_VS_SPV,
-        fragment: MESH_FS_SPV,
+        fragment: MESH_CAMERA_FS_SPV,
     };
 
     /// The per-instance layout [`MESH_CAMERA`] consumes: a 4x4 matrix as
