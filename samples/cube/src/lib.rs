@@ -16,6 +16,8 @@ pub mod mesh;
 pub mod projection;
 #[cfg(feature = "render")]
 pub mod render;
+#[cfg(feature = "window")]
+pub mod windowed;
 
 use renew_fixed::{Fixed, Vec3};
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, STONE, Tuning};
@@ -56,6 +58,10 @@ impl CliError {
 /// Not `Eq`: a free viewpoint carries coordinates, and float equality is
 /// not the reflexive relation `Eq` promises.
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "command-line switches are independent by nature; packing them into flags would make the parser and every reader translate"
+)]
 pub struct Options {
     /// Which built-in script drives the player.
     pub script: Script,
@@ -67,6 +73,8 @@ pub struct Options {
     pub json: bool,
     /// Print usage and stop.
     pub help: bool,
+    /// Play it in a window, rather than running a script.
+    pub window: bool,
     /// Which viewpoint `--render` draws from.
     pub view: View,
     /// Draw the world to a PNG at this path, if anywhere.
@@ -85,6 +93,7 @@ impl Default for Options {
             show: false,
             json: false,
             help: false,
+            window: false,
             view: View::Player,
             render: None,
         }
@@ -230,6 +239,16 @@ pub struct Report {
     pub edits: (u32, u32),
     /// Whether the player finished standing on something.
     pub grounded: bool,
+    /// What drove the run: `script` for a scripted one, `window` for a
+    /// played one.
+    ///
+    /// **In the digest line, and that is the point.** A played run is
+    /// driven by a person against a wall clock; a scripted one is a pure
+    /// function of its inputs. The two digests are not comparable, and a
+    /// line that did not say which it was would invite exactly that
+    /// comparison. The platformer carries the same field for the same
+    /// reason.
+    pub source: &'static str,
 }
 
 /// The usage text.
@@ -245,6 +264,7 @@ pub fn usage() -> &'static str {
      \n\
      --script NAME   which built-in script drives the player: stand, patrol, build\n\
      --show          draw two slices through the world: the plan and the elevation\n\
+     --window        play it: WASD walks, arrows look, space jumps\n\
      --render PATH   draw the world to a PNG there (needs --features render)\n\
      --view NAME     player (default) or iso, for --render\n\
      --eye X,Y,Z     draw from here instead, looking at --look-at\n\
@@ -301,6 +321,7 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 let path = arguments.next().ok_or(CliError::MissingValue("--render"))?;
                 options.render = Some(std::path::PathBuf::from(path));
             }
+            "--window" => options.window = true,
             "--show" => options.show = true,
             "--json" => options.json = true,
             "--script" => {
@@ -383,6 +404,11 @@ pub fn run(options: &Options) -> Report {
 
 /// What a finished world answers with.
 fn report_of(script: Script, world: &Cube) -> Report {
+    report_from(script, world, "script")
+}
+
+/// The same report, with the source named.
+fn report_from(script: Script, world: &Cube, source: &'static str) -> Report {
     Report {
         script,
         ticks: world.tick(),
@@ -390,6 +416,7 @@ fn report_of(script: Script, world: &Cube) -> Report {
         solids: world.grid().solid_count(),
         edits: world.edits(),
         grounded: world.grounded(),
+        source,
     }
 }
 
@@ -475,8 +502,10 @@ pub fn elevation_text(world: &Cube) -> String {
 pub fn describe(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
-        "cube script={} ticks={} digest=0x{:016x} solids={} broken={} placed={} grounded={}",
+        "cube script={} source={} ticks={} digest=0x{:016x} solids={} broken={} placed={} \
+         grounded={}",
         report.script.name(),
+        report.source,
         report.ticks,
         report.digest,
         report.solids,
@@ -542,6 +571,31 @@ fn render_to(_world: &Cube, _view: View, _path: &std::path::Path) -> Result<(), 
     )
 }
 
+/// Play it in a window.
+///
+/// # Errors
+///
+/// The message a build without the feature answers with, or the reason no
+/// window could be opened.
+#[cfg(feature = "window")]
+fn play(options: &Options) -> Result<Report, String> {
+    windowed::run(options).map_err(|error| error.to_string())
+}
+
+/// The honest answer in a build with the windowing stack compiled out.
+///
+/// Names both roads, the tool's first: a reader who typed a `renew`
+/// command has no use for a cargo flag on its own.
+#[cfg(not(feature = "window"))]
+fn play(_options: &Options) -> Result<Report, String> {
+    Err(
+        "this build has no window. Run `renew --features window run cube -- --window`, or \
+         build it directly with `cargo run -p renew-sample-cube --features window --bin cube \
+         -- --window`"
+            .to_string(),
+    )
+}
+
 /// Parse, run, print, and answer with an exit code.
 ///
 /// **The whole binary, in the library.** A process shell that did any of this
@@ -566,6 +620,18 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
     if options.help {
         print!("{}", usage());
         return 0;
+    }
+    if options.window {
+        return match play(&options) {
+            Ok(report) => {
+                println!("{}", describe(&report));
+                0
+            }
+            Err(message) => {
+                eprintln!("usage: {message}");
+                2
+            }
+        };
     }
     let world = run_world(&options);
     let report = report_of(options.script, &world);

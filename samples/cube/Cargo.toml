@@ -25,6 +25,10 @@ path = "src/main.rs"
 # prove this sample builds with the renderer removed.
 [features]
 render = ["dep:renew-rhi", "dep:renew-render3d", "dep:renew-png"]
+# Play it: a window, a keyboard, and the camera on the player's head.
+# Requires `render` structurally rather than by prose -- a window with
+# nothing drawn in it is not a thing this game does.
+window = ["render", "renew-platform/window", "renew-rhi/present", "dep:renew-event"]
 
 [dependencies]
 renew-platform = { path = "../../crates/core/platform", default-features = false }
@@ -33,6 +37,7 @@ renew-sample-cube-world = { path = "world" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-render3d = { path = "../../crates/render3d", optional = true }
 renew-png = { path = "../../crates/png", optional = true }
+renew-event = { path = "../../crates/core/event", optional = true }
 
 # The projection is index-and-vector arithmetic, which is the row in the
 # testing table that asks for properties rather than examples. Same

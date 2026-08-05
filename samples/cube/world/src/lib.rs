@@ -120,7 +120,7 @@ fn is_ground(normal: Vec3) -> bool {
 /// The world.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "three of the four are input latches — jump, dig and place each               need their own previous state for edge detection, and merging               any two of them would make a player who digs while jumping               behave differently from one who does not"
+    reason = "three of the four are input latches: jump, dig and place each need their own previous state for edge detection, and merging any two would make a player who digs while jumping behave differently from one who does not"
 )]
 pub struct Cube {
     grid: Grid,

@@ -1783,6 +1783,7 @@ name = "renew-sample-cube"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "renew-event",
  "renew-fixed",
  "renew-platform",
  "renew-png",

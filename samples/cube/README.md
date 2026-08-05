@@ -207,6 +207,51 @@ so every match of eleven bytes or more encoded as the wrong symbol. The
 file was still small, still structurally a PNG, still had a valid header,
 and every test in the crate passed. Only a decoder refused it.
 
+## Playing it
+
+```
+renew --features window run cube -- --window
+cargo run -p renew-sample-cube --features window --bin cube -- --window
+```
+
+| | |
+|---|---|
+| **W A S D** | walk, relative to where you are looking |
+| **arrow keys** | turn left and right, look up and down |
+| **space** | jump |
+| **enter** | break the block you are looking at |
+| **tab** | place one against it |
+| **escape** | stop |
+
+**Walking is camera-relative, in eight directions.** The world takes
+whole steps on its own axes, clamped to -1, 0 or +1, so the driver
+rotates the key you pressed into a world direction and rounds it to the
+nearest step the world can express. Press forward while facing north-east
+and you walk north-east. It is steppy, and honest: a smoother walk needs a
+fixed-point vector in the world's own vocabulary, which is a change to the
+simulation rather than to the driver.
+
+**Turning is fixed point, and that is not fussiness.** Yaw and pitch feed
+`Angle::sin_cos`, which is fixed point and identical on every platform,
+and the result reaches the world as a direction. A float here would make
+the world's digest depend on the platform's maths library, and the world's
+whole claim is that it depends on nothing but its inputs. A turn and its
+opposite return the view *exactly* where it began, which a test asserts
+and a float would quietly lose.
+
+**The digest line says `source=window`.** A played run is driven by a
+person against a wall clock; a scripted one is a pure function of its
+inputs. Their digests are not comparable, and a line that did not say
+which it was would invite exactly that comparison.
+
+**Pitch stops short of vertical.** At exactly straight up the look
+direction is parallel to world up, the camera basis has no unique answer,
+and the picture would roll on its own axis for no input.
+
+**The geometry is uploaded once and redrawn from every angle.** Turning
+does not rebuild it -- that is what putting the camera matrix on the GPU
+bought. Only breaking or placing a block does.
+
 ## Seeing it from inside
 
 ![The room in perspective: floor, two walls meeting at a corner, the ceiling above, and the mound standing on the floor](room.png)

@@ -114,6 +114,7 @@ fn a_run_is_reproducible() {
         show: false,
         json: false,
         help: false,
+        window: false,
         view: renew_sample_cube::View::Player,
         render: None,
     };
