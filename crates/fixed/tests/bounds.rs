@@ -468,3 +468,61 @@ fn segmentation_does_not_bound_slide_creep() {
         );
     }
 }
+
+/// **A length is never negative, and beyond the range it saturates.**
+///
+/// `Wide::checked_sqrt` cast a `u128` integer root straight to `i64`. A root
+/// below 2^64 does not fit one, so squared lengths above about 2^126 produced
+/// a *negative* distance — silently, from a function named `checked_`, and
+/// reachable through `Vec2::length` at coordinates beyond the documented world
+/// bounds. The crate's front page promises that overflow saturates in every
+/// profile and is counted, never wraps; this is that promise applied to the
+/// one path that was not keeping it.
+///
+/// **The assertion exercises the boundary rather than restating it**: it
+/// requires the arithmetic to be finite and exact on the low side, to saturate
+/// on the high side, and to record the saturation — so a change that silently
+/// widened or narrowed the range fails here instead of passing.
+#[test]
+fn a_length_saturates_instead_of_going_negative() {
+    // Below the threshold: exact, positive, and not saturated.
+    let below = Fixed::from_bits(6_000_000_000_000_000_000);
+    let before = renew_fixed::saturations();
+    let length = Vec2::new(below, below).length();
+    assert!(
+        length.to_bits() > 0,
+        "a length below the threshold came back {} raw",
+        length.to_bits()
+    );
+    assert_eq!(
+        renew_fixed::saturations().0,
+        before.0,
+        "a length well inside the range recorded a saturation"
+    );
+
+    // Above it: saturated, counted, and still not negative.
+    for raw in [
+        6_600_000_000_000_000_000i64,
+        7_000_000_000_000_000_000,
+        8_000_000_000_000_000_000,
+        i64::MAX,
+    ] {
+        let component = Fixed::from_bits(raw);
+        let before = renew_fixed::saturations();
+        let length = Vec2::new(component, component).length();
+        assert!(
+            length.to_bits() > 0,
+            "a component of {raw} raw gave a length of {} raw — a distance less than nothing",
+            length.to_bits()
+        );
+        assert_eq!(
+            length.to_bits(),
+            i64::MAX,
+            "a component of {raw} raw did not saturate"
+        );
+        assert!(
+            renew_fixed::saturations().0 > before.0,
+            "a component of {raw} raw saturated without recording it"
+        );
+    }
+}

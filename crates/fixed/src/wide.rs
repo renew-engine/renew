@@ -81,14 +81,29 @@ impl Wide {
         if self.0 < 0 {
             return None;
         }
+        #[expect(clippy::cast_sign_loss, reason = "non-negative by the check above")]
+        let root = (self.0 as u128).isqrt();
+
+        // **A root below 2^64 does not fit an `i64`, and this cast was written
+        // as though it did.** Squared lengths above about 2^126 have roots
+        // above `i64::MAX`, and casting those produced a *negative* length — a
+        // distance less than nothing, returned silently by a function named
+        // `checked_`. Reachable from `Vec2::length` at coordinates beyond the
+        // documented world bounds, which is where a caller has least reason to
+        // expect a wrong answer and most reason to expect a saturated one.
+        //
+        // This crate promises that overflow saturates in every profile and is
+        // counted, never wraps. So it saturates, and it is counted.
+        if root > i64::MAX as u128 {
+            crate::saturation::record();
+            return Some(Fixed::from_bits(i64::MAX));
+        }
         #[expect(
-            clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
-            reason = "non-negative by the check above; the root of a value below 2^127 is \
-                      below 2^64 and the callers that matter stay far inside that"
+            reason = "bounded by the saturation check immediately above"
         )]
-        let root = (self.0 as u128).isqrt() as i64;
-        Some(Fixed::from_bits(root))
+        let narrowed = root as i64;
+        Some(Fixed::from_bits(narrowed))
     }
 
     /// Back to a [`Fixed`], or `None` if it will not fit.
