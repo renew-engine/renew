@@ -454,3 +454,37 @@ fn an_index_past_the_end_of_a_body_is_refused() {
     assert!(!world.set_filter(handle, past, Filter::ALL));
     assert_eq!(world.shape_extent(handle), Some(1), "the list did not grow");
 }
+
+/// **A hole is not a shape to replace.** Replacing at a freed index must be
+/// refused rather than quietly refilling it, because a caller that meant to
+/// change an existing collider and got a new one at the same identity has a
+/// contact history that lies.
+#[test]
+fn replacing_at_a_hole_is_refused_rather_than_refilling_it() {
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let handle = entities.spawn();
+    world.create_body(handle, BodyKind::Kinematic, Transform::IDENTITY);
+    let index = world
+        .add_shape(handle, cube(1), Transform::IDENTITY, Filter::ALL)
+        .expect("live");
+    assert!(world.remove_shape(handle, index));
+
+    // A perfectly valid shape at a freed index. The refusal is about the hole,
+    // not about the operands — which is why the shape here is a good one.
+    assert!(
+        !world.replace_shape(handle, index, sphere(2), Transform::IDENTITY),
+        "a hole is not a shape to replace"
+    );
+    assert!(
+        world.shape(Collider { handle, index }).is_none(),
+        "and nothing was put there"
+    );
+
+    // Adding is how a freed index comes back, and that path still works.
+    let refilled = world
+        .add_shape(handle, sphere(2), Transform::IDENTITY, Filter::ALL)
+        .expect("live");
+    assert_eq!(refilled, index);
+    assert!(world.replace_shape(handle, index, cube(3), Transform::IDENTITY));
+}
