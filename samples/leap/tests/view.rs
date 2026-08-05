@@ -288,3 +288,34 @@ fn the_view_says_where_it_is_looking() {
         "each row is labelled with its world coordinate"
     );
 }
+
+/// **A view at the far edge of the coordinate range draws air rather than
+/// crashing.**
+///
+/// The view spans thirty cells either side of the character, so a character
+/// standing at the largest representable whole coordinate has cells beyond it
+/// that no longer fit the type the overlap test works in. Those cells are not
+/// solid — nothing can be there — and the drawing says so instead of panicking
+/// or wrapping around to claim something is.
+#[test]
+fn a_view_at_the_edge_of_the_range_draws_air_rather_than_crashing() {
+    let far = renew_fixed::Vec2::new(
+        renew_fixed::Fixed::from_int(i32::MAX),
+        renew_fixed::Fixed::ZERO,
+    );
+    // A platform large enough that, were the guard to wrap instead of refuse,
+    // it would be claimed as covering the unrepresentable cells.
+    let text = world_text(&[Platform::new(0, 0, 40, 1)], far);
+    let grid = rows(&text);
+    assert_eq!(grid.len(), 17, "the view is still whole");
+    for row in &grid {
+        assert_eq!(row.len(), 61);
+    }
+    // Column 60 is thirty cells right of the character, which is past the
+    // largest representable whole coordinate. It must be air, not floor.
+    let past_the_end: Vec<char> = grid.iter().map(|row| row[60]).collect();
+    assert!(
+        past_the_end.iter().all(|drawn| *drawn != '#'),
+        "a cell beyond the representable range was drawn as solid"
+    );
+}
