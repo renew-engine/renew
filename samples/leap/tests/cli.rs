@@ -150,13 +150,13 @@ fn the_answer_reads_and_parses() {
     let line = describe(&report);
     assert!(line.starts_with("leap script=dash"));
     assert!(line.contains("ticks=120"));
-    assert!(line.contains(&format!("digest={:016x}", report.digest)));
+    assert!(line.contains(&format!("digest=0x{:016x}", report.digest)));
 
     let json = describe_json(&report);
     assert!(json.contains("\"schema_version\":1"));
     assert!(json.contains("\"sample\":\"leap\""));
     assert!(json.contains("\"script\":\"dash\""));
-    assert!(json.contains(&format!("\"digest\":\"{:016x}\"", report.digest)));
+    assert!(json.contains(&format!("\"digest\":\"0x{:016x}\"", report.digest)));
     assert!(json.starts_with('{') && json.ends_with('}'));
 }
 

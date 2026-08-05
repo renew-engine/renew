@@ -205,7 +205,7 @@ pub fn run(options: &Options) -> Report {
 #[must_use]
 pub fn describe(report: &Report) -> String {
     format!(
-        "leap script={} ticks={} digest={:016x} grounded={} wall={}",
+        "leap script={} ticks={} digest=0x{:016x} grounded={} wall={}",
         report.script.name(),
         report.ticks,
         report.digest,
@@ -220,7 +220,7 @@ pub fn describe(report: &Report) -> String {
 pub fn describe_json(report: &Report) -> String {
     format!(
         "{{\"schema_version\":1,\"sample\":\"leap\",\"script\":\"{}\",\"ticks\":{},\
-         \"digest\":\"{:016x}\",\"grounded\":{},\"against_wall\":{}}}",
+         \"digest\":\"0x{:016x}\",\"grounded\":{},\"against_wall\":{}}}",
         report.script.name(),
         report.ticks,
         report.digest,

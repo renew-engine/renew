@@ -253,7 +253,7 @@ pub fn run(options: &Options) -> Report {
 pub fn describe(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
-        "cube script={} ticks={} digest={:016x} solids={} broken={} placed={} grounded={}",
+        "cube script={} ticks={} digest=0x{:016x} solids={} broken={} placed={} grounded={}",
         report.script.name(),
         report.ticks,
         report.digest,
@@ -273,7 +273,7 @@ pub fn describe_json(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
         "{{\"schema_version\":1,\"sample\":\"cube\",\"script\":\"{}\",\"ticks\":{},\
-         \"digest\":\"{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\"grounded\":{}}}",
+         \"digest\":\"0x{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\"grounded\":{}}}",
         report.script.name(),
         report.ticks,
         report.digest,

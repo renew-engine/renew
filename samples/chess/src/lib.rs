@@ -222,7 +222,7 @@ pub fn describe(report: &Report) -> String {
             result_name(report.result)
         ),
         Mode::Play => format!(
-            "chess play moves={} digest={:016x} result={}",
+            "chess play moves={} digest=0x{:016x} result={}",
             report.played,
             report.digest,
             result_name(report.result)
@@ -240,7 +240,7 @@ pub fn describe_json(report: &Report) -> String {
     };
     format!(
         "{{\"schema_version\":1,\"sample\":\"chess\",\"mode\":\"{}\",\"depth\":{},\
-         \"nodes\":{},\"moves\":{},\"digest\":\"{:016x}\",\"result\":\"{}\"}}",
+         \"nodes\":{},\"moves\":{},\"digest\":\"0x{:016x}\",\"result\":\"{}\"}}",
         mode,
         report.depth,
         report.nodes,
