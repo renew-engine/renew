@@ -286,3 +286,54 @@ fn exhausting_the_iteration_limit_is_reported() {
         assert_eq!(report.iterations, 1);
     }
 }
+
+/// **A body whose shape list has a hole still moves correctly.** Removing a
+/// shape leaves its index occupied by nothing, and the sweep walks indices up
+/// to the highest occupied one — so it has to step over the gap rather than
+/// treat it as a collider with no geometry.
+#[test]
+fn a_body_with_a_removed_shape_sweeps_only_its_live_ones() {
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let character = entities.spawn();
+    world.create_body(character, BodyKind::Kinematic, at(0, 0));
+
+    // Two shapes; the first is removed, leaving index 0 a hole and index 1
+    // live. The extent stays at two, which is what walks over the hole.
+    let doomed = world
+        .add_shape(character, square(1), Transform::IDENTITY, Filter::new(1, 1))
+        .expect("live body");
+    world
+        .add_shape(character, square(1), Transform::IDENTITY, Filter::new(1, 1))
+        .expect("live body");
+    assert!(world.remove_shape(character, doomed));
+    assert_eq!(
+        world.shape_extent(character),
+        Some(2),
+        "the hole keeps its place"
+    );
+
+    // A wall at x = 4, so the surviving shape still stops the body.
+    let wall = entities.spawn();
+    world.create_body(wall, BodyKind::Static, at(4, 0));
+    world.add_shape(
+        wall,
+        Shape::Box {
+            half_extents: v(1, 20),
+        },
+        Transform::IDENTITY,
+        Filter::new(1, 1),
+    );
+
+    let mut hits = empty_hits();
+    let report = world
+        .move_and_slide(character, v(8, 0), ANY, SKIN, LIMIT, &mut hits)
+        .expect("a live body");
+
+    assert_eq!(report.hits.existed, 1, "the surviving shape met the wall");
+    assert!(
+        report.destination.x < Fixed::from_int(3),
+        "stopped at x = {}, which is inside the wall",
+        report.destination.x.to_bits()
+    );
+}
