@@ -11,7 +11,7 @@
 
 [![CI](https://github.com/renew-engine/renew/actions/workflows/ci.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
 [![Nightly checks](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml)
-[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25%20lines-brightgreen)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-100%25%20minus%20named%20exemptions-brightgreen)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](rust-toolchain.toml)
@@ -75,9 +75,12 @@ time pending: 11666657 ns
 ## Modules
 
 Every module is independently buildable, testable, and — outside the minimal core —
-removable. CI proves the last part on every commit: the workspace is built and tested a
-second time with the optional crate taken out, and the platform crate again with its
-windowing feature compiled away.
+removable. CI proves the last part on every commit, and proves it *one crate at a time*: fifteen
+configurations, each with one optional crate and everything that depends on it excluded, every one
+built **and** tested. A sixteenth builds the minimal core alone and asserts that no optional crate
+reached its graph. The platform crate is built again with its windowing feature compiled away, and
+the game is built with no graphics crate in its dependency graph at all — which is the removability
+claim from the other side, and the reason the window is a feature rather than a default.
 
 | Module | What it does | Maturity |
 |---|---|---|
@@ -86,7 +89,25 @@ windowing feature compiled away.
 | **`renew-math`** | `Vec2/3/4`, `Mat4`, `Quat`, `Aabb3` — plain data, documented layout, branchless kernels | `internal` · core |
 | **`renew-memory`** | `LinearArena`, a generation-checked `Pool<T>`, and a counting global allocator | `internal` · core |
 | **`renew-platform`** | The engine's only doorway to the OS: clock, files, named threads, window | `internal` · core |
+| **`renew-fixed`** | Q47.16 fixed-point arithmetic — the number type the simulation is written in, so a result cannot depend on a floating-point mode | `bootstrap` · optional |
+| **`renew-frame`** | The fixed-timestep loop: an accumulator over integer nanoseconds, with the clock passed in | `bootstrap` · optional |
+| **`renew-ecs`** | Sparse-set storage with a defined iteration order, because an undefined one is a determinism bug waiting for a rehash | `bootstrap` · optional |
 | **`renew-jobs`** | A fixed-size worker pool with a deterministic-chunk `parallel_for` | `bootstrap` · optional |
+| **`renew-rng`** | Seeded, reproducible random numbers — no thread-local state, no entropy the caller did not ask for | `bootstrap` · optional |
+| **`renew-input`** | Input state and mapping, over the event vocabulary | `bootstrap` · optional |
+| **`renew-replay`** | Input traces as files: record a run, replay it, compare the digests | `bootstrap` · optional |
+| **`renew-trace`** | Simulation digests — the hash the cross-platform determinism lane compares | `bootstrap` · optional |
+| **`renew-physics2d`** | Bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, and slide resolution, in fixed point | `bootstrap` · optional |
+| **`renew-physics3d`** | The same surface in three dimensions, axis-aligned only — rotation waits on a fixed-point orientation type, and the crate says so rather than pretending | `bootstrap` · optional |
+| **`renew-rhi`** | The GPU doorway: Vulkan through `ash`, behind an interface that names no Vulkan type in its public API | `bootstrap` · optional |
+| **`renew-render2d`** | Sprites from an atlas, one instanced draw | `bootstrap` · optional |
+| **`renew-render3d`** | Indexed geometry, depth-tested, in submission order | `bootstrap` · optional |
+| **`renew-audio`** | Mixing and playback, behind the platform's device seam | `bootstrap` · optional |
+| **`renew-asset`** | Content-addressed asset packs, with every entry verifiable against its digest | `bootstrap` · optional |
+
+Twenty engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
+prints the live list with each crate's declared maturity, read from its manifest rather than from
+this table.
 
 Maturity runs `bootstrap` → `internal` → `stable`. A module never claims a level it has not
 earned: `internal` means other modules may depend on it, `stable` means the public API is
@@ -123,8 +144,16 @@ cargo run --bin renew -- help
 | `build` | build the workspace |
 | `test` | run the workspace test suite |
 | `bench` | run the workspace benchmarks (`--smoke` runs each once, without statistics — CI's mode) |
+| `run` | build and start a sample; everything after its name goes to the sample verbatim |
+| `record` | run a sample, writing the input it saw to a trace file |
+| `replay` | run a sample from a recorded trace, and compare the digest |
 | `lint` | check formatting, then run clippy with warnings denied |
 | `check` | verify workspace crate manifests and dependencies |
+| `coverage` | hold a coverage report against the exemption manifest |
+| `modules` | list every module with its maturity, read from the manifests |
+| `asset-pack` | build an asset pack from a directory of files |
+| `asset-inspect` | list a pack's entries, optionally re-hashing every payload |
+| `determinism` | emit this target's simulation digests, or compare several targets' |
 | `doctor` | check the development environment |
 
 Every command takes `--json` and emits a single schema-versioned document, so tooling can
@@ -138,19 +167,29 @@ Every commit on `main` clears all of these, on Windows, Linux, and macOS:
 |---|---|
 | Format and lints, zero warnings | `rustfmt` and `clippy` with a strict deny-set |
 | Tests, debug and release | `cargo test` across the three-platform matrix |
-| Line coverage ≥ 95% | `cargo llvm-cov --fail-under-lines 95` |
+| Line coverage: 100% of every line not individually exempted | `renew coverage --report`, against `coverage-exemptions.toml`. Each exemption names its lines and its reason, and the gate fails in **both** directions — an uncovered line with no entry, and an entry whose line is covered again. `--fail-under-lines 95` also runs, as a loose backstop against a collection that collapsed wholesale |
 | No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo`, `dbg!` denied outside tests |
 | `unsafe` denied by default | workspace-wide `unsafe_code = "deny"`; the crates that need it opt in per crate, and `undocumented_unsafe_blocks = "deny"` makes every block state the invariant that keeps it sound |
 | Module graph is a DAG | crate manifest and dependency-graph check (`renew check`) |
-| Optional modules stay removable | the workspace built and tested with the optional crate excluded, and the platform crate built headless |
+| Optional modules stay removable | fifteen configurations, each excluding one optional crate and its dependents, all built and tested; plus the minimal core alone, asserted to contain no optional crate |
 | Licenses and advisories | `cargo-deny`, over the full dependency tree including dev-dependencies |
 | Sanitizers and Miri | scheduled nightly runs (ASan, TSan, Miri) |
 
 ## What's next
 
-Rendering (Vulkan-first, headless-provable through golden images), an ECS, the asset
-pipeline, audio, input mapping, and 2D samples — in roughly that order, each landing behind
-the same gates as everything above.
+The list this section used to carry — rendering, an ECS, the asset pipeline, audio, input
+mapping, 2D samples — has shipped. What is actually next:
+
+- **The 3D renderer, finished.** Geometry and a depth-tested draw exist and are headless-provable.
+  Still to come: meshing a voxel world into a vertex buffer, a camera (the player's by default, a
+  free one behind a flag), a window for the 3D sample, and a texture atlas generated in code so
+  golden images stay byte-comparable.
+- **Modules climbing the maturity ladder.** Nothing is `stable` yet, and nothing will claim it
+  before its API is under change control and its parsers have been fuzzed.
+- **An editor, eventually**, as a client of the same public APIs every other tool uses — never a
+  privileged one.
+
+Each lands behind the same gates as everything above.
 
 ## Contributing
 
