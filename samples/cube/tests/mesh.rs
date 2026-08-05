@@ -1,12 +1,11 @@
 //! The meshing rule, against a budget computed before any of it was
 //! written.
 //!
-//! §10 asks for the number first, and the design note carries it: the
-//! arena has 5012 solid cells and **4642** visible inward faces. The
-//! figure is not an observation of what this mesher produces — it was
-//! derived from the arena's dimensions, and these tests hold the code to
-//! it. A test that recorded whatever the code emitted would agree with a
-//! wrong mesher forever.
+//! The arena has 5012 solid cells and **4642** visible inward faces.
+//! Those figures are not observations of what this mesher produces — they
+//! were derived from the arena's dimensions before it was written, and
+//! these tests hold the code to them. A test that recorded whatever the
+//! code emitted would agree with a wrong mesher forever.
 
 use renew_sample_cube::mesh::{Quad, colour, faces};
 use renew_sample_cube_world::grid::{AIR, Cell, Grid, STONE};
