@@ -176,6 +176,37 @@ reversed quad draws identically. That is exactly why: the mistake is
 invisible until culling is switched on, and then half the world disappears
 with no recent change to blame.
 
+## Writing the picture out
+
+`png::encode` turns RGBA bytes into a PNG, with no dependency. A PNG is
+four chunks, two checksums and a deflate stream -- and deflate's *fixed*
+Huffman tables are published constants, so a compressor good enough for
+pictures of geometry needs no tables of its own.
+
+It matches against three candidates: the pixel to the left, the pixel
+above, and the byte before. Those are what a rendered picture is made of.
+A 256x256 flat image comes out at about **two kilobytes** against 256 KiB
+raw. Data with no such structure comes out slightly *larger* than raw,
+because fixed Huffman spends nine bits on half the byte values -- an
+honest trade for an encoder meant for renders rather than photographs.
+
+That matters because these pictures are committed: an uncompressed render
+would add a quarter of a megabyte to the repository's history every time
+it changed.
+
+**How it is checked, and why that is not a formality.** The tests assert
+the layout against the format and pin the length and distance symbol
+tables to the published ones. But a deflate stream packs everything
+low-bit-first *except* Huffman codes, and a file that gets that backwards
+decodes into plausible garbage rather than failing -- so the output is
+also handed to an independent decoder across flat, banded, striped and
+incompressible images, each checked for exact pixels.
+
+**It caught a real defect.** The length-symbol arithmetic was off by one,
+so every match of eleven bytes or more encoded as the wrong symbol. The
+file was still small, still structurally a PNG, still had a valid header,
+and every test in the crate passed. Only a decoder refused it.
+
 ## Shape
 
 Two crates. `world/` is the simulation: a fixed-step pure function of
