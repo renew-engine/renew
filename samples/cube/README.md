@@ -121,6 +121,61 @@ runs with `grounded=false`, which is a jump in progress rather than a
 fall — a jump clears about five blocks, and the script presses jump
 every seventeenth tick.
 
+## Meshing the world
+
+`mesh::faces` turns the grid into the block faces a renderer would draw:
+one quad per solid cell face whose neighbour is air. It is pure, it holds
+no renderer, and it runs on a machine with no GPU -- the same position
+the platformer's `scene` module occupies, for the same reason.
+
+**The rule is "the neighbour is air *inside* the grid", not "the neighbour
+is not solid".** Those sound identical and differ by more than half the
+mesh.
+
+`Grid::is_solid` answers `false` for cells outside the grid, deliberately:
+a player who walks out of the world should fall, so the void is not
+something to stand on. But a mesher written against that answer emits a
+face wherever the neighbour is not solid -- including every cell of the
+surrounding void -- so it also emits the box's entire **outer skin**. The
+faces are all behind the walls, so the picture from inside looks perfectly
+correct while the mesh is twice the size it should be, and the pipeline
+culls nothing, so those backfaces rasterize rather than being free.
+
+`Grid::get` answers with three cases where `is_solid` answers with two,
+and the third is the one that matters: `None` means outside. Meshing
+against `get` makes the distinction structural instead of something a
+reader has to remember.
+
+**The budget, computed before the mesher was written:**
+
+| | |
+|---|---|
+| Solid cells | 41x12x41 shell minus its 39x10x39 interior, plus a 5x2x5 mound = **5012** |
+| Cavity skin | 2(39x39) + 4(39x10) = **4602** |
+| Mound | +65 exposed, -25 floor faces it covers |
+| **Visible faces** | **4642** |
+| Outer skin, if the rule is wrong | **5330** more, for **9972** total |
+
+Both numbers are asserted. Swapping the emission rule to the naive one
+makes the arena mesh to exactly 9972, which is how the test knows it is
+testing something: the figures were derived from the arena's dimensions
+first, so a mesher that agreed with itself rather than with the arithmetic
+would fail.
+
+Faces are shaded by direction -- brightest up, dimmest down, the two
+horizontal axes distinguished. Nothing lights the scene in v0, so a world
+drawn in one colour per block type reads as a single silhouette with an
+outline; varying the colour by which way a face points is the cheapest
+thing that makes an edge visible, and it is free at runtime because the
+colour is baked into the vertex. A block type with no colour of its own
+comes out magenta rather than a plausible grey.
+
+Corners are wound counter-clockwise seen from outside, on every face, and
+a test says so -- even though the pipeline culls nothing today and a
+reversed quad draws identically. That is exactly why: the mistake is
+invisible until culling is switched on, and then half the world disappears
+with no recent change to blame.
+
 ## Shape
 
 Two crates. `world/` is the simulation: a fixed-step pure function of

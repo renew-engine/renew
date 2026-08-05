@@ -11,6 +11,8 @@
 //! the world headless, and prints one line. Everything interesting is in the
 //! world; everything here is the seam that lets a machine ask it a question.
 
+pub mod mesh;
+
 use renew_fixed::{Fixed, Vec3};
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, STONE, Tuning};
 
