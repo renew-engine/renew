@@ -313,3 +313,32 @@ proptest! {
         }
     }
 }
+
+/// **A ray that passes some bodies and meets another.** Every other ray test
+/// puts every body on the line or leaves the world empty, so the path where a
+/// visible body is simply missed had never run — and a query that stopped at
+/// the first miss instead of continuing would report nothing at all.
+#[test]
+fn a_ray_walks_past_the_bodies_it_misses() {
+    // Three cubes off the line and one on it, the on-line one last so the
+    // walk has to get past all three misses to find it.
+    let (world, handles) = world_of(&[(0, 5, 0), (2, -5, 0), (4, 0, 5), (6, 0, 0)]);
+    let hit = world
+        .ray_query(v(-5, 0, 0), RIGHT, FAR, ANY, Exclude::NONE)
+        .expect("the fourth cube is on the line");
+    assert_eq!(hit.collider.handle, handles[3], "the only one it can meet");
+    close(
+        hit.distance,
+        Fixed::from_int(10),
+        "at x = 5, ten from the origin",
+    );
+
+    // And with that one gone there is nothing left to find, which proves the
+    // other three really are misses rather than silently accepted.
+    let (near_misses, _) = world_of(&[(0, 5, 0), (2, -5, 0), (4, 0, 5)]);
+    assert!(
+        near_misses
+            .ray_query(v(-5, 0, 0), RIGHT, FAR, ANY, Exclude::NONE)
+            .is_none()
+    );
+}
