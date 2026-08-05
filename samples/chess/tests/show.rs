@@ -347,3 +347,20 @@ fn the_command_line_shows_and_refuses() {
     assert_eq!(run_cli(args("--move e2e5")), 1, "not legal");
     assert_eq!(run_cli(args("--move")), 1, "no value");
 }
+
+/// **`run` checks the moves it is given rather than trusting that `parse`
+/// checked them.**
+///
+/// The two are separate public entry points, and a caller building `Options`
+/// directly — which is what every test in this file does — never goes through
+/// the parser. If `run` assumed otherwise, `apply` would be handed text that
+/// names no move at all.
+#[test]
+fn run_refuses_a_non_move_that_never_passed_the_parser() {
+    let options = Options {
+        mode: Mode::Show,
+        moves: vec!["e2e4".to_string(), "wat".to_string()],
+        ..Options::default()
+    };
+    assert_eq!(run(&options), Err(CliError::NotAMove("wat".to_string())));
+}

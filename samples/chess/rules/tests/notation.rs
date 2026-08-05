@@ -183,7 +183,13 @@ fn every_promotion_round_trips() {
 /// permit; this reader's job is the first question only, so it accepts it.
 #[test]
 fn text_that_is_not_a_move_is_refused() {
-    for text in ["", "e2", "e2e", "e2e4e", "e2e45", "i2i4", "e0e4", "  e2e4"] {
+    for text in [
+        "", "e2", "e2e", "e2e4e", "e2e45", "i2i4", "e0e4", "  e2e4",
+        // Longer than a move, with four good characters in front: the case
+        // the two square reads and the promotion read both accept, leaving
+        // the length itself as the only thing that can refuse it.
+        "e2e4qq", "e2e4q1", "e2e4qqqq",
+    ] {
         assert_eq!(
             Move::from_notation(text),
             None,
