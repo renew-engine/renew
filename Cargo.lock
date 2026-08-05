@@ -1749,6 +1749,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-chess"
+version = "0.1.0"
+dependencies = [
+ "renew-sample-chess-rules",
+]
+
+[[package]]
 name = "renew-sample-chess-rules"
 version = "0.1.0"
 dependencies = [

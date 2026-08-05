@@ -1,0 +1,27 @@
+[package]
+name = "renew-sample-chess"
+description = "The chess sample's driver: counts positions to a depth, or plays a deterministic game, and answers with a digest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Chess's command-line face: runs perft against a position, or plays a deterministic game, and prints the result as text and as JSON."
+maturity = "bootstrap"
+core = false
+simulation = false
+
+extension_points = []
+
+[[bin]]
+name = "chess"
+path = "src/main.rs"
+
+[dependencies]
+renew-sample-chess-rules = { path = "rules" }
+
+[lints]
+workspace = true
