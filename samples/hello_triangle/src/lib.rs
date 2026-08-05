@@ -201,7 +201,21 @@ pub fn validation_requested() -> bool {
 /// needs to know. Saying it either way makes the log self-describing.
 #[must_use]
 pub fn diagnostics_note() -> &'static str {
-    if validation_requested() {
+    note_for(validation_requested())
+}
+
+/// The note itself, as a function of the state rather than of the
+/// environment.
+///
+/// Split out for the same reason [`validation_for`] is: a function that
+/// reads the environment can only be tested in whichever state the test
+/// runner happens to be in, so one of its two answers would never be
+/// examined by anything. Taking the state as an argument makes both
+/// halves of a promise that is *about* saying both halves ordinarily
+/// testable.
+#[must_use]
+fn note_for(validation: bool) -> &'static str {
+    if validation {
         "graphics validation is ON: it reports driver-level faults this log would otherwise miss, and it changes timing, so a fault that depends on timing may behave differently here than in an ordinary run."
     } else {
         "graphics validation is OFF, so this is an ordinary run and what it records is what really happened. If the fault is graphical and nothing here explains it, set RENEW_VALIDATION=1 and run again: the layer names faults inside the driver, at the cost of changing timing."
@@ -252,6 +266,34 @@ pub fn validation_for(logging: bool) -> renew_rhi::Validation {
 
 #[cfg(test)]
 mod tests {
+    /// Both halves of the note exist and say which state they describe.
+    ///
+    /// The promise the note makes is that a log always says whether
+    /// validation was on, *either way round* — so a test that only ever
+    /// saw one answer would leave exactly that promise unchecked.
+    #[test]
+    fn the_note_names_the_validation_state_in_both_directions() {
+        let on = super::note_for(true);
+        let off = super::note_for(false);
+        assert!(on.contains("ON"), "the on note must say so: {on}");
+        assert!(off.contains("OFF"), "the off note must say so: {off}");
+        assert_ne!(on, off, "the two states must not read alike");
+        // The off note is the one that has to teach: a reader with a
+        // thin log needs to know there is a closer look available, what
+        // to type for it, and what it costs.
+        assert!(
+            off.contains("RENEW_VALIDATION=1"),
+            "the off note must say what to set: {off}"
+        );
+        assert!(
+            off.contains("timing"),
+            "the off note must say what enabling it costs: {off}"
+        );
+        assert!(
+            on.contains("timing"),
+            "the on note must say what is already being paid: {on}"
+        );
+    }
 
     #[test]
     fn the_validation_policy_answers_both_ways() {
