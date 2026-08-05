@@ -382,7 +382,11 @@ fn escape(text: &str) -> String {
 /// Returns a reason naming the run whenever its output cannot yield both
 /// digests. Never returns a partial set: a report missing one hash is a
 /// report proving half of what it claims, and half is reported as none.
-pub fn digests_from_output(name: &str, stdout: &str) -> Result<Vec<(String, String)>, String> {
+pub fn digests_from_output(
+    name: &str,
+    stdout: &str,
+    fields: &[&str],
+) -> Result<Vec<(String, String)>, String> {
     let Some(line) = stdout
         .lines()
         .map(str::trim)
@@ -398,7 +402,11 @@ pub fn digests_from_output(name: &str, stdout: &str) -> Result<Vec<(String, Stri
         .map_err(|error| format!("`{name}` printed unreadable JSON: {error:?}"))?;
 
     let mut digests = Vec::new();
-    for field in ["schedule_hash", "state_hash"] {
+    // **Which fields carry a digest is the run's business, not this
+    // function's.** It was a fixed pair when one sample fed the lane; a second
+    // sample with different field names would have been told its report
+    // carried no `state_hash`, which is true and useless.
+    for &field in fields {
         let Some(value) = report.get(field).and_then(crate::json::Value::as_str) else {
             return Err(format!("`{name}`'s report carries no `{field}`"));
         };
@@ -460,7 +468,12 @@ mod tests {
 
     #[test]
     fn a_runs_output_yields_both_of_its_digests_prefixed_by_the_run() {
-        let digests = super::digests_from_output("glide/seed-7", SAMPLE_LINE).expect("parses");
+        let digests = super::digests_from_output(
+            "glide/seed-7",
+            SAMPLE_LINE,
+            &["schedule_hash", "state_hash"],
+        )
+        .expect("parses");
         assert_eq!(
             digests,
             vec![
@@ -487,7 +500,9 @@ warning: unused
 {SAMPLE_LINE}
 "
         );
-        assert!(super::digests_from_output("run", &noisy).is_ok());
+        assert!(
+            super::digests_from_output("run", &noisy, &["schedule_hash", "state_hash"]).is_ok()
+        );
     }
 
     /// Every way a run can fail to report, named rather than defaulted.
@@ -520,8 +535,12 @@ warning: unused
             ),
         ];
         for (label, stdout) in cases {
-            let error = super::digests_from_output("glide/seed-7", &stdout)
-                .expect_err("a run that did not report must be refused");
+            let error = super::digests_from_output(
+                "glide/seed-7",
+                &stdout,
+                &["schedule_hash", "state_hash"],
+            )
+            .expect_err("a run that did not report must be refused");
             assert!(
                 error.contains("glide/seed-7"),
                 "the `{label}` case must name the run: {error}"
@@ -758,5 +777,37 @@ warning: unused
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod field_selection {
+    /// **A report's digest fields are the run's business.** When one sample fed
+    /// the lane, the pair was fixed in the parser; a second sample naming its
+    /// one hash `digest` would have been told it carried no `state_hash`, which
+    /// is true and useless.
+    #[test]
+    fn a_run_contributes_exactly_the_fields_it_names() {
+        let two = r#"{"schema_version":1,"schedule_hash":"0xaa","state_hash":"0xbb"}"#;
+        let pairs = super::digests_from_output("g/x", two, &["schedule_hash", "state_hash"])
+            .expect("both are there");
+        assert_eq!(pairs.len(), 2);
+
+        let one = r#"{"schema_version":1,"sample":"leap","digest":"0xcc"}"#;
+        let pairs = super::digests_from_output("l/y", one, &["digest"]).expect("one is there");
+        assert_eq!(pairs, vec![("l/y/digest".to_string(), "0xcc".to_string())]);
+
+        // And asking for a field a report does not carry is still a failure,
+        // rather than a quietly smaller digest set.
+        let missing = super::digests_from_output("l/y", one, &["state_hash"])
+            .expect_err("the field is absent");
+        assert!(missing.contains("state_hash"), "got: {missing}");
+
+        // Naming no fields at all yields nothing, which the comparison treats
+        // as a leg that reported nothing rather than as agreement.
+        assert_eq!(
+            super::digests_from_output("l/y", one, &[]).expect("nothing asked for"),
+            Vec::new()
+        );
     }
 }
