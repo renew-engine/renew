@@ -39,6 +39,7 @@
 // it is not. There is no `allow` below.
 #![deny(clippy::float_arithmetic, clippy::print_stdout, clippy::print_stderr)]
 
+pub mod clear;
 pub mod bounds;
 pub mod broadphase;
 pub mod filter;
@@ -50,6 +51,7 @@ pub mod slide;
 pub mod sweep;
 pub mod world;
 
+pub use clear::{ClearEnd, ClearReport};
 pub use bounds::Aabb;
 pub use broadphase::Broadphase;
 pub use filter::Filter;

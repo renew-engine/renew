@@ -74,6 +74,13 @@ impl World {
         iteration_limit: u32,
         out: &mut [SlideHit],
     ) -> Option<SlideReport> {
+        // **Out of anything it is already inside, before asking what it will
+        // hit.** A sweep starts from where the body is and answers what is
+        // ahead of it, which is the wrong question when the answer is already
+        // touching — so a body spawned overlapping would otherwise sweep out
+        // from inside the thing it is stuck in and stay stuck.
+        self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+
         let start = self.transform(handle)?;
         let mut position = start.translation;
         let mut remaining = displacement;
@@ -124,8 +131,18 @@ impl World {
         }
 
         self.set_transform(handle, Transform::at(position));
+
+        // **And out again at the end, which is what makes the clearance
+        // guarantee true rather than approximate.** Measured against real
+        // geometry in this crate as well as the two-dimensional one, the slide
+        // alone lands inside the skin distance by an amount that grows with
+        // the distance travelled: here a 1024-unit slide ended 232 raw units
+        // *inside* a wall it should have rested 256 clear of. Re-establishing
+        // the clearance removes the dependence rather than bounding it.
+        let restored = self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+
         Some(SlideReport {
-            destination: position,
+            destination: restored.destination,
             hits,
             iterations,
             end,
