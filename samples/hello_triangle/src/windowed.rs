@@ -23,7 +23,7 @@ use renew_platform::window::{
 };
 use renew_rhi::{
     Device, DeviceDesc, Extent, Item, Pass, PipelineDesc, RenderDesc, RenderPipeline, TargetError,
-    Validation, builtin,
+    builtin,
 };
 
 use crate::cli::{Options, Report};
@@ -155,7 +155,7 @@ impl TriangleApp {
     fn bring_up(&mut self, window: NativeWindow, size: Extent) -> Result<(), SampleError> {
         let device = Device::new(&DeviceDesc {
             app_name: "renew-hello-triangle",
-            validation: Validation::Off,
+            validation: crate::validation_policy(),
         })
         .map_err(device_error)?;
         let target = device

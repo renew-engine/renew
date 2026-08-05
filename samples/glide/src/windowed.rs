@@ -19,7 +19,7 @@ use renew_platform::window::{
 };
 use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
-    Color, Device, DeviceDesc, Extent, Pass, PresentOutcome, RenderDesc, Validation, WindowTarget,
+    Color, Device, DeviceDesc, Extent, Pass, PresentOutcome, RenderDesc, WindowTarget,
 };
 use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 
@@ -255,9 +255,13 @@ impl GlideApp {
     }
 
     fn bring_up(&mut self, window: NativeWindow, size: Extent) -> Result<(), SampleError> {
+        // Validation follows the diagnostics switch: off for an
+        // ordinary run, where the layer costs frame time and says
+        // nothing, and on for a run that is being debugged, where it is
+        // the only thing that can name a fault inside the driver.
         let device = Device::new(&DeviceDesc {
             app_name: "renew-glide",
-            validation: Validation::Off,
+            validation: crate::validation_policy(),
         })
         .map_err(|error| SampleError::failed("bringing up the device", &error))?;
         let target = device

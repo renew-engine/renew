@@ -21,6 +21,7 @@ name = "cube"
 path = "src/main.rs"
 
 [dependencies]
+renew-platform = { path = "../../crates/core/platform", default-features = false }
 renew-fixed = { path = "../../crates/fixed" }
 renew-sample-cube-world = { path = "world" }
 

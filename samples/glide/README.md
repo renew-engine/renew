@@ -56,6 +56,52 @@ close, which is not a failed run.
 the length — so the flags it would contradict are refused by name
 rather than silently ignored.
 
+## When something goes wrong
+
+Set `RENEW_LOG` to a file path and the run reports into it: the engine's
+own error channel, and any panic.
+
+```
+RENEW_LOG=run.log glide --window
+```
+
+```powershell
+$env:RENEW_LOG = "$env:USERPROFILEun.log"
+.	arget\debug\glide.exe --window
+```
+
+An environment variable rather than a flag, because a panic that happens
+before the command line is parsed still needs somewhere to go. An empty
+value counts as unset. Every sample takes it, including the ones with no
+graphics at all, where what it carries is a panic.
+
+**Every log says whether graphics validation was on**, in its first
+line, both ways round. Validation is a separate switch:
+
+```
+RENEW_LOG=run.log RENEW_VALIDATION=1 glide --window
+```
+
+They are separate deliberately. The validation layer reports faults
+inside the driver that nothing else here can see — and it changes
+timing, so a fault that depends on timing can behave differently, or
+vanish, when it is on. The first capture worth having is of the run that
+actually failed, unperturbed; validation is the second look, taken
+knowingly. A log that did not say which kind of run it recorded would be
+impossible to compare against another.
+
+The file is appended to, never truncated, so several runs at one path
+accumulate. It is created as soon as logging starts, so an **empty file
+means logging was on and nothing was reported** — which is a different
+thing from no file, meaning it was never on. A path that cannot be
+written is said once on the error stream and the run continues; a broken
+log must not become a broken run.
+
+**What it cannot catch:** a driver that takes the process down leaves
+nothing to write with. A log that ends mid-run, with a nonzero exit and
+no failure line, is itself the finding — it says the fault was below the
+engine rather than in it.
+
 ## Shape
 
 Two crates. `world/` is the simulation — a pure fixed-step function of

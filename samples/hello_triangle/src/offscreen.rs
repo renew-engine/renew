@@ -12,7 +12,7 @@ use renew_math::Alpha;
 use renew_platform::Clock;
 use renew_rhi::{
     AdapterInfo, Device, DeviceDesc, Extent, Item, Pass, PipelineDesc, RenderDesc, RenderPipeline,
-    Validation, builtin,
+    builtin,
 };
 
 use crate::cli::{Options, Report};
@@ -88,7 +88,7 @@ impl HeadlessRun {
     pub fn start(seed: u64, draw: Draw) -> Result<Self, SampleError> {
         let device = Device::new(&DeviceDesc {
             app_name: "renew-hello-triangle",
-            validation: Validation::Off,
+            validation: crate::validation_policy(),
         })
         .map_err(device_error)?;
         let target = device

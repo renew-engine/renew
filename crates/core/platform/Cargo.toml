@@ -27,7 +27,7 @@ window = ["dep:winit", "dep:raw-window-handle"]
 # compiling only where something actually plays. It carries the
 # diagnostics crate with it, because the stream's error callback is the
 # one place in this crate that reports from a thread it does not own.
-audio-out = ["dep:cpal", "dep:renew-diag"]
+audio-out = ["dep:cpal"]
 
 [dependencies]
 # The event vocabulary this crate re-exports as its `event` module.
@@ -60,7 +60,10 @@ cpal = { version = "=0.18.1", optional = true, default-features = false }
 # Carried by `audio-out` alone: the audio thread's error callback is the
 # only reporter in this crate, so the default and headless graphs are
 # exactly what they were without it.
-renew-diag = { path = "../diag", optional = true }
+# Not optional: the file sink in `diag.rs` is part of this crate's
+# always-available surface. The audio seam also uses it, which is why
+# this line used to be optional.
+renew-diag = { path = "../diag" }
 
 [lints]
 workspace = true

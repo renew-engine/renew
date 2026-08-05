@@ -72,6 +72,17 @@ const FAILURE_EXIT: u8 = 1;
 /// `1` for a failure, `2` for a bad command line. The last line on
 /// stdout is always the digest line the determinism gate compares.
 pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
+    // Diagnostics, before anything can fail. `RENEW_LOG` names a file;
+    // when it is set the engine's own error channel and any panic land
+    // there, and the device is brought up with validation on.
+    // Diagnostics, before anything can fail. A path that cannot be
+    // written is said out loud once: silence there would look exactly
+    // like a run with nothing to report.
+    if let Err(error) =
+        renew_platform::diag::log_to_file(diagnostics_path(), Some(diagnostics_note()))
+    {
+        eprintln!("RENEW_LOG: {error}");
+    }
     let strict = std::env::var_os(STRICT).is_some_and(|value| value == "1");
     match run(args) {
         Ok(report) => {
@@ -151,8 +162,89 @@ pub fn exit_code(code: u8) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// The file `RENEW_LOG` names, if it names one.
+///
+/// An environment variable rather than a flag, so a panic that happens
+/// before the command line is parsed still has somewhere to go. Absent
+/// and empty both mean off.
+#[must_use]
+pub fn diagnostics_path() -> Option<std::path::PathBuf> {
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
+}
+
+/// Whether `RENEW_VALIDATION` asks for the graphics validation layer.
+///
+/// **A separate switch from the log, deliberately.** The layer changes
+/// timing, so a crash that is a race can vanish when it is enabled — and
+/// the first capture anybody wants is of the run that actually failed,
+/// unperturbed. Logging records what happened; this looks closer, and
+/// asks to be turned on knowing that it changes what it observes.
+#[must_use]
+pub fn validation_requested() -> bool {
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_VALIDATION")).is_some()
+}
+
+/// The line every log opens with, saying which state the graphics
+/// validation layer is in.
+///
+/// **Always said, in both states, and that is the point.** A log that
+/// mentioned the layer only when it was off would leave a reader of the
+/// other kind wondering whether it had been on — and a run recorded with
+/// the layer active is not a stock run, which anybody comparing two logs
+/// needs to know. Saying it either way makes the log self-describing.
+#[must_use]
+pub fn diagnostics_note() -> &'static str {
+    note_for(validation_requested())
+}
+
+/// The note itself, as a function of the state rather than of the
+/// environment.
+///
+/// Split out for the same reason a pure helper always is here: a function that
+/// reads the environment can only be tested in whichever state the test
+/// runner happens to be in, so one of its two answers would never be
+/// examined by anything. Taking the state as an argument makes both
+/// halves of a promise that is *about* saying both halves ordinarily
+/// testable.
+#[must_use]
+fn note_for(validation: bool) -> &'static str {
+    if validation {
+        "graphics validation is ON: it reports driver-level faults this log would otherwise miss, and it changes timing, so a fault that depends on timing may behave differently here than in an ordinary run."
+    } else {
+        "graphics validation is OFF, so this is an ordinary run and what it records is what really happened. If the fault is graphical and nothing here explains it, set RENEW_VALIDATION=1 and run again: the layer names faults inside the driver, at the cost of changing timing."
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Both halves of the note exist and say which state they describe.
+    ///
+    /// The promise the note makes is that a log always says whether
+    /// validation was on, *either way round* — so a test that only ever
+    /// saw one answer would leave exactly that promise unchecked.
+    #[test]
+    fn the_note_names_the_validation_state_in_both_directions() {
+        let on = super::note_for(true);
+        let off = super::note_for(false);
+        assert!(on.contains("ON"), "the on note must say so: {on}");
+        assert!(off.contains("OFF"), "the off note must say so: {off}");
+        assert_ne!(on, off, "the two states must not read alike");
+        // The off note is the one that has to teach: a reader with a
+        // thin log needs to know there is a closer look available, what
+        // to type for it, and what it costs.
+        assert!(
+            off.contains("RENEW_VALIDATION=1"),
+            "the off note must say what to set: {off}"
+        );
+        assert!(
+            off.contains("timing"),
+            "the off note must say what enabling it costs: {off}"
+        );
+        assert!(
+            on.contains("timing"),
+            "the on note must say what is already being paid: {on}"
+        );
+    }
     use super::{FAILURE_EXIT, SampleError, USAGE_EXIT, dump_failed, report_error, run_cli};
     use renew_platform::fs::FsError;
     use std::path::PathBuf;
