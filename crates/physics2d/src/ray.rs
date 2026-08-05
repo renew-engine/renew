@@ -149,14 +149,16 @@ fn oriented_box(
             };
         }
         exit = exit.min(far);
+        // This one check rejects everything: a box behind the origin drives
+        // `exit` negative while `enter` sits at zero, and a box beyond the
+        // ray's reach drives `enter` past `max_distance`, which `exit` can
+        // never exceed. A second test after the loop for either of those is
+        // unreachable, so there is not one.
         if enter > exit {
             return None;
         }
     }
 
-    if exit < Fixed::ZERO || enter > max_distance {
-        return None;
-    }
     let point = origin + direction * enter;
     let local_normal = if axis_is_x(entry_axis) {
         Vec2::new(entry_sign, Fixed::ZERO)
