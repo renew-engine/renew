@@ -62,9 +62,7 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
     // there, and the renderer is brought up with validation on. Reading
     // the environment is the binary's job: the crate that owns the file
     // sink deliberately reads no configuration of its own.
-    if let Some(path) = diagnostics_path() {
-        renew_platform::diag::log_to_file(path);
-    }
+    renew_platform::diag::log_to_file(diagnostics_path());
 
     match run(args) {
         Ok(report) => {
@@ -174,4 +172,39 @@ pub fn diagnostics_path() -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn diagnostics_enabled() -> bool {
     diagnostics_path().is_some()
+}
+
+/// Which validation policy a run asks the renderer for.
+///
+/// Behind the windowing feature because the rendering crate is: a build
+/// with no window has no renderer to ask.
+///
+/// **A named function rather than a conditional at the call site**, so
+/// both answers can be asserted. Inline, the diagnostics arm executes
+/// only in a run that has already set the variable and opened a window,
+/// which no test does — the choice would be made in a place nothing
+/// could observe. `IfAvailable` rather than `Required`: a machine
+/// without the validation layer must still run while something else is
+/// being debugged.
+#[cfg(feature = "window")]
+#[must_use]
+pub fn validation_policy() -> renew_rhi::Validation {
+    validation_for(diagnostics_enabled())
+}
+
+/// The policy a run asks for, given whether it is logging.
+///
+/// Split from the reader so both answers are reachable without touching
+/// the environment — which is process-wide, and which a test that wrote
+/// it would be racing every other test in its binary. `IfAvailable`
+/// rather than `Required`: a machine without the validation layer must
+/// still run while something else is being debugged.
+#[cfg(feature = "window")]
+#[must_use]
+pub fn validation_for(logging: bool) -> renew_rhi::Validation {
+    if logging {
+        renew_rhi::Validation::IfAvailable
+    } else {
+        renew_rhi::Validation::Off
+    }
 }

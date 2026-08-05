@@ -75,9 +75,7 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
     // Diagnostics, before anything can fail. `RENEW_LOG` names a file;
     // when it is set the engine's own error channel and any panic land
     // there, and the device is brought up with validation on.
-    if let Some(path) = diagnostics_path() {
-        renew_platform::diag::log_to_file(path);
-    }
+    renew_platform::diag::log_to_file(diagnostics_path());
     let strict = std::env::var_os(STRICT).is_some_and(|value| value == "1");
     match run(args) {
         Ok(report) => {

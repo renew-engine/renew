@@ -83,9 +83,7 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
     // Diagnostics, before anything can fail. `RENEW_LOG` names a file;
     // when it is set the engine's own error channel and any panic land
     // there, and the device is brought up with validation on.
-    if let Some(path) = diagnostics_path() {
-        renew_platform::diag::log_to_file(path);
-    }
+    renew_platform::diag::log_to_file(diagnostics_path());
     let strict = std::env::var_os(STRICT).is_some_and(|value| value == "1");
     match run(args) {
         Ok(report) => {
@@ -191,8 +189,52 @@ pub fn diagnostics_enabled() -> bool {
     diagnostics_path().is_some()
 }
 
+/// Which validation policy a run asks the renderer for.
+///
+/// **A named function rather than a conditional at the call site**, so
+/// both answers can be asserted. Inline, the diagnostics arm executes
+/// only in a run that has already set the variable and opened a window,
+/// which no test does — the choice would be made in a place nothing
+/// could observe. `IfAvailable` rather than `Required`: a machine
+/// without the validation layer must still run while something else is
+/// being debugged.
+#[must_use]
+pub fn validation_policy() -> renew_rhi::Validation {
+    validation_for(diagnostics_enabled())
+}
+
+/// The policy a run asks for, given whether it is logging.
+///
+/// Split from the reader so both answers are reachable without touching
+/// the environment — which is process-wide, and which a test that wrote
+/// it would be racing every other test in its binary. `IfAvailable`
+/// rather than `Required`: a machine without the validation layer must
+/// still run while something else is being debugged.
+#[must_use]
+pub fn validation_for(logging: bool) -> renew_rhi::Validation {
+    if logging {
+        renew_rhi::Validation::IfAvailable
+    } else {
+        renew_rhi::Validation::Off
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_validation_policy_answers_both_ways() {
+        assert_eq!(
+            super::validation_for(true),
+            renew_rhi::Validation::IfAvailable,
+            "a logged run asks for validation, which is what can name a fault in the driver"
+        );
+        assert_eq!(
+            super::validation_for(false),
+            renew_rhi::Validation::Off,
+            "an ordinary run pays nothing for a layer it will not read"
+        );
+    }
     use super::{FAILURE_EXIT, SampleError, USAGE_EXIT, dump_failed, report_error, run_cli};
     use renew_platform::fs::FsError;
     use std::path::PathBuf;

@@ -19,7 +19,7 @@ use renew_platform::window::{
 };
 use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
-    Color, Device, DeviceDesc, Extent, Pass, PresentOutcome, RenderDesc, Validation, WindowTarget,
+    Color, Device, DeviceDesc, Extent, Pass, PresentOutcome, RenderDesc, WindowTarget,
 };
 use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 
@@ -261,11 +261,7 @@ impl GlideApp {
         // the only thing that can name a fault inside the driver.
         let device = Device::new(&DeviceDesc {
             app_name: "renew-glide",
-            validation: if crate::diagnostics_enabled() {
-                Validation::IfAvailable
-            } else {
-                Validation::Off
-            },
+            validation: crate::validation_policy(),
         })
         .map_err(|error| SampleError::failed("bringing up the device", &error))?;
         let target = device

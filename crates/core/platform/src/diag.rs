@@ -101,7 +101,8 @@ impl core::fmt::Debug for FileSink {
     }
 }
 
-/// Send this process's diagnostics, and any panic, to `path`.
+/// Send this process's diagnostics, and any panic, to `path` — or do
+/// nothing at all, when there is no path.
 ///
 /// Installs a [`FileSink`] as the process-wide sink and chains a panic
 /// hook that records the panic before the default one runs — so a run
@@ -125,7 +126,14 @@ impl core::fmt::Debug for FileSink {
 /// Never for a bad path — a sink that cannot write drops its records
 /// silently, as its own contract states. Calling this twice is the
 /// reporting crate's contract violation, not this function's.
-pub fn log_to_file(path: impl Into<PathBuf>) {
+pub fn log_to_file(path: Option<impl Into<PathBuf>>) {
+    // `None` is the ordinary case — a run nobody asked to log — and it
+    // is taken here rather than at every call site so a binary wires
+    // this in unconditionally and has one line to get right instead of
+    // a condition each.
+    let Some(path) = path else {
+        return;
+    };
     let sink: &'static FileSink = Box::leak(Box::new(FileSink::new(path)));
     renew_diag::install(sink);
 
@@ -204,6 +212,18 @@ mod tests {
         let shown = format!("{sink:?}");
         assert!(shown.starts_with("FileSink"), "{shown}");
         assert!(shown.contains("somewhere.log"), "{shown}");
+    }
+
+    /// **The no-path case installs nothing**, which is the arm every
+    /// ordinary run takes. Testable here precisely because it does not
+    /// consume the process-wide sink slot — the installing arm cannot
+    /// be, which is why it has an integration test of its own.
+    #[test]
+    fn no_path_installs_nothing() {
+        log_to_file(None::<PathBuf>);
+        // Reaching here at all is the assertion: had this installed a
+        // sink, the integration test in this crate would then be unable
+        // to install its own, and would fail.
     }
 
     /// A path that cannot be written is dropped rather than fatal — the

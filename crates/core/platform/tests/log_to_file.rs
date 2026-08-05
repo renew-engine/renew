@@ -35,7 +35,7 @@ fn records_and_panics_both_reach_the_file() {
     // had written things it did not.
     let _ = std::fs::remove_file(&path);
 
-    renew_platform::diag::log_to_file(&path);
+    renew_platform::diag::log_to_file(Some(&path));
 
     renew_diag::error!(target: "test", "an error with a value: {}", 7);
     renew_diag::warn!(target: "test", "a warning");
