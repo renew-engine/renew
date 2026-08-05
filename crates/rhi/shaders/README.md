@@ -65,6 +65,37 @@ Target: SPIR-V 1.0
 > glslc -O instanced_depth.frag -o instanced_depth.frag.spv
 ```
 
+`mesh.vert` and `mesh.frag` were compiled 2026-08-05, with the version
+output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh.vert -o mesh.vert.spv
+> glslc -O mesh.frag -o mesh.frag.spv
+```
+
 To recompile: install the same SDK version, run the same commands, and
 update this record with the observed `--version` output in the same
 commit as the new bytes.
+
+**Run them from this directory.** `glslc` embeds the source path it was
+given into the module's debug information, so `glslc -O instanced.vert`
+and `glslc -O crates/rhi/shaders/instanced.vert` produce **different
+bytes from identical source**. Every command recorded above is a bare
+filename, which only works from here. Discovered 2026-08-05 while
+checking that a comment-only edit left the blobs untouched: compiled from
+the repository root all three appeared to have changed, and compiled from
+this directory all three were byte-identical to what is committed. A
+recompile from the wrong directory produces a blob diff that looks like a
+real change and is not.
+
+**Comment-only edits do not change the bytes**, verified the same way —
+so a header comment may be corrected without touching the `.spv` beside
+it, and the source-and-blob-together rule is satisfied by the blob
+legitimately not moving rather than by skipping it.

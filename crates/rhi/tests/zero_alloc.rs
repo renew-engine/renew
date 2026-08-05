@@ -118,6 +118,13 @@ fn steady_state_frames_allocate_nothing() {
     let buffer_two = device
         .create_buffer(64, BufferUsage::PerFrame)
         .expect("second per-frame buffer");
+    // **The mesh path inside the measured window, deliberately.** Both
+    // gates measure only what their own bodies render, so a path added
+    // without touching them passes vacuously — the hole recorded and
+    // paid once already for the textured pipeline. The mesh and its
+    // pipeline are built out here, where allocation is free; what the
+    // window measures is the bind of two buffers and the indexed draw.
+    let (mesh_pipeline, mesh) = mesh_fixture(&device).expect("mesh fixture");
     let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
@@ -132,6 +139,10 @@ fn steady_state_frames_allocate_nothing() {
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup instanced frame");
+        let items = [Item::new(&mesh_pipeline).mesh(&mesh)];
+        target
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+            .expect("warmup mesh frame");
         target.read_back_into(&mut pixels);
     }
 
@@ -151,6 +162,14 @@ fn steady_state_frames_allocate_nothing() {
             target
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady instanced frame");
+            // The mesh frame: two buffer binds and an indexed draw, plus
+            // the retention entry the mesh takes in the table. Measured
+            // separately from the frames above so a regression names its
+            // shape rather than moving one aggregate number.
+            let items = [Item::new(&mesh_pipeline).mesh(&mesh)];
+            target
+                .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+                .expect("steady mesh frame");
             // The multi-pass, multi-buffer frame: two passes, three
             // items, two distinct buffers retained in one frame — the
             // walk's loops and the retention table's width, measured on
@@ -195,6 +214,40 @@ fn steady_state_frames_allocate_nothing() {
     if let Err(activity) = verdict {
         panic!("the render path was loud in every window (last: {activity})");
     }
+}
+
+/// A mesh pipeline and one small indexed mesh, built outside the
+/// measured window. Two triangles over four corners, so the frame under
+/// measurement performs a real indexed draw rather than a degenerate
+/// one.
+fn mesh_fixture(
+    device: &Device,
+) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Mesh), Box<dyn std::error::Error>> {
+    let pipeline = device.create_pipeline(&PipelineDesc::mesh(
+        builtin::MESH,
+        TargetFormat::Rgba8Unorm,
+        builtin::MESH_LAYOUT,
+    ))?;
+    let mut vertices = Vec::new();
+    for corner in [
+        [-1.0f32, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ] {
+        for value in corner {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in [0.0f32, 1.0, 0.0, 1.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    let mesh = device.create_mesh(&renew_rhi::MeshDesc::new(
+        &vertices,
+        28,
+        &[0, 1, 2, 0, 2, 3],
+    ))?;
+    Ok((pipeline, mesh))
 }
 
 /// The instanced pipeline, its per-frame buffer, and one packed

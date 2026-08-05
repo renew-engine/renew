@@ -24,8 +24,8 @@ use std::sync::Mutex;
 
 use renew_rhi::{
     Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, Item,
-    LoadOp, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders, StoreOp,
-    TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
+    LoadOp, MeshDesc, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders,
+    StoreOp, TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -922,6 +922,82 @@ fn every_driver_failure_ladder_behaves() {
                 .map_err(|error| format!("{name}: recovery creation failed: {error}"))
         }));
     }
+
+    // ---- MB · mesh buffer ladder --------------------------------------------
+    // Every fallible call `create_mesh` makes, in order, on the same
+    // terms as the buffer ladder above: surface the right call, leave
+    // nothing behind, and recover.
+    //
+    // **The no-ordinal justification carries over rather than being
+    // assumed.** `create_mesh` performs each interposed call exactly
+    // once — it maps host-visible memory and copies into it, with no
+    // staging buffer, no second allocation and no transfer submit. Had
+    // it staged, `vkCreateBuffer` and `vkAllocateMemory` would each run
+    // twice per creation, which would silently re-aim every pinned `@2`
+    // scenario in this file.
+    let mesh_ladder: &[(&str, &str, &str)] = &[
+        (
+            "MB1",
+            "vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateBuffer",
+        ),
+        (
+            "MB2",
+            "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateMemory(mesh)",
+        ),
+        (
+            "MB3",
+            "vkBindBufferMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindBufferMemory",
+        ),
+        ("MB4", "vkMapMemory=ERROR_OUT_OF_HOST_MEMORY", "vkMapMemory"),
+    ];
+    let mesh_bytes = [0u8; 28 * 3];
+    let mesh_indices = [0u32, 1, 2];
+    for &(name, fault, call) in mesh_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            let desc = MeshDesc::new(&mesh_bytes, 28, &mesh_indices);
+            match device.create_mesh(&desc) {
+                Err(error) => {
+                    if !matches!(&error, TargetError::Creation { call: got, .. } if *got == call) {
+                        return Err(wrong(name, call, &error));
+                    }
+                }
+                Ok(_) => {
+                    return Err(format!("{name}: creation succeeded despite the fault"));
+                }
+            }
+            device
+                .create_mesh(&desc)
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery creation failed: {error}"))
+        }));
+    }
+
+    // MB5: the poison gate on mesh creation. Every resource constructor
+    // in the crate refuses on a lost device before touching the driver,
+    // and this proves the mesh one does — reached the way T17 reaches its
+    // own, by losing the device on an unrelated upload first and then
+    // asking. The four rungs above cannot get here: they inject
+    // out-of-host-memory, which fails a call without poisoning anything.
+    verdicts.push(device_case(
+        "MB5",
+        "vkQueueSubmit2=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("MB5", "DeviceLost", &other)),
+                Ok(_) => return Err("MB5: the upload survived a lost device".to_owned()),
+            }
+            let desc = MeshDesc::new(&mesh_bytes, 28, &mesh_indices);
+            match device.create_mesh(&desc) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("MB5", "DeviceLost from create_mesh", &other)),
+                Ok(_) => Err("MB5: a mesh was built on a lost device".to_owned()),
+            }
+        },
+    ));
 
     // ---- D · offscreen render ladder -------------------------------
     // D1-D3: the frame fails before submission, so nothing is in

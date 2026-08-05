@@ -74,22 +74,23 @@ pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation
 pub use error::{DeviceError, PipelineError, TargetError};
 pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
+pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pass::{Attachment, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
 pub use vk::pipeline::{
-    AddressMode, Blend, DepthState, Filter, FrameData, InstanceAttribute, PipelineDesc,
-    RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat,
+    AddressMode, Blend, DepthState, Filter, FrameData, MeshShaders, PipelineDesc, RenderPipeline,
+    Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
 };
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
 pub use vk::texture::{Texture, TextureDesc};
 
-/// The embedded v0 shaders, each bundled with the vertex count its
-/// vertex stage generates: a colored triangle, and a full-target quad
-/// that samples one texture. Both draw from `gl_VertexIndex` with no
-/// vertex buffers. Compiled offline by the pinned toolchain (the record
-/// lives beside the sources); removed when the asset pipeline owns
-/// shader delivery.
+/// The embedded v0 shaders. Most of them draw from `gl_VertexIndex` and
+/// write their own vertex list, so each is bundled with the vertex count
+/// its stage generates; [`MESH`] is the exception, reading a per-vertex
+/// stream and taking its count from the geometry instead. Compiled
+/// offline by the pinned toolchain (the record lives beside the sources);
+/// removed when the asset pipeline owns shader delivery.
 pub mod builtin {
     use crate::Shaders;
 
@@ -127,10 +128,8 @@ pub mod builtin {
     };
 
     /// The instance layout `INSTANCED` consumes: centre, then colour.
-    pub const INSTANCED_LAYOUT: &[crate::InstanceAttribute] = &[
-        crate::InstanceAttribute::Vec2,
-        crate::InstanceAttribute::Vec4,
-    ];
+    pub const INSTANCED_LAYOUT: &[crate::VertexAttribute] =
+        &[crate::VertexAttribute::Vec2, crate::VertexAttribute::Vec4];
 
     /// The instanced quad with per-instance depth: six expanded
     /// vertices per instance; placement, depth and colour from the one
@@ -145,10 +144,8 @@ pub mod builtin {
 
     /// The instance layout `INSTANCED_DEPTH` consumes: (centre.xy,
     /// depth, unused), then colour.
-    pub const INSTANCED_DEPTH_LAYOUT: &[crate::InstanceAttribute] = &[
-        crate::InstanceAttribute::Vec4,
-        crate::InstanceAttribute::Vec4,
-    ];
+    pub const INSTANCED_DEPTH_LAYOUT: &[crate::VertexAttribute] =
+        &[crate::VertexAttribute::Vec4, crate::VertexAttribute::Vec4];
 
     /// The colored triangle: three vertices, no descriptors.
     pub const TRIANGLE: Shaders<'static> = Shaders {
@@ -164,4 +161,30 @@ pub mod builtin {
         fragment: TEXTURED_FS_SPV,
         vertex_count: 6,
     };
+
+    /// Vertex stage SPIR-V reading a per-vertex stream.
+    pub static MESH_VS_SPV: &[u8] = include_bytes!("../shaders/mesh.vert.spv");
+    /// Fragment stage SPIR-V passing the interpolated colour through.
+    pub static MESH_FS_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
+
+    /// The mesh pair: clip-space positions and colours read per vertex,
+    /// walked by an index buffer.
+    ///
+    /// **A [`MeshShaders`] rather than a [`Shaders`], so there is no
+    /// vertex count here to be ignored.** The count belongs to the
+    /// geometry on this path. The matching layout is [`MESH_LAYOUT`];
+    /// shader and slice describe the same bytes and change together.
+    ///
+    /// [`MeshShaders`]: crate::MeshShaders
+    /// [`Shaders`]: crate::Shaders
+    pub const MESH: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_VS_SPV,
+        fragment: MESH_FS_SPV,
+    };
+
+    /// The per-vertex layout [`MESH`] consumes: clip-space position,
+    /// then colour. Packs to 28 bytes, which is the stride every mesh
+    /// drawn by that pipeline must carry.
+    pub const MESH_LAYOUT: &[crate::VertexAttribute] =
+        &[crate::VertexAttribute::Vec3, crate::VertexAttribute::Vec4];
 }

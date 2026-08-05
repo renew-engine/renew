@@ -4,7 +4,7 @@
 // style -- no per-vertex buffer exists), everything else read per
 // instance from the one bound vertex buffer at instance rate.
 //
-// Layout here and the `InstanceAttribute` slice at pipeline creation
+// Layout here and the `VertexAttribute` slice declared as this pipeline's instance input
 // describe the same bytes: location 0/1 = vec2 NDC min/max, location
 // 2/3 = vec2 UV min/max, location 4 = vec4 premultiplied tint. Change
 // one and the other in the same commit or the draw reads garbage.

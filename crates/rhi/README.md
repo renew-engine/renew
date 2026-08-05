@@ -3,8 +3,9 @@
 The engine's only doorway to the GPU: device bring-up, render targets,
 and the v0 draw path, over Vulkan. A frame is described, not scripted:
 the caller composes a `RenderDesc` — a list of `Pass`es, each with one
-color attachment, an optional depth attachment, and `Item`s (a pipeline
-plus optional per-frame bytes) drawn in order — on its own stack, and
+color attachment, an optional depth attachment, and `Item`s (a pipeline,
+optionally the geometry it walks, optionally this frame's bytes) drawn in
+order — on its own stack, and
 hands it to a target's `render`. Correctness is provable headless — the
 offscreen target renders and reads back pixels without a window or a
 display server, and the golden-image tests attest the bytes.
@@ -26,18 +27,29 @@ display server, and the golden-image tests attest the bytes.
   Attachments carry their load and store ops (`LoadOp::Clear` holds its
   `ClearValue`, so a clear value without a clearing load is
   unrepresentable); depth is a per-target internal image a pass opts
-  into, sized and owned by the target. Malformed frames — no passes, a
-  first-pass `Load`, a clear value of the wrong kind, a depth-testing
-  pipeline in a depthless pass, two items naming one buffer — are
-  refused by named assertions before any GPU call.
-- `RenderPipeline` — two SPIR-V stages, optional per-instance vertex
-  input, an optional sampled texture bound at creation, and optional
-  `DepthState` (test/write, compare fixed `LESS_OR_EQUAL`). `builtin`
-  carries the embedded shader bundles — a colored triangle, a textured
-  full-target quad, and instanced quads with and without per-instance
-  depth — each pairing its stages with the vertex count they generate,
-  so the two cannot be mismatched (sources and compile record in
+  into, sized and owned by the target. An `Item` may name geometry
+  (`Item::mesh`), which makes its draw indexed. Malformed frames — no
+  passes, a first-pass `Load`, a clear value of the wrong kind, a
+  depth-testing pipeline in a depthless pass, two items naming one
+  per-frame buffer, an item whose geometry and whose pipeline's
+  per-vertex input disagree, a mesh whose stride the pipeline does not
+  pack to — are refused by named assertions before any GPU call.
+- `RenderPipeline` — two SPIR-V stages, optional per-vertex and
+  per-instance input, an optional sampled texture bound at creation, and
+  optional `DepthState` (test/write, compare fixed `LESS_OR_EQUAL`). Two
+  pipeline shapes: `PipelineDesc::new` takes `Shaders`, whose stages
+  write their own vertex list and carry the count they generate;
+  `PipelineDesc::mesh` takes `MeshShaders` and a per-vertex layout, and
+  has no count at all because the geometry supplies it. `builtin` carries
+  the embedded shader bundles — a colored triangle, a textured
+  full-target quad, instanced quads with and without per-instance depth,
+  and the mesh pair (sources and compile record in
   [shaders/](shaders/README.md)).
+- `Mesh` — vertex and index bytes written once at creation and read-only
+  to the GPU thereafter, in one allocation. Indices are `&[u32]`, and
+  **every index is checked against the vertex count at creation**: an
+  out-of-range index is data no validation layer here reads, so creation
+  is the only place it can be caught.
 - `Texture` — a sampled RGBA8 image, filled once from host bytes during
   creation and immutable thereafter.
 - `Sampler` — filter and address mode; `SamplerDesc::atlas()` is
@@ -95,10 +107,14 @@ presents frames where a display exists.
 ## Status
 
 Early-stage: the surface is exactly device + two target kinds + the
-pass vocabulary + one pipeline shape + one sampled texture — instanced
-vertex input and target-owned depth exist; no MSAA, no image identity
-on attachments, one fixed descriptor layout (a combined image sampler
-at set 0, binding 0) — grown only when a consumer demands it. The `[package.metadata.renew]` table
+pass vocabulary + two pipeline shapes + one sampled texture + geometry
+— per-vertex and per-instance input, indexed draws and target-owned
+depth exist; no MSAA, no image identity on attachments, no push
+constants, one fixed descriptor layout (a combined image sampler at set
+0, binding 0) — grown only when a consumer demands it. Mesh memory is
+host-visible rather than device-local, which is a recorded decision with
+a written reopening trigger (a real-GPU frame-time measurement showing
+vertex fetch matters) and not an oversight. The `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
 metadata. Contract lints live in [clippy.toml](clippy.toml): thread
 spawning, clock reads, and filesystem access are rejected at lint time.

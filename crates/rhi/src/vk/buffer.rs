@@ -1,12 +1,18 @@
 //! Per-frame buffers: the memory a frame's instance data rides in.
 //!
-//! One class of buffer exists — rewritten by the host every frame, read
-//! by the frame being recorded — because exactly one consumer exists and
-//! an enum arm no test can reach is a hole in the coverage gate, not
-//! foresight. The memory is host-visible and coherent, written directly:
-//! staging a buffer that changes every frame would add a copy and a
-//! submit to the steady path, which is the reason the image upload path
-//! and this one are different designs, not one design with a flag.
+//! One class of buffer lives *here* — rewritten by the host every frame,
+//! read by the frame being recorded — because exactly one consumer
+//! exists and an enum arm no test can reach is a hole in the coverage
+//! gate, not foresight. The memory is host-visible and coherent, written
+//! directly: staging a buffer that changes every frame would add a copy
+//! and a submit to the steady path, which is the reason the image upload
+//! path and this one are different designs, not one design with a flag.
+//!
+//! **That argument since produced a third design rather than a third
+//! flag.** Geometry — written once at creation, drawn by any number of
+//! items on any number of targets — lives in `mesh.rs`, with no ring, no
+//! slot arithmetic, no copy phase and no owning target. Every rule stated
+//! below would have had to grow the words "unless static" to cover it.
 //!
 //! # The ring lives in here, invisibly
 //!
