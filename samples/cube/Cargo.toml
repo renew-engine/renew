@@ -20,10 +20,24 @@ extension_points = []
 name = "cube"
 path = "src/main.rs"
 
+# Draw the world to a PNG. Off by default -- the game a player runs
+# carries no graphics crate at all, which is what lets the build matrix
+# prove this sample builds with the renderer removed.
+[features]
+render = ["dep:renew-rhi", "dep:renew-render3d"]
+
 [dependencies]
 renew-platform = { path = "../../crates/core/platform", default-features = false }
 renew-fixed = { path = "../../crates/fixed" }
 renew-sample-cube-world = { path = "world" }
+renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
+renew-render3d = { path = "../../crates/render3d", optional = true }
+
+# The projection is index-and-vector arithmetic, which is the row in the
+# testing table that asks for properties rather than examples. Same
+# version the rendering crates pin.
+[dev-dependencies]
+proptest = "1.11"
 
 [lints]
 workspace = true

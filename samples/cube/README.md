@@ -207,6 +207,48 @@ so every match of eleven bytes or more encoded as the wrong symbol. The
 file was still small, still structurally a PNG, still had a valid header,
 and every test in the crate passed. Only a decoder refused it.
 
+## Drawing it
+
+![The arena, drawn isometrically: the floor and two inner walls, with the mound at the centre](arena.png)
+
+`cube --render arena.png` draws the world through the 3D renderer and
+writes the picture above. The `render` feature builds it in; without the
+feature the flag is refused by name rather than ignored, and the game a
+player runs carries no graphics crate at all.
+
+```
+renew --features render run cube -- --render arena.png
+cargo run -p renew-sample-cube --features render --bin cube -- --render arena.png
+```
+
+**The view is a fixed true isometric** -- a 45 degree turn and a 35.264
+degree tilt -- with no camera anywhere, because a camera is a later step.
+Every entry of that basis is a square root rather than a sine, which is
+not a style choice: `sqrt` is required by IEEE 754 to be correctly
+rounded and is therefore identical on every platform, while `sin` and
+`cos` are not, and this picture is committed and compared.
+
+**Half the faces are dropped before drawing, and that is the picture.**
+The arena is a closed box, so every face the mesher emits points inward.
+Drawn from outside, the nearest surface along every ray is the underside
+of the near wall, which fills the frame -- a technically correct render
+of the world and useless to look at. Nothing culls it, because the
+pipeline draws both sides of everything. So the render drops the faces
+turned away from the eye, which cuts the near walls off and leaves a view
+*into* the room: 2321 quads of the 4642 the world has, exactly half,
+since for each pair of opposite directions one faces the viewer.
+
+That split is a fact about where the viewer stands rather than about the
+world, which is why it lives in the render and not in the mesher.
+
+**What the picture shows.** The bright diamond is the floor, whose faces
+point up and take the brightest shade. The two darker bands are the inner
+faces of the east and north walls. The small notch at the centre is the
+mound -- its top is the same shade as the floor, because both point up
+and nothing lights the scene, so only its two side faces separate it.
+That is the honest limit of flat shading, and what a texture atlas or a
+light would change.
+
 ## Shape
 
 Two crates. `world/` is the simulation: a fixed-step pure function of
