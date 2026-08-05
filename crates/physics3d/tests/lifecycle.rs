@@ -383,3 +383,74 @@ proptest! {
         prop_assert_eq!(seen.len(), added.len(), "every live shape appears exactly once");
     }
 }
+
+/// Two static bodies never move, so a contact between them can never change.
+/// The rest of the matrix must still collide, or the only movable kind in v0
+/// collides with nothing.
+#[test]
+fn only_two_static_bodies_cannot_produce_a_contact() {
+    use BodyKind::{Dynamic, Kinematic, Static};
+    assert!(!Static.collides_with(Static));
+    assert!(Static.collides_with(Kinematic));
+    assert!(Kinematic.collides_with(Static));
+    assert!(Kinematic.collides_with(Kinematic));
+    assert!(Dynamic.collides_with(Static));
+    assert!(Dynamic.collides_with(Dynamic));
+}
+
+/// A body created against an entity whose slot was reused inherits nothing
+/// from the body that used to be there — including its incarnation, which is
+/// what stops a rebuilt collider passing for the old one.
+#[test]
+fn a_body_at_a_recycled_slot_carries_a_fresh_incarnation() {
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let first = entities.spawn();
+    world.create_body(first, BodyKind::Kinematic, Transform::IDENTITY);
+    let index = world
+        .add_shape(first, cube(1), Transform::IDENTITY, Filter::ALL)
+        .expect("live");
+    let before = world
+        .incarnation(Collider {
+            handle: first,
+            index,
+        })
+        .expect("occupied")
+        .get();
+
+    entities.despawn(first);
+    let recycled = entities.spawn();
+    world.create_body(recycled, BodyKind::Kinematic, Transform::IDENTITY);
+    let again = world
+        .add_shape(recycled, cube(1), Transform::IDENTITY, Filter::ALL)
+        .expect("live");
+    let after = world
+        .incarnation(Collider {
+            handle: recycled,
+            index: again,
+        })
+        .expect("occupied")
+        .get();
+
+    assert_ne!(
+        after, before,
+        "the new body must not inherit the old one's identity"
+    );
+}
+
+/// Removing, replacing or refiltering a shape index past the end of a body's
+/// list is a no-op rather than a panic or a silent extension.
+#[test]
+fn an_index_past_the_end_of_a_body_is_refused() {
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let handle = entities.spawn();
+    world.create_body(handle, BodyKind::Kinematic, Transform::IDENTITY);
+    world.add_shape(handle, cube(1), Transform::IDENTITY, Filter::ALL);
+
+    let past = ShapeIndex::from_raw(99);
+    assert!(!world.remove_shape(handle, past));
+    assert!(!world.replace_shape(handle, past, cube(1), Transform::IDENTITY));
+    assert!(!world.set_filter(handle, past, Filter::ALL));
+    assert_eq!(world.shape_extent(handle), Some(1), "the list did not grow");
+}
