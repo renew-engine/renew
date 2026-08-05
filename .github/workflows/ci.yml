@@ -178,7 +178,7 @@ jobs:
       # accumulator, and the bench suite.
       - name: Build and test without the frame loop
         run: |
-          sel="--workspace --exclude renew-frame --exclude renew-sample-chess-rules --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
+          sel="--workspace --exclude renew-frame --exclude renew-sample-chess-rules --exclude renew-sample-cube-world --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
@@ -241,7 +241,7 @@ jobs:
       # turns forgetting that into a red cell rather than a green one.
       - name: Build and test without the entity storage
         run: |
-          sel="--workspace --exclude renew-ecs --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-leap-world --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
+          sel="--workspace --exclude renew-ecs --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-cube-world --exclude renew-sample-leap-world --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
           cargo build $sel
           cargo test $sel
@@ -281,7 +281,7 @@ jobs:
       # and this cell went red until it named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-leap-world"
+          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-cube-world --exclude renew-sample-leap-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel
@@ -299,7 +299,7 @@ jobs:
       # workspace minus one leaf.
       - name: Build and test without three-dimensional collision
         run: |
-          sel="--workspace --exclude renew-physics3d"
+          sel="--workspace --exclude renew-physics3d --exclude renew-sample-cube-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-physics3d $sel
           cargo build $sel
           cargo test $sel

@@ -1,0 +1,27 @@
+[package]
+name = "renew-sample-cube-world"
+description = "The cube sample's simulation: a voxel world with a walking player, block breaking and placing, checked digest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "A voxel world's rules as a pure fixed-step function of per-tick input: a grid of blocks, a player swept against them, and the ray that decides which block is being looked at."
+maturity = "bootstrap"
+core = false
+simulation = true
+
+extension_points = []
+
+# Simulation only: the world may not reach an OS capability at any dependency
+# depth, and the structure check walks this list to prove it.
+[dependencies]
+renew-fixed = { path = "../../../crates/fixed" }
+renew-frame = { path = "../../../crates/frame" }
+renew-physics3d = { path = "../../../crates/physics3d" }
+
+[lints]
+workspace = true

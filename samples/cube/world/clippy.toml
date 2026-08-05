@@ -1,0 +1,34 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). The mechanical half of
+# this crate's determinism declaration: the world is a pure function of its
+# per-tick input, and everything below makes the ways that stops being true
+# unwritable rather than merely documented.
+#
+# One clock read inside `step` would destroy replay identity for every recorded
+# run, with no test failing until a digest diverged — and the digest would only
+# diverge on a machine other than the one that recorded it.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "the world advances by ticks the caller counts, never by a clock it reads" },
+    { path = "std::time::SystemTime::now", reason = "same reason as Instant::now, and this one is not even monotonic" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded; no deterministic parallel-scheduling contract exists yet" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::read", reason = "the level arrives as an argument, never from a path this crate chose" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so a value derived from it differs between runs of the same binary on the same inputs" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same road to the same entropy: it is built from RandomState" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

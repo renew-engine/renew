@@ -1756,6 +1756,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-cube-world"
+version = "0.1.0"
+dependencies = [
+ "renew-fixed",
+ "renew-frame",
+ "renew-physics3d",
+]
+
+[[package]]
 name = "renew-sample-glide"
 version = "0.1.0"
 dependencies = [
