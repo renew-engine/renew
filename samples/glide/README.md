@@ -5,6 +5,21 @@ scripted traces or a recorded replay — and, behind the `window`
 feature, playable in a window with the score in the title. Behind
 `audio`, it makes sounds while you play.
 
+## What it looks like
+
+![A frame of the game: the bird as a yellow square, green pipes, blue sky](soar-600.png)
+
+**This is not a fresh render.** It is the committed golden image -- the
+exact frame CI compares, drawn on the pinned software rasterizer, with a
+provenance sidecar beside it naming the driver, the shaders, the trace
+and the tick. Converting that to a PNG shows the frame that is
+*verified*, rather than one drawn by a second path that nothing checks.
+
+`cargo run -p renew-sample-glide --example make_picture` regenerates it
+from the goldens whenever they are refreshed. The other committed frame,
+`sink-240.png`, is the same trace at the tick where the bird has hit the
+floor.
+
 ## Running it
 
 ```

@@ -18,6 +18,24 @@ That line is the same on every run, in every process, and in a build
 with the whole windowing stack compiled out
 (`--no-default-features`) — which is the point of the sample.
 
+## What it draws
+
+![The triangle the sample renders: three vertex colours blended across it, on a dark backdrop](triangle.png)
+
+Sixty-four pixels square, which is the size the headless run actually
+uses -- shown at its own size rather than scaled up, because a blurred
+enlargement would be a picture of something the sample never drew.
+
+`--capture PATH` writes it:
+
+```
+hello_triangle --headless --frames 8 --capture triangle.png
+```
+
+**It is the same buffer the oracle compares**, read back the same way at
+the same moment. A capture drawn through a second path would be a
+picture of something no test looks at.
+
 ## What it does
 
 `renew-frame` owns no loop. It answers one question — *given the

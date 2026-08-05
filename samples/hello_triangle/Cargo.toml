@@ -31,6 +31,7 @@ name = "hello_triangle"
 path = "src/main.rs"
 
 [dependencies]
+renew-png = { path = "../../crates/png" }
 renew-frame = { path = "../../crates/frame" }
 renew-math = { path = "../../crates/core/math" }
 renew-platform = { path = "../../crates/core/platform", default-features = false }

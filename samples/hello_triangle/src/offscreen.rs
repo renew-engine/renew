@@ -265,7 +265,23 @@ impl HeadlessRun {
 pub fn run(options: &Options) -> Result<Report, SampleError> {
     let mut run = HeadlessRun::start(options.seed, Draw::Triangle)?;
     run.run(options.frames)?;
+    if let Some(path) = &options.capture {
+        capture(&mut run, path)?;
+    }
     Ok(run.report())
+}
+
+/// Write the last rendered frame to `path` as a PNG.
+///
+/// The picture is exactly what the oracle compares: the same buffer, at
+/// the same moment, read back the same way. A capture drawn by a second
+/// path would be a picture of something no test looks at.
+fn capture(run: &mut HeadlessRun, path: &std::path::Path) -> Result<(), SampleError> {
+    let pixels = run.read_back();
+    let png = renew_png::encode(EXTENT.width, EXTENT.height, pixels)
+        .map_err(|error| SampleError::Usage(format!("encoding the capture: {error}")))?;
+    renew_platform::fs::write(path, &png)
+        .map_err(|error| SampleError::Usage(format!("writing {}: {error}", path.display())))
 }
 
 #[cfg(test)]
