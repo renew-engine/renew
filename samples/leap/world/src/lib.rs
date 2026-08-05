@@ -149,6 +149,15 @@ impl Platform {
 }
 
 /// Everything the terrain collides with.
+/// How large the character is, measured from its centre.
+///
+/// **Public because anything drawing the world needs it.** A drawing that
+/// guesses the size puts the character somewhere it is not — one cell tall
+/// when it is two makes a character standing on the floor look like a
+/// character hovering above it, and the picture then contradicts the
+/// `grounded` flag printed beside it.
+pub const CHARACTER_HALF_EXTENTS: Vec2 = Vec2::new(Fixed::from_ratio(1, 2), Fixed::ONE);
+
 const TERRAIN_LAYER: u32 = 0b01;
 /// Everything the character is.
 const CHARACTER_LAYER: u32 = 0b10;
@@ -200,7 +209,7 @@ impl Leap {
         physics.add_shape(
             character,
             Shape::Box {
-                half_extents: Vec2::new(Fixed::from_ratio(1, 2), Fixed::ONE),
+                half_extents: CHARACTER_HALF_EXTENTS,
             },
             Transform::IDENTITY,
             Filter::new(CHARACTER_LAYER, TERRAIN_LAYER),

@@ -101,6 +101,7 @@ fn a_run_is_reproducible_and_discriminating() {
     let options = Options {
         script: Script::Hop,
         ticks: 300,
+        show: false,
         json: false,
         help: false,
     };
@@ -174,6 +175,12 @@ fn a_run_of_no_ticks_answers() {
 #[test]
 fn the_command_line_answers_with_an_exit_code() {
     assert_eq!(run_cli(args("--ticks 30")), 0);
+    assert_eq!(run_cli(args("--ticks 30 --show")), 0, "the picture prints");
+    assert_eq!(
+        run_cli(args("--ticks 30 --show --json")),
+        0,
+        "asking for both prints the machine-readable one, and does not crash"
+    );
     assert_eq!(run_cli(args("--ticks 30 --json")), 0);
     assert_eq!(run_cli(args("--help")), 0, "help is not a failure");
     assert_eq!(run_cli(args("--wat")), 1);
