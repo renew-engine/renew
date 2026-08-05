@@ -39,6 +39,10 @@
 // function of the compiler's instruction selection, and this crate's whole
 // obligation is that it is not. There is no `allow` below.
 #![deny(clippy::float_arithmetic, clippy::print_stdout, clippy::print_stderr)]
+// The README is the crate front page and its example compiles with the
+// rest of the tests, so a signature change breaks it rather than leaving
+// it quietly wrong.
+#![doc = include_str!("../README.md")]
 
 pub mod bounds;
 pub mod broadphase;
