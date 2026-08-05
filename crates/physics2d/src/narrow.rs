@@ -360,3 +360,86 @@ fn clip_incident_face(
     }
     clipped
 }
+
+/// How far apart two shapes are, and along which direction.
+///
+/// Positive means separated by that distance; zero or negative means touching
+/// or overlapping. The direction points **from `a` toward `b`**.
+///
+/// This is what a sweep needs and a contact test does not: `collide` answers
+/// "do they touch", which says nothing about how far a body may travel before
+/// they do. Returning a *lower bound* on the true distance is enough — and for
+/// the polytope pair that is exactly what the separating-axis test yields,
+/// since the deepest separating axis under-reports a diagonal gap.
+#[must_use]
+pub fn separation(a: Shape, a_at: Transform, b: Shape, b_at: Transform) -> Option<(Fixed, Vec2)> {
+    match (a, b) {
+        (Shape::Circle { radius: ra }, Shape::Circle { radius: rb }) => {
+            let delta = b_at.translation - a_at.translation;
+            let direction = delta.normalize().unwrap_or(COINCIDENT_FALLBACK);
+            Some((delta.length() - ra - rb, direction))
+        }
+        (Shape::Circle { radius }, Shape::Box { half_extents }) => Some(circle_box_separation(
+            a_at.translation,
+            radius,
+            half_extents,
+            b_at,
+        )),
+        (Shape::Box { half_extents }, Shape::Circle { radius }) => {
+            let (distance, direction) =
+                circle_box_separation(b_at.translation, radius, half_extents, a_at);
+            Some((distance, -direction))
+        }
+        (Shape::Box { half_extents: ha }, Shape::Box { half_extents: hb }) => {
+            Some(box_box_separation(ha, a_at, hb, b_at))
+        }
+        _ => None,
+    }
+}
+
+/// The gap between a circle's surface and a box, along the direction joining
+/// the circle's centre to its closest point on the box.
+fn circle_box_separation(
+    centre: Vec2,
+    radius: Fixed,
+    half: Vec2,
+    box_at: Transform,
+) -> (Fixed, Vec2) {
+    let axes = box_axes(box_at);
+    let offset = centre - box_at.translation;
+    let local = Vec2::new(offset.dot(axes.0), offset.dot(axes.1));
+    let clamped = Vec2::new(
+        local.x.clamp(-half.x, half.x),
+        local.y.clamp(-half.y, half.y),
+    );
+    let delta = clamped - local;
+    let distance = delta.length() - radius;
+    // Pointing from the circle toward the box, which is a→b for this order.
+    let direction = delta.normalize().unwrap_or(COINCIDENT_FALLBACK);
+    let world = axes.0 * direction.x + axes.1 * direction.y;
+    (distance, world)
+}
+
+/// The widest gap over the four candidate axes — a lower bound on the true
+/// distance, which is what conservative advancement is built on.
+fn box_box_separation(ha: Vec2, a_at: Transform, hb: Vec2, b_at: Transform) -> (Fixed, Vec2) {
+    let a_axes = box_axes(a_at);
+    let b_axes = box_axes(b_at);
+    let facing = b_at.translation - a_at.translation;
+    // Seeded with a real candidate rather than with `None`: there are always
+    // four axes, so an empty answer would be a case that cannot happen dressed
+    // up as one that can.
+    let mut widest = Fixed::MIN;
+    let mut best = a_axes.0;
+    for axis in [a_axes.0, a_axes.1, b_axes.0, b_axes.1] {
+        let along = facing.dot(axis);
+        let gap = along.abs() - box_reach(ha, a_axes, axis) - box_reach(hb, b_axes, axis);
+        // Widest wins; a tie leaves the earlier candidate, so the enumeration
+        // order decides it and two machines agree.
+        if gap > widest {
+            widest = gap;
+            best = if along < Fixed::ZERO { -axis } else { axis };
+        }
+    }
+    (widest, best)
+}
