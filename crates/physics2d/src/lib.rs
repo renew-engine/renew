@@ -48,6 +48,7 @@ pub mod narrow;
 pub mod query;
 pub mod ray;
 pub mod shape;
+pub mod sweep;
 pub mod world;
 
 pub use bounds::Aabb;
@@ -58,4 +59,5 @@ pub use narrow::collide;
 pub use query::{Counts, Exclude, Hit};
 pub use ray::{RayHit, cast};
 pub use shape::{Shape, Transform};
+pub use sweep::{MAX_ADVANCE_STEPS, SweepHit, sweep};
 pub use world::{BodyKind, Collider, HandleState, Incarnation, ShapeIndex, World};
