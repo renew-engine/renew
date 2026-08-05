@@ -196,6 +196,7 @@ const ALLOWS_UNSAFE: &[&str] = &[
     "crates/core/memory/src/lib.rs",
     "crates/jobs/src/lib.rs",
     "crates/render2d/tests/fault.rs",
+    "crates/render3d/tests/fault.rs",
     "crates/rhi/src/lib.rs",
     "crates/rhi/tests/fault.rs",
     "crates/rhi/tests/fault_present.rs",

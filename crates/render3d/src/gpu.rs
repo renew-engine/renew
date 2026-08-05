@@ -227,12 +227,60 @@ mod tests {
             chain: "D32_SFLOAT, D24_UNORM_S8_UINT",
         }
         .into();
-        match refused {
-            Render3dError::DepthUnsupported { chain } => {
-                assert_eq!(chain, "D32_SFLOAT, D24_UNORM_S8_UINT", "the chain survives");
+        // `matches!` with the outcome in the message, the shape the
+        // rendering crate's own refusal tables use: an arm that runs only
+        // when the test fails is a line no passing run ever covers.
+        assert!(
+            matches!(
+                &refused,
+                Render3dError::DepthUnsupported { chain }
+                    if *chain == "D32_SFLOAT, D24_UNORM_S8_UINT"
+            ),
+            "the depth refusal must keep its own name and chain, got {refused:?}"
+        );
+    }
+
+    /// The chain of causes is intact: the two wrapping variants hand back
+    /// what they wrap, and the two that stand alone hand back nothing.
+    ///
+    /// Worth asserting because `source` is what a caller printing a chain
+    /// walks — a variant that dropped its cause would print one line
+    /// where the useful sentence is the next one.
+    #[test]
+    fn the_wrapping_variants_expose_their_cause() {
+        use std::error::Error as _;
+
+        let pipeline = Render3dError::Pipeline(PipelineError::InvalidSpirv {
+            stage: "vertex",
+            reason: "bad magic",
+        });
+        let upload = Render3dError::Upload(TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory(mesh)",
+        });
+        assert!(
+            pipeline
+                .source()
+                .is_some_and(|cause| cause.to_string().contains("bad magic")),
+            "the pipeline refusal must hand back what it wraps"
+        );
+        assert!(
+            upload
+                .source()
+                .is_some_and(|cause| cause.to_string().contains("vkAllocateMemory(mesh)")),
+            "the upload refusal must hand back what it wraps"
+        );
+        assert!(
+            Render3dError::EmptyScene.source().is_none(),
+            "an empty scene wraps nothing; a cause here would be invented"
+        );
+        assert!(
+            Render3dError::DepthUnsupported {
+                chain: "D32_SFLOAT"
             }
-            other => panic!("the depth refusal must keep its own name, got {other:?}"),
-        }
+            .source()
+            .is_none(),
+            "the depth refusal is this crate's own words, wrapping nothing"
+        );
     }
 
     /// Every other pipeline refusal keeps the rendering crate's words

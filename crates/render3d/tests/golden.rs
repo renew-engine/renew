@@ -285,3 +285,26 @@ fn an_empty_scene_is_refused_rather_than_fatal() -> Result<(), Box<dyn std::erro
     );
     Ok(())
 }
+
+/// The renderer names itself when printed, and says nothing else.
+///
+/// Here rather than beside the pure tests because a renderer cannot be
+/// built without a device. The assertion is deliberately weak in one
+/// direction and strict in the other: the type's name has to be there,
+/// for a caller printing a struct that holds one, and the pipeline's
+/// handle must not be — a raw handle in a log is a number that means
+/// nothing to a reader and changes every run.
+#[test]
+fn the_renderer_names_itself_without_leaking_a_handle() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let shown = format!("{renderer:?}");
+    assert!(shown.contains("MeshRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible rather than silent: {shown}"
+    );
+    Ok(())
+}

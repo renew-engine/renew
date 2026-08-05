@@ -573,7 +573,7 @@ jobs:
           # which turns every "zero validation errors" assertion in
           # this step into a claim about nothing.
           export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
-          cargo test --package renew-rhi --package renew-render2d --test fault
+          cargo test --package renew-rhi --package renew-render2d --package renew-render3d --test fault
       # The golden bootstrap/refresh ritual writes its candidate and
       # fails; surface the candidate for human inspection.
       - name: Upload golden candidates
