@@ -79,7 +79,7 @@ pub struct Hit {
 
 impl World {
     /// Whether a collider is visible to a query with this mask and exclusion.
-    fn visible(
+    pub(crate) fn query_visible(
         &self,
         collider: Collider,
         mask: u32,
@@ -108,7 +108,7 @@ impl World {
     ) -> Counts {
         let mut counts = Counts::default();
         for collider in self.colliders() {
-            let Some((shape, at)) = self.visible(collider, mask, exclude) else {
+            let Some((shape, at)) = self.query_visible(collider, mask, exclude) else {
                 continue;
             };
             // A point is a zero-radius circle, and the geometry already knows
@@ -146,7 +146,7 @@ impl World {
     ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         for collider in self.colliders() {
-            let Some((shape, at)) = self.visible(collider, mask, exclude) else {
+            let Some((shape, at)) = self.query_visible(collider, mask, exclude) else {
                 continue;
             };
             let Some(hit) = cast(origin, direction, max_distance, shape, at) else {
@@ -184,7 +184,7 @@ impl World {
     ) -> Counts {
         let mut counts = Counts::default();
         for collider in self.colliders() {
-            let Some((other, other_at)) = self.visible(collider, mask, exclude) else {
+            let Some((other, other_at)) = self.query_visible(collider, mask, exclude) else {
                 continue;
             };
             if collide(shape, at, other, other_at).is_none() {

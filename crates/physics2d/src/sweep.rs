@@ -62,6 +62,26 @@ pub fn sweep(
         let here = Transform::new(from.translation + displacement * time, from.rotation);
         let (gap, direction) = separation(moving, here, target, target_at)?;
 
+        // **Touching is not the same as being obstructed.** A body resting
+        // against a wall and sliding along it is in contact for the whole
+        // move, and reporting that as a blocking hit stops it dead: the slide
+        // removes the normal component, the remainder is already parallel, and
+        // the next iteration meets the same surface at the same instant. The
+        // body burns its whole iteration budget standing still.
+        //
+        // So contact only blocks when the motion goes *into* it. This is the
+        // one check that separates a wall a character is running along from a
+        // wall it is running at.
+        //
+        // **Penetration is the exception**: a body genuinely inside something
+        // reports whichever way it is moving, because a caller needs to know
+        // it is there before it can decide to push out. Only the band between
+        // touching and the skin distance is treated as passable.
+        let resting = gap >= Fixed::ZERO && displacement.dot(direction) <= Fixed::ZERO;
+        if gap <= skin && resting {
+            break;
+        }
+
         // Contact, or the budget spent. **The last step reports where it got
         // to rather than nothing**, because reporting no hit would let a body
         // pass straight through something it was converging on — and since
