@@ -7,6 +7,8 @@ commands the same way.
 ```
 usage: renew <command> [options]
        renew [options] run <sample> [--] [sample arguments...]
+       renew record --output <path> <sample> [--] [sample arguments...]
+       renew replay --input <path> <sample> [--] [sample arguments...]
 
 commands:
   configure  verify the toolchain and cargo are present and sane
@@ -14,21 +16,49 @@ commands:
   test       run the workspace test suite
   bench      run the workspace benchmarks
   run        build and run a workspace sample
+  record     run a sample, writing the input it saw to a file
+  replay     run a sample from a recorded input file
   lint       check formatting, then run clippy with warnings denied
   check      verify workspace crate manifests and dependencies
   coverage   hold a coverage report against the exemption manifest
   modules    list every module with its maturity, from the manifests
-  asset-pack     build an asset pack from a directory of files
+  asset-pack  build an asset pack from a directory of files
   asset-inspect  list an asset pack's entries, optionally verifying them
-  determinism    emit this target's simulation digests, or compare several targets'
+  determinism  emit this target's simulation digests, or compare several targets'
   doctor     check the development environment
 
 options:
   --json            emit one machine-readable JSON document on stdout
   --report <path>   (coverage only, required) the llvm-cov JSON export to read
   --smoke           (bench only) run each benchmark once, without statistics
+  --output <path>   (record only, required) the trace file to write
+  --input <path>    (replay only, required) the trace file to read
+  --pack <path>     (asset-pack, asset-inspect; required) the pack file
+  --from <dir>      (asset-pack only, required) the directory to pack
+  --verify          (asset-inspect only) check each entry against its digest
   --emit <path>     (determinism only) write this target's digests here
   --compare <path>  (determinism only, repeatable) a target report to compare
+  --features <list> (run, record, replay; repeatable) cargo features to build
+                    the sample with, e.g. `--features window` for a window
+  --help, -h        print this text; `renew help` does the same
+
+Everything after `run <sample>` goes to the sample untouched, including
+flags renew itself knows: `renew run hello_triangle --json` gives the sample
+`--json`, while `renew --json run hello_triangle` gives it to renew. One `--`
+after the sample name is an optional separator and is not passed on.
+
+`record` and `replay` are `run` with a trace file: their flag goes before
+the sample name for the same reason, and reaches the sample as
+`--record-trace <path>` or `--replay-trace <path>` at the front of its line.
+Recording and replaying are headless: a windowed replay is a live run
+wearing a replay's name. How a sample spells headless is the sample's own
+business — some take `--headless`, others are headless unless asked for a
+window — so its usage says which, and this tool assumes nothing.
+
+`--features` reaches cargo, not the sample. It builds the sample with those
+features on, which is how a sample's optional capabilities are named:
+`renew --features window run glide --window` builds the window in, then
+asks for it.
 ```
 
 `bench --smoke` is a second fixed entry in the command table (every bench

@@ -29,8 +29,20 @@ crates enter the normal graph only behind the `window` feature (and
 the dev graph for the oracle); the default build carries none of
 them, and the build matrix proves it with a build-only probe.
 
-`glide --window` opens the game (`--features window` builds it):
-space or the primary mouse button flaps, the score lives in the
+`--window` opens the game, and the `window` feature is what builds the
+window in. Either of these works from a clean clone:
+
+```
+renew --features window run glide -- --window
+cargo run -p renew-sample-glide --features window --bin glide -- --window
+```
+
+The feature is not on by default, and that is the point rather than an
+oversight: the build matrix proves the game builds and runs with no
+graphics crate in its graph at all, which stops being true the moment
+the window is always compiled in.
+
+Space or the primary mouse button flaps, the score lives in the
 title, and the digest line prints at close marked `source=window` so
 nothing ever compares a wall-clock run against a scripted one. Flap
 edges ride a saturating counter consumed one per fixed step — a press
@@ -66,8 +78,8 @@ RENEW_LOG=run.log glide --window
 ```
 
 ```powershell
-$env:RENEW_LOG = "$env:USERPROFILEun.log"
-.	arget\debug\glide.exe --window
+$env:RENEW_LOG = "$env:USERPROFILE\run.log"
+.\target\debug\glide.exe --window
 ```
 
 An environment variable rather than a flag, because a panic that happens

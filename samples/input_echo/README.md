@@ -57,7 +57,7 @@ that is what lets one trace be replayed across many seeds.
 | `--frames N` | Frames of simulation to run (default 600, ten seconds at 60 Hz). Headless, one frame is exactly one step; windowed, the run ends once the simulation has advanced this many steps. A close request ends it sooner. |
 | `--seed N` | Selects the movement speed. The seed axis is a placeholder until there is a random-number service; it feeds the world so the shape of the flag survives. |
 | `--dump-stats PATH` | Write the JSON report there, after the run. |
-| `--record-trace PATH` | Write the input this run saw to a trace file. |
+| `--record-trace PATH` | Write the input this run saw to a trace file. Requires `--headless`, and refused alongside `--replay-trace`: this sample records what a script produced, so there is nothing to record from a window, and re-recording a replay would write back the file it just read. |
 | `--replay-trace PATH` | Run the input in that file instead. The header owns the run, so `--input-trace`, `--frames` and `--seed` are refused alongside it. Requires `--headless`: replaying against a live window would mix recorded input with real input. |
 
 The last line on stdout is always the digest line — the string the
