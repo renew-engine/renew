@@ -211,7 +211,7 @@ jobs:
       # other side.
       - name: Build and test without the rendering crate
         run: |
-          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-render3d --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi $sel
           cargo build $sel
           cargo test $sel
@@ -274,6 +274,18 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
+      # The 3D renderer: policy over the rendering crate, and no
+      # consumers at all yet -- no sample draws geometry, so nothing is
+      # excluded alongside it. That is what makes this cell cheap to keep
+      # honest now and worth having before it stops being cheap: the
+      # first consumer joins the exclude list rather than discovering,
+      # later, that the crate was never actually removable.
+      - name: Build and test without the 3D renderer
+        run: |
+          sel="--workspace --exclude renew-render3d"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d $sel
+          cargo build $sel
+          cargo test $sel
       # The fixed-point arithmetic, and the collision crate written in it.
       # This cell was a single leaf when it landed, with a comment saying
       # the first crate to depend on it should discover the obligation
@@ -338,7 +350,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
@@ -482,6 +494,17 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-render2d --test golden --test zero_alloc
+      # The 3D renderer's oracles, under the same rule and for a sharper
+      # reason: its tie-break case -- two coplanar quads at one depth,
+      # pushed in each order -- is the only test anywhere that makes
+      # submission order visible in a pixel, and its depth-format
+      # assertion is what lets the crate translate the depth refusal
+      # rather than pre-flighting it. Both are written to fail on a
+      # skip, which needs a lane that sets this to mean anything.
+      - name: Mesh-renderer tests on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-render3d --test golden
       # The game's replay-capture oracle on the same pinned rasterizer:
       # committed traces replayed through the driver's own loop, drawn
       # through the sprite pipeline, compared against committed images.
@@ -573,7 +596,7 @@ jobs:
           # which turns every "zero validation errors" assertion in
           # this step into a claim about nothing.
           export VK_ADD_LAYER_PATH="$PWD/target/fault-layer:$VK_ADD_LAYER_PATH"
-          cargo test --package renew-rhi --package renew-render2d --test fault
+          cargo test --package renew-rhi --package renew-render2d --package renew-render3d --test fault
       # The golden bootstrap/refresh ritual writes its candidate and
       # fails; surface the candidate for human inspection.
       - name: Upload golden candidates

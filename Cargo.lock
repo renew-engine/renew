@@ -1720,6 +1720,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-render3d"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-rhi",
+]
+
+[[package]]
 name = "renew-replay"
 version = "0.1.0"
 dependencies = [
