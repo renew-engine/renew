@@ -67,6 +67,15 @@ pub struct Options {
     pub script: Script,
     /// How many ticks to run.
     pub ticks: u32,
+    /// The windowed run's tick bound: `None` plays until the window is
+    /// closed.
+    ///
+    /// Separate from [`Self::ticks`] because the two runs end for
+    /// different reasons. A headless run has no other ending, so it needs
+    /// a default; a window has one already, and giving it the headless
+    /// default made the game quit itself ten seconds in. Set only when
+    /// `--ticks` is actually passed.
+    pub window_ticks: Option<u32>,
     /// Draw the world as two slices through it.
     pub show: bool,
     /// Print the answer as JSON rather than as a sentence.
@@ -90,6 +99,7 @@ impl Default for Options {
         Self {
             script: Script::Stand,
             ticks: 600,
+            window_ticks: None,
             show: false,
             json: false,
             help: false,
@@ -269,7 +279,8 @@ pub fn usage() -> &'static str {
      --view NAME     player (default) or iso, for --render\n\
      --eye X,Y,Z     draw from here instead, looking at --look-at\n\
      --look-at X,Y,Z where a free view points\n\
-     --ticks N       how many ticks to run (default 600)\n\
+     --ticks N       how many ticks to run (default 600); with --window,\n\
+                     the game plays until closed unless this is given\n\
      --json          print the answer as JSON rather than as a sentence\n\
      --help          print this and stop\n"
 }
@@ -334,6 +345,9 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 options.ticks = text
                     .parse()
                     .map_err(|_| CliError::NotANumber(text.clone()))?;
+                // A windowed run is bounded only when asked for, and
+                // this is the asking.
+                options.window_ticks = Some(options.ticks);
             }
             other => return Err(CliError::UnknownFlag(other.to_string())),
         }
@@ -517,15 +531,26 @@ pub fn describe(report: &Report) -> String {
 
 /// The same answer, machine-readable.
 ///
+/// **Version 2 added `source`.** The text line has always named whether a
+/// run was scripted or played, because the two are not comparable: a
+/// scripted run is a pure function of its inputs and a played one is
+/// driven by a person against a wall clock. Machines are what compare
+/// digests, and version 1 gave them no way to tell the two apart — so the
+/// field that exists to prevent the comparison was missing from exactly
+/// the output that would make it. The version moved with it, because a
+/// consumer that cannot see the field cannot know to check it.
+///
 /// Carries a `schema_version` from its first release, so a consumer can tell a
 /// shape it understands from one it does not.
 #[must_use]
 pub fn describe_json(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
-        "{{\"schema_version\":1,\"sample\":\"cube\",\"script\":\"{}\",\"ticks\":{},\
-         \"digest\":\"0x{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\"grounded\":{}}}",
+        "{{\"schema_version\":2,\"sample\":\"cube\",\"script\":\"{}\",\"source\":\"{}\",\
+         \"ticks\":{},\"digest\":\"0x{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\
+         \"grounded\":{}}}",
         report.script.name(),
+        report.source,
         report.ticks,
         report.digest,
         report.solids,
@@ -624,7 +649,19 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
     if options.window {
         return match play(&options) {
             Ok(report) => {
-                println!("{}", describe(&report));
+                // **`--json` means `--json` here too.** The window
+                // branch returning before the check below printed prose
+                // to a caller that had asked for a machine-readable
+                // line, which is the one thing a machine cannot recover
+                // from.
+                println!(
+                    "{}",
+                    if options.json {
+                        describe_json(&report)
+                    } else {
+                        describe(&report)
+                    }
+                );
                 0
             }
             Err(message) => {

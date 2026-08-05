@@ -111,6 +111,7 @@ fn a_run_is_reproducible() {
     let options = Options {
         script: Script::Build,
         ticks: 300,
+        window_ticks: None,
         show: false,
         json: false,
         help: false,
@@ -174,7 +175,7 @@ fn the_answer_reads_and_parses() {
 
     let json = describe_json(&report);
     assert!(
-        json.contains("\"schema_version\":1"),
+        json.contains("\"schema_version\":2"),
         "a machine-readable output carries its version from the first release"
     );
     assert!(json.contains("\"sample\":\"cube\""));

@@ -12,6 +12,20 @@
 //! inputs. Turning with a float would make a wall-clock run's digest a
 //! function of the platform's maths library.
 //!
+//! # The world steps on its own clock, not the panel's
+//!
+//! The event loop spins as fast as the display allows, so a simulation
+//! stepped once per spin would run two and a half times faster on a
+//! 144 Hz panel than on a 60 Hz one — and unbounded where no window came
+//! up at all. A [`FrameLoop`] absorbs the elapsed time and hands back how
+//! many fixed steps are due, which is the shape the platformer already
+//! uses for the same problem. The world's own step stays exactly what it
+//! was; only how often it is called changes.
+//!
+//! The wall clock reaches the *driver* and never the world: what a step
+//! consumes is an [`Intent`] of integers and angles. A scripted run and a
+//! played one differ in when steps happen, not in what a step does.
+//!
 //! # Walking is camera-relative, in eight directions
 //!
 //! `Intent` takes whole steps on the world's own axes, clamped to −1, 0
@@ -23,11 +37,15 @@
 //! file.
 
 use renew_fixed::{Angle, Fixed, Vec3};
+use renew_frame::{FrameLoop, StepBudget, Timestamp, Timestep};
+use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
 use renew_render3d::{Camera as RenderCamera, CameraRenderer, attachment, pass};
-use renew_rhi::{Device, DeviceDesc, Extent, Mesh, RenderDesc, Validation, WindowTarget};
+use renew_rhi::{
+    Device, DeviceDesc, Extent, Mesh, PresentOutcome, RenderDesc, Validation, WindowTarget,
+};
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, Tuning};
 
 use crate::{Options, Report, arena};
@@ -117,8 +135,26 @@ pub struct CubeApp {
     /// never fires. Degrees are a plain integer with a plain order.
     pitch_degrees: i32,
     ticks: u32,
-    limit: u32,
+    /// `None` = play until the window closes; `Some(n)` = stop after `n`
+    /// ticks.
+    ///
+    /// **A window with a default bound is a game that quits itself.** The
+    /// headless run needs a bound because nothing else would ever end it;
+    /// a window already has an ending, and reusing the headless default
+    /// here stopped play after six hundred ticks — ten seconds at sixty
+    /// hertz — with nothing on screen saying why.
+    limit: Option<u32>,
     closing: bool,
+    /// The wall clock the frame loop reads. The only clock in the file,
+    /// and it reaches the driver alone.
+    clock: Clock,
+    /// Absent until the window is up, so device bring-up is not banked as
+    /// a burst of catch-up steps the moment play starts.
+    frame: Option<FrameLoop>,
+    /// The window's size in physical pixels, kept because recovering a
+    /// swapchain needs the current size and the event that reports it is
+    /// not the frame that discovers the loss.
+    size: Extent,
     /// The drawing half, which exists only once there is a window.
     ///
     /// `None` is not a failure: a machine with no adapter still runs the
@@ -159,8 +195,14 @@ impl CubeApp {
             yaw: Angle::ZERO,
             pitch_degrees: 0,
             ticks: 0,
-            limit: options.ticks,
+            limit: options.window_ticks,
             closing: false,
+            clock: Clock::start(),
+            frame: None,
+            size: Extent {
+                width: 1,
+                height: 1,
+            },
             gpu: None,
         }
     }
@@ -267,10 +309,62 @@ impl CubeApp {
         let color = [attachment(SKY)];
         let items = [gpu.renderer.item(&gpu.mesh, &packed)];
         let passes = [pass(&color, &items)];
-        // A refused frame is not fatal: a resize can invalidate a
-        // swapchain between one frame and the next, and the next frame
-        // rebuilds it.
-        let _ = gpu.target.render(&RenderDesc::new(&passes));
+        // **The outcome is the recovery signal, not noise.** `render`
+        // never rebuilds a swapchain on its own; a target whose surface
+        // has changed reports `NeedsResize` and stays dormant until
+        // someone calls `resize`. Discarding this is how a window comes
+        // back from the first resize showing the last frame it managed,
+        // for ever.
+        let outcome = gpu.target.render(&RenderDesc::new(&passes));
+        if matches!(outcome, Ok(PresentOutcome::NeedsResize)) {
+            let size = self.size;
+            self.resize(size);
+        }
+    }
+
+    /// Follow the window's size.
+    ///
+    /// **A refused resize is not the end of the picture.** The swapchain
+    /// stays dormant, every later frame reports [`PresentOutcome::NeedsResize`],
+    /// and each of those asks again — so a transient refusal costs a
+    /// frame rather than the session. What ends the picture is never
+    /// asking, which is what this file did before.
+    fn resize(&mut self, size: Extent) {
+        self.size = size;
+        if let Some(gpu) = &mut self.gpu {
+            drop(gpu.target.resize(size));
+        }
+    }
+
+    /// Whether any reason to keep looping remains.
+    ///
+    /// The bound is checked at frame boundaries rather than mid-plan, so
+    /// a lagging frame that owes several steps executes all of them and
+    /// the reported tick count never disagrees with the world.
+    fn done(&self) -> bool {
+        self.closing || self.limit.is_some_and(|bound| self.ticks >= bound)
+    }
+
+    /// The update as a pure function of the frame's timestamp — the
+    /// testable core, with the clock read left to the seam.
+    fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
+        // Counted rather than iterated so the borrow of `frame` ends
+        // before `advance` takes the whole of `self`. Every step is the
+        // same call; only how many is in question.
+        let due = match self.frame.as_mut() {
+            Some(frame) => frame.begin_frame(now).steps().count(),
+            // No window came up, so there is no clock anchor and nothing
+            // to draw. One step a spin keeps the simulation moving for
+            // whoever is reading the digest.
+            None => 1,
+        };
+        for _ in 0..due {
+            self.advance();
+        }
+        self.draw();
+        if self.done() {
+            control.exit();
+        }
     }
 
     /// The block the player is aiming at, if any.
@@ -306,13 +400,29 @@ impl CubeApp {
 impl WindowApp for CubeApp {
     fn ready(&mut self, window: &WindowRef<'_>) {
         self.aim();
+        let (width, height) = window.physical_size();
+        self.size = Extent { width, height };
         self.gpu = self.bring_up(window);
+        // Anchored after bring-up: device creation can take a noticeable
+        // fraction of a second, and anchoring before it would bank that
+        // as catch-up steps the player never asked for.
+        self.frame = Some(FrameLoop::new(
+            Timestep::HZ_60,
+            StepBudget::DEFAULT,
+            Timestamp::from_nanos(self.clock.elapsed_nanos()),
+        ));
     }
 
     fn event(&mut self, event: renew_event::WindowEvent) {
         use renew_event::{KeyCode, WindowEvent};
         match event {
             WindowEvent::CloseRequested => self.closing = true,
+            WindowEvent::Resized { width, height } => self.resize(Extent { width, height }),
+            // **No key-up arrives for a key held when focus leaves.** Tab
+            // away mid-stride and the player would walk into a wall until
+            // the window came back and the key was pressed and released
+            // again.
+            WindowEvent::Focused(false) => self.held = Held::default(),
             WindowEvent::Key { code, pressed, .. } => match code {
                 KeyCode::KeyW => self.held.forward = pressed,
                 KeyCode::KeyS => self.held.back = pressed,
@@ -335,11 +445,8 @@ impl WindowApp for CubeApp {
     }
 
     fn update(&mut self, control: &mut LoopControl) {
-        self.advance();
-        self.draw();
-        if self.closing || (self.limit > 0 && self.ticks >= self.limit) {
-            control.exit();
-        }
+        let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
+        self.update_at(now, control);
     }
 }
 
@@ -365,6 +472,156 @@ pub fn run(options: &Options) -> Result<Report, WindowError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app with no window, for the seam tests below.
+    fn app() -> CubeApp {
+        CubeApp::new(&Options::default())
+    }
+
+    /// **The window must not quit itself.** The headless run needs a tick
+    /// bound because nothing else would end it; a window has an ending
+    /// already, and borrowing the headless default stopped play ten
+    /// seconds in.
+    #[test]
+    fn a_window_plays_until_it_is_closed() {
+        let mut app = app();
+        assert_eq!(app.limit, None, "no bound unless one was asked for");
+        app.ticks = 100_000;
+        assert!(!app.done(), "an unbounded run has no tick that ends it");
+        app.closing = true;
+        assert!(app.done(), "closing the window ends it");
+    }
+
+    /// A bound, when asked for, is honoured — the headless lanes and the
+    /// windowed smoke test both depend on this.
+    #[test]
+    fn a_tick_bound_is_honoured_when_given() {
+        let options = Options {
+            window_ticks: Some(3),
+            ..Options::default()
+        };
+        let mut app = CubeApp::new(&options);
+        app.ticks = 2;
+        assert!(!app.done(), "two of three ticks is not done");
+        app.ticks = 3;
+        assert!(app.done(), "the third tick ends it");
+    }
+
+    /// **The clock decides how many steps happen, not the panel.**
+    /// Stepping once per redraw ran the world at the refresh rate: two
+    /// and a half times faster on a 144 Hz screen than on a 60 Hz one.
+    #[test]
+    fn the_clock_decides_how_many_steps_happen() {
+        let mut app = app();
+        let start = Timestamp::from_nanos(0);
+        app.frame = Some(FrameLoop::new(Timestep::HZ_60, StepBudget::DEFAULT, start));
+        let mut control = LoopControl::default();
+
+        app.update_at(start, &mut control);
+        assert_eq!(app.ticks, 0, "no time has passed, so nothing is due");
+
+        // Against the step length itself rather than a round number of
+        // milliseconds: a sixtieth is 16_666_667 ns, so fifty
+        // milliseconds is three steps *less one nanosecond* — the kind of
+        // arithmetic that makes a test wrong rather than the code.
+        let step = Timestep::HZ_60.nanos().get();
+        app.update_at(Timestamp::from_nanos(3 * step), &mut control);
+        assert_eq!(app.ticks, 3, "three step lengths are three steps");
+
+        // Not quite a fourth: the shortfall stays in the accumulator.
+        app.update_at(Timestamp::from_nanos(4 * step - 1), &mut control);
+        assert_eq!(app.ticks, 3, "a step short of due is not due");
+
+        // And the nanosecond that completes it delivers it, which is what
+        // "the remainder is carried" means.
+        app.update_at(Timestamp::from_nanos(4 * step), &mut control);
+        assert_eq!(app.ticks, 4, "the carried remainder completes the step");
+    }
+
+    /// With no frame loop — no window came up — the simulation still
+    /// moves, so a machine without an adapter still answers with a
+    /// digest rather than a stall.
+    #[test]
+    fn without_a_window_the_simulation_still_advances() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(0), &mut control);
+        assert_eq!(app.ticks, 1, "one step a spin keeps the digest moving");
+    }
+
+    /// **Losing focus releases everything.** No key-up arrives for a key
+    /// held when the window loses focus, so without this the player walks
+    /// into a wall until the key is pressed and released again.
+    #[test]
+    fn losing_focus_releases_every_key() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.held = Held {
+            forward: true,
+            jump: true,
+            turn_left: true,
+            ..Held::default()
+        };
+        app.event(WindowEvent::Focused(false));
+        assert_eq!(
+            app.held,
+            Held::default(),
+            "a key held across a focus change is a key held for ever"
+        );
+    }
+
+    /// Regaining focus is not a reason to change anything: the keys are
+    /// already released, and the player has not pressed one yet.
+    #[test]
+    fn regaining_focus_changes_nothing() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.event(WindowEvent::Focused(true));
+        assert_eq!(app.held, Held::default());
+        assert!(!app.closing, "focus is not a close");
+    }
+
+    /// **A resize is followed, not dropped.** The size is kept because
+    /// recovering a swapchain needs the current one, and the frame that
+    /// discovers the loss is not the event that reported the size.
+    #[test]
+    fn a_resize_is_recorded_even_with_nothing_to_draw() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.event(WindowEvent::Resized {
+            width: 800,
+            height: 600,
+        });
+        assert_eq!(
+            app.size,
+            Extent {
+                width: 800,
+                height: 600
+            },
+            "the size a recovery would resize to must be the current one"
+        );
+    }
+
+    /// Closing is closing, however it arrives.
+    #[test]
+    fn either_way_of_closing_ends_the_run() {
+        use renew_event::{KeyCode, WindowEvent};
+
+        let mut closed = app();
+        closed.event(WindowEvent::CloseRequested);
+        assert!(closed.done());
+
+        let mut escaped = app();
+        escaped.event(WindowEvent::Key {
+            code: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+        });
+        assert!(escaped.done(), "escape stops it too");
+    }
 
     /// Forward means where the player is facing.
     ///
