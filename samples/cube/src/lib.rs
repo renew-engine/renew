@@ -283,3 +283,30 @@ pub fn describe_json(report: &Report) -> String {
         report.grounded
     )
 }
+
+/// Parse, run, print, and answer with an exit code.
+///
+/// **The whole binary, in the library.** A process shell that did any of this
+/// itself would be a piece of the program no test could drive without spawning
+/// one — and the parts most worth testing, the refusals, are exactly the parts
+/// a spawned process makes hardest to inspect.
+pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
+    let options = match parse(arguments) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("cube: {}", error.message());
+            return 1;
+        }
+    };
+    if options.help {
+        print!("{}", usage());
+        return 0;
+    }
+    let report = run(&options);
+    if options.json {
+        println!("{}", describe_json(&report));
+    } else {
+        println!("{}", describe(&report));
+    }
+    0
+}

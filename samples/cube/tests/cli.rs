@@ -192,3 +192,20 @@ fn a_run_of_no_ticks_answers() {
     assert!(!report.grounded, "it has not fallen yet");
     assert!(report.solids > 0);
 }
+
+/// The whole binary, driven without spawning one.
+#[test]
+fn the_command_line_answers_with_an_exit_code() {
+    use renew_sample_cube::run_cli;
+
+    assert_eq!(run_cli(args("--ticks 30")), 0, "a good run succeeds");
+    assert_eq!(run_cli(args("--ticks 30 --json")), 0);
+    assert_eq!(run_cli(args("--help")), 0, "help is not a failure");
+    assert_eq!(run_cli(args("--wat")), 1, "an unknown flag fails");
+    assert_eq!(
+        run_cli(args("--script fly")),
+        1,
+        "so does an unknown script"
+    );
+    assert_eq!(run_cli(args("--ticks lots")), 1);
+}
