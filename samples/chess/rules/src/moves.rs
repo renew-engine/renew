@@ -346,17 +346,19 @@ fn castles(board: &Board, from: Square, us: Colour, list: &mut MoveList) {
         {
             continue;
         }
-        let Some(crossed_square) = Square::at(crossed, rank) else {
-            continue;
-        };
+        // The crossed file is 3 or 5 and the rank is 0 or 7, so this is on the
+        // board by construction — a `continue` here would be a branch nothing
+        // could take.
+        let crossed_square = Square::at(crossed, rank)
+            .unwrap_or_else(|| unreachable!("a castling path stays on the board"));
         // Through check. The landing square is checked by the ordinary
         // legality filter, so it is deliberately not repeated here.
         if is_attacked(board, crossed_square, us.other()) {
             continue;
         }
-        if let Some(to) = Square::at(landing, rank) {
-            list.push(Move::new(from, to));
-        }
+        let to = Square::at(landing, rank)
+            .unwrap_or_else(|| unreachable!("a castling destination stays on the board"));
+        list.push(Move::new(from, to));
     }
 }
 

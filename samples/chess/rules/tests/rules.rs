@@ -324,3 +324,85 @@ fn moves_have_readable_names() {
     let promotion = Move::promoting(square("a7"), square("a8"), Kind::Knight);
     assert_eq!(promotion.notation(), "a7a8n");
 }
+
+/// Every piece has a letter and a digest code, and both have to be distinct
+/// per kind or two different positions hash the same.
+#[test]
+fn every_kind_has_its_own_letter_and_its_own_code() {
+    use Kind::{Bishop, King, Knight, Pawn, Queen, Rook};
+    let kinds = [Pawn, Knight, Bishop, Rook, Queen, King];
+
+    let letters: Vec<char> = kinds.iter().map(|kind| kind.letter()).collect();
+    assert_eq!(letters, vec!['p', 'n', 'b', 'r', 'q', 'k']);
+
+    // Distinctness, in both colours, through the digest: a board with one
+    // piece on one square must hash differently for each of the twelve.
+    let mut seen = Vec::new();
+    for colour in [Colour::White, Colour::Black] {
+        for kind in kinds {
+            let mut board = Board::empty();
+            board.put(Some(square("d4")), Some(Piece::new(colour, kind)));
+            let digest = board.digest();
+            assert!(
+                !seen.contains(&digest),
+                "{colour:?} {kind:?} hashes the same as something else"
+            );
+            seen.push(digest);
+        }
+    }
+    assert_eq!(seen.len(), 12);
+}
+
+/// The side to move is part of the position: the same pieces with the other
+/// player to move is a different position and usually a different game.
+#[test]
+fn the_side_to_move_reaches_the_digest() {
+    let mut white = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").expect("well-formed");
+    let black = Board::from_fen("4k3/8/8/8/8/8/8/4K3 b - - 0 1").expect("well-formed");
+    assert_ne!(white.digest(), black.digest());
+    white.to_move = Colour::Black;
+    assert_eq!(white.digest(), black.digest(), "and nothing else differs");
+}
+
+/// A board with no king is representable, because testing one piece's movement
+/// should not require building a legal game around it.
+#[test]
+fn a_board_without_a_king_has_no_king_square() {
+    let board = Board::from_fen("8/8/8/3Q4/8/8/8/8 w - - 0 1").expect("well-formed");
+    assert_eq!(board.king_square(Colour::White), None);
+    assert_eq!(board.king_square(Colour::Black), None);
+    // And its legal moves are still generated, since legality only asks
+    // whether a king it can find is attacked.
+    assert!(!legal(&board).is_empty(), "the queen can still move");
+}
+
+/// A move from an empty square changes nothing rather than inventing a null
+/// move that hands the turn over.
+#[test]
+fn a_move_from_an_empty_square_does_nothing() {
+    let board = Board::initial();
+    let after = apply(&board, Move::new(square("e4"), square("e5")));
+    assert_eq!(after, board, "the position is returned exactly as given");
+    assert_eq!(after.to_move, Colour::White, "and the turn did not pass");
+}
+
+/// An en-passant field longer than a square name is malformed, not a square
+/// with something after it.
+#[test]
+fn an_over_long_square_name_is_refused() {
+    assert!(Board::from_fen("8/8/8/8/8/8/8/8 w - e33").is_err());
+    assert!(Board::from_fen("8/8/8/8/8/8/8/8 w - e").is_err());
+}
+
+/// An empty move list reports itself as empty, which is how a caller learns a
+/// game is over without asking twice.
+#[test]
+fn an_empty_move_list_says_so() {
+    let list = renew_sample_chess_rules::MoveList::default();
+    assert!(list.is_empty());
+    assert_eq!(list.len(), 0);
+    assert!(list.as_slice().is_empty());
+
+    // And a position with moves does not.
+    assert!(!legal(&Board::initial()).is_empty());
+}
