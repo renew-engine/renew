@@ -313,7 +313,17 @@ impl WindowApp for GateApp {
                     // the per-slot table.
                     2 => {
                         if let Some((mesh_pipeline, mesh)) = self.mesh.as_ref() {
-                            mesh_storage = [Item::new(mesh_pipeline).mesh(mesh)];
+                            // **Two items naming one mesh**, which is the
+                            // shape the per-frame buffers forbid and
+                            // geometry allows. It costs one retention
+                            // slot rather than two, and the scan that
+                            // decides so runs on the frame path — so it
+                            // belongs inside the measured window rather
+                            // than being reasoned about outside it.
+                            mesh_storage = [
+                                Item::new(mesh_pipeline).mesh(mesh),
+                                Item::new(mesh_pipeline).mesh(mesh),
+                            ];
                             passes_one = [Pass::new(&color, &mesh_storage)];
                             &passes_one
                         } else {

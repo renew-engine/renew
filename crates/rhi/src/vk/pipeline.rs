@@ -1323,6 +1323,23 @@ mod tests {
         );
     }
 
+    /// The mesh stage pair carries exactly the two blobs and nothing
+    /// else.
+    ///
+    /// **Here because the builtin is a const struct literal**, so
+    /// `MeshShaders::new` — the constructor a caller with its own shaders
+    /// uses — is reached by nothing else in the tree. An untested public
+    /// constructor is the coverage gate's business as much as the
+    /// reader's.
+    #[test]
+    fn the_mesh_stage_pair_carries_its_two_blobs() {
+        let vertex = [1u8, 2, 3, 4];
+        let fragment = [5u8, 6, 7, 8];
+        let shaders = MeshShaders::new(&vertex, &fragment);
+        assert_eq!(shaders.vertex, &vertex);
+        assert_eq!(shaders.fragment, &fragment);
+    }
+
     /// The two constructors are decisions, so they are asserted: the
     /// common case tests and writes, the read-only case tests without
     /// leaving a footprint.
