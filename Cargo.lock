@@ -1756,6 +1756,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-cube"
+version = "0.1.0"
+dependencies = [
+ "renew-fixed",
+ "renew-sample-cube-world",
+]
+
+[[package]]
 name = "renew-sample-cube-world"
 version = "0.1.0"
 dependencies = [

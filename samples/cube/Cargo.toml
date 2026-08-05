@@ -1,0 +1,28 @@
+[package]
+name = "renew-sample-cube"
+description = "The cube sample's driver: runs the voxel world headless from a named script and answers with a digest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The voxel game's command-line face: parses a script name and a tick count, runs the world headless, and prints the digest as text and as JSON."
+maturity = "bootstrap"
+core = false
+simulation = false
+
+extension_points = []
+
+[[bin]]
+name = "cube"
+path = "src/main.rs"
+
+[dependencies]
+renew-fixed = { path = "../../crates/fixed" }
+renew-sample-cube-world = { path = "world" }
+
+[lints]
+workspace = true
