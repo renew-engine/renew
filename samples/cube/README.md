@@ -207,6 +207,39 @@ so every match of eleven bytes or more encoded as the wrong symbol. The
 file was still small, still structurally a PNG, still had a valid header,
 and every test in the crate passed. Only a decoder refused it.
 
+## Seeing it from inside
+
+![The room in perspective: floor, two walls meeting at a corner, the ceiling above, and the mound standing on the floor](room.png)
+
+A real camera, with a real perspective divide. `--eye` and `--look-at`
+place it; `--view player` uses the player's own eyes, which is the
+default, because a picture of what the simulation believes is evidence
+about the simulation rather than about a viewpoint.
+
+```
+renew --features render run cube -- --eye -8,6,-10 --look-at 4,1.5,0 --render room.png
+renew --features render run cube -- --view player --render eyes.png
+```
+
+**The matrix goes to the GPU as per-instance vertex input.** That is not
+a workaround for the shortest path: this engine has no push-constant
+range anywhere, and its one descriptor set binds a combined image sampler
+to the fragment stage, so per-instance input at binding 1 is the only
+route a matrix can take — and it is the one the mesh path deliberately
+left composable.
+
+It is also the right answer regardless. `gl_Position` carries a real `w`,
+so the hardware performs the perspective divide and the clipper handles
+geometry behind the eye. Transforming vertices on the way in would mean
+**clipping polygons against the near plane in this sample**, because a
+triangle crossing `w = 0` cannot be divided at all — and inside a room,
+with walls behind you, that is not a corner case. It also means the mesh
+never re-uploads when the camera moves.
+
+**The free camera is explicit, never accumulated.** Two points on a
+command line, not mouse deltas: a picture that depended on how somebody
+moved their hand could not be compared, and these pictures are committed.
+
 ## Drawing it
 
 ![The arena, drawn isometrically: the floor and two inner walls, with the mound at the centre](arena.png)

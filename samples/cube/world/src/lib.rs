@@ -248,6 +248,16 @@ impl Cube {
         .is_some()
     }
 
+    /// Which way the player is looking: a unit direction.
+    ///
+    /// Paired with [`Cube::eye`], this is a viewpoint — which is what a
+    /// camera needs and what `looking_at` deliberately does not give,
+    /// since that answers with the block hit rather than the ray.
+    #[must_use]
+    pub fn look(&self) -> Vec3 {
+        self.look
+    }
+
     /// Where the player is looking from.
     #[must_use]
     pub fn eye(&self) -> Vec3 {

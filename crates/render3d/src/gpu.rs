@@ -155,15 +155,7 @@ impl MeshRenderer {
     /// the variant, which explains why this is caught here rather than
     /// below. [`Render3dError::Upload`] for a driver refusal.
     pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
-        if scene.is_empty() {
-            return Err(Render3dError::EmptyScene);
-        }
-        let mesh = device.create_mesh(&MeshDesc::new(
-            scene.vertices(),
-            VERTEX_STRIDE,
-            scene.indices(),
-        ))?;
-        Ok(mesh)
+        upload_scene(device, scene)
     }
 
     /// The draw for `mesh`, ready to sit in a pass.
@@ -172,6 +164,121 @@ impl MeshRenderer {
     #[must_use]
     pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
         Item::new(&self.pipeline).mesh(mesh)
+    }
+}
+
+/// The upload both renderers perform, so an empty scene is refused the
+/// same way whichever one asked.
+fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+    if scene.is_empty() {
+        return Err(Render3dError::EmptyScene);
+    }
+    let mesh = device.create_mesh(&MeshDesc::new(
+        scene.vertices(),
+        VERTEX_STRIDE,
+        scene.indices(),
+    ))?;
+    Ok(mesh)
+}
+
+/// A view-projection matrix, packed for the instance stream.
+///
+/// Four columns of four floats, column-major — the order
+/// `renew_math::Mat4` stores and the order GLSL's `mat4(c0, c1, c2, c3)`
+/// takes, so the bytes cross unchanged.
+///
+/// **Plain columns rather than a matrix type**, so this crate keeps its
+/// single dependency. Whoever owns a camera owns the maths that built it;
+/// what crosses the boundary is sixty-four bytes with a stated order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Camera {
+    bytes: [u8; 64],
+}
+
+impl Camera {
+    /// Pack four column vectors.
+    #[must_use]
+    pub fn from_columns(columns: [[f32; 4]; 4]) -> Self {
+        let mut bytes = [0u8; 64];
+        let mut at = 0;
+        for column in columns {
+            for value in column {
+                bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+                at += 4;
+            }
+        }
+        Self { bytes }
+    }
+
+    /// The packed bytes, as the instance stream wants them.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Draws indexed geometry through a camera, depth-tested.
+///
+/// The difference from [`MeshRenderer`] is where the transform happens
+/// and therefore what a scene's positions mean: that one takes clip
+/// space and draws it straight, this one takes **world space** and
+/// multiplies by a matrix on the GPU.
+///
+/// **Two renderers rather than a flag**, because the two make different
+/// promises about the same [`Scene`]. A single type with an optional
+/// camera would leave the meaning of a position undecidable from the
+/// call site, and the failure mode is a picture rather than an error.
+pub struct CameraRenderer {
+    pipeline: RenderPipeline,
+    matrix: renew_rhi::Buffer,
+}
+
+impl CameraRenderer {
+    /// Build the pipeline and the buffer the matrix rides in.
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::new`], plus a refusal to allocate the
+    /// per-frame buffer the matrix is written into.
+    pub fn new(device: &Device, format: TargetFormat) -> Result<Self, Render3dError> {
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
+                .instance_input(builtin::MESH_CAMERA_INSTANCE_LAYOUT)
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        // One matrix, sixty-four bytes, rewritten every frame. The
+        // per-frame buffer is the crate's own answer to "written by the
+        // host while an earlier frame may still be reading".
+        let matrix = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+        Ok(Self { pipeline, matrix })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// Positions are **world space** here, unlike [`MeshRenderer`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh` seen through `camera`.
+    ///
+    /// One instance: the matrix is the same for every vertex, and the
+    /// instance stream is how it reaches them.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .frame_data(renew_rhi::FrameData::new(&self.matrix, camera.bytes(), 1))
+    }
+}
+
+impl core::fmt::Debug for CameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CameraRenderer").finish_non_exhaustive()
     }
 }
 

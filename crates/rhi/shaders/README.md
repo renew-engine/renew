@@ -99,3 +99,20 @@ real change and is not.
 so a header comment may be corrected without touching the `.spv` beside
 it, and the source-and-blob-together rule is satisfied by the blob
 legitimately not moving rather than by skipping it.
+
+## mesh_camera.vert — compiled 2026-08-06
+
+Same SDK and the same working directory rule as the entries above (glslc
+embeds the source path, so it is run from this directory):
+
+```
+> C:\VulkanSDK.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+```
+
+1024 bytes. It reuses `mesh.frag.spv` unchanged — the fragment stage only
+passes the interpolated colour through, and a second identical binary
+would be a second thing to keep in step.

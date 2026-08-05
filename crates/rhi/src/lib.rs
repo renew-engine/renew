@@ -167,6 +167,10 @@ pub mod builtin {
     /// Fragment stage SPIR-V passing the interpolated colour through.
     pub static MESH_FS_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
 
+    /// The camera-aware mesh vertex stage: world-space positions
+    /// multiplied by a matrix supplied as per-instance input.
+    pub static MESH_CAMERA_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.vert.spv");
+
     /// The mesh pair: clip-space positions and colours read per vertex,
     /// walked by an index buffer.
     ///
@@ -187,4 +191,41 @@ pub mod builtin {
     /// drawn by that pipeline must carry.
     pub const MESH_LAYOUT: &[crate::VertexAttribute] =
         &[crate::VertexAttribute::Vec3, crate::VertexAttribute::Vec4];
+
+    /// The mesh pair with a camera: **world-space** positions and
+    /// colours per vertex, multiplied by a matrix supplied once per
+    /// instance.
+    ///
+    /// **The matrix arrives as per-instance vertex input, and that is
+    /// not a workaround.** This crate has no push-constant range
+    /// anywhere, and its one descriptor set layout binds a combined
+    /// image sampler to the fragment stage — so per-instance input at
+    /// binding 1 is the only path a matrix can take today, it is proven
+    /// by the sprite renderer, and it is what the change that introduced
+    /// per-vertex buffers deliberately left composable.
+    ///
+    /// **Why this rather than transforming on the way in.** A caller
+    /// that multiplied its own vertices would have to divide by `w`
+    /// itself, and a triangle crossing `w = 0` cannot be divided — so it
+    /// would also have to clip polygons against the near plane. Here
+    /// `gl_Position` carries a real `w`, and the hardware does both.
+    ///
+    /// The per-vertex layout is [`MESH_LAYOUT`], unchanged; the
+    /// per-instance one is [`MESH_CAMERA_INSTANCE_LAYOUT`].
+    pub const MESH_CAMERA: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_VS_SPV,
+        fragment: MESH_FS_SPV,
+    };
+
+    /// The per-instance layout [`MESH_CAMERA`] consumes: a 4x4 matrix as
+    /// four columns, packing to 64 bytes.
+    ///
+    /// Column-major, matching `renew_math::Mat4` and GLSL's own
+    /// `mat4(c0, c1, c2, c3)`, so the bytes cross unchanged.
+    pub const MESH_CAMERA_INSTANCE_LAYOUT: &[crate::VertexAttribute] = &[
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+    ];
 }

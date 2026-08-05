@@ -114,6 +114,7 @@ fn a_run_is_reproducible() {
         show: false,
         json: false,
         help: false,
+        view: renew_sample_cube::View::Player,
         render: None,
     };
     let first = run(&options);
@@ -251,5 +252,73 @@ fn a_build_without_the_renderer_refuses_to_draw() {
     assert!(
         !std::path::Path::new("unwritten.png").exists(),
         "a build that cannot draw must not leave a file behind"
+    );
+}
+
+/// A viewpoint is three numbers, and anything else says so.
+#[test]
+fn a_viewpoint_is_three_numbers_and_says_so_when_it_is_not() {
+    // Bit patterns: these are parsed literals, so exactness is the claim,
+    // and comparing bits is the tree's own idiom for that.
+    assert_eq!(
+        renew_sample_cube::triple("1,2,3")
+            .expect("three numbers")
+            .map(f32::to_bits),
+        [1.0f32, 2.0, 3.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        renew_sample_cube::triple(" -1.5 , 0 , 2.25 ")
+            .expect("spaces are allowed")
+            .map(f32::to_bits),
+        [-1.5f32, 0.0, 2.25].map(f32::to_bits)
+    );
+    for bad in ["1,2", "1,2,3,4", "1,two,3", ""] {
+        let refused = format!("{:?}", renew_sample_cube::triple(bad));
+        assert!(
+            refused.starts_with("Err("),
+            "`{bad}` is not a viewpoint and should be refused: {refused}"
+        );
+    }
+}
+
+/// `--view` names a viewpoint, and an unknown one is refused.
+#[test]
+fn the_view_flag_selects_a_viewpoint() {
+    let iso = parse(["--view".to_string(), "iso".to_string()]).expect("iso is a view");
+    assert_eq!(iso.view, renew_sample_cube::View::Isometric);
+
+    let free = parse([
+        "--eye".to_string(),
+        "1,2,3".to_string(),
+        "--look-at".to_string(),
+        "4,5,6".to_string(),
+    ])
+    .expect("two points are a view");
+    assert_eq!(
+        free.view,
+        renew_sample_cube::View::Free {
+            eye: [1.0, 2.0, 3.0],
+            target: [4.0, 5.0, 6.0]
+        }
+    );
+
+    // The other order too: each flag fills in the half the other left,
+    // and only one order was exercised until this line existed.
+    let reversed = parse([
+        "--look-at".to_string(),
+        "4,5,6".to_string(),
+        "--eye".to_string(),
+        "1,2,3".to_string(),
+    ])
+    .expect("order should not matter");
+    assert_eq!(reversed.view, free.view, "the flags should commute");
+
+    let refused = format!(
+        "{:?}",
+        parse(["--view".to_string(), "sideways".to_string()])
+    );
+    assert!(
+        refused.contains("sideways"),
+        "the refusal names it: {refused}"
     );
 }

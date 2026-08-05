@@ -11,6 +11,7 @@
 //! the world headless, and prints one line. Everything interesting is in the
 //! world; everything here is the seam that lets a machine ask it a question.
 
+pub mod camera;
 pub mod mesh;
 pub mod projection;
 #[cfg(feature = "render")]
@@ -51,7 +52,10 @@ impl CliError {
 }
 
 /// What to run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: a free viewpoint carries coordinates, and float equality is
+/// not the reflexive relation `Eq` promises.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// Which built-in script drives the player.
     pub script: Script,
@@ -63,6 +67,8 @@ pub struct Options {
     pub json: bool,
     /// Print usage and stop.
     pub help: bool,
+    /// Which viewpoint `--render` draws from.
+    pub view: View,
     /// Draw the world to a PNG at this path, if anywhere.
     ///
     /// **Needs the `render` feature**, which is off by default: the game
@@ -79,9 +85,60 @@ impl Default for Options {
             show: false,
             json: false,
             help: false,
+            view: View::Player,
             render: None,
         }
     }
+}
+
+/// Where `--render` draws from.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum View {
+    /// The player's own eyes.
+    ///
+    /// **The default, because a picture of what the simulation believes
+    /// is evidence about the simulation.** A view from outside shows the
+    /// world; this shows what the player would see, so a wrong picture
+    /// here means a wrong world rather than a wrong viewpoint.
+    #[default]
+    Player,
+    /// A named point looking at a named point. Explicit rather than
+    /// accumulated, so the same command line always draws the same frame.
+    Free {
+        /// Where the eye is.
+        eye: [f32; 3],
+        /// What it looks at.
+        target: [f32; 3],
+    },
+    /// The whole world at once, drawn isometrically with the near walls
+    /// cut away. Not a camera: there is no eye inside the world, and the
+    /// faces turned away are dropped rather than clipped.
+    Isometric,
+}
+
+/// Parse three comma-separated numbers.
+///
+/// Public so its refusals can be tested directly: a viewpoint typed
+/// wrongly should say so rather than silently becoming the origin.
+///
+/// # Errors
+///
+/// [`CliError::NotANumber`] when there are not exactly three parts, or
+/// when one of them is not a number.
+pub fn triple(text: &str) -> Result<[f32; 3], CliError> {
+    let mut out = [0.0f32; 3];
+    let mut parts = text.split(',');
+    for slot in &mut out {
+        let part = parts.next().ok_or(CliError::NotANumber(text.to_string()))?;
+        *slot = part
+            .trim()
+            .parse()
+            .map_err(|_| CliError::NotANumber(part.to_string()))?;
+    }
+    if parts.next().is_some() {
+        return Err(CliError::NotANumber(text.to_string()));
+    }
+    Ok(out)
 }
 
 /// A built-in input script.
@@ -189,6 +246,9 @@ pub fn usage() -> &'static str {
      --script NAME   which built-in script drives the player: stand, patrol, build\n\
      --show          draw two slices through the world: the plan and the elevation\n\
      --render PATH   draw the world to a PNG there (needs --features render)\n\
+     --view NAME     player (default) or iso, for --render\n\
+     --eye X,Y,Z     draw from here instead, looking at --look-at\n\
+     --look-at X,Y,Z where a free view points\n\
      --ticks N       how many ticks to run (default 600)\n\
      --json          print the answer as JSON rather than as a sentence\n\
      --help          print this and stop\n"
@@ -205,6 +265,38 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--help" | "-h" => options.help = true,
+            "--view" => {
+                let name = arguments.next().ok_or(CliError::MissingValue("--view"))?;
+                options.view = match name.as_str() {
+                    "player" => View::Player,
+                    "iso" | "isometric" => View::Isometric,
+                    other => return Err(CliError::UnknownFlag(other.to_string())),
+                };
+            }
+            "--eye" => {
+                let value = arguments.next().ok_or(CliError::MissingValue("--eye"))?;
+                let eye = triple(&value)?;
+                options.view = match options.view {
+                    View::Free { target, .. } => View::Free { eye, target },
+                    _ => View::Free {
+                        eye,
+                        target: [0.0, 1.0, 0.0],
+                    },
+                };
+            }
+            "--look-at" => {
+                let value = arguments
+                    .next()
+                    .ok_or(CliError::MissingValue("--look-at"))?;
+                let target = triple(&value)?;
+                options.view = match options.view {
+                    View::Free { eye, .. } => View::Free { eye, target },
+                    _ => View::Free {
+                        eye: [0.0, 2.0, -8.0],
+                        target,
+                    },
+                };
+            }
             "--render" => {
                 let path = arguments.next().ok_or(CliError::MissingValue("--render"))?;
                 options.render = Some(std::path::PathBuf::from(path));
@@ -421,8 +513,19 @@ pub fn describe_json(report: &Report) -> String {
 /// A refusal from the renderer, or the message a build without the
 /// feature answers with.
 #[cfg(feature = "render")]
-fn render_to(world: &Cube, path: &std::path::Path) -> Result<(), String> {
-    render::to_png(world.grid(), path).map_err(|error| error.to_string())
+fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), String> {
+    match view {
+        View::Isometric => render::to_png(world.grid(), path),
+        View::Player => {
+            let camera = camera::player_view(world, 1.0);
+            render::to_png_through(world.grid(), &camera, path)
+        }
+        View::Free { eye, target } => {
+            let camera = camera::free_view(eye, target, 1.0);
+            render::to_png_through(world.grid(), &camera, path)
+        }
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// The honest answer in a build with the rendering stack compiled out.
@@ -430,7 +533,7 @@ fn render_to(world: &Cube, path: &std::path::Path) -> Result<(), String> {
 /// Named rather than ignored, and it names both roads: a reader who
 /// typed a `renew` command has no use for a cargo flag on its own.
 #[cfg(not(feature = "render"))]
-fn render_to(_world: &Cube, _path: &std::path::Path) -> Result<(), String> {
+fn render_to(_world: &Cube, _view: View, _path: &std::path::Path) -> Result<(), String> {
     Err(
         "this build cannot draw. Run `renew --features render run cube -- --render out.png`, \
          or build it directly with `cargo run -p renew-sample-cube --features render --bin cube \
@@ -477,7 +580,7 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
             println!("{}", elevation_text(&world));
         }
         if let Some(path) = &options.render
-            && let Err(error) = render_to(&world, path)
+            && let Err(error) = render_to(&world, options.view, path)
         {
             eprintln!("usage: {error}");
             return 2;

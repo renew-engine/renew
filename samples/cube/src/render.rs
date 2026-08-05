@@ -10,7 +10,9 @@
 //! [`crate::projection`], and what it writes comes from [`renew_png`];
 //! all three are pure and tested without a device.
 
-use renew_render3d::{MeshRenderer, Scene, attachment, pass};
+use renew_render3d::{
+    Camera as RenderCamera, CameraRenderer, MeshRenderer, Scene, attachment, pass,
+};
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
 use renew_sample_cube_world::grid::Grid;
 
@@ -120,7 +122,7 @@ pub fn draw(grid: &Grid) -> Result<Vec<u8>, RenderError> {
 /// Pure, so the geometry can be counted without a device.
 #[must_use]
 pub fn build(grid: &Grid) -> Scene {
-    let view = Projection::isometric([-20.5, -0.5, -20.5], [20.5, 11.5, 20.5]);
+    let view = Projection::isometric(low_corner(grid), high_corner(grid));
     let mut scene = Scene::new();
     for quad in faces(grid) {
         let (dx, dy, dz) = quad.face.step();
@@ -142,6 +144,125 @@ pub fn build(grid: &Grid) -> Scene {
         );
     }
     scene
+}
+
+/// The scene for a camera: every visible face, in **world** space.
+///
+/// The isometric path projects on the way in and hands the renderer clip
+/// space; this hands over the world and lets the matrix do it on the GPU.
+/// The difference is not a preference — a camera inside a room has
+/// geometry behind it, and only a real `w` and the hardware clipper deal
+/// with that.
+///
+/// No facing filter here either. The cutaway exists because an *outside*
+/// view of a closed box shows the underside of the near wall; from inside
+/// the room, the walls behind the viewer are what the clipper removes and
+/// the depth test sorts.
+#[must_use]
+pub fn build_world_space(grid: &Grid) -> Scene {
+    let mut scene = Scene::new();
+    for quad in faces(grid) {
+        scene.quad(quad.corners(), colour(quad.block, quad.face));
+    }
+    scene
+}
+
+/// Draw `grid` seen through `camera`, and hand back the pixels.
+///
+/// # Errors
+///
+/// As [`draw`].
+pub fn draw_through(grid: &Grid, camera: &crate::camera::Camera) -> Result<Vec<u8>, RenderError> {
+    let scene = build_world_space(grid);
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
+
+    let device = Device::new(&DeviceDesc {
+        app_name: "cube",
+        validation: Validation::IfAvailable,
+    })
+    .map_err(|error| RenderError::NoDevice(error.to_string()))?;
+
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device
+        .create_offscreen_target(extent)
+        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    let renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)
+        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    let mesh = renderer
+        .upload(&device, &scene)
+        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    let packed = RenderCamera::from_columns(camera.view_projection());
+
+    let color = [attachment(BACKDROP)];
+    let items = [renderer.item(&mesh, &packed)];
+    let passes = [pass(&color, &items)];
+    target
+        .render(&RenderDesc::new(&passes))
+        .map_err(|error| RenderError::Refused(error.to_string()))?;
+
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// Draw `grid` through `camera` and write it to `path`.
+///
+/// # Errors
+///
+/// As [`draw_through`], plus the file.
+pub fn to_png_through(
+    grid: &Grid,
+    camera: &crate::camera::Camera,
+    path: &std::path::Path,
+) -> Result<(), RenderError> {
+    let pixels = draw_through(grid, camera)?;
+    let png = renew_png::encode(SIZE, SIZE, &pixels)
+        .map_err(|error| RenderError::Output(error.to_string()))?;
+    std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
+}
+
+/// The world-space corner below every cell in `grid`.
+///
+/// **Derived rather than written down.** These were the arena's own
+/// numbers, typed in — correct for the one world this sample builds and
+/// silently wrong for any other, framing a box that no longer matches
+/// what is drawn. A cell spans one unit centred on its integer, so the
+/// world starts half a unit below the lowest cell.
+fn low_corner(grid: &Grid) -> [f32; 3] {
+    let min = grid.min();
+    [
+        world_edge(min.x, -1),
+        world_edge(min.y, -1),
+        world_edge(min.z, -1),
+    ]
+}
+
+/// The world-space corner above every cell in `grid`.
+fn high_corner(grid: &Grid) -> [f32; 3] {
+    let min = grid.min();
+    let (x, y, z) = grid.size();
+    [
+        world_edge(min.x.saturating_add(x).saturating_sub(1), 1),
+        world_edge(min.y.saturating_add(y).saturating_sub(1), 1),
+        world_edge(min.z.saturating_add(z).saturating_sub(1), 1),
+    ]
+}
+
+/// One edge of a cell, half a unit out from its centre.
+///
+/// The same bound `Quad::corners` relies on: a coordinate large enough to
+/// lose precision as an `f32` needs a grid too large to allocate.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a coordinate past 2^24 needs a grid too large to allocate"
+)]
+fn world_edge(cell: i32, side: i32) -> f32 {
+    cell as f32 + (side as f32) * 0.5
 }
 
 /// A step component as a float. `Face::step` answers with -1, 0 or 1 and
