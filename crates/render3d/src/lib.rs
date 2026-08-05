@@ -1,5 +1,5 @@
 //! Indexed 3D geometry over the rendering crate: one mesh pipeline,
-//! depth-tested, one indexed draw per frame.
+//! depth-tested, indexed draws in submission order.
 //!
 //! # Contract
 //!
@@ -41,4 +41,4 @@ mod gpu;
 mod scene;
 
 pub use gpu::{MeshRenderer, Render3dError, attachment, depth_attachment, pass};
-pub use scene::{Scene, VERTEX_STRIDE};
+pub use scene::Scene;

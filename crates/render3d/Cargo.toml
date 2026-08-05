@@ -1,6 +1,6 @@
 [package]
 name = "renew-render3d"
-description = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, one indexed draw per frame"
+description = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, indexed draws in submission order"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, one indexed draw per frame."
+purpose = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, indexed draws in submission order."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -20,6 +20,12 @@ simulation = false
 # would drag windowing crates into every consumer's graph.
 [dependencies]
 renew-rhi = { path = "../rhi", default-features = false }
+
+# `Scene` is index-and-offset arithmetic over a byte container, which is
+# the row in the testing table that asks for properties rather than
+# examples. The same version the sibling crate pins.
+[dev-dependencies]
+proptest = "1.11"
 
 [lints]
 workspace = true

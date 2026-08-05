@@ -20,14 +20,19 @@ use renew_rhi::{
 
 use crate::scene::{Scene, VERTEX_STRIDE};
 
-/// The per-vertex layout this crate's pipeline declares: a clip-space
-/// position, then a colour.
+/// The per-vertex layout this crate's pipeline declares.
 ///
-/// The same shapes the built-in mesh shaders read, and the same order the
-/// scene packs — three lists describing one set of bytes. They change
-/// together or the draw reads garbage, which is why the assertion the
-/// rendering crate makes at record time is worth having.
-const LAYOUT: &[VertexAttribute] = &[VertexAttribute::Vec3, VertexAttribute::Vec4];
+/// **The rendering crate's own constant, not a copy of it.** `MESH_LAYOUT`
+/// ships beside `MESH` in `builtin`, where the shader and the layout that
+/// describes its inputs sit together and are changed together. Declaring
+/// the same two attributes here instead would have looked equivalent and
+/// would not have been: the record-time assertion that a mesh's stride
+/// matches its pipeline's compares two numbers *both* derived from
+/// whichever layout this crate passed in, so they agree by construction
+/// and cannot notice a shader that has moved on. There is no reflection
+/// anywhere in the rendering crate to catch it either. Naming the
+/// constant is what actually couples this pipeline to those shaders.
+const LAYOUT: &[VertexAttribute] = builtin::MESH_LAYOUT;
 
 /// What can go wrong building or uploading. Creation only: the draw
 /// itself cannot fail, and the render belongs to the target.
@@ -208,6 +213,30 @@ pub fn depth_attachment() -> Attachment {
 /// The parts stay public for the frames this does not fit — a caller
 /// composing 3D geometry beside a 2D overlay builds its own pass from
 /// [`attachment`], [`depth_attachment`] and [`MeshRenderer::item`].
+///
+/// # One pass per frame
+///
+/// **Two of these in one frame is a wrong picture, and nothing refuses
+/// it.** The depth attachment always clears, so a second pass starts from
+/// an empty depth buffer and draws over geometry the first pass put in
+/// front — exactly the plausible-looking wrong picture depth exists to
+/// prevent. The rendering crate's contract check does not catch it: it
+/// refuses a *load* on the frame's first depth use, which is a different
+/// mistake. Geometry that belongs in one image belongs in one `pass`,
+/// with as many items as it takes. A caller who genuinely wants two
+/// depth-sharing passes needs an attachment that loads, which v0 does not
+/// offer and which that check would refuse for the first pass anyway —
+/// it composes its own from the rendering crate directly, knowing why.
+///
+/// # Panics
+///
+/// Not here — this only builds a description. But `color` is handed on
+/// unexamined, and the rendering crate asserts at render time, in every
+/// profile, that a pass carries exactly one colour attachment. An empty
+/// or two-element slice therefore aborts at `render`, not at this call.
+/// Unlike an empty scene, which is ordinary data and gets an ordinary
+/// refusal, a caller passing the wrong number of attachments has made a
+/// structural mistake rather than presented unusual data.
 #[must_use]
 pub fn pass<'a>(color: &'a [Attachment], items: &'a [Item<'a>]) -> Pass<'a> {
     Pass::new(color, items).depth(depth_attachment())

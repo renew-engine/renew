@@ -1,7 +1,7 @@
 # renew-render3d
 
 Indexed 3D geometry over the rendering crate: one mesh pipeline,
-depth-tested, one indexed draw per frame. Quads go in on the host, a
+depth-tested, indexed draws in submission order. Quads go in on the host, a
 mesh comes out, and a draw item goes into a frame the caller composes.
 
 - `Scene` — the pure half. Accumulates quads into packed vertex bytes
@@ -85,8 +85,29 @@ that fails if submission order is perturbed anywhere between a push and
 a draw. Verified by doing exactly that: reversing the index order makes
 it the single failure, while every other test in the crate passes.
 
+Those oracles skip where there is no adapter, which is why the software
+rasterizer lane runs them with `RENEW_GOLDEN=1`, where a skip is a
+failure. Without that lane they would be six green ticks proving nothing
+on every runner without a GPU — including the depth-format assertion
+that lets this crate translate the depth refusal instead of pre-flighting
+it, which is a premise the design rests on rather than a detail.
+
+`Scene` gets property tests as well as examples: it is index-and-offset
+arithmetic over a byte container, and the two invariants the layer below
+relies on — whole records, and every index inside this scene's own
+corners — are statements about arbitrary quad counts that examples at one
+and two quads cannot make.
+
+**Fuzzing: N/A.** Nothing here parses external data. `Scene` serialises
+first-party `f32`s handed in by a caller, and the bytes it produces are
+consumed by the rendering crate in the same process. The obligation
+attaches when geometry arrives from a file.
+
 ## Manifest
 
 `Cargo.toml` is authoritative for maturity, core status, dependencies
 and extension points. Contract lints live in `clippy.toml`: clock reads,
-filesystem access and thread spawning are rejected at lint time.
+filesystem access and thread spawning are rejected at lint time — the
+same fourteen paths the 2D sibling names, including the spellings that
+would otherwise walk around the obvious ones (`Builder::spawn` for a
+named thread, `Read::read_to_end` for a whole file).

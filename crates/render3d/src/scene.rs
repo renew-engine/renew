@@ -2,11 +2,17 @@
 //!
 //! Nothing here calls a device. That is what makes the arithmetic — the
 //! packing, the winding, the index numbering — testable on a machine with
-//! no adapter, which is most machines and every sanitizer lane. The
-//! sibling 2D crate draws the same line in the same place, and its pure
-//! half does still name the rendering crate's `Extent`: the property is
-//! *no device calls*, not *no dependency*, and claiming the stronger one
-//! would claim something no crate here actually does.
+//! no adapter, which is most machines and every sanitizer lane.
+//!
+//! **This file goes further than that and names the rendering crate
+//! nowhere at all** — it has no `use` statements. The property the 2D
+//! sibling states for its own pure half is the weaker one, *no device
+//! calls*, because `render2d/src/fill.rs` really does name `Extent`.
+//! Both properties are worth having and they are not the same one; what
+//! is written here is what this file does. The stride constant below is
+//! the seam that keeps it so: it repeats a number the rendering crate
+//! also knows rather than importing it, and `gpu.rs` is where the two are
+//! checked against each other.
 //!
 //! # Push order is index order is draw order
 //!
@@ -21,15 +27,22 @@
 /// colour, packed with no padding.
 ///
 /// **Not a `#[repr(C)]` struct, and that is not a style choice.** The
-/// maths crate's vector types are sixteen-byte aligned, so a struct of a
-/// `Vec3` and a `Vec4` occupies more than the twenty-eight bytes its
-/// fields need — and the rendering crate asserts, at the moment a draw is
-/// recorded, that a mesh's stride equals the stride the pipeline's
-/// per-vertex layout packs to. A padded record would fail that assertion
-/// at the draw rather than here, which is a long way from the mistake.
+/// maths crate's `Vec4` is `#[repr(C, align(16))]`; its `Vec3` is twelve
+/// bytes at align four. A `#[repr(C)]` record of the two therefore pads
+/// the `Vec3` out to the sixteen-byte boundary the `Vec4` demands and
+/// occupies **thirty-two** bytes, not twenty-eight — the alignment of one
+/// field, not of both, is what does it. The rendering crate asserts at
+/// the moment a draw is recorded that a mesh's stride equals the stride
+/// the pipeline's per-vertex layout packs to, so a padded record would
+/// fail at the draw rather than here, a long way from the mistake.
 /// Writing the bytes explicitly makes the layout the code's subject
 /// rather than the compiler's.
-pub const VERTEX_STRIDE: u32 = 28;
+///
+/// The alignment claim is about a crate this one does not depend on, so
+/// nothing compiles it. It is stated as the reason for a decision, not
+/// relied on: what the code relies on is the assertion in `gpu.rs` that
+/// this constant equals the packed width of the layout actually declared.
+pub(crate) const VERTEX_STRIDE: u32 = 28;
 
 /// Geometry accumulated on the host, ready to be uploaded once.
 ///
@@ -56,6 +69,15 @@ impl Scene {
     /// other vector. This exists because the named consumer knows its
     /// face count before it starts, and an allocation per quad on a
     /// four-thousand-face world is a cost with no reason.
+    ///
+    /// # Panics
+    ///
+    /// If `quads` is large enough that the byte count overflows, or that
+    /// the reservation itself cannot be made — the same conditions
+    /// [`Vec::with_capacity`] panics on, reached through the multiply.
+    /// A hint that cannot be honoured is a caller's arithmetic mistake,
+    /// not a condition to thread a result type through the constructor
+    /// for.
     #[must_use]
     pub fn with_capacity(quads: usize) -> Self {
         Self {
@@ -99,12 +121,33 @@ impl Scene {
     }
 
     /// Whole vertex records pushed so far.
+    ///
+    /// # Panics
+    ///
+    /// In dev builds, if the count has passed what a `u32` holds. See the
+    /// assertion's own note: the release behaviour is a saturating floor,
+    /// which is wrong rather than merely imprecise, so the dev build says
+    /// so instead of continuing.
     #[must_use]
     pub fn vertex_count(&self) -> u32 {
         // Every push adds exactly one stride, so the division is exact.
-        // The cast cannot lose: a scene that overflowed a `u32` of
-        // records would need more bytes than the host can address.
-        u32::try_from(self.vertices.len() / VERTEX_STRIDE as usize).unwrap_or(u32::MAX)
+        let records = self.vertices.len() / VERTEX_STRIDE as usize;
+        // **Asserted rather than argued away.** A scene of more than a
+        // `u32` of records needs 2^32 * 28 bytes, about 120 GiB — beyond
+        // anything this engine will build on the host, but well inside
+        // what a 64-bit host can address, so "impossible" would be a
+        // claim rather than a fact. It matters which: saturating here
+        // would make `quad` number its corners from `u32::MAX`, and those
+        // indices wrap into the low, *valid* range, where the in-range
+        // scan the rendering crate runs cannot see them. A wrong picture
+        // that passes every check is the one failure worth a dev-build
+        // abort. Release keeps the floor: a scene this size fails at
+        // upload regardless, where the refusal is an ordinary error.
+        debug_assert!(
+            u32::try_from(records).is_ok(),
+            "a scene of {records} vertex records has outgrown the u32 an index carries"
+        );
+        u32::try_from(records).unwrap_or(u32::MAX)
     }
 
     /// Indices pushed so far — six per quad, which is what an indexed
@@ -136,14 +179,19 @@ impl Scene {
     }
 
     /// The packed vertex bytes.
+    ///
+    /// Crate-visible: the upload is the only reader, and it applies the
+    /// stride itself. A caller with its own use for the bytes would be
+    /// building a mesh this crate did not describe, which is a request to
+    /// widen this deliberately rather than a gap to leave open.
     #[must_use]
-    pub fn vertices(&self) -> &[u8] {
+    pub(crate) fn vertices(&self) -> &[u8] {
         &self.vertices
     }
 
     /// The indices, in push order.
     #[must_use]
-    pub fn indices(&self) -> &[u32] {
+    pub(crate) fn indices(&self) -> &[u32] {
         &self.indices
     }
 }
@@ -274,5 +322,76 @@ mod tests {
         }
         assert_eq!(hinted.vertices(), plain.vertices());
         assert_eq!(hinted.indices(), plain.indices());
+    }
+
+    proptest::proptest! {
+        /// **The two invariants the layer below actually depends on, at
+        /// counts no example test reaches.**
+        ///
+        /// `create_mesh` scans every index and refuses one that is not
+        /// less than the vertex count, and it computes the vertex count
+        /// from `vertices.len() / stride` — so a scene whose bytes are
+        /// not a whole number of records, or whose indices point past its
+        /// own corners, is refused at upload or, worse, draws the wrong
+        /// corners. Both properties are arithmetic over the quad count,
+        /// which is exactly the shape examples at one and two quads
+        /// cannot speak for.
+        #[test]
+        fn any_number_of_quads_packs_to_whole_records_indexing_only_its_own_corners(
+            count in 0_usize..400,
+        ) {
+            let mut scene = Scene::new();
+            for _ in 0..count {
+                scene.quad(CORNERS, WHITE);
+            }
+
+            let vertices = u32::try_from(count).unwrap_or(u32::MAX) * 4;
+            proptest::prop_assert_eq!(scene.vertex_count(), vertices);
+            proptest::prop_assert_eq!(scene.index_count(), u32::try_from(count).unwrap_or(u32::MAX) * 6);
+            // Whole records: the division the layer below performs is
+            // exact, so its vertex count is this one.
+            proptest::prop_assert_eq!(
+                scene.vertices().len(),
+                count * 4 * VERTEX_STRIDE as usize
+            );
+            // Every index addresses a vertex this scene actually holds.
+            // The failing direction matters: an index equal to the count
+            // is past the last vertex, not at it.
+            proptest::prop_assert!(
+                scene.indices().iter().all(|&index| index < vertices),
+                "an index reached past the last vertex"
+            );
+            // Emptiness is the condition `upload` refuses, and it has to
+            // agree with both buffers or the guard reads one of them.
+            proptest::prop_assert_eq!(scene.is_empty(), count == 0);
+            proptest::prop_assert_eq!(scene.vertices().is_empty(), count == 0);
+        }
+
+        /// Clearing returns a scene to the state a new one is in, for any
+        /// history — so a caller rebuilding geometry every frame cannot
+        /// accumulate anything, and the indices restart from zero rather
+        /// than from where the last build stopped.
+        #[test]
+        fn clearing_any_scene_leaves_it_indistinguishable_from_a_new_one(
+            count in 0_usize..200,
+        ) {
+            let mut scene = Scene::new();
+            for _ in 0..count {
+                scene.quad(CORNERS, WHITE);
+            }
+            scene.clear();
+            proptest::prop_assert!(scene.is_empty());
+            proptest::prop_assert_eq!(scene.vertex_count(), 0);
+            proptest::prop_assert_eq!(scene.index_count(), 0);
+
+            scene.quad(CORNERS, WHITE);
+            let fresh = {
+                let mut other = Scene::new();
+                other.quad(CORNERS, WHITE);
+                other
+            };
+            proptest::prop_assert_eq!(scene.vertices(), fresh.vertices());
+            proptest::prop_assert_eq!(scene.indices(), fresh.indices());
+        }
     }
 }
