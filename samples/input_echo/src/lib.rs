@@ -163,23 +163,7 @@ pub fn exit_code(code: u8) -> ExitCode {
 /// shell that exports an empty string meant to turn it off.
 #[must_use]
 pub fn diagnostics_path() -> Option<std::path::PathBuf> {
-    let value = std::env::var_os("RENEW_LOG")?;
-    if value.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(value))
-}
-
-/// Whether this run is logging diagnostics, which also decides whether
-/// the renderer asks for validation.
-///
-/// **`IfAvailable`, never `Required`.** A machine without the validation
-/// layer installed must still run while something else is being
-/// debugged; requiring it would turn a missing optional component into a
-/// failure to start.
-#[must_use]
-pub fn diagnostics_enabled() -> bool {
-    diagnostics_path().is_some()
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
 }
 
 #[cfg(test)]

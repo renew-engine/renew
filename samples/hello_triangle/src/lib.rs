@@ -170,11 +170,7 @@ pub fn exit_code(code: u8) -> ExitCode {
 /// shell that exports an empty string meant to turn it off.
 #[must_use]
 pub fn diagnostics_path() -> Option<std::path::PathBuf> {
-    let value = std::env::var_os("RENEW_LOG")?;
-    if value.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(value))
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
 }
 
 /// Whether this run is logging diagnostics, which also decides whether

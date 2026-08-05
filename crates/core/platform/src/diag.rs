@@ -101,6 +101,26 @@ impl core::fmt::Debug for FileSink {
     }
 }
 
+/// Interpret an environment value as a log path.
+///
+/// **Pure, and it takes the value rather than reading it.** This crate
+/// is a doorway to the operating system and deliberately not a source of
+/// ambient configuration, so the binary reads its own environment and
+/// hands the result here. That split is also what makes the rule
+/// testable: every answer is reachable without a process-wide write that
+/// would race whatever else shares the test binary.
+///
+/// Absent and empty both mean off. An empty value is a shell exporting
+/// nothing, which is a way of saying no rather than a file with no name.
+#[must_use]
+pub fn path_from_value(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let value = value?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
 /// Send this process's diagnostics, and any panic, to `path` — or do
 /// nothing at all, when there is no path.
 ///
@@ -212,6 +232,22 @@ mod tests {
         let shown = format!("{sink:?}");
         assert!(shown.starts_with("FileSink"), "{shown}");
         assert!(shown.contains("somewhere.log"), "{shown}");
+    }
+
+    /// Absent, empty and named — the three answers, none of which needs
+    /// the environment touched.
+    #[test]
+    fn a_value_is_a_path_only_when_it_names_one() {
+        assert_eq!(path_from_value(None), None, "unset is off");
+        assert_eq!(
+            path_from_value(Some(std::ffi::OsString::new())),
+            None,
+            "an empty export is a way of saying no, not a file with no name"
+        );
+        assert_eq!(
+            path_from_value(Some(std::ffi::OsString::from("run.log"))),
+            Some(PathBuf::from("run.log"))
+        );
     }
 
     /// **The no-path case installs nothing**, which is the arm every

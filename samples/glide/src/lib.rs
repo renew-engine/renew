@@ -155,11 +155,7 @@ fn windowed_run(_options: &Options) -> Result<Report, SampleError> {
 /// shell that exports an empty string meant to turn it off.
 #[must_use]
 pub fn diagnostics_path() -> Option<std::path::PathBuf> {
-    let value = std::env::var_os("RENEW_LOG")?;
-    if value.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(value))
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
 }
 
 /// Whether this run is logging diagnostics, which is also what decides
@@ -206,5 +202,28 @@ pub fn validation_for(logging: bool) -> renew_rhi::Validation {
         renew_rhi::Validation::IfAvailable
     } else {
         renew_rhi::Validation::Off
+    }
+}
+
+#[cfg(all(test, feature = "window"))]
+mod tests {
+    /// Both answers, asserted where the renderer exists to be asked.
+    ///
+    /// The arm that asks for validation runs only in a process that has
+    /// set the variable and opened a window, which no test does — so
+    /// inline at the call site the decision was made somewhere nothing
+    /// could observe. As a function of a boolean, both are reachable.
+    #[test]
+    fn the_validation_policy_answers_both_ways() {
+        assert_eq!(
+            super::validation_for(true),
+            renew_rhi::Validation::IfAvailable,
+            "a logged run asks for validation, which is what can name a fault in the driver"
+        );
+        assert_eq!(
+            super::validation_for(false),
+            renew_rhi::Validation::Off,
+            "an ordinary run pays nothing for a layer it will not read"
+        );
     }
 }
