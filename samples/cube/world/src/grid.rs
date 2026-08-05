@@ -171,8 +171,30 @@ impl Grid {
         self.get(cell).is_some_and(|block| block != AIR)
     }
 
-    /// Put a block in a cell. `false` if the cell is outside the grid.
+    /// Put a block in a cell. `false` if the cell is outside the grid, or if
+    /// it is on the shell and the block is air.
+    ///
+    /// **The shell cannot be cleared, and that is the world being closed
+    /// rather than a special case.** Outside the grid is neither solid nor
+    /// air, so a player who gets out of it falls forever with nothing to land
+    /// on and no way to tell that from a deep hole.
+    ///
+    /// Two attempts at this were too weak, and both are worth recording
+    /// because each looked sufficient:
+    ///
+    /// - **A thicker floor.** Anything that can dig once can dig again, so no
+    ///   thickness closes a floor against a script that repeats.
+    /// - **An unbreakable bottom layer.** It stopped the digging and not the
+    ///   climbing: `build` places blocks under itself, so it built a tower
+    ///   past the three-high walls and walked off the top.
+    ///
+    /// The shell is the boundary of the box in all three axes, so there is no
+    /// direction left to leave by. Filling is unaffected: only clearing is
+    /// refused, and only on the boundary.
     pub fn set(&mut self, cell: Cell, block: Block) -> bool {
+        if block == AIR && self.on_shell(cell) {
+            return false;
+        }
         // `index` already proved the cell is inside, so the slot is there. A
         // second `None` arm would be a branch nothing could take.
         let Some(slot) = self.index(cell).and_then(|at| self.blocks.get_mut(at)) else {
@@ -180,6 +202,24 @@ impl Grid {
         };
         *slot = block;
         true
+    }
+
+    /// Whether a cell is on the outer boundary of the grid in any axis.
+    ///
+    /// Cells outside the grid are not on its shell — they are not in it at
+    /// all, and [`Self::set`] refuses them for that reason instead.
+    #[must_use]
+    pub fn on_shell(&self, cell: Cell) -> bool {
+        let (width, height, depth) = self.size;
+        if self.index(cell).is_none() {
+            return false;
+        }
+        cell.x == self.min.x
+            || cell.y == self.min.y
+            || cell.z == self.min.z
+            || cell.x == self.min.x + width - 1
+            || cell.y == self.min.y + height - 1
+            || cell.z == self.min.z + depth - 1
     }
 
     /// Fill a rectangular region, inclusive of both corners.

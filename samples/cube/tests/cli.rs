@@ -111,6 +111,7 @@ fn a_run_is_reproducible() {
     let options = Options {
         script: Script::Build,
         ticks: 300,
+        show: false,
         json: false,
         help: false,
     };
