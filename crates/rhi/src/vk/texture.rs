@@ -87,10 +87,17 @@ fn required_bytes(extent: Extent) -> Option<u64> {
 /// slice would leave the tail of the image as whatever the staging
 /// allocation happened to contain — a bug that renders as plausible
 /// garbage rather than as a failure.
-fn check_desc(desc: &TextureDesc<'_>) -> Result<u64, TargetError> {
+fn check_desc(desc: &TextureDesc<'_>, max_dimension: u32) -> Result<u64, TargetError> {
     if desc.extent.width == 0 || desc.extent.height == 0 {
         return Err(TargetError::Creation {
             call: "create_texture(zero extent)",
+            code: 0,
+        });
+    }
+    // Handed in, not queried -- see the note in `check_extent`.
+    if desc.extent.width > max_dimension || desc.extent.height > max_dimension {
+        return Err(TargetError::Creation {
+            call: "create_texture(extent exceeds the device limit)",
             code: 0,
         });
     }
@@ -291,7 +298,7 @@ impl Device {
         // region that runs only when the assertion fails, which is to
         // say never — and an unreachable region is a hole in the
         // coverage gate rather than a nicety.
-        let checked = check_desc(desc);
+        let checked = check_desc(desc, self.shared.max_image_dimension_2d);
         let extent = desc.extent;
         let supplied = desc.rgba8.len();
         debug_assert!(
@@ -642,6 +649,63 @@ fn upload(
 
 #[cfg(test)]
 mod tests {
+
+    /// The same refusal on the upload path, for the same reason.
+    #[test]
+    fn a_texture_past_the_device_limit_is_refused_by_name() {
+        let pixels = [0u8; 16];
+        let refusal = check_desc(
+            &TextureDesc::new(
+                Extent {
+                    width: 65,
+                    height: 2,
+                },
+                &pixels,
+            ),
+            64,
+        )
+        .expect_err("past the limit is not a texture");
+        assert!(
+            matches!(refusal, TargetError::Creation { call, code: 0 }
+                if call == "create_texture(extent exceeds the device limit)"),
+            "refused as {refusal:?}, which names no cause"
+        );
+
+        // Reported before the pixel-length rule, so a caller whose
+        // extent is impossible hears about the extent rather than about
+        // a byte count derived from it.
+        let refusal = check_desc(
+            &TextureDesc::new(
+                Extent {
+                    width: 65,
+                    height: 65,
+                },
+                &pixels,
+            ),
+            64,
+        )
+        .expect_err("past the limit is not a texture");
+        assert!(
+            matches!(refusal, TargetError::Creation { call, .. }
+                if call == "create_texture(extent exceeds the device limit)"),
+            "the extent rule must be reported before the length rule: {refusal:?}"
+        );
+
+        assert!(
+            check_desc(
+                &TextureDesc::new(
+                    Extent {
+                        width: 2,
+                        height: 2,
+                    },
+                    &pixels,
+                ),
+                2,
+            )
+            .is_ok(),
+            "the limit itself is allowed"
+        );
+    }
     use super::*;
 
     /// The byte count is `width * height * 4`, and the multiplication is
@@ -678,53 +742,62 @@ mod tests {
         let pixels = [0u8; 16];
 
         assert!(matches!(
-            check_desc(&TextureDesc::new(
-                Extent {
-                    width: 0,
-                    height: 2
-                },
-                &pixels
-            )),
+            check_desc(
+                &TextureDesc::new(
+                    Extent {
+                        width: 0,
+                        height: 2
+                    },
+                    &pixels
+                ),
+                u32::MAX
+            ),
             Err(TargetError::Creation {
                 call: "create_texture(zero extent)",
                 ..
             })
         ));
         assert!(matches!(
-            check_desc(&TextureDesc::new(
-                Extent {
-                    width: 2,
-                    height: 0
-                },
-                &pixels
-            )),
+            check_desc(
+                &TextureDesc::new(
+                    Extent {
+                        width: 2,
+                        height: 0
+                    },
+                    &pixels
+                ),
+                u32::MAX
+            ),
             Err(TargetError::Creation {
                 call: "create_texture(zero extent)",
                 ..
             })
         ));
         assert!(matches!(
-            check_desc(&TextureDesc::new(
-                Extent {
-                    width: u32::MAX,
-                    height: u32::MAX
-                },
-                &pixels
-            )),
+            check_desc(
+                &TextureDesc::new(
+                    Extent {
+                        width: u32::MAX,
+                        height: u32::MAX
+                    },
+                    &pixels
+                ),
+                u32::MAX
+            ),
             Err(TargetError::Creation {
                 call: "create_texture(extent overflows)",
                 ..
             })
         ));
         assert!(matches!(
-            check_desc(&TextureDesc::new(good, &pixels[..15])),
+            check_desc(&TextureDesc::new(good, &pixels[..15]), u32::MAX),
             Err(TargetError::Creation {
                 call: "create_texture(pixel length)",
                 ..
             })
         ));
         assert!(matches!(
-            check_desc(&TextureDesc::new(good, &pixels)),
+            check_desc(&TextureDesc::new(good, &pixels), u32::MAX),
             Ok(16)
         ));
     }
