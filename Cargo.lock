@@ -1740,6 +1740,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-chess-rules"
+version = "0.1.0"
+dependencies = [
+ "renew-frame",
+]
+
+[[package]]
 name = "renew-sample-glide"
 version = "0.1.0"
 dependencies = [

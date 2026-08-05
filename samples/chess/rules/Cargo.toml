@@ -1,0 +1,25 @@
+[package]
+name = "renew-sample-chess-rules"
+description = "The chess sample's rules: legal move generation, checked against published perft counts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Chess as a pure function of position and move: generation, legality, castling, en passant, promotion, and a digest over every value that can change future play."
+maturity = "bootstrap"
+core = false
+simulation = true
+
+extension_points = []
+
+# Simulation only: the rules may not reach an OS capability at any dependency
+# depth, and the structure check walks this list to prove it.
+[dependencies]
+renew-frame = { path = "../../../crates/frame" }
+
+[lints]
+workspace = true
