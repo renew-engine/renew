@@ -219,7 +219,10 @@ impl Cube {
             if self.grid.set(picked.cell, AIR) {
                 self.broken += 1;
             }
-        } else if place {
+        } else {
+            // Placing, because the guard above established that one of the two
+            // is happening. Written as `else if place` this had a third path
+            // nothing could take, and dig wins a tick where both are pressed.
             // Against the face, not into the block — placing into the block
             // being looked at would replace it, which is what digging is for.
             let target = picked.neighbour();
