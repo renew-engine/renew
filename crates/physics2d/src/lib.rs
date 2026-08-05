@@ -42,12 +42,16 @@
 
 pub mod bounds;
 pub mod broadphase;
+pub mod contact;
 pub mod filter;
+pub mod narrow;
 pub mod shape;
 pub mod world;
 
 pub use bounds::Aabb;
 pub use broadphase::Broadphase;
+pub use contact::{Contact, ContactPoint, MAX_MANIFOLD_POINTS, Manifold};
 pub use filter::Filter;
+pub use narrow::collide;
 pub use shape::{Shape, Transform};
 pub use world::{BodyKind, Collider, HandleState, Incarnation, ShapeIndex, World};
