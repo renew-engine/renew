@@ -25,6 +25,21 @@ use crate::query::Exclude;
 use crate::shape::Transform;
 use crate::world::{Collider, ShapeIndex, World};
 
+/// How many pushes the clearing step gets when a slide invokes it.
+///
+/// **Its own budget, not the slide's.** A caller may ask for a single slide
+/// iteration — that is a perfectly reasonable thing to want, and cheap — but a
+/// single *push* is not enough to re-establish a clearance, because one push
+/// lands short by whatever the separating direction's own rounding costs and
+/// the remainder grows with how deep the body was. Sharing the slide's budget
+/// made the clearance shortfall scale with the distance travelled while
+/// looking like a property of the slide, which is the wrong place to go
+/// looking.
+///
+/// Sixteen because clearing converges in two or three pushes even at a corner,
+/// so this is a runaway guard rather than a working limit.
+pub(crate) const CLEARING_ITERATIONS: u32 = 16;
+
 /// How a clearing ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClearEnd {

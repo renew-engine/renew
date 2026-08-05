@@ -79,7 +79,7 @@ impl World {
         // ahead of it, which is the wrong question when the answer is already
         // touching — so a body spawned overlapping would otherwise sweep out
         // from inside the thing it is stuck in and stay stuck.
-        self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+        self.clear_of_geometry(handle, mask, skin, crate::clear::CLEARING_ITERATIONS)?;
 
         let start = self.transform(handle)?;
         let mut position = start.translation;
@@ -139,7 +139,8 @@ impl World {
         // the distance travelled: here a 1024-unit slide ended 232 raw units
         // *inside* a wall it should have rested 256 clear of. Re-establishing
         // the clearance removes the dependence rather than bounding it.
-        let restored = self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+        let restored =
+            self.clear_of_geometry(handle, mask, skin, crate::clear::CLEARING_ITERATIONS)?;
 
         Some(SlideReport {
             destination: restored.destination,

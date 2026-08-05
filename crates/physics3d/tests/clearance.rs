@@ -26,16 +26,6 @@ fn at(x: i32, y: i32, z: i32) -> Transform {
 const SKIN_RAW: i64 = 256;
 const SKIN: Fixed = Fixed::from_bits(SKIN_RAW);
 const TOLERANCE_RAW: i64 = 1;
-/// How far short of the skin a slide may come to rest, in raw units.
-///
-/// **Not creep.** The distance travelled does not appear in it — that is
-/// asserted separately, and exactly. This is the gap between the narrowphase's
-/// own reading of a separation and the box arithmetic in this file: the
-/// clearing loop stops when the engine says the body is clear, and the two
-/// measures disagree by a few parts in sixty-five thousand where the contact
-/// is not axis-aligned. Sixteen raw units was the worst observed, against a
-/// skin of 65536.
-const RESIDUAL_RAW: i64 = 64;
 const REQUIRED_RAW: i64 = SKIN_RAW - TOLERANCE_RAW;
 const ANY: u32 = u32::MAX;
 
@@ -211,7 +201,7 @@ fn a_slide_never_ends_closer_than_the_skin_minus_the_tolerance() {
                     }
                     touched += 1;
                     assert!(
-                        clearance >= skin_raw - RESIDUAL_RAW,
+                        clearance >= skin_raw - TOLERANCE_RAW,
                         "a slide ended {clearance} raw from geometry against a skin of \
                          {skin_raw} — {units} units travelled, iteration limit {limit}, \
                          from {start:?}"
@@ -283,7 +273,14 @@ fn a_body_that_starts_inside_is_pushed_out_before_it_moves() {
         centre: (0, 0, 0),
         half: (4, 4, 4),
     }];
-    for start in [(0, 0, 0), (3, 0, 0), (0, 3, 0), (0, 0, 3), (4, 4, 4), (-3, 2, 1)] {
+    for start in [
+        (0, 0, 0),
+        (3, 0, 0),
+        (0, 3, 0),
+        (0, 0, 3),
+        (4, 4, 4),
+        (-3, 2, 1),
+    ] {
         let (mut world, mover) = staged(start, &walls);
         let mut hits = empty_hits();
         world
