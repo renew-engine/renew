@@ -176,6 +176,28 @@ reversed quad draws identically. That is exactly why: the mistake is
 invisible until culling is switched on, and then half the world disappears
 with no recent change to blame.
 
+## Writing the picture out
+
+`png::encode` turns RGBA bytes into a PNG, in about a hundred lines and
+with no dependency. Encoding one turns out not to need a compressor:
+the data is a zlib stream, and a zlib stream may be made of deflate
+**stored** blocks -- bytes copied verbatim behind a five-byte header. So
+the encoder is four chunks, two checksums and some framing.
+
+Stored blocks cost five bytes per 65535, about 0.008% over the raw
+pixels. A real compressor would make the file much *smaller* than raw,
+and for flat-coloured faces the difference would be large -- this trades
+size for having no dependency and a byte layout a reader can check
+against the specification in one sitting.
+
+**How it was checked.** The tests assert the layout against the format,
+including a hand-derived single-pixel file and the block split that only
+appears past 65535 bytes. That catches a typo but would not catch a
+specification consistently misread, since the same reading wrote the
+encoder and the test -- so the output was also handed to an independent
+decoder at five sizes, and each opened as RGBA at the right dimensions
+with pixels round-tripping exactly.
+
 ## Shape
 
 Two crates. `world/` is the simulation: a fixed-step pure function of
