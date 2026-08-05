@@ -10,7 +10,7 @@ cargo run -p renew-sample-input-echo --bin input_echo -- --headless --input-trac
 
 ```console
 $ cargo run -p renew-sample-input-echo --bin input_echo -- --headless --input-trace walk
-renew-frame sample=input_echo seed=0 source=walk frames=20 ticks=20 dropped=0 schedule_hash=0xcaa0947bf9fa1305 state_hash=0x833e49c9dd637b92
+renew-frame sample=input_echo seed=0 source=walk frames=20 ticks=20 dropped=0 schedule_hash=0x64972ba6d4f30765 state_hash=0x833e49c9dd637b92
 ```
 
 ## What it does

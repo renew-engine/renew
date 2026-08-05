@@ -11,7 +11,7 @@ cargo run -p renew-sample-hello-triangle --bin hello_triangle -- --headless --fr
 
 ```console
 $ cargo run -p renew-sample-hello-triangle --bin hello_triangle -- --headless --frames 600
-renew-frame sample=hello_triangle seed=0 frames=600 ticks=600 dropped=0 schedule_hash=0xefc2181bbc0d588d state_hash=0x5d3ec02c32278af9
+renew-frame sample=hello_triangle seed=0 frames=600 ticks=600 dropped=0 schedule_hash=0x55ce27c8dcb97c4d state_hash=0x5d3ec02c32278af9
 ```
 
 That line is the same on every run, in every process, and in a build
