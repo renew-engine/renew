@@ -4,7 +4,7 @@ resolver = "3"
 # needs nightly and sanitizer instrumentation, and pulling that into the
 # stable build every merge depends on would break it.
 exclude = ["fuzz"]
-members = ["bench/suite", "crates/asset", "crates/audio", "crates/core/diag", "crates/core/event", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/fixed", "crates/frame", "crates/physics2d", "crates/input", "crates/jobs", "crates/render2d", "crates/replay", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/chess/rules", "samples/glide", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
+members = ["bench/suite", "crates/asset", "crates/audio", "crates/core/diag", "crates/core/event", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/fixed", "crates/frame", "crates/physics2d", "crates/physics3d", "crates/input", "crates/jobs", "crates/render2d", "crates/replay", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/chess/rules", "samples/glide", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
 
 [workspace.package]
 version = "0.1.0"
