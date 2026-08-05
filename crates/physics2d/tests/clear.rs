@@ -322,3 +322,81 @@ fn a_circle_is_pushed_clear_as_well() {
         "the circle rests {gap} raw from the face, inside the skin of {SKIN_RAW}"
     );
 }
+
+/// **A capsule is not pushed out of anything, because nothing can measure it.**
+///
+/// The narrowphase does not implement capsules and declines them rather than
+/// reporting "they do not touch", which would be a lie. This operation inherits
+/// that exactly, and the inheritance is worth a test: the clearance guarantee
+/// the slide now makes would otherwise read as covering every shape, and a
+/// caller putting a capsule in a level would get silence rather than an answer.
+///
+/// This test asserts the gap. Implementing capsules will fail it.
+#[test]
+fn a_capsule_is_skipped_because_nothing_can_measure_it() {
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let body = entities.spawn();
+    world.create_body(body, BodyKind::Kinematic, Transform::IDENTITY);
+    world.add_shape(
+        body,
+        Shape::Capsule {
+            radius: Fixed::ONE,
+            half_height: Fixed::ONE,
+        },
+        Transform::IDENTITY,
+        Filter::new(1, 1),
+    );
+    let wall = entities.spawn();
+    world.create_body(wall, BodyKind::Static, Transform::IDENTITY);
+    world.add_shape(
+        wall,
+        Shape::Box {
+            half_extents: v(4, 4),
+        },
+        Transform::IDENTITY,
+        Filter::new(1, 1),
+    );
+
+    let report = world
+        .clear_of_geometry(body, ANY, SKIN, 8)
+        .expect("a live body");
+    assert_eq!(
+        report.end,
+        ClearEnd::AlreadyClear,
+        "a capsule dead inside a box was measured after all"
+    );
+    assert_eq!(report.moved, Vec2::ZERO);
+
+    // And the other way round: a box inside a capsule is equally unmeasurable.
+    // **In a world of its own** — the first attempt reused this one, and the
+    // box was duly pushed out of the *box* wall above, which is correct
+    // behaviour and says nothing at all about capsules.
+    let mut entities = Entities::new();
+    let mut world = World::new();
+    let box_body = entities.spawn();
+    world.create_body(box_body, BodyKind::Kinematic, Transform::IDENTITY);
+    world.add_shape(
+        box_body,
+        Shape::Box {
+            half_extents: v(1, 1),
+        },
+        Transform::IDENTITY,
+        Filter::new(2, 2),
+    );
+    let capsule_wall = entities.spawn();
+    world.create_body(capsule_wall, BodyKind::Static, Transform::IDENTITY);
+    world.add_shape(
+        capsule_wall,
+        Shape::Capsule {
+            radius: Fixed::from_int(4),
+            half_height: Fixed::from_int(4),
+        },
+        Transform::IDENTITY,
+        Filter::new(2, 2),
+    );
+    let report = world
+        .clear_of_geometry(box_body, ANY, SKIN, 8)
+        .expect("a live body");
+    assert_eq!(report.end, ClearEnd::AlreadyClear);
+}

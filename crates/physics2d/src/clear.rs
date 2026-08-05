@@ -118,6 +118,15 @@ impl World {
     /// from its own test: its shapes are parts of one object, and an object is
     /// not inside itself.
     ///
+    /// **Capsules are skipped, because nothing here can measure them.** The
+    /// narrowphase does not implement them — it says so where it declines
+    /// them — and this operation inherits that gap exactly: a capsule is
+    /// neither pushed out of anything nor pushes anything out, and the answer
+    /// will be `AlreadyClear` however deeply it overlaps. That is the crate's
+    /// existing position on capsules, not a new one, and it is stated here
+    /// because the clearance guarantee `move_and_slide` now makes would
+    /// otherwise read as covering them.
+    ///
     /// **The body moves; nothing else does.** Whatever it was inside stays
     /// where it is, including another body that could have been pushed instead.
     /// That is v0 being explicit rather than clever: choosing which of two
