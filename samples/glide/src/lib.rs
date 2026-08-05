@@ -147,10 +147,19 @@ fn windowed_run(options: &Options) -> Result<Report, SampleError> {
 /// The honest answer in a build with the windowing stack compiled out:
 /// name the reason and exit non-zero. Silently pretending to open a
 /// window would make the removability evidence worthless.
+///
+/// **The message names both roads, and the tool's first.** It used to say
+/// only "rebuild with `--features window`", which is a cargo flag — of no
+/// use to a reader who typed `renew run glide --window` and never ran
+/// cargo at all. A refusal that names a command the reader cannot map
+/// back to what they typed is a dead end wearing an explanation.
 #[cfg(not(feature = "window"))]
 fn windowed_run(_options: &Options) -> Result<Report, SampleError> {
     Err(SampleError::Usage(
-        "this build has no windowing support; rebuild with --features window".to_string(),
+        "this build has no windowing support. Run \
+         `renew --features window run glide --window`, or build it directly with \
+         `cargo run -p renew-sample-glide --features window --bin glide -- --window`"
+            .to_string(),
     ))
 }
 

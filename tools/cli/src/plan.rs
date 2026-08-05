@@ -99,12 +99,16 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
 /// sample's line, ahead of anything the caller wrote. Front rather than
 /// back because the caller's half is verbatim and may end in a flag
 /// still waiting for its value, which would otherwise swallow this one.
+/// `features` are cargo's, and so go **before** the `--`: everything
+/// after that separator belongs to the sample, and a feature landing
+/// there would be handed to the sample as an argument it never declared.
 #[must_use]
 pub fn sample_step(
     package: &str,
     binary: &str,
     lead: Option<(&str, &str)>,
     sample_args: &[String],
+    features: &[String],
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -112,8 +116,12 @@ pub fn sample_step(
         package.to_string(),
         "--bin".to_string(),
         binary.to_string(),
-        "--".to_string(),
     ];
+    for names in features {
+        args.push("--features".to_string());
+        args.push(names.clone());
+    }
+    args.push("--".to_string());
     if let Some((flag, value)) = lead {
         args.push(flag.to_string());
         args.push(value.to_string());
@@ -191,6 +199,52 @@ mod tests {
         assert!(steps(Command::Replay, false).is_empty());
     }
 
+    /// Features are cargo's and land before the separator; the sample's
+    /// own arguments stay after it, untouched.
+    ///
+    /// The position is the whole point: everything after `--` is handed
+    /// to the sample, so a feature written there would arrive as an
+    /// argument the sample never declared and be refused by it, naming a
+    /// flag the caller did type but in a role they did not intend.
+    #[test]
+    fn features_go_to_cargo_and_the_separator_still_divides_the_line() {
+        let args = sample_step(
+            "renew-sample-glide",
+            "glide",
+            None,
+            &["--window".to_string()],
+            &["window".to_string(), "audio".to_string()],
+        );
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--package",
+                "renew-sample-glide",
+                "--bin",
+                "glide",
+                "--features",
+                "window",
+                "--features",
+                "audio",
+                "--",
+                "--window",
+            ]
+        );
+        // Each occurrence kept: cargo unions them, and dropping one is
+        // how a caller silently loses a capability they asked for.
+        let separator = args.iter().position(|arg| arg == "--").expect("separator");
+        assert_eq!(
+            args.iter().filter(|arg| *arg == "--features").count(),
+            2,
+            "both occurrences must survive"
+        );
+        assert!(
+            args.iter().take(separator).any(|arg| arg == "audio"),
+            "features belong to cargo, ahead of the separator"
+        );
+    }
+
     #[test]
     fn a_sample_step_names_its_package_and_binary_then_hands_over() {
         let args = sample_step(
@@ -198,6 +252,7 @@ mod tests {
             "hello_triangle",
             None,
             &["--headless".to_string(), "--frames".to_string()],
+            &[],
         );
         assert_eq!(
             args,
@@ -218,7 +273,7 @@ mod tests {
     fn a_sample_step_with_nothing_to_hand_over_still_ends_in_the_separator() {
         // Uniform shape: the separator is not conditional, so nothing
         // downstream has to know whether the sample was given arguments.
-        let args = sample_step("renew-sample-input-echo", "input_echo", None, &[]);
+        let args = sample_step("renew-sample-input-echo", "input_echo", None, &[], &[]);
         assert_eq!(
             args,
             [
@@ -243,6 +298,7 @@ mod tests {
             "input_echo",
             Some(("--replay-trace", "walk.trace")),
             &["--headless".to_string(), "--seed".to_string()],
+            &[],
         );
         assert_eq!(
             args,

@@ -1217,7 +1217,13 @@ fn run_sample(invocation: &Invocation) -> ExitCode {
         .trace_flags()
         .zip(invocation.trace.as_deref())
         .map(|((_, child_flag), path)| (child_flag, path));
-    let args = plan::sample_step(&sample.package, &sample.name, lead, &invocation.sample_args);
+    let args = plan::sample_step(
+        &sample.package,
+        &sample.name,
+        lead,
+        &invocation.sample_args,
+        &invocation.features,
+    );
     match runner.execute("cargo", &args) {
         // A replay's whole result is the digest the child printed, and in
         // JSON mode this process captured the child's stdout rather than

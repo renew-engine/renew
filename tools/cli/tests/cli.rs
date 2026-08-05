@@ -1715,3 +1715,45 @@ fn a_rustup_that_cannot_name_its_toolchain_still_counts_as_found() {
 
     let _ = fs::remove_dir_all(&directory);
 }
+
+/// The README's fenced usage block is the tool's own usage text, exactly.
+///
+/// **A hand-copied snapshot is a clock, not a document.** This block had
+/// drifted to thirteen subcommands against the tool's fifteen, and was
+/// missing six options -- so a reader who trusted it would not have known
+/// `record` and `replay` existed. Re-typing it would have restarted the
+/// same clock. Comparing it makes drift a failing test instead of a
+/// discovery months later.
+///
+/// The comparison runs against the *binary*, not against `usage()` in the
+/// library, so it also proves the two agree: a README matching a function
+/// nobody calls would prove nothing.
+#[test]
+fn the_readme_shows_the_usage_text_the_binary_prints() -> std::io::Result<()> {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))?;
+    let printed = String::from_utf8_lossy(&run(&["--help"])?.stdout)
+        .replace("\r\n", "\n")
+        .trim_end()
+        .to_string();
+
+    // The block is the first fence whose first line starts the usage
+    // text; anchoring on that rather than on a line number keeps this
+    // working when prose moves around it.
+    let readme = readme.replace("\r\n", "\n");
+    let opened = readme
+        .find("```\nusage: renew")
+        .expect("the README should carry a fenced usage block");
+    let body_start = opened + "```\n".len();
+    let body_end = readme[body_start..]
+        .find("\n```")
+        .map(|offset| body_start + offset)
+        .expect("the usage block should be closed");
+    let block = &readme[body_start..body_end];
+
+    assert_eq!(
+        block, printed,
+        "the README's usage block and `renew --help` have parted. Re-sync the block; \
+         do not edit one to look like the other by hand."
+    );
+    Ok(())
+}

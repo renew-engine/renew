@@ -12,8 +12,13 @@ use crate::world::EchoWorld;
 pub const SAMPLE: &str = "input_echo";
 
 /// What the sample accepts, in the words it accepts them.
-pub const USAGE: &str = "usage: input_echo [--headless [--input-trace NAME]] [--frames N] \
-                         [--seed N] [--dump-stats PATH] [--record-trace PATH] \n                         [--replay-trace PATH]";
+pub const USAGE: &str = concat!(
+    "usage: input_echo [--frames N] [--seed N] [--dump-stats PATH]\n",
+    "       input_echo --headless [--input-trace NAME] [--record-trace PATH]\n",
+    "       input_echo --headless --replay-trace PATH\n",
+    "\nThe trace flags are headless-only: a window is driven by the person\n",
+    "at the keyboard, and this sample records only what a script produced."
+);
 
 /// The trace a headless run replays unless told otherwise.
 pub const DEFAULT_TRACE: &str = "walk";
@@ -42,10 +47,19 @@ pub struct Options {
     pub dump_stats: Option<PathBuf>,
     /// Where to write the run's input as a replayable trace, if anywhere.
     ///
-    /// Recording is independent of how the run is driven: a scripted run
-    /// records the script, a windowed run records the person. The file
-    /// says nothing about which, because a trace is the input and not the
-    /// thing that produced it.
+    /// **Headless scripted runs only; refused elsewhere.** This once said
+    /// recording was independent of how the run is driven, and that "a
+    /// windowed run records the person" -- which was never true. The flag
+    /// was read in one place, so a windowed run and a replay run both took
+    /// it, exited zero, and wrote nothing at all.
+    ///
+    /// Refused rather than implemented, following the sibling game, which
+    /// already refuses this flag beside a window and beside a replay.
+    /// Recording a live window is a real feature and a larger one than it
+    /// looks: this sample's windowed driver feeds the world a synthetic
+    /// resize outside the event path and releases held keys on focus loss,
+    /// neither of which a recording taken from the event stream would
+    /// carry, so the trace would replay into a different world.
     pub record_trace: Option<PathBuf>,
     /// A recorded trace to drive this run, instead of a named script.
     ///
@@ -121,15 +135,29 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         }
         if !overridden.is_empty() {
             return Err(SampleError::Usage(format!(
-                "--replay-trace owns the run, so {} cannot be given with it;                  the trace's own header carries them",
+                "--replay-trace owns the run, so {} cannot be given with it; \
+                 the trace's own header carries them",
                 overridden.join(" and ")
             )));
         }
         if !options.headless {
             return Err(SampleError::Usage(format!(
-                "--replay-trace needs --headless: replaying {} against a live                  window would mix recorded input with real input",
+                "--replay-trace needs --headless: replaying {} against a live window \
+                 would mix recorded input with real input",
                 path.display()
             )));
+        }
+        // Its own sentence rather than a name in the list above, because
+        // that message ends "the trace's own header carries them" -- true
+        // of the flags that set up a run, and meaningless for a flag that
+        // writes one out.
+        if options.record_trace.is_some() {
+            return Err(SampleError::Usage(
+                "--record-trace cannot be given with --replay-trace: re-recording a replay \
+                 writes back the file it just read, and proves only that the recorder is \
+                 the identity"
+                    .to_string(),
+            ));
         }
     }
     if scripted && !options.headless {
@@ -138,6 +166,17 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
         // dropped would make its digest line unexplainable.
         return Err(SampleError::Usage(
             "--input-trace only applies to --headless runs; a window is driven by real input"
+                .to_string(),
+        ));
+    }
+    if options.record_trace.is_some() && !options.headless {
+        // The same rule and the same reason as the line above. This one
+        // was missing, so the flag was accepted, ignored, and the run
+        // exited zero having written no file -- which reads exactly like
+        // a recording that happened.
+        return Err(SampleError::Usage(
+            "--record-trace only applies to --headless runs; recording a window would need \
+             the live driver's own input, which this sample does not capture"
                 .to_string(),
         ));
     }
@@ -218,6 +257,74 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
+
+    /// A windowed run refuses the recording flag rather than dropping it.
+    ///
+    /// **The defect this replaces was silence.** The flag parsed in every
+    /// mode and was read in one, so `input_echo --frames 5 --record-trace
+    /// out.trace` exited zero, printed an ordinary digest line, and wrote
+    /// no file -- which is indistinguishable, from the outside, from a
+    /// recording that happened and was empty.
+    #[test]
+    fn recording_is_refused_outside_a_headless_run() {
+        // Read off the formatted result rather than destructured: an
+        // arm for the case where the test fails is a line no passing run
+        // ever executes, and the coverage gate is right to count it.
+        let refused = format!(
+            "{:?}",
+            parse(&["--frames", "5", "--record-trace", "out.trace"])
+        );
+        assert!(
+            refused.starts_with("Err(Usage("),
+            "a windowed run cannot record, so it must refuse: {refused}"
+        );
+        assert!(
+            refused.contains("--record-trace") && refused.contains("--headless"),
+            "the refusal must name both flags, so the reader knows which to change: {refused}"
+        );
+    }
+
+    /// Recording a replay is refused: it would write back the file it
+    /// just read, and prove only that the recorder is the identity.
+    #[test]
+    fn recording_a_replay_is_refused() {
+        let refused = parse(&[
+            "--headless",
+            "--replay-trace",
+            "walk.trace",
+            "--record-trace",
+            "out.trace",
+        ]);
+        let refused = format!("{refused:?}");
+        assert!(
+            refused.starts_with("Err(Usage("),
+            "re-recording a replay must be refused: {refused}"
+        );
+        assert!(
+            refused.contains("--record-trace") && refused.contains("--replay-trace"),
+            "the refusal must name both flags: {refused}"
+        );
+    }
+
+    /// The mode that can record still does.
+    ///
+    /// Here so the two refusals above cannot be satisfied by refusing the
+    /// flag everywhere, which would pass both and delete the feature.
+    #[test]
+    fn a_headless_scripted_run_still_accepts_the_recording_flag() {
+        let options = parse(&[
+            "--headless",
+            "--input-trace",
+            "walk",
+            "--record-trace",
+            "out.trace",
+        ])
+        .expect("the one mode that records must keep recording");
+        assert_eq!(
+            options.record_trace.as_deref(),
+            Some(std::path::Path::new("out.trace"))
+        );
+    }
     use super::{DEFAULT_FRAMES, DEFAULT_TRACE, Options, Report, parse_args};
     use crate::error::SampleError;
     use crate::input::Input;

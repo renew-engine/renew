@@ -157,10 +157,39 @@ pub struct Invocation {
     /// the two modes are one subcommand because they are two halves of
     /// one claim, and parsing refuses both together and neither.
     pub emit: Option<String>,
+    /// Run, record and replay: cargo features to build the sample with,
+    /// each occurrence kept.
+    ///
+    /// **Cargo's own vocabulary, showing through deliberately.** A
+    /// sample's optional capabilities are cargo features, and the one
+    /// windowed sample cannot be started at all without naming one — so
+    /// the alternative to letting the word through was a per-sample table
+    /// mapping invented names onto features, which the sample list is
+    /// specifically built to avoid needing (samples are discovered, never
+    /// written down).
+    ///
+    /// Repeating accumulates, on the same reasoning as
+    /// [`Invocation::compare`]: two occurrences mean the union, and
+    /// keeping the last is how a caller silently loses one.
+    pub features: Vec<String>,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
 /// Help carries the `--json` flag so usage can honor the output contract.
+///
+/// **The size gap between the variants is deliberate, not overlooked.**
+/// `Run` carries the whole parsed command line and `Help` carries one
+/// bool, which is what the lint is for — an enum whose small variant is
+/// common wastes the difference on every value. Exactly one `Parsed`
+/// exists per process: it is built by `parse`, matched immediately, and
+/// dropped. Boxing would trade a pointer chase and an allocation for
+/// bytes that are never multiplied by anything, and would put a `Box::new`
+/// in front of every construction in the tests, where the shape of the
+/// value is the thing being read.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one value per process, built and matched at once; boxing would cost more than the gap"
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Parsed {
     Run(Invocation),
@@ -251,6 +280,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut from: Option<String> = None;
     let mut verify = false;
     let mut compare: Vec<String> = Vec::new();
+    let mut features: Vec<String> = Vec::new();
     let mut emit: Option<String> = None;
     let mut sample: Option<String> = None;
     let mut sample_args: Vec<String> = Vec::new();
@@ -298,6 +328,16 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             "--compare" => {
                 let path = rest.next().ok_or(ParseError::MissingValue("--compare"))?;
                 compare.push(path.clone());
+            }
+            // Repeatable for the same reason `--compare` is, and passed
+            // to cargo verbatim: cargo already unions repeated
+            // occurrences and already accepts comma- or space-separated
+            // lists inside one, so splitting or joining here would be
+            // this tool inventing a second grammar for a syntax that
+            // already has one.
+            "--features" => {
+                let names = rest.next().ok_or(ParseError::MissingValue("--features"))?;
+                features.push(names.clone());
             }
             // Its own flag rather than `--output`, which belongs to
             // `record` and means "write the input you saw here". This
@@ -352,6 +392,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         report.as_deref(),
         trace.as_ref().map(|(flag, _)| *flag),
         sample.as_deref(),
+        &features,
     )?;
     check_asset_combination(command, pack.as_deref(), from.as_deref(), verify)?;
     check_determinism_mode(command, emit.as_deref(), &compare)?;
@@ -370,6 +411,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             verify,
             compare,
             emit,
+            features,
         })),
         None => Err(ParseError::NoCommand),
     }
@@ -496,7 +538,15 @@ fn check_combination(
     report: Option<&str>,
     trace: Option<&'static str>,
     sample: Option<&str>,
+    features: &[String],
 ) -> Result<(), ParseError> {
+    if !features.is_empty() && !command.is_some_and(Command::takes_sample) {
+        // Features name how a *sample* is built. `renew build` builds the
+        // whole workspace and `renew test` runs all of it, so a feature
+        // there would have to mean something this tool has not decided —
+        // refusing is what keeps the flag's meaning single.
+        return Err(ParseError::UnexpectedArgument("--features".to_string()));
+    }
     if smoke && command != Some(Command::Bench) {
         // The flag belongs to exactly one subcommand; anywhere else it is
         // as unexpected as any stray argument.
@@ -575,6 +625,8 @@ pub fn usage() -> String {
         "  --verify          (asset-inspect only) check each entry against its digest\n",
         "  --emit <path>     (determinism only) write this target's digests here\n",
         "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
+        "  --features <list> (run, record, replay; repeatable) cargo features to build\n",
+        "                    the sample with, e.g. `--features window` for a window\n",
         "  --help, -h        print this text; `renew help` does the same\n",
         "\nEverything after `run <sample>` goes to the sample untouched, including\n",
         "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
@@ -583,8 +635,14 @@ pub fn usage() -> String {
         "\n`record` and `replay` are `run` with a trace file: their flag goes before\n",
         "the sample name for the same reason, and reaches the sample as\n",
         "`--record-trace <path>` or `--replay-trace <path>` at the front of its line.\n",
-        "Replaying is a headless run — pass `--headless` to the sample; it is not\n",
-        "assumed, because a windowed replay is a live run wearing a replay's name.\n",
+        "Recording and replaying are headless: a windowed replay is a live run\n",
+        "wearing a replay's name. How a sample spells headless is the sample's own\n",
+        "business — some take `--headless`, others are headless unless asked for a\n",
+        "window — so its usage says which, and this tool assumes nothing.\n",
+        "\n`--features` reaches cargo, not the sample. It builds the sample with those\n",
+        "features on, which is how a sample's optional capabilities are named:\n",
+        "`renew --features window run glide --window` builds the window in, then\n",
+        "asks for it.\n",
     ));
     text
 }
@@ -612,6 +670,7 @@ mod tests {
             verify: false,
             compare: Vec::new(),
             emit: None,
+            features: Vec::new(),
         }
     }
 
@@ -1130,6 +1189,79 @@ mod tests {
         assert_eq!(
             parse(&arguments(&["run", "sample", "--"])),
             Ok(running("sample", &[]))
+        );
+    }
+
+    /// Two occurrences mean the union, and both survive.
+    ///
+    /// The same rule `--compare` follows, for the same reason: keeping
+    /// only the last is how a caller who asked for a window *and* sound
+    /// silently gets one of them, with nothing anywhere saying so.
+    #[test]
+    fn features_accumulate_across_occurrences() {
+        assert_eq!(
+            parse(&arguments(&[
+                "--features",
+                "window",
+                "--features",
+                "audio",
+                "run",
+                "glide"
+            ])),
+            Ok(Parsed::Run(Invocation {
+                sample: Some("glide".to_string()),
+                features: vec!["window".to_string(), "audio".to_string()],
+                ..plain(Command::Run)
+            }))
+        );
+    }
+
+    /// The flag is accepted after the subcommand too, since it only has
+    /// to precede the sample name -- everything after that name is the
+    /// sample's.
+    #[test]
+    fn features_may_sit_on_either_side_of_the_subcommand() {
+        let before = parse(&arguments(&["--features", "window", "run", "glide"]));
+        let after = parse(&arguments(&["run", "--features", "window", "glide"]));
+        assert_eq!(before, after, "position before the sample name is free");
+    }
+
+    /// After the sample name it belongs to the sample, not to cargo.
+    ///
+    /// This is the pass-through contract, and it has to hold for a flag
+    /// renew itself knows -- otherwise the rule "everything after the
+    /// sample name is the sample's" would have exceptions a reader must
+    /// memorise.
+    #[test]
+    fn features_after_the_sample_name_belong_to_the_sample() {
+        assert_eq!(
+            parse(&arguments(&["run", "glide", "--features", "window"])),
+            Ok(Parsed::Run(Invocation {
+                sample: Some("glide".to_string()),
+                sample_args: vec!["--features".to_string(), "window".to_string()],
+                ..plain(Command::Run)
+            }))
+        );
+    }
+
+    /// Features name how a sample is built, so a subcommand that builds
+    /// no sample refuses them rather than ignoring them.
+    #[test]
+    fn features_are_refused_where_no_sample_is_built() {
+        for command in ["build", "test", "lint", "coverage"] {
+            assert_eq!(
+                parse(&arguments(&["--features", "window", command])),
+                Err(ParseError::UnexpectedArgument("--features".to_string())),
+                "{command} builds no sample, so the flag has no meaning there"
+            );
+        }
+    }
+
+    #[test]
+    fn features_without_a_value_says_which_flag() {
+        assert_eq!(
+            parse(&arguments(&["--features"])),
+            Err(ParseError::MissingValue("--features"))
         );
     }
 

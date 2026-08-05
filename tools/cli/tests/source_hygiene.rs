@@ -127,3 +127,104 @@ fn no_text_file_carries_a_byte_order_mark_or_a_mangled_encoding() {
         faults.join("\n  ")
     );
 }
+
+/// The one-based line a byte offset falls on.
+///
+/// Clippy suggests the `bytecount` crate here. Declined: this runs once
+/// per fault found, not once per byte scanned, and a fault list long
+/// enough for the difference to matter is a tree in far worse trouble
+/// than a slow test. A dependency is presumed rejected until it earns
+/// itself, and counting newlines twice a year does not.
+#[expect(
+    clippy::naive_bytecount,
+    reason = "runs once per fault, not per byte; a dependency would cost more than it saves"
+)]
+fn line_of(bytes: &[u8], offset: usize) -> usize {
+    bytes[..offset]
+        .iter()
+        .filter(|byte| *byte == &b'\n')
+        .count()
+        + 1
+}
+
+/// A carriage return that no line feed follows, and a tab, in a tree that
+/// uses neither.
+///
+/// **A second way to damage a file, with a different cause and the same
+/// ending.** Where the checks above catch an encoding round-trip, this
+/// catches a *collapsed escape*: a shell heredoc that eats one backslash
+/// turns the two characters backslash-r into a carriage return, and
+/// backslash-t into a tab, inside whatever literal was being written.
+///
+/// It happened here, twice in one session. A sample's README gained a
+/// PowerShell block whose `$env:USERPROFILE\run.log` had become
+/// `$env:USERPROFILE` + CR + `un.log`, and whose `.\target\debug\glide.exe`
+/// had become `.` + TAB + `arget\debug\glide.exe`. It reached a merged
+/// commit, because the file is prose: nothing compiled it, and both
+/// characters are invisible in an editor and in rendered Markdown. The
+/// first person to meet it would have been a Windows user copying the
+/// block, which is the only reason that block exists. The second time,
+/// the same shell mangled the source of this very test.
+///
+/// A *lone* carriage return is the signal rather than a carriage return as
+/// such: this tree is checked out CRLF on Windows, so CR-LF pairs are
+/// ordinary, and only an unpaired one means something went wrong.
+#[test]
+fn no_text_file_carries_a_stray_control_character() {
+    const CARRIAGE_RETURN: u8 = b'\r';
+    const LINE_FEED: u8 = b'\n';
+    const TAB: u8 = b'\t';
+
+    let root = workspace_root();
+    let mut files = Vec::new();
+    text_files(&root, &mut files).expect("the workspace should be walkable");
+    assert!(
+        files.len() > 50,
+        "found only {} text files - the walk is not reaching the tree, and this would pass \
+         vacuously",
+        files.len()
+    );
+
+    let mut faults: Vec<String> = Vec::new();
+    for path in &files {
+        let shown = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let Ok(bytes) = std::fs::read(path) else {
+            // Unreadable is the business of the check above, which
+            // reports it; reporting it twice would say nothing new.
+            continue;
+        };
+
+        for (offset, pair) in bytes.windows(2).enumerate() {
+            if pair[0] == CARRIAGE_RETURN && pair[1] != LINE_FEED {
+                faults.push(format!(
+                    "{shown}:{}: a carriage return with no line feed after it",
+                    line_of(&bytes, offset)
+                ));
+            }
+        }
+        // A file ending in a bare carriage return is the same fault, and
+        // no two-byte window can see it.
+        if bytes.last() == Some(&CARRIAGE_RETURN) {
+            faults.push(format!("{shown}: ends with a bare carriage return"));
+        }
+        if let Some(offset) = bytes.iter().position(|b| *b == TAB) {
+            faults.push(format!(
+                "{shown}:{}: a tab, where this tree indents with spaces",
+                line_of(&bytes, offset)
+            ));
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "{} stray control character(s):\n  {}\n\nUsually a shell heredoc that ate a backslash, \
+         turning an escape into the character it names. Write the file with a file tool rather \
+         than through a shell literal.",
+        faults.len(),
+        faults.join("\n  ")
+    );
+}
