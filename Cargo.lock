@@ -1788,6 +1788,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-leap-world"
+version = "0.1.0"
+dependencies = [
+ "renew-ecs",
+ "renew-fixed",
+ "renew-frame",
+ "renew-physics2d",
+]
+
+[[package]]
 name = "renew-trace"
 version = "0.1.0"
 dependencies = [
