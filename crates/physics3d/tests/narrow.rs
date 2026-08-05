@@ -308,3 +308,38 @@ proptest! {
         }
     }
 }
+
+/// Separation in the negative direction, and with the sphere named first.
+///
+/// The other separation test only ever puts the second shape on the positive
+/// side and only ever names the box first, which leaves the sign branch and
+/// one whole arm unexercised — both of which would report a direction pointing
+/// the wrong way, and a sweep built on that walks into what it meant to avoid.
+#[test]
+fn separation_points_the_right_way_from_either_side() {
+    // Boxes, with the second one behind the first on each axis in turn.
+    for (offset, axis) in [(v(-5, 0, 0), 0), (v(0, -5, 0), 1), (v(0, 0, -5), 2)] {
+        let (gap, direction) = separation(cube(1), at(0, 0, 0), cube(1), Transform::at(offset));
+        close(gap, Fixed::from_int(3), "gap");
+        let component = match axis {
+            0 => direction.x,
+            1 => direction.y,
+            _ => direction.z,
+        };
+        close(
+            component,
+            Fixed::from_int(-1),
+            "the direction follows the second shape",
+        );
+    }
+
+    // A sphere named first against a box, which is its own arm.
+    let (gap, direction) = separation(sphere(1), at(0, 0, 0), cube(1), at(5, 0, 0));
+    close(gap, Fixed::from_int(3), "gap");
+    close(direction.x, Fixed::ONE, "pointing at the box");
+
+    // And behind it, so that arm's sign is exercised too.
+    let (gap, direction) = separation(sphere(1), at(0, 0, 0), cube(1), at(-5, 0, 0));
+    close(gap, Fixed::from_int(3), "gap");
+    close(direction.x, Fixed::from_int(-1), "pointing behind");
+}
