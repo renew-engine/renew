@@ -1,0 +1,28 @@
+[package]
+name = "renew-sample-leap-world"
+description = "The leap sample's simulation: a platformer character moved by the collision crate, with a machine-checked digest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "A platformer's rules as a pure fixed-step function of per-tick input: gravity, running, jumping, ground state, and a digest over every value that can change future behaviour."
+maturity = "bootstrap"
+core = false
+simulation = true
+
+extension_points = []
+
+# Simulation only: the world may not reach an OS capability at any dependency
+# depth, and the structure check walks this list to prove it.
+[dependencies]
+renew-ecs = { path = "../../../crates/ecs" }
+renew-fixed = { path = "../../../crates/fixed" }
+renew-frame = { path = "../../../crates/frame" }
+renew-physics2d = { path = "../../../crates/physics2d" }
+
+[lints]
+workspace = true
