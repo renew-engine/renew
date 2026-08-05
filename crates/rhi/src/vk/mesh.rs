@@ -669,16 +669,12 @@ mod tests {
             ),
         ];
         for (vertex_bytes, stride, index_count, expected) in cases {
-            match layout_for(vertex_bytes, stride, index_count) {
-                Err(TargetError::Creation { call, code: 0 }) => assert_eq!(
-                    call, expected,
-                    "wrong rule named for ({vertex_bytes}, {stride}, {index_count})"
-                ),
-                other => panic!(
-                    "({vertex_bytes}, {stride}, {index_count}) should be refused as \
-                     {expected}, got {other:?}"
-                ),
-            }
+            let outcome = layout_for(vertex_bytes, stride, index_count);
+            assert!(
+                matches!(&outcome, Err(TargetError::Creation { call, code: 0 }) if *call == expected),
+                "({vertex_bytes}, {stride}, {index_count}) should be refused as {expected}, \
+                 got {outcome:?}"
+            );
         }
         // And the ordinary case still computes, so the guards above are
         // not simply refusing everything.

@@ -282,16 +282,33 @@ mod tests {
     /// test rather than a const block: const evaluation never executes
     /// at runtime, so its lines read as uncovered to the coverage gate,
     /// and a guard that needs an exemption to exist defeats both.
+    /// The packed width of one attribute.
+    ///
+    /// **Named, so the exhaustive match is reachable.** Inlined into the
+    /// sum below it would only ever run for the formats `SPRITE_LAYOUT`
+    /// happens to use, leaving the others as lines no passing run
+    /// executes — while the match still has to list them, because the
+    /// rendering crate's enum carries no `#[non_exhaustive]` precisely so
+    /// that a new format is a compile error here. Split out, the
+    /// exhaustiveness tripwire is kept and every arm is exercised.
+    fn packed_width(attribute: VertexAttribute) -> usize {
+        match attribute {
+            VertexAttribute::Vec2 => 8,
+            VertexAttribute::Vec3 => 12,
+            VertexAttribute::Vec4 => 16,
+        }
+    }
+
+    #[test]
+    fn every_attribute_reports_its_packed_width() {
+        assert_eq!(packed_width(VertexAttribute::Vec2), 8);
+        assert_eq!(packed_width(VertexAttribute::Vec3), 12);
+        assert_eq!(packed_width(VertexAttribute::Vec4), 16);
+    }
+
     #[test]
     fn the_stride_and_the_layout_describe_the_same_bytes() {
-        let total: usize = SPRITE_LAYOUT
-            .iter()
-            .map(|attribute| match attribute {
-                VertexAttribute::Vec2 => 8,
-                VertexAttribute::Vec3 => 12,
-                VertexAttribute::Vec4 => 16,
-            })
-            .sum();
+        let total: usize = SPRITE_LAYOUT.iter().copied().map(packed_width).sum();
         assert_eq!(
             total,
             fill::INSTANCE_STRIDE,

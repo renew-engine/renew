@@ -975,6 +975,30 @@ fn every_driver_failure_ladder_behaves() {
         }));
     }
 
+    // MB5: the poison gate on mesh creation. Every resource constructor
+    // in the crate refuses on a lost device before touching the driver,
+    // and this proves the mesh one does — reached the way T17 reaches its
+    // own, by losing the device on an unrelated upload first and then
+    // asking. The four rungs above cannot get here: they inject
+    // out-of-host-memory, which fails a call without poisoning anything.
+    verdicts.push(device_case(
+        "MB5",
+        "vkQueueSubmit2=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("MB5", "DeviceLost", &other)),
+                Ok(_) => return Err("MB5: the upload survived a lost device".to_owned()),
+            }
+            let desc = MeshDesc::new(&mesh_bytes, 28, &mesh_indices);
+            match device.create_mesh(&desc) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("MB5", "DeviceLost from create_mesh", &other)),
+                Ok(_) => Err("MB5: a mesh was built on a lost device".to_owned()),
+            }
+        },
+    ));
+
     // ---- D · offscreen render ladder -------------------------------
     // D1-D3: the frame fails before submission, so nothing is in
     // flight: the target stays usable and the next frame succeeds.
