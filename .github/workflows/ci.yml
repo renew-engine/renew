@@ -539,11 +539,23 @@ jobs:
               at += 12 + length
           raw = zlib.decompress(idat)
           assert len(raw) == height * (1 + width * 4), "the stream is the wrong length"
-          # A picture of one flat colour means nothing was drawn.
-          pixels = {raw[i:i + 4] for row in range(height)
-                    for i in [row * (1 + width * 4) + 1]}
-          assert len(pixels) > 1, "every scanline starts with the same pixel; nothing drew"
-          print(f"{len(data)} bytes, {width}x{height}, stream {len(raw)} bytes")
+          # A picture of one flat colour means nothing was drawn. Sampled
+          # over the whole image rather than down one column: the view is
+          # centred, so the left edge is entirely backdrop and a column
+          # probe there proves only that the backdrop is uniform. It did
+          # exactly that once.
+          stride = 1 + width * 4
+          colours = set()
+          for row in range(height):
+              line = raw[row * stride + 1:(row + 1) * stride]
+              for x in range(0, width * 4, 4):
+                  colours.add(bytes(line[x:x + 4]))
+          assert len(colours) >= 4, f"only {len(colours)} colour(s); the geometry did not draw"
+          corner = raw[1:5]
+          middle_row = height // 2
+          centre = raw[middle_row * stride + 1 + (width // 2) * 4:][:4]
+          assert centre != corner, "the middle of the picture is the backdrop; nothing drew there"
+          print(f"{len(data)} bytes, {width}x{height}, {len(colours)} colours")
           CHECK
       # The game's replay-capture oracle on the same pinned rasterizer:
       # committed traces replayed through the driver's own loop, drawn
