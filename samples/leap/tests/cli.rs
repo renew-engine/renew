@@ -101,6 +101,7 @@ fn a_run_is_reproducible_and_discriminating() {
     let options = Options {
         script: Script::Hop,
         ticks: 300,
+        show: false,
         json: false,
         help: false,
     };
