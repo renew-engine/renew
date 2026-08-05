@@ -1710,6 +1710,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-png"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "renew-render2d"
 version = "0.1.0"
 dependencies = [
@@ -1778,6 +1785,7 @@ dependencies = [
  "proptest",
  "renew-fixed",
  "renew-platform",
+ "renew-png",
  "renew-render3d",
  "renew-rhi",
  "renew-sample-cube-world",

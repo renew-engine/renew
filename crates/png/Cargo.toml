@@ -1,0 +1,22 @@
+[package]
+name = "renew-png"
+description = "PNG encoding with no dependencies: RGBA pixels to the bytes of a file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "PNG encoding with no dependencies: RGBA pixels in, the bytes of a file out. It never touches the filesystem."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true

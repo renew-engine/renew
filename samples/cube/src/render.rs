@@ -7,7 +7,7 @@
 //!
 //! This module is the only one here that names a rendering crate. What it
 //! draws comes from [`crate::mesh`], where it lands comes from
-//! [`crate::projection`], and what it writes comes from [`crate::png`];
+//! [`crate::projection`], and what it writes comes from [`renew_png`];
 //! all three are pure and tested without a device.
 
 use renew_render3d::{MeshRenderer, Scene, attachment, pass};
@@ -64,8 +64,8 @@ const BACKDROP: Color = Color::new(0.09, 0.10, 0.13, 1.0);
 /// caller may reasonably carry on.
 pub fn to_png(grid: &Grid, path: &std::path::Path) -> Result<(), RenderError> {
     let pixels = draw(grid)?;
-    let png = crate::png::encode(SIZE, SIZE, &pixels)
-        .ok_or_else(|| RenderError::Output("the encoder refused the image".to_string()))?;
+    let png = renew_png::encode(SIZE, SIZE, &pixels)
+        .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
 }
 
