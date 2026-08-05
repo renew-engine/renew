@@ -25,8 +25,8 @@ use std::rc::Rc;
 
 use renew_rhi::{
     AdapterKind, Attachment, Blend, ClearValue, Color, DepthState, Device, DeviceDesc, DeviceError,
-    Extent, Item, LoadOp, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp, TargetFormat,
-    TextureDesc, Validation, builtin,
+    Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp,
+    TargetFormat, TextureDesc, Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -804,6 +804,242 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
     );
 
     // Teardown first, oracle second: destruction-time findings count.
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One mesh vertex, packed exactly as `MESH_LAYOUT` declares:
+/// clip-space position vec3, colour vec4. The layout slice, the shader's
+/// locations and this function describe the same 28 bytes.
+fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(28);
+    for value in position {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    for value in colour {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
+/// G6: the mesh path — vertex buffer, index buffer, indexed draw — with
+/// a computed oracle rather than a committed artifact.
+///
+/// **No committed golden, on G3's argument rather than in spite of it.**
+/// A committed golden exists for the triangle because a silhouette edge
+/// is where implementations differ. The geometry here is two triangles
+/// covering the target exactly, in one flat colour, so the only edge in
+/// play is the diagonal the two share — and a shared edge is not
+/// somewhere implementations may differ: a sample on it is covered by
+/// exactly one of the two, never both and never neither. With one
+/// colour across all four vertices, interpolation cannot vary the answer
+/// either, so every pixel has one right value on every conformant
+/// adapter.
+///
+/// **What makes this prove indices rather than merely draw:** the second
+/// frame keeps the same four vertices and submits half the index list.
+/// A path that ignored the index buffer would draw the same picture
+/// twice; a path that read it draws half the target and leaves the rest
+/// at the clear colour. The vertex buffer is unchanged between them, so
+/// the index list is the only thing that can account for the difference.
+#[test]
+fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn std::error::Error>>
+{
+    const SIZE: u32 = 32;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(&PipelineDesc::mesh(
+        builtin::MESH,
+        TargetFormat::Rgba8Unorm,
+        builtin::MESH_LAYOUT,
+    ))?;
+
+    // Four corners of the target in clip space, all one colour. Corner
+    // order: 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left.
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let mut vertices = Vec::new();
+    for corner in [
+        [-1.0f32, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ] {
+        vertices.extend(mesh_vertex(corner, green));
+    }
+    // Two triangles sharing the 0-2 diagonal, covering the whole target.
+    let whole = [0u32, 1, 2, 0, 2, 3];
+    let mesh = device.create_mesh(&MeshDesc::new(&vertices, 28, &whole))?;
+    assert_eq!(mesh.vertex_count(), 4, "four corners");
+    assert_eq!(mesh.index_count(), 6, "two triangles");
+    assert_eq!(mesh.vertex_stride(), 28, "vec3 position plus vec4 colour");
+    let shown = format!("{mesh:?}");
+    assert!(shown.starts_with("Mesh"), "{shown}");
+    assert!(shown.contains("index_count"), "{shown}");
+
+    // A clear colour that appears nowhere in the geometry, so a draw
+    // that failed to cover shows as unwritten rather than plausible.
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let items = [Item::new(&pipeline).mesh(&mesh)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            assert_eq!(
+                at(&pixels, x, y),
+                [0, 255, 0, 255],
+                "pixel ({x},{y}) is not covered by the indexed quad on adapter {:?}",
+                device.adapter()
+            );
+        }
+    }
+
+    // Half the index list, same vertices: only the first triangle. It
+    // spans corners 0, 1, 2 — top-left, top-right, bottom-right — so the
+    // bottom-left corner falls outside it and keeps the clear colour.
+    let half = device.create_mesh(&MeshDesc::new(&vertices, 28, &whole[..3]))?;
+    assert_eq!(half.index_count(), 3, "one triangle");
+    let items = [Item::new(&pipeline).mesh(&half)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, SIZE - 1, 0),
+        [0, 255, 0, 255],
+        "the top-right corner is inside the one triangle the indices name"
+    );
+    assert_eq!(
+        at(&pixels, 0, SIZE - 1),
+        [255, 0, 255, 255],
+        "the bottom-left corner is outside it — a path ignoring the index list would cover it"
+    );
+
+    // **This does NOT prove retention, and saying so is the point.**
+    // Dropping a mesh handle and drawing again is the shape of the
+    // texture keep-alive proof, but it cannot carry the same weight
+    // here: this target is synchronous, so `render` has already waited
+    // its fence and no submit outlives the call — the caller's own
+    // borrow covers the only window in which the GPU reads. What the
+    // lines below actually check is that one mesh survives a sibling's
+    // drop and keeps drawing, which is a keep-alive smoke rather than a
+    // race. **The retention table is load-bearing only on the window
+    // path**, where `render` returns before the GPU finishes, and that
+    // is where a proof of it has to live.
+    let items = [Item::new(&pipeline).mesh(&mesh)];
+    let passes = [Pass::new(&magenta, &items)];
+    target.render(&RenderDesc::new(&passes))?;
+    drop(half);
+    target.render(&RenderDesc::new(&passes))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, 0, SIZE - 1),
+        [0, 255, 0, 255],
+        "the whole-quad mesh still draws after another mesh handle was dropped"
+    );
+
+    // One mesh, several items, in one frame — the rule that applies to
+    // per-frame buffers deliberately does not reach geometry, because
+    // there is no copy to race.
+    let twice = [
+        Item::new(&pipeline).mesh(&mesh),
+        Item::new(&pipeline).mesh(&mesh),
+    ];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &twice)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, SIZE / 2, SIZE / 2),
+        [0, 255, 0, 255],
+        "two items may name one mesh"
+    );
+
+    // Teardown first, oracle second: destruction-time findings count.
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// G7: one item carrying **both** geometry and per-frame bytes — the two
+/// vertex streams bound in one draw, at two bindings with two input
+/// rates, across one location space.
+///
+/// **This is the combination nothing in the tree consumes yet**, and it
+/// is exercised here rather than left to the first caller for two
+/// reasons. It is the arm of the retention enumeration that no other test
+/// reaches, so without it a mesh drawn beside instance data would be
+/// retained by code proven only by reading. And it is the shape the
+/// camera will take at the renderer step — a per-instance transform
+/// riding the buffer that already exists — so getting the binding numbers
+/// wrong here is cheaper to find now than then.
+///
+/// The oracle is the same flat-colour full-target quad as G6, drawn with
+/// a one-instance stream attached. Its pixels must be unchanged: the
+/// instance data is bound and unread by this shader, so a wrong binding
+/// index shows up as a validation error rather than as a colour, which is
+/// why validation is consulted at the end.
+#[test]
+fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 16;
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::mesh(
+            builtin::MESH,
+            TargetFormat::Rgba8Unorm,
+            builtin::MESH_LAYOUT,
+        )
+        .instance_input(builtin::INSTANCED_LAYOUT),
+    )?;
+    let mut vertices = Vec::new();
+    for corner in [
+        [-1.0f32, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ] {
+        vertices.extend(mesh_vertex(corner, [0.0, 0.0, 1.0, 1.0]));
+    }
+    let mesh = device.create_mesh(&MeshDesc::new(&vertices, 28, &[0, 1, 2, 0, 2, 3]))?;
+    let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+    let bytes = instance([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]);
+
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let items = [Item::new(&pipeline)
+        .mesh(&mesh)
+        .frame_data(renew_rhi::FrameData::new(&buffer, &bytes, 1))];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+        assert_eq!(
+            pixel,
+            [0, 0, 255, 255],
+            "pixel {index} is not the mesh's own colour on adapter {:?} — a per-instance stream              bound where the per-vertex one belongs would change it",
+            device.adapter()
+        );
+    }
+
+    // Teardown first, oracle second: a wrong binding index is a
+    // validation finding rather than a colour, so this is the assertion
+    // that actually judges the two-stream layout.
     drop(target);
     drop(pipeline);
     assert_no_validation_errors(&device);

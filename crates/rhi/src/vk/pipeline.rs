@@ -1,6 +1,14 @@
-//! The v0 graphics pipeline: two SPIR-V stages, no vertex buffers,
-//! dynamic rendering into one color attachment, and optionally one
-//! sampled texture.
+//! The v0 graphics pipeline: two SPIR-V stages, dynamic rendering into
+//! one color attachment, optionally one sampled texture, and optionally
+//! vertex input — per-vertex at binding 0, per-instance at binding 1.
+//!
+//! **Two pipeline shapes, and which one a pipeline is decides where its
+//! vertex count comes from.** A generative pipeline's stages write their
+//! own vertex list, so the count belongs to the shader and travels with
+//! it in [`Shaders`]. A mesh pipeline reads a per-vertex stream, so the
+//! count belongs to the geometry and arrives at the draw — which is why
+//! its stages are a [`MeshShaders`] carrying no count at all rather than
+//! a `Shaders` carrying one that nothing reads.
 
 use std::fmt;
 use std::rc::Rc;
@@ -32,24 +40,40 @@ impl TargetFormat {
     }
 }
 
-/// One per-instance vertex attribute, in declaration order.
+/// One vertex attribute, in declaration order.
 ///
-/// Closed and small on purpose: these are the shapes the instanced-quad
-/// path consumes today, and a format nobody binds is an enum arm no test
+/// Closed and small on purpose: these are the shapes the paths in this
+/// crate consume today, and a format nobody binds is an enum arm no test
 /// can reach. Offsets and locations are derived from position in the
 /// slice — the caller declares an order, never arithmetic.
+///
+/// **Named for what it is rather than for the rate it arrives at.** It
+/// described per-instance data only while per-instance data was the only
+/// kind; a per-vertex stream reads the same formats through the same
+/// descriptions, and a type named `InstanceAttribute` sitting in a
+/// per-vertex list would misdescribe its own module.
+///
+/// **Deliberately not `#[non_exhaustive]`**, following the resolution
+/// that removed the attribute from this module's sibling enums: growing
+/// it should be a compile error at every in-tree match, naming each site
+/// that must handle the new format, rather than routing it silently into
+/// a wildcard arm no test can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstanceAttribute {
+pub enum VertexAttribute {
     /// Two 32-bit floats.
     Vec2,
+    /// Three 32-bit floats — a position, which is the one shape a mesh
+    /// cannot express as any of the others without padding every vertex.
+    Vec3,
     /// Four 32-bit floats.
     Vec4,
 }
 
-impl InstanceAttribute {
+impl VertexAttribute {
     pub(crate) fn byte_len(self) -> u32 {
         match self {
             Self::Vec2 => 8,
+            Self::Vec3 => 12,
             Self::Vec4 => 16,
         }
     }
@@ -57,10 +81,28 @@ impl InstanceAttribute {
     pub(crate) fn format(self) -> vk::Format {
         match self {
             Self::Vec2 => vk::Format::R32G32_SFLOAT,
+            Self::Vec3 => vk::Format::R32G32B32_SFLOAT,
             Self::Vec4 => vk::Format::R32G32B32A32_SFLOAT,
         }
     }
 }
+
+/// The buffer binding a per-vertex stream is bound at.
+///
+/// **Fixed rather than derived from which streams a pipeline declares.**
+/// Vulkan's input rate is a property of a binding, so two rates need two
+/// bindings; assigning them by rate rather than by presence means the
+/// number is a constant every reader can check, and the pipeline builder
+/// and both record paths read this one definition instead of three
+/// agreeing literals. A pipeline declaring only per-instance input leaves
+/// binding 0 undeclared, which is legal — bindings need not be dense —
+/// and changes no GLSL anywhere, because a shader declares locations, not
+/// bindings.
+pub(crate) const VERTEX_BINDING: u32 = 0;
+
+/// The buffer binding a per-instance stream is bound at. See
+/// [`VERTEX_BINDING`] for why these are constants rather than derived.
+pub(crate) const INSTANCE_BINDING: u32 = 1;
 
 /// Pipeline construction parameters. The SPIR-V is borrowed byte
 /// slices — [`crate::builtin`] provides the embedded v0 shaders.
@@ -86,18 +128,31 @@ pub struct PipelineDesc<'a> {
     pub target_format: TargetFormat,
     /// How many vertices the vertex stage generates for one draw.
     ///
-    /// With no vertex buffers, the vertex list is written into the
+    /// With no per-vertex buffer, the vertex list is written into the
     /// shader, so its length is a property of the shader and not of the
     /// frame -- which is why it is set here and the caller never passes
     /// a count to a draw. Asking a stage for more vertices than it has
     /// indexes past the end of its own constant array.
+    ///
+    /// **Ignored by a pipeline that declares [`Self::vertex_input`]**,
+    /// whose count comes from the geometry instead. The two are the
+    /// mutually exclusive answers to one question, and which answers it
+    /// is decided by whether a per-vertex layout is declared.
     pub vertex_count: u32,
-    /// Per-instance vertex input, or `None` for the shaders that write
-    /// their vertex list into the source. One binding, instance rate:
-    /// the per-frame buffer is the only vertex buffer this crate binds,
-    /// and its bytes advance per instance, never per vertex — corners
-    /// come from `gl_VertexIndex` expansion, per the house shader style.
-    pub instance_input: Option<&'a [InstanceAttribute]>,
+    /// Per-vertex input, or `None` for the shaders that write their
+    /// vertex list into the source.
+    ///
+    /// Declaring this makes the pipeline a *mesh* pipeline: it may only
+    /// be drawn by an item naming geometry, and the draw becomes indexed
+    /// with its count taken from that geometry. The frame contract
+    /// refuses the mismatch by name before any GPU call, the same way it
+    /// refuses a depth-testing pipeline in a depthless pass.
+    pub vertex_input: Option<&'a [VertexAttribute]>,
+    /// Per-instance input, or `None`. Bytes here advance once per
+    /// instance rather than once per vertex — for the shaders that
+    /// expand corners from `gl_VertexIndex`, this is the only stream
+    /// they read.
+    pub instance_input: Option<&'a [VertexAttribute]>,
     /// How this pipeline's output combines with the target's contents.
     /// [`Blend::Opaque`] — no blending — unless the builder says
     /// otherwise.
@@ -150,12 +205,16 @@ pub enum Blend {
 /// generates.
 ///
 /// **The three travel together because they are only correct together.**
-/// With no vertex buffers, the vertex list is written into the shader,
-/// so the count belongs to that shader and to no other. Passed
-/// separately they are two safe values that compile in any combination:
-/// too low and the draw renders part of the geometry, too high and the
-/// stage indexes past the end of its own constant array. Bundled, the
-/// mismatch cannot be spelled.
+/// A stage that reads no per-vertex buffer writes its vertex list into
+/// the shader, so the count belongs to that shader and to no other.
+/// Passed separately they are two safe values that compile in any
+/// combination: too low and the draw renders part of the geometry, too
+/// high and the stage indexes past the end of its own constant array.
+/// Bundled, the mismatch cannot be spelled.
+///
+/// **A stage that *does* read a per-vertex buffer takes [`MeshShaders`]
+/// instead**, because its premise is the opposite one: the count belongs
+/// to the geometry, so there is none here to bundle.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Shaders<'a> {
@@ -179,6 +238,45 @@ impl<'a> Shaders<'a> {
     }
 }
 
+/// A vertex/fragment pair whose vertex stage reads a per-vertex stream.
+///
+/// **A second bundle type rather than a count-carrying one with the
+/// count ignored.** [`Shaders`] bundles a vertex count because a stage
+/// that writes its own vertex list owns that number. A mesh stage does
+/// not: the count belongs to the geometry, and arrives with it at the
+/// draw. Given a single bundle, a mesh pipeline would have to carry a
+/// number nothing reads — and a caller writing `Shaders::new(vs, fs, 6)`
+/// for a mesh pipeline would get a silently ignored `6`. Two types remove
+/// that from the constructors, which is the same reasoning that makes a
+/// clear value ride the load op that uses it.
+///
+/// **What this does not do, stated because the stronger claim is the
+/// tempting one:** it does not make the bad value *unspellable*.
+/// `PipelineDesc`'s fields are `pub`, and `#[non_exhaustive]` blocks
+/// struct-literal construction from outside the crate rather than
+/// assignment to a field of a value already built — so a caller can still
+/// set `vertex_count` on a mesh descriptor, or clear `vertex_input` on
+/// one. Both are then caught at `render` by the frame contract rather
+/// than by the compiler. Closing that would mean private fields with
+/// accessors across every descriptor in this crate, which one pipeline
+/// shape does not justify.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct MeshShaders<'a> {
+    /// Vertex stage SPIR-V, declaring per-vertex inputs.
+    pub vertex: &'a [u8],
+    /// Fragment stage SPIR-V.
+    pub fragment: &'a [u8],
+}
+
+impl<'a> MeshShaders<'a> {
+    /// A stage pair that reads geometry.
+    #[must_use]
+    pub fn new(vertex: &'a [u8], fragment: &'a [u8]) -> Self {
+        Self { vertex, fragment }
+    }
+}
+
 impl<'a> PipelineDesc<'a> {
     /// The two things a pipeline cannot be built without.
     ///
@@ -196,6 +294,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_count: shaders.vertex_count,
             blend: Blend::Opaque,
             texture: None,
+            vertex_input: None,
             instance_input: None,
             depth_state: None,
         }
@@ -210,13 +309,58 @@ impl<'a> PipelineDesc<'a> {
         self
     }
 
+    /// A mesh pipeline: stages that read a per-vertex stream of
+    /// `layout`, drawing geometry supplied per item.
+    ///
+    /// **The layout is positional, not a builder, and the shaders are a
+    /// different type from the generative ones.** Both follow from the
+    /// same fact: a mesh pipeline's vertex count comes from the geometry,
+    /// so there is no count to supply and no meaningful pipeline without
+    /// a layout. Between them, "a mesh pipeline carrying a vertex count"
+    /// and "a mesh pipeline with no per-vertex layout" are values that
+    /// cannot be written down rather than mistakes that are documented.
+    ///
+    /// Locations and offsets are derived from position in `layout`; the
+    /// shader's `location(n)` list and this slice describe the same bytes
+    /// or the draw reads garbage, which is why the mesh builtin and its
+    /// layout slice live beside each other. The packed sum of the
+    /// attributes is the stride every mesh drawn by this pipeline must
+    /// have — a disagreement fetches past the end of the mesh's
+    /// allocation, so it is refused by a retained assertion where the
+    /// draw is recorded.
+    #[must_use]
+    pub fn mesh(
+        shaders: MeshShaders<'a>,
+        target_format: TargetFormat,
+        layout: &'a [VertexAttribute],
+    ) -> Self {
+        Self {
+            vertex_spirv: shaders.vertex,
+            fragment_spirv: shaders.fragment,
+            target_format,
+            // Never read on this path: the draw takes its count from the
+            // geometry. Zero rather than a sentinel because no caller can
+            // supply it and nothing consults it.
+            vertex_count: 0,
+            blend: Blend::Opaque,
+            texture: None,
+            vertex_input: Some(layout),
+            instance_input: None,
+            depth_state: None,
+        }
+    }
+
     /// Declare per-instance vertex input, in order. Locations and
     /// offsets are derived from position; the shader's `location(n)`
     /// list and this slice describe the same layout or the draw reads
     /// garbage, which is why the instanced builtin and its layout slice
     /// live beside each other.
+    ///
+    /// Where a pipeline declares both, per-vertex locations come first
+    /// and per-instance locations continue after them — one location
+    /// space across two bindings, as Vulkan requires.
     #[must_use]
-    pub fn instance_input(mut self, attributes: &'a [InstanceAttribute]) -> Self {
+    pub fn instance_input(mut self, attributes: &'a [VertexAttribute]) -> Self {
         self.instance_input = Some(attributes);
         self
     }
@@ -468,6 +612,14 @@ pub struct RenderPipeline {
     layout: vk::PipelineLayout,
     pub(crate) format: TargetFormat,
     pub(crate) vertex_count: u32,
+    /// Whether this pipeline reads a per-vertex stream — that is, whether
+    /// it is a mesh pipeline. The frame contract asserts it matches
+    /// whether the item names geometry, exactly as it does for depth.
+    pub(crate) vertex_input: bool,
+    /// Packed stride of the per-vertex stream; zero when there is none.
+    /// The record path asserts a mesh's stride equals it, because a
+    /// disagreement fetches past the end of the mesh's allocation.
+    pub(crate) vertex_stride: u32,
     /// Whether this pipeline carries depth state — the targets assert
     /// it matches the pass it draws in.
     pub(crate) depth: bool,
@@ -658,6 +810,97 @@ fn creation(call: &'static str, code: vk::Result) -> PipelineError {
     }
 }
 
+/// How many attributes one pipeline may declare across both streams.
+///
+/// A fixed ceiling rather than a `Vec`, so building a pipeline layout
+/// allocates nothing and the arrays below are stack-sized. Sixteen is
+/// four times what any consumer in this tree declares and comfortably
+/// under `maxVertexInputAttributes`, whose guaranteed floor is sixteen —
+/// so a layout this accepts is one every conformant adapter accepts.
+pub(crate) const MAX_VERTEX_ATTRIBUTES: usize = 16;
+
+/// The Vulkan vertex-input description a pair of attribute lists
+/// produces, plus the per-vertex stride the record path checks a mesh
+/// against.
+pub(crate) struct VertexInputLayout {
+    pub(crate) bindings: [vk::VertexInputBindingDescription; 2],
+    pub(crate) binding_count: usize,
+    pub(crate) attributes: [vk::VertexInputAttributeDescription; MAX_VERTEX_ATTRIBUTES],
+    pub(crate) attribute_count: usize,
+    /// Packed sum of the per-vertex attributes; zero when none are
+    /// declared.
+    pub(crate) vertex_stride: u32,
+}
+
+/// Derive bindings, attributes and the per-vertex stride from what a
+/// pipeline declares.
+///
+/// **One location space across two bindings, per-vertex first.** Vulkan
+/// numbers shader input locations globally, not per binding, so the two
+/// lists cannot both start at zero. Per-vertex first is arbitrary but
+/// fixed, and it is what keeps an instance-only pipeline's locations at
+/// `0..n` — which is why every existing shader and its committed SPIR-V
+/// are untouched by this becoming two streams.
+///
+/// # Panics
+///
+/// Declaring more than [`MAX_VERTEX_ATTRIBUTES`] across both lists is a
+/// contract violation, asserted: the arrays are fixed-width, so the
+/// alternative is a silently truncated layout whose draw reads the wrong
+/// bytes.
+pub(crate) fn vertex_input_layout(
+    per_vertex: Option<&[VertexAttribute]>,
+    per_instance: Option<&[VertexAttribute]>,
+) -> VertexInputLayout {
+    let vertex = per_vertex.unwrap_or(&[]);
+    let instance = per_instance.unwrap_or(&[]);
+    assert!(
+        vertex.len() + instance.len() <= MAX_VERTEX_ATTRIBUTES,
+        "a pipeline declares at most {MAX_VERTEX_ATTRIBUTES} vertex attributes across both \
+         streams, got {} per-vertex and {} per-instance",
+        vertex.len(),
+        instance.len()
+    );
+
+    let mut layout = VertexInputLayout {
+        bindings: [vk::VertexInputBindingDescription::default(); 2],
+        binding_count: 0,
+        attributes: [vk::VertexInputAttributeDescription::default(); MAX_VERTEX_ATTRIBUTES],
+        attribute_count: 0,
+        vertex_stride: 0,
+    };
+    let mut location = 0u32;
+    for (attributes, binding, rate) in [
+        (vertex, VERTEX_BINDING, vk::VertexInputRate::VERTEX),
+        (instance, INSTANCE_BINDING, vk::VertexInputRate::INSTANCE),
+    ] {
+        if attributes.is_empty() {
+            continue;
+        }
+        let mut stride = 0u32;
+        for attribute in attributes {
+            layout.attributes[layout.attribute_count] =
+                vk::VertexInputAttributeDescription::default()
+                    .location(location)
+                    .binding(binding)
+                    .format(attribute.format())
+                    .offset(stride);
+            layout.attribute_count += 1;
+            location += 1;
+            stride += attribute.byte_len();
+        }
+        layout.bindings[layout.binding_count] = vk::VertexInputBindingDescription::default()
+            .binding(binding)
+            .stride(stride)
+            .input_rate(rate);
+        layout.binding_count += 1;
+        if binding == VERTEX_BINDING {
+            layout.vertex_stride = stride;
+        }
+    }
+    layout
+}
+
 impl Device {
     /// Create a sampler.
     ///
@@ -822,36 +1065,19 @@ impl Device {
                 .module(fs)
                 .name(c"main"),
         ];
-        // With no instance input this stays the empty state every
-        // existing pipeline was built with. With it, one binding at
-        // instance rate: stride is the packed sum of the declared
-        // attributes, locations and offsets derived from order.
-        let mut attribute_descs = Vec::new();
-        let mut instance_stride = 0u32;
-        if let Some(attributes) = desc.instance_input {
-            for (index, attribute) in attributes.iter().enumerate() {
-                // The list is a handful of attributes; a count that
-                // overflows u32 is not a real pipeline.
-                #[allow(clippy::cast_possible_truncation)]
-                attribute_descs.push(
-                    vk::VertexInputAttributeDescription::default()
-                        .location(index as u32)
-                        .binding(0)
-                        .format(attribute.format())
-                        .offset(instance_stride),
-                );
-                instance_stride += attribute.byte_len();
-            }
-        }
-        let binding_descs = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(instance_stride)
-            .input_rate(vk::VertexInputRate::INSTANCE)];
+        // With neither stream declared this stays the empty state every
+        // generative pipeline was built with. The layout itself is a
+        // pure function, so its cross-stream location numbering — the
+        // part that compiles and binds happily while reading the wrong
+        // bytes — is unit-tested without a device.
+        let vertex_layout = vertex_input_layout(desc.vertex_input, desc.instance_input);
         let mut vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        if !attribute_descs.is_empty() {
+        if vertex_layout.binding_count > 0 {
             vertex_input = vertex_input
-                .vertex_binding_descriptions(&binding_descs)
-                .vertex_attribute_descriptions(&attribute_descs);
+                .vertex_binding_descriptions(&vertex_layout.bindings[..vertex_layout.binding_count])
+                .vertex_attribute_descriptions(
+                    &vertex_layout.attributes[..vertex_layout.attribute_count],
+                );
         }
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -953,6 +1179,8 @@ impl Device {
             layout,
             format: desc.target_format,
             vertex_count: desc.vertex_count,
+            vertex_input: desc.vertex_input.is_some(),
+            vertex_stride: vertex_layout.vertex_stride,
             depth: desc.depth_state.is_some(),
             descriptors,
             _bound: desc.texture.clone(),
@@ -992,6 +1220,107 @@ mod tests {
         let desc = SamplerDesc::atlas();
         assert_eq!(desc.filter, Filter::Nearest);
         assert_eq!(desc.address, AddressMode::ClampToEdge);
+    }
+
+    /// Every attribute's size and Vulkan spelling, all three arms. Here
+    /// rather than in the device suite for the reason the filter test
+    /// above states: that suite skips wherever the validation layer is
+    /// absent, which is most machines.
+    #[test]
+    fn every_vertex_attribute_maps_to_its_vulkan_spelling() {
+        assert_eq!(VertexAttribute::Vec2.byte_len(), 8);
+        assert_eq!(VertexAttribute::Vec3.byte_len(), 12);
+        assert_eq!(VertexAttribute::Vec4.byte_len(), 16);
+        assert_eq!(VertexAttribute::Vec2.format(), vk::Format::R32G32_SFLOAT);
+        assert_eq!(VertexAttribute::Vec3.format(), vk::Format::R32G32B32_SFLOAT);
+        assert_eq!(
+            VertexAttribute::Vec4.format(),
+            vk::Format::R32G32B32A32_SFLOAT
+        );
+    }
+
+    /// **The two streams share one location space, and this is where
+    /// getting it wrong would be invisible.** A layout with repeated or
+    /// gapped locations builds a pipeline the driver accepts and that
+    /// reads the wrong bytes; no image oracle would name the cause. So
+    /// the numbering is pinned directly, for all four declaration shapes.
+    #[test]
+    fn the_two_streams_share_one_location_space() {
+        let vertex = [VertexAttribute::Vec3, VertexAttribute::Vec4];
+        let instance = [VertexAttribute::Vec2, VertexAttribute::Vec4];
+
+        let neither = vertex_input_layout(None, None);
+        assert_eq!(neither.binding_count, 0, "no streams, no bindings");
+        assert_eq!(neither.attribute_count, 0);
+        assert_eq!(neither.vertex_stride, 0);
+
+        // Instance-only is what every pipeline in the tree declared
+        // before meshes existed: locations must still start at zero, or
+        // the committed SPIR-V beside them would stop matching.
+        let only_instance = vertex_input_layout(None, Some(&instance));
+        assert_eq!(only_instance.binding_count, 1);
+        assert_eq!(only_instance.bindings[0].binding, INSTANCE_BINDING);
+        assert_eq!(only_instance.bindings[0].stride, 24);
+        assert_eq!(
+            only_instance.bindings[0].input_rate,
+            vk::VertexInputRate::INSTANCE
+        );
+        assert_eq!(only_instance.attributes[0].location, 0);
+        assert_eq!(only_instance.attributes[1].location, 1);
+        assert_eq!(only_instance.attributes[1].offset, 8);
+        assert_eq!(
+            only_instance.vertex_stride, 0,
+            "no per-vertex stream means no stride for a mesh to match"
+        );
+
+        let only_vertex = vertex_input_layout(Some(&vertex), None);
+        assert_eq!(only_vertex.binding_count, 1);
+        assert_eq!(only_vertex.bindings[0].binding, VERTEX_BINDING);
+        assert_eq!(
+            only_vertex.bindings[0].input_rate,
+            vk::VertexInputRate::VERTEX
+        );
+        assert_eq!(only_vertex.vertex_stride, 28, "vec3 + vec4");
+        assert_eq!(only_vertex.attributes[1].offset, 12);
+
+        let both = vertex_input_layout(Some(&vertex), Some(&instance));
+        assert_eq!(both.binding_count, 2);
+        assert_eq!(both.attribute_count, 4);
+        assert_eq!(both.vertex_stride, 28);
+        // Per-vertex first, per-instance continuing after it: one
+        // ascending run with no repeat and no gap.
+        let locations: Vec<u32> = both.attributes[..4].iter().map(|a| a.location).collect();
+        assert_eq!(locations, vec![0, 1, 2, 3], "one location space");
+        let bindings: Vec<u32> = both.attributes[..4].iter().map(|a| a.binding).collect();
+        assert_eq!(
+            bindings,
+            vec![
+                VERTEX_BINDING,
+                VERTEX_BINDING,
+                INSTANCE_BINDING,
+                INSTANCE_BINDING
+            ],
+            "each attribute reads from its own stream's binding"
+        );
+        // Offsets restart per stream: they are within a binding, not
+        // across the pair.
+        let offsets: Vec<u32> = both.attributes[..4].iter().map(|a| a.offset).collect();
+        assert_eq!(offsets, vec![0, 12, 0, 8]);
+    }
+
+    /// The fixed-width arrays make over-declaring a truncation rather
+    /// than a reallocation, so it is refused by name instead.
+    #[test]
+    fn more_attributes_than_the_arrays_hold_are_refused() {
+        let many = [VertexAttribute::Vec2; MAX_VERTEX_ATTRIBUTES];
+        assert!(
+            std::panic::catch_unwind(|| vertex_input_layout(Some(&many), Some(&many))).is_err(),
+            "twice the ceiling across both streams must refuse, not truncate"
+        );
+        assert!(
+            std::panic::catch_unwind(|| vertex_input_layout(Some(&many), None)).is_ok(),
+            "exactly the ceiling is legal"
+        );
     }
 
     /// The two constructors are decisions, so they are asserted: the

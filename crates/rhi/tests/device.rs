@@ -8,8 +8,8 @@
 
 use renew_rhi::{
     AddressMode, Attachment, BufferUsage, ClearValue, Color, DepthState, Device, DeviceDesc,
-    DeviceError, Extent, Filter, FrameData, Item, LoadOp, Pass, PipelineDesc, PipelineError,
-    RenderDesc, SamplerDesc, Shaders, StoreOp, TargetFormat, Validation, builtin,
+    DeviceError, Extent, Filter, FrameData, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
+    PipelineError, RenderDesc, SamplerDesc, Shaders, StoreOp, TargetFormat, Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -512,15 +512,58 @@ fn malformed_frames_are_refused_by_name() {
                 .expect("boundary buffer")
         })
         .collect();
+    refused("a ninth distinct buffer", "distinct resources", &|target| {
+        let color = clear(black);
+        let items: Vec<Item<'_>> = many
+            .iter()
+            .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
+            .collect();
+        let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+    });
+
+    // The mesh half of the same contract. A mesh pipeline and a
+    // generative one refuse the opposite mistakes, and the stride rule
+    // guards the fetch itself.
+    let mesh_pipeline = device
+        .create_pipeline(&PipelineDesc::mesh(
+            builtin::MESH,
+            TargetFormat::Rgba8Unorm,
+            builtin::MESH_LAYOUT,
+        ))
+        .expect("mesh pipeline");
+    let mesh = device
+        .create_mesh(&MeshDesc::new(&[0u8; 28 * 3], 28, &[0, 1, 2]))
+        .expect("mesh");
     refused(
-        "a ninth distinct buffer",
-        "distinct per-frame buffers",
+        "a mesh pipeline drawn with no geometry",
+        "names geometry exactly when",
         &|target| {
             let color = clear(black);
-            let items: Vec<Item<'_>> = many
-                .iter()
-                .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
-                .collect();
+            let items = [Item::new(&mesh_pipeline)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "geometry on a pipeline that generates its own vertices",
+        "names geometry exactly when",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&pipeline).mesh(&mesh)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // A stride the pipeline does not pack to: the mesh's own indices stay
+    // inside its own vertex count, and the fetch still runs off the end,
+    // which is why this rule exists separately from the creation check.
+    let wrong_stride = device
+        .create_mesh(&MeshDesc::new(&[0u8; 32 * 3], 32, &[0, 1, 2]))
+        .expect("mesh with a stride the mesh pipeline does not pack to");
+    refused(
+        "a mesh whose stride the pipeline does not pack to",
+        "must equal the stride",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&mesh_pipeline).mesh(&wrong_stride)];
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );

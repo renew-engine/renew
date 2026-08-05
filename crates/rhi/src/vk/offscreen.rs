@@ -8,11 +8,10 @@ use ash::vk;
 
 use crate::config::Extent;
 use crate::error::TargetError;
-use crate::vk::buffer::BufferInner;
 use crate::vk::depth::{self, DepthResources};
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
-use crate::vk::pass::{self, MAX_RETAINED_BUFFERS, RenderDesc};
-use crate::vk::pipeline::TargetFormat;
+use crate::vk::pass::{self, MAX_RETAINED_RESOURCES, RenderDesc, Retained};
+use crate::vk::pipeline::{INSTANCE_BINDING, TargetFormat, VERTEX_BINDING};
 use crate::vk::transition::{self, ImageUse};
 
 /// Bytes per pixel of the fixed RGBA8 format.
@@ -152,7 +151,7 @@ pub struct OffscreenTarget {
     /// format in the chain. One, not per-slot: this target is
     /// synchronous.
     depth: Option<DepthResources>,
-    /// Buffers the recorded work references, retained so a caller
+    /// Resources the recorded work references, retained so a caller
     /// dropping its handle cannot free memory the submit still reads.
     /// Cleared at the top of the next render's copy phase — where the
     /// previous render's tail wait has proven the work ended — and in
@@ -160,7 +159,7 @@ pub struct OffscreenTarget {
     /// timed out) the entries deliberately survive: the submit may
     /// still be reading them, and the wedged flag keeps every later
     /// call from touching this table until Drop's quiesce.
-    retained: [Option<Rc<BufferInner>>; MAX_RETAINED_BUFFERS],
+    retained: [Option<Retained>; MAX_RETAINED_RESOURCES],
     /// Set when a submitted frame never provably completed (a fence
     /// wait timed out or failed): GPU work may still be writing the
     /// readback buffer, so reading it would be a data race, and the
@@ -442,8 +441,12 @@ impl OffscreenTarget {
     /// on an attachment's first use in the frame; clear values must
     /// match their attachment's kind and a depth clear its documented
     /// range; an item's pipeline depth state must match its pass; one
-    /// buffer feeds at most one item per frame, and a frame carries at
-    /// most the retention table's width of distinct buffers. Frame data
+    /// buffer feeds at most one item per frame; an item names geometry
+    /// exactly when its pipeline declares per-vertex input, and a mesh's
+    /// vertex stride equals the stride that pipeline's layout packs to;
+    /// and a frame carries at most the retention table's width of
+    /// distinct resources — per-frame buffers and meshes together, a
+    /// mesh counting once however many items name it. Frame data
     /// longer than its buffer's per-frame capacity also panics through
     /// a retained assertion: the length bounds a copy into mapped
     /// device memory, which makes it a memory-safety boundary rather
@@ -502,6 +505,29 @@ impl OffscreenTarget {
         let mut retained_count = 0usize;
         for pass in desc.passes {
             for item in pass.items {
+                if let Some(mesh) = item.mesh {
+                    debug_assert!(
+                        Rc::ptr_eq(&mesh.inner.shared, &self.shared),
+                        "mesh and target come from different devices"
+                    );
+                }
+                // Retention is enumerated by one shared function with a
+                // total match over the item's shape, so a resource class
+                // added to `Item` cannot be skipped here silently. A mesh
+                // named by several items is retained once — the frame
+                // contract bounded the distinct count, and a duplicate
+                // entry would only shorten the table.
+                for resource in pass::retained_of(item).into_iter().flatten() {
+                    if let Retained::Mesh(mesh) = &resource
+                        && self.retained[..retained_count].iter().any(|held| {
+                            matches!(held, Some(Retained::Mesh(seen)) if Rc::ptr_eq(seen, mesh))
+                        })
+                    {
+                        continue;
+                    }
+                    self.retained[retained_count] = Some(resource);
+                    retained_count += 1;
+                }
                 let Some(data) = &item.frame_data else {
                     continue;
                 };
@@ -537,13 +563,11 @@ impl OffscreenTarget {
                         data.bytes.len(),
                     );
                 }
-                // The submit this frame records will read the region
-                // until the tail wait proves otherwise; hold the memory
-                // past any caller drop until then — the wedge arm is
-                // exactly the path where the caller's borrow ends while
-                // the GPU may still read.
-                self.retained[retained_count] = Some(Rc::clone(inner));
-                retained_count += 1;
+                // Retention for this buffer was recorded above, before
+                // the copy: the submit this frame records will read the
+                // region until the tail wait proves otherwise, and the
+                // wedge arm is exactly the path where the caller's borrow
+                // ends while the GPU may still read.
             }
         }
         let device = &self.shared.device;
@@ -677,6 +701,25 @@ impl OffscreenTarget {
                         item.pipeline.pipeline,
                     );
                     item.pipeline.bind_descriptors(self.cmd);
+                    if let Some(mesh) = item.mesh {
+                        // A mesh has no slots — its bytes were written
+                        // once at creation and never again — so both
+                        // targets bind it at the same offsets, and the
+                        // per-frame ring's slot arithmetic simply does
+                        // not arise for it.
+                        device.cmd_bind_vertex_buffers(
+                            self.cmd,
+                            VERTEX_BINDING,
+                            &[mesh.inner.buffer],
+                            &[0],
+                        );
+                        device.cmd_bind_index_buffer(
+                            self.cmd,
+                            mesh.inner.buffer,
+                            mesh.inner.index_offset,
+                            vk::IndexType::UINT32,
+                        );
+                    }
                     let instances = match &item.frame_data {
                         Some(data) => {
                             // Slot zero always: this target is
@@ -686,7 +729,7 @@ impl OffscreenTarget {
                             // wait proves the read ended.
                             device.cmd_bind_vertex_buffers(
                                 self.cmd,
-                                0,
+                                INSTANCE_BINDING,
                                 &[data.buffer.inner.buffer],
                                 &[0],
                             );
@@ -694,7 +737,23 @@ impl OffscreenTarget {
                         }
                         None => 1,
                     };
-                    device.cmd_draw(self.cmd, item.pipeline.vertex_count, instances, 0, 0);
+                    // The count comes from whichever half owns it: the
+                    // geometry for a mesh draw, the shader for a stage
+                    // that writes its own vertex list. The frame contract
+                    // already refused the mismatch.
+                    match item.mesh {
+                        Some(mesh) => device.cmd_draw_indexed(
+                            self.cmd,
+                            mesh.inner.index_count,
+                            instances,
+                            0,
+                            0,
+                            0,
+                        ),
+                        None => {
+                            device.cmd_draw(self.cmd, item.pipeline.vertex_count, instances, 0, 0);
+                        }
+                    }
                 }
                 device.cmd_end_rendering(self.cmd);
             }

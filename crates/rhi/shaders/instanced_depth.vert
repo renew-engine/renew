@@ -5,7 +5,7 @@
 // per-vertex buffer exists); placement, depth and colour read per
 // instance from the one bound vertex buffer at instance rate.
 //
-// Layout here and the `InstanceAttribute` slice at pipeline creation
+// Layout here and the `VertexAttribute` slice declared as this pipeline's instance input
 // describe the same bytes: location 0 = vec4 (xy centre in NDC, z
 // depth, w unused), location 1 = vec4 colour. Change one and the other
 // in the same commit or the draw reads garbage.

@@ -9,6 +9,7 @@
 use std::fmt;
 
 use crate::config::Color;
+use crate::vk::mesh::Mesh;
 use crate::vk::pipeline::{FrameData, RenderPipeline};
 
 /// Everything one frame needs, for either target: the passes, in order.
@@ -136,12 +137,25 @@ pub enum ClearValue {
     Depth(f32),
 }
 
-/// One draw: a pipeline, and optionally this frame's bytes.
+/// One draw: a pipeline, optionally the geometry it walks, and
+/// optionally this frame's bytes.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct Item<'a> {
     /// The pipeline the draw binds.
     pub pipeline: &'a RenderPipeline,
+    /// The geometry this draw walks, making it an indexed draw whose
+    /// count comes from the mesh.
+    ///
+    /// Present exactly when the pipeline declares per-vertex input —
+    /// asserted before any GPU call, because a mesh pipeline drawn
+    /// without geometry reads an unbound binding and geometry handed to
+    /// a generative pipeline is silently ignored.
+    ///
+    /// **Unlike per-frame bytes, a mesh may be named by any number of
+    /// items** — there is no copy to race, so the one-buffer-one-item
+    /// rule below does not reach it.
+    pub mesh: Option<&'a Mesh>,
     /// `FrameData` contained, not forked; room to grow (a
     /// first-instance or vertex-offset field) without touching existing
     /// callers.
@@ -149,13 +163,21 @@ pub struct Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    /// A draw with `pipeline` and no per-frame bytes.
+    /// A draw with `pipeline` and nothing else.
     #[must_use]
     pub fn new(pipeline: &'a RenderPipeline) -> Self {
         Self {
             pipeline,
+            mesh: None,
             frame_data: None,
         }
+    }
+
+    /// Walk `mesh`, making this an indexed draw of its whole index list.
+    #[must_use]
+    pub fn mesh(mut self, mesh: &'a Mesh) -> Self {
+        self.mesh = Some(mesh);
+        self
     }
 
     /// Carry per-frame bytes and an instanced draw in this item.
@@ -163,6 +185,68 @@ impl<'a> Item<'a> {
     pub fn frame_data(mut self, data: FrameData<'a>) -> Self {
         self.frame_data = Some(data);
         self
+    }
+}
+
+/// One resource a recorded frame references and must outlive.
+///
+/// **The two arms exist so retention has one table and one clearing
+/// rule.** Release sites only ever write `None`, so none of them cares
+/// which arm they hold — which is what lets a second resource class join
+/// without touching a single one of the four proofs that decide when
+/// memory may die.
+pub(crate) enum Retained {
+    /// A per-frame buffer whose slot region the frame copied into.
+    ///
+    /// **Never read through — held for its `Drop` alone**, the same
+    /// reasoning `RenderPipeline`'s `_bound` records: the recorded
+    /// command stream holds the Vulkan handles the GPU uses, and this
+    /// holds the right to keep those handles valid until the work has
+    /// provably ended.
+    #[allow(
+        dead_code,
+        reason = "held to keep the allocation alive across a submit, never read through"
+    )]
+    Frame(std::rc::Rc<crate::vk::buffer::BufferInner>),
+    /// Geometry the frame's draws walk. Read only to recognise a mesh
+    /// already retained this frame, so several items may name one mesh
+    /// without spending a slot each.
+    Mesh(std::rc::Rc<crate::vk::mesh::MeshInner>),
+}
+
+/// Everything one item's recorded work references, in retention order.
+///
+/// **A total match over the item's shape, in one place, and that is the
+/// point.** Both targets' fill loops used to key retention on
+/// `frame_data` being `Some`, so any new resource-bearing field would
+/// have been skipped silently — memory freed under a live submit, on the
+/// asynchronous path only, where freed-but-untouched memory usually still
+/// reads fine. Adding a third resource to [`Item`] now fails to compile
+/// here rather than passing every test.
+pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; 2] {
+    // **Destructured with no `..` rest pattern, and that is the whole
+    // mechanism.** Matching a locally-built tuple would compile happily
+    // when a third resource-bearing field appeared on `Item` — the
+    // guarantee this function advertises would be fiction. Naming every
+    // field makes the addition a compile error *here*, which is the one
+    // place that has to learn about it. `#[non_exhaustive]` does not
+    // apply inside the defining crate, so the pattern really is total.
+    let Item {
+        pipeline: _,
+        mesh,
+        frame_data,
+    } = item;
+    match (*mesh, frame_data.as_ref()) {
+        (None, None) => [None, None],
+        (Some(mesh), None) => [Some(Retained::Mesh(std::rc::Rc::clone(&mesh.inner))), None],
+        (None, Some(data)) => [
+            Some(Retained::Frame(std::rc::Rc::clone(&data.buffer.inner))),
+            None,
+        ],
+        (Some(mesh), Some(data)) => [
+            Some(Retained::Mesh(std::rc::Rc::clone(&mesh.inner))),
+            Some(Retained::Frame(std::rc::Rc::clone(&data.buffer.inner))),
+        ],
     }
 }
 
@@ -246,14 +330,71 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                  depth-testing pipeline in a depthless pass (or the reverse) draws \
                  differently than written"
             );
+            // The same shape as the depth rule above, for the same
+            // reason: a mesh pipeline drawn without geometry reads an
+            // unbound vertex binding, which is undefined rather than
+            // merely wrong, and geometry handed to a generative pipeline
+            // is silently ignored — a draw that renders differently than
+            // written.
+            assert!(
+                item.pipeline.vertex_input == item.mesh.is_some(),
+                "pass {index}: an item names geometry exactly when its pipeline declares \
+                 per-vertex input — a mesh pipeline with no mesh reads an unbound binding, \
+                 and a mesh on a pipeline that generates its own vertices is ignored"
+            );
+            // Retained rather than debug-only: this bounds every vertex
+            // fetch the draw makes. Creation proved each index is inside
+            // the mesh's own vertex count; that count means bytes only at
+            // the stride the pipeline fetches with, so a disagreement
+            // reads past the end of the allocation.
+            if let Some(mesh) = item.mesh {
+                assert!(
+                    mesh.vertex_stride() == item.pipeline.vertex_stride,
+                    "pass {index}: the mesh's vertex stride ({}) must equal the stride the \
+                     pipeline's per-vertex layout packs to ({}) — a mismatch fetches past the \
+                     end of the mesh",
+                    mesh.vertex_stride(),
+                    item.pipeline.vertex_stride
+                );
+            }
         }
     }
-    // One buffer, one item, per frame: two items naming one buffer would
-    // have the second copy silently win before either draws.
-    let mut seen: [Option<*const u8>; MAX_RETAINED_BUFFERS] = [None; MAX_RETAINED_BUFFERS];
+    check_retention_bound(desc);
+}
+
+/// The retention half of the frame contract: how many distinct resources
+/// one frame may keep alive, and which of them may repeat.
+///
+/// Split out of [`check_frame_contract`] because it walks the frame a
+/// second time for a different reason — the walk above is per pass and
+/// about attachments, this one is per resource and about the retention
+/// table's fixed width.
+fn check_retention_bound(desc: &RenderDesc<'_>) {
+    // Two rules, deliberately different:
+    //
+    // - **One buffer, one item, per frame.** Two items naming one
+    //   per-frame buffer would have the second copy silently win before
+    //   either draws. Unchanged, in wording and in force.
+    // - **A mesh may repeat.** Nothing copies into a mesh, so there is no
+    //   race for the rule above to prevent, and drawing one voxel mesh
+    //   from several items is an ordinary thing to want. It costs one
+    //   retention slot however many items name it.
+    let mut seen: [Option<*const u8>; MAX_RETAINED_RESOURCES] = [None; MAX_RETAINED_RESOURCES];
     let mut count = 0usize;
     for pass in desc.passes {
         for item in pass.items {
+            if let Some(mesh) = item.mesh {
+                let key = std::rc::Rc::as_ptr(&mesh.inner).cast::<u8>();
+                if !seen[..count].contains(&Some(key)) {
+                    assert!(
+                        count < MAX_RETAINED_RESOURCES,
+                        "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
+                         (per-frame buffers and meshes together)"
+                    );
+                    seen[count] = Some(key);
+                    count += 1;
+                }
+            }
             let Some(data) = &item.frame_data else {
                 continue;
             };
@@ -264,8 +405,9 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                  second copy would silently win before either draws"
             );
             assert!(
-                count < MAX_RETAINED_BUFFERS,
-                "a frame carries at most {MAX_RETAINED_BUFFERS} distinct per-frame buffers"
+                count < MAX_RETAINED_RESOURCES,
+                "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
+                 (per-frame buffers and meshes together)"
             );
             seen[count] = Some(key);
             count += 1;
@@ -273,11 +415,12 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
     }
 }
 
-/// How many distinct per-frame buffers one frame may carry, per target
-/// slot — the hard bound that keeps retention tables fixed-width and
-/// the frame path allocation-free. The ninth distinct buffer is refused
-/// by name in [`check_frame_contract`].
-pub(crate) const MAX_RETAINED_BUFFERS: usize = 8;
+/// How many distinct resources one frame may keep alive, per target slot
+/// — the hard bound that keeps retention tables fixed-width and the frame
+/// path allocation-free. Per-frame buffers and meshes share it, because
+/// they share one table. The ninth distinct resource is refused by name
+/// in [`check_frame_contract`].
+pub(crate) const MAX_RETAINED_RESOURCES: usize = 8;
 
 impl LoadOp {
     pub(crate) fn to_vk(self) -> ash::vk::AttachmentLoadOp {

@@ -16,6 +16,7 @@ pub mod buffer;
 pub mod debug;
 pub mod depth;
 pub mod device;
+pub mod mesh;
 pub mod offscreen;
 pub mod pass;
 pub mod pipeline;

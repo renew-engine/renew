@@ -39,6 +39,11 @@ struct SmokeApp {
     /// depth passes off the strict lane, a failure on it (the exercise
     /// must not go silently vacuous where it is the point).
     depth_pipeline: Option<renew_rhi::RenderPipeline>,
+    /// The mesh path on the asynchronous target, and the only place its
+    /// retention rule can be proved.
+    mesh_pipeline: Option<renew_rhi::RenderPipeline>,
+    /// Dropped mid-run, deliberately: see [`SmokeApp::MESH_DROP_FRAME`].
+    mesh: Option<renew_rhi::Mesh>,
     size: Extent,
     frames: u32,
     updates: u32,
@@ -56,6 +61,8 @@ impl SmokeApp {
             target: None,
             pipeline: None,
             depth_pipeline: None,
+            mesh_pipeline: None,
+            mesh: None,
             size: Extent {
                 width: 0,
                 height: 0,
@@ -68,6 +75,23 @@ impl SmokeApp {
             failure: None,
         }
     }
+
+    /// The frame after which the caller's mesh handle is dropped.
+    ///
+    /// **This is the retention proof, and the number matters.** On this
+    /// target `render` returns before the GPU has finished — the submit
+    /// is still outstanding — so dropping the only caller handle here is
+    /// exactly the moment a missing retention entry becomes a
+    /// use-after-free. The frames after it keep rendering and presenting,
+    /// so the destroyed buffer would be caught by the validation layer
+    /// this suite runs under `Required`, and by the queue still reading
+    /// it. Chosen below `FRAMES_WANTED` so several frames follow the
+    /// drop, and above the ring depth so the drop lands while an earlier
+    /// slot's work is genuinely in flight.
+    ///
+    /// The offscreen golden cannot make this claim: that target waits
+    /// its fence inside `render`, so nothing outlives the call there.
+    const MESH_DROP_FRAME: u32 = 6;
 
     fn done(&self) -> bool {
         self.skip.is_some() || self.failure.is_some() || self.frames >= FRAMES_WANTED
@@ -190,12 +214,28 @@ impl WindowApp for SmokeApp {
             eprintln!("SKIP depth passes: adapter offers no chain depth format");
             None
         };
+        // The mesh path, on the one target where its lifetime rule can
+        // be tested. Built here so the run can drop the handle later
+        // while a submit that reads it is still outstanding.
+        let (mesh_pipeline, mesh) = match mesh_fixture(&device, target.format()) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.failure = Some(error);
+                return;
+            }
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
         self.depth_pipeline = depth_pipeline;
+        self.mesh_pipeline = Some(mesh_pipeline);
+        self.mesh = Some(mesh);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one event-dispatch narrative: resize, the dormancy cycle, frame assembly and the mid-flight mesh drop read top to bottom, and splitting it would separate the drop from the render that makes it a proof"
+    )]
     fn event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::Resized { width, height } => {
@@ -253,12 +293,27 @@ impl WindowApp for SmokeApp {
                 }
                 let color = clear(clear_color);
                 let items_storage;
-                let items: &[Item<'_>] = match self.pipeline.as_ref() {
-                    Some(pipeline) => {
+                let items_with_mesh;
+                // The mesh rides the first pass while the caller still
+                // holds it; once dropped, the frames that follow draw
+                // without it and the retention table is the only thing
+                // keeping the submit's memory alive.
+                // `zip` rather than a nested match: the pipeline and the
+                // mesh are built together in `ready` and only the mesh is
+                // ever taken away, so "a mesh without its pipeline" is a
+                // state this app cannot reach and does not need an arm.
+                let geometry = self.mesh_pipeline.as_ref().zip(self.mesh.as_ref());
+                let items: &[Item<'_>] = match (self.pipeline.as_ref(), geometry) {
+                    (Some(pipeline), Some((mesh_pipeline, mesh))) => {
+                        items_with_mesh =
+                            [Item::new(pipeline), Item::new(mesh_pipeline).mesh(mesh)];
+                        &items_with_mesh
+                    }
+                    (Some(pipeline), None) => {
                         items_storage = [Item::new(pipeline)];
                         &items_storage
                     }
-                    None => &[],
+                    (None, _) => &[],
                 };
                 // Three passes wherever a depth format exists: the
                 // textured pass, then two passes that Load the color
@@ -294,7 +349,18 @@ impl WindowApp for SmokeApp {
                 // one was.
                 self.slots_seen |= 1u32 << target.frame_slot();
                 match target.render(&RenderDesc::new(passes)) {
-                    Ok(PresentOutcome::Presented) => self.frames += 1,
+                    Ok(PresentOutcome::Presented) => {
+                        self.frames += 1;
+                        // **Dropped with the submit still outstanding.**
+                        // `render` returned without waiting, so the queue
+                        // is reading this mesh right now; only the
+                        // target's retention clone stands between that
+                        // read and a freed buffer. Every frame after this
+                        // one keeps presenting, and the layer is on.
+                        if self.frames == Self::MESH_DROP_FRAME {
+                            self.mesh = None;
+                        }
+                    }
                     Ok(PresentOutcome::NeedsResize) => {
                         if let Err(error) = target.resize(self.size) {
                             self.failure = Some(format!("resize failed: {error}"));
@@ -323,6 +389,46 @@ impl WindowApp for SmokeApp {
             control.request_redraw();
         }
     }
+}
+
+/// A mesh pipeline and one indexed quad, built outside the frame loop.
+///
+/// Extracted from  rather than inlined: it is fixture work, and
+/// the setup it would otherwise sit inside is already at the length the
+/// lint refuses.
+fn mesh_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Mesh), String> {
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::mesh(
+            builtin::MESH,
+            format,
+            builtin::MESH_LAYOUT,
+        ))
+        .map_err(|error| format!("mesh pipeline failed: {error}"))?;
+    let mut vertices = Vec::new();
+    for corner in [
+        [-0.6f32, -0.6, 0.0],
+        [0.6, -0.6, 0.0],
+        [0.6, 0.6, 0.0],
+        [-0.6, 0.6, 0.0],
+    ] {
+        for value in corner {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in [0.2f32, 0.8, 0.4, 1.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    let mesh = device
+        .create_mesh(&renew_rhi::MeshDesc::new(
+            &vertices,
+            28,
+            &[0, 1, 2, 0, 2, 3],
+        ))
+        .map_err(|error| format!("mesh failed: {error}"))?;
+    Ok((pipeline, mesh))
 }
 
 fn main() {

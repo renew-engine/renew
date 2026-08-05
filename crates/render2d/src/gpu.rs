@@ -6,9 +6,9 @@
 use std::rc::Rc;
 
 use renew_rhi::{
-    Attachment, Blend, Buffer, BufferUsage, ClearValue, Color, Device, Extent, FrameData,
-    InstanceAttribute, Item, LoadOp, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc,
-    Shaders, StoreOp, TargetError, TargetFormat, TextureDesc,
+    Attachment, Blend, Buffer, BufferUsage, ClearValue, Color, Device, Extent, FrameData, Item,
+    LoadOp, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders, StoreOp,
+    TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -23,12 +23,12 @@ static SPRITE_FS_SPV: &[u8] = include_bytes!("../shaders/sprite.frag.spv");
 /// list, [`fill::pack`], and this slice describe the same 48 bytes;
 /// change one and the others in the same commit or the draw reads
 /// garbage.
-const SPRITE_LAYOUT: &[InstanceAttribute] = &[
-    InstanceAttribute::Vec2, // NDC min
-    InstanceAttribute::Vec2, // NDC max
-    InstanceAttribute::Vec2, // UV min
-    InstanceAttribute::Vec2, // UV max
-    InstanceAttribute::Vec4, // premultiplied tint
+const SPRITE_LAYOUT: &[VertexAttribute] = &[
+    VertexAttribute::Vec2, // NDC min
+    VertexAttribute::Vec2, // NDC max
+    VertexAttribute::Vec2, // UV min
+    VertexAttribute::Vec2, // UV max
+    VertexAttribute::Vec4, // premultiplied tint
 ];
 
 /// Six expanded vertices per instance, as the vertex stage's corner
@@ -287,8 +287,9 @@ mod tests {
         let total: usize = SPRITE_LAYOUT
             .iter()
             .map(|attribute| match attribute {
-                InstanceAttribute::Vec2 => 8,
-                InstanceAttribute::Vec4 => 16,
+                VertexAttribute::Vec2 => 8,
+                VertexAttribute::Vec3 => 12,
+                VertexAttribute::Vec4 => 16,
             })
             .sum();
         assert_eq!(

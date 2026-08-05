@@ -70,6 +70,13 @@ struct GateApp {
     /// pass vacuously the moment the data path allocated. This is also
     /// the one automated exercise of the window path's retention ring.
     instanced: Option<(renew_rhi::RenderPipeline, Buffer, Buffer)>,
+    /// The mesh pipeline and its geometry. **The window path's mesh work
+    /// is structurally different from the offscreen path's** — a per-slot
+    /// retention table released while a submit may still be outstanding,
+    /// rather than a single table behind a tail wait — so measuring the
+    /// offscreen gate alone would leave the binds, the indexed draw and
+    /// the dedupe scan on this path gated by nothing.
+    mesh: Option<(renew_rhi::RenderPipeline, renew_rhi::Mesh)>,
     size: Extent,
     presented: u32,
     updates: u32,
@@ -94,6 +101,7 @@ impl GateApp {
             target: None,
             pipeline: None,
             instanced: None,
+            mesh: None,
             size: Extent {
                 width: 0,
                 height: 0,
@@ -179,10 +187,48 @@ impl WindowApp for GateApp {
                 return;
             }
         };
+        let mesh = match device.create_pipeline(&PipelineDesc::mesh(
+            builtin::MESH,
+            target.format(),
+            builtin::MESH_LAYOUT,
+        )) {
+            Ok(mesh_pipeline) => {
+                let mut vertices = Vec::new();
+                for corner in [
+                    [-0.6f32, -0.6, 0.0],
+                    [0.6, -0.6, 0.0],
+                    [0.6, 0.6, 0.0],
+                    [-0.6, 0.6, 0.0],
+                ] {
+                    for value in corner {
+                        vertices.extend_from_slice(&value.to_ne_bytes());
+                    }
+                    for value in [0.2f32, 0.8, 0.4, 1.0] {
+                        vertices.extend_from_slice(&value.to_ne_bytes());
+                    }
+                }
+                match device.create_mesh(&renew_rhi::MeshDesc::new(
+                    &vertices,
+                    28,
+                    &[0, 1, 2, 0, 2, 3],
+                )) {
+                    Ok(mesh) => (mesh_pipeline, mesh),
+                    Err(error) => {
+                        self.failure = Some(format!("mesh failed: {error}"));
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                self.failure = Some(format!("mesh pipeline failed: {error}"));
+                return;
+            }
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
         self.instanced = Some(instanced);
+        self.mesh = Some(mesh);
     }
 
     #[expect(
@@ -236,7 +282,8 @@ impl WindowApp for GateApp {
                 let second_storage;
                 let passes_one;
                 let passes_two;
-                let passes: &[Pass<'_>] = match self.presented % 3 {
+                let mesh_storage;
+                let passes: &[Pass<'_>] = match self.presented % 4 {
                     0 => {
                         if let Some(pipeline) = self.pipeline.as_ref() {
                             items_storage = [Item::new(pipeline)];
@@ -255,6 +302,19 @@ impl WindowApp for GateApp {
                                 1,
                             ))];
                             passes_one = [Pass::new(&color, &items_storage)];
+                            &passes_one
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
+                    }
+                    // The mesh frame: two buffer binds, an indexed draw,
+                    // and a mesh retention entry taken and released on
+                    // the per-slot table.
+                    2 => {
+                        if let Some((mesh_pipeline, mesh)) = self.mesh.as_ref() {
+                            mesh_storage = [Item::new(mesh_pipeline).mesh(mesh)];
+                            passes_one = [Pass::new(&color, &mesh_storage)];
                             &passes_one
                         } else {
                             passes_one = [Pass::new(&color, &[])];

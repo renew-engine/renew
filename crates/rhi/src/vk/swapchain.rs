@@ -19,11 +19,10 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::config::Extent;
 use crate::error::TargetError;
-use crate::vk::buffer::BufferInner;
 use crate::vk::depth::{self, DepthResources};
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
-use crate::vk::pass::{self, MAX_RETAINED_BUFFERS, RenderDesc};
-use crate::vk::pipeline::TargetFormat;
+use crate::vk::pass::{self, MAX_RETAINED_RESOURCES, RenderDesc, Retained};
+use crate::vk::pipeline::{INSTANCE_BINDING, TargetFormat, VERTEX_BINDING};
 use crate::vk::transition::{self, ImageUse};
 
 fn creation(call: &'static str, code: vk::Result) -> TargetError {
@@ -153,7 +152,7 @@ pub struct WindowTarget {
     /// non-lost quiesce: `pending` answers "may I record?", retention
     /// answers "may memory die?", and the failed-quiesce corner is
     /// where those two questions have different answers.
-    retained: [[Option<Rc<BufferInner>>; MAX_RETAINED_BUFFERS]; FRAMES_IN_FLIGHT],
+    retained: [[Option<Retained>; MAX_RETAINED_RESOURCES]; FRAMES_IN_FLIGHT],
     /// Set when a frame aborted and the recovery quiesce FAILED without
     /// a lost device: the GPU may still be executing, so fences were not
     /// reset, flags were not cleared, the chain was not destroyed and
@@ -467,8 +466,12 @@ impl WindowTarget {
     /// frame; clear values must match their attachment's kind and a
     /// depth clear its documented range; an item's pipeline depth state
     /// must match its pass; one buffer feeds at most one item per
-    /// frame, and a frame carries at most the retention table's width
-    /// of distinct buffers. Frame data longer than its buffer's
+    /// frame; an item names geometry exactly when its pipeline declares
+    /// per-vertex input, and a mesh's vertex stride equals the stride
+    /// that pipeline's layout packs to; and a frame carries at most the
+    /// retention table's width of distinct resources — per-frame buffers
+    /// and meshes together, a mesh counting once however many items name
+    /// it. Frame data longer than its buffer's
     /// per-frame capacity also panics through a retained assertion: the
     /// length bounds a copy into mapped device memory, which makes it a
     /// memory-safety boundary rather than a contract nicety.
@@ -586,6 +589,30 @@ impl WindowTarget {
             let mut retained_count = 0usize;
             for pass in desc.passes {
                 for item in pass.items {
+                    if let Some(mesh) = item.mesh {
+                        debug_assert!(
+                            Rc::ptr_eq(&mesh.inner.shared, &self.shared),
+                            "mesh and target come from different devices"
+                        );
+                    }
+                    // Retention is enumerated by one shared function with
+                    // a total match over the item's shape, so a resource
+                    // class added to `Item` cannot be skipped here
+                    // silently — which on this path would free memory
+                    // under a live submit. A mesh named by several items
+                    // is retained once; the frame contract bounded the
+                    // distinct count.
+                    for resource in pass::retained_of(item).into_iter().flatten() {
+                        if let Retained::Mesh(mesh) = &resource
+                            && self.retained[frame][..retained_count].iter().any(|held| {
+                                matches!(held, Some(Retained::Mesh(seen)) if Rc::ptr_eq(seen, mesh))
+                            })
+                        {
+                            continue;
+                        }
+                        self.retained[frame][retained_count] = Some(resource);
+                        retained_count += 1;
+                    }
                     let Some(data) = &item.frame_data else {
                         continue;
                     };
@@ -627,11 +654,10 @@ impl WindowTarget {
                         inner.mapped.add(slot_byte_offset),
                         data.bytes.len(),
                     );
-                    // The submit this frame records will read the region
-                    // until its fence retires; keep the memory alive
-                    // past any caller drop until that is proven.
-                    self.retained[frame][retained_count] = Some(Rc::clone(inner));
-                    retained_count += 1;
+                    // Retention for this buffer was recorded above,
+                    // before the copy: the submit this frame records will
+                    // read the region until its fence retires, and the
+                    // memory must outlive any caller drop until then.
                 }
             }
             let acquired = self.swapchain_loader.acquire_next_image(
@@ -837,6 +863,24 @@ impl WindowTarget {
                         item.pipeline.pipeline,
                     );
                     item.pipeline.bind_descriptors(cmd);
+                    if let Some(mesh) = item.mesh {
+                        // No slot arithmetic: a mesh was written once at
+                        // creation and has one region, so this bind is
+                        // identical on both targets. The asymmetry below
+                        // is the per-frame ring's alone.
+                        device.cmd_bind_vertex_buffers(
+                            cmd,
+                            VERTEX_BINDING,
+                            &[mesh.inner.buffer],
+                            &[0],
+                        );
+                        device.cmd_bind_index_buffer(
+                            cmd,
+                            mesh.inner.buffer,
+                            mesh.inner.index_offset,
+                            vk::IndexType::UINT32,
+                        );
+                    }
                     let instances = match &item.frame_data {
                         Some(data) => {
                             // A plain record-time offset — sound only
@@ -845,7 +889,7 @@ impl WindowTarget {
                             // slot's region.
                             device.cmd_bind_vertex_buffers(
                                 cmd,
-                                0,
+                                INSTANCE_BINDING,
                                 &[data.buffer.inner.buffer],
                                 &[data.buffer.inner.slot_stride * frame as u64],
                             );
@@ -853,7 +897,14 @@ impl WindowTarget {
                         }
                         None => 1,
                     };
-                    device.cmd_draw(cmd, item.pipeline.vertex_count, instances, 0, 0);
+                    // The count comes from whichever half owns it: the
+                    // geometry for a mesh draw, the shader for a stage
+                    // that writes its own vertex list.
+                    if let Some(mesh) = item.mesh {
+                        device.cmd_draw_indexed(cmd, mesh.inner.index_count, instances, 0, 0, 0);
+                    } else {
+                        device.cmd_draw(cmd, item.pipeline.vertex_count, instances, 0, 0);
+                    }
                 }
                 device.cmd_end_rendering(cmd);
             }
