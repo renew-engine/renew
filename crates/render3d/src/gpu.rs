@@ -56,6 +56,18 @@ pub enum Render3dError {
     Pipeline(PipelineError),
     /// Uploading the geometry failed.
     Upload(TargetError),
+    /// The buffer the camera's matrix rides in could not be allocated.
+    ///
+    /// **Its own variant rather than [`Self::Upload`]**, which is where
+    /// the blanket conversion from a target failure would have put it.
+    /// The two are the same kind of refusal from the driver and different
+    /// events entirely for a reader: this one happens in
+    /// [`CameraRenderer::new`], before any scene exists, so reporting it
+    /// as an upload of geometry describes something that had not been
+    /// asked for yet. A sixty-four-byte allocation failing also means
+    /// something quite different from a mesh failing — it is not a large
+    /// mesh, it is a device with nothing left.
+    CameraBuffer(TargetError),
     /// The scene has no geometry.
     ///
     /// **Refused here rather than downstream, and that is deliberate.**
@@ -76,6 +88,9 @@ impl core::fmt::Display for Render3dError {
             ),
             Self::Pipeline(error) => write!(f, "building the mesh pipeline: {error}"),
             Self::Upload(error) => write!(f, "uploading the geometry: {error}"),
+            Self::CameraBuffer(error) => {
+                write!(f, "allocating the camera's matrix buffer: {error}")
+            }
             Self::EmptyScene => write!(f, "the scene has no geometry to upload"),
         }
     }
@@ -85,7 +100,11 @@ impl std::error::Error for Render3dError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Pipeline(error) => Some(error),
-            Self::Upload(error) => Some(error),
+            // One arm: both wrap a target failure, and clippy is right
+            // that two arms with one body is a distinction without a
+            // difference. They differ in what they *say*, which is
+            // Display's business, not this one's.
+            Self::Upload(error) | Self::CameraBuffer(error) => Some(error),
             Self::DepthUnsupported { .. } | Self::EmptyScene => None,
         }
     }
@@ -228,6 +247,30 @@ impl Camera {
 /// promises about the same [`Scene`]. A single type with an optional
 /// camera would leave the meaning of a position undecidable from the
 /// call site, and the failure mode is a picture rather than an error.
+///
+/// # Colour is not carried through unchanged
+///
+/// This path fades a fragment's colour toward a dim horizon as its
+/// distance from the eye grows, reaching a fixed fraction of the way by
+/// a fixed distance; both constants live in the fragment shader. Callers
+/// that need the colour they supplied to arrive intact — a picker buffer,
+/// an id pass, anything read back and compared — want [`MeshRenderer`]
+/// and their own transform, not this.
+///
+/// **Why a renderer fades at all**, when a fade is a look and this crate
+/// is not in the business of looks: flat-shaded geometry with no lighting
+/// gives a viewer exactly one depth cue, the outline where two faces of
+/// different orientation meet. Inside a room every wall is one flat
+/// colour, so near and far walls are indistinguishable and the space
+/// reads as a cut-out. Perspective without that cue is not perspective a
+/// viewer can see. It is a readability floor rather than a feature, and
+/// it is stated here because behaviour a caller cannot predict from the
+/// type's name is behaviour the type must name itself.
+///
+/// The constants are constants because this crate has no channel for
+/// per-draw scalars that is not already carrying the camera matrix. When
+/// one exists they should be the first thing to use it, at which point
+/// this section describes a default rather than a fact.
 pub struct CameraRenderer {
     pipeline: RenderPipeline,
     matrix: renew_rhi::Buffer,
@@ -238,8 +281,9 @@ impl CameraRenderer {
     ///
     /// # Errors
     ///
-    /// As [`MeshRenderer::new`], plus a refusal to allocate the
-    /// per-frame buffer the matrix is written into.
+    /// As [`MeshRenderer::new`], plus [`Render3dError::CameraBuffer`]
+    /// when the per-frame buffer the matrix is written into cannot be
+    /// allocated.
     pub fn new(device: &Device, format: TargetFormat) -> Result<Self, Render3dError> {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
@@ -249,7 +293,12 @@ impl CameraRenderer {
         // One matrix, sixty-four bytes, rewritten every frame. The
         // per-frame buffer is the crate's own answer to "written by the
         // host while an earlier frame may still be reading".
-        let matrix = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
+        // Mapped by hand rather than through `?`: the blanket
+        // conversion from a target failure means "uploading the
+        // geometry", and no geometry has been offered at this point.
+        let matrix = device
+            .create_buffer(64, renew_rhi::BufferUsage::PerFrame)
+            .map_err(Render3dError::CameraBuffer)?;
         Ok(Self { pipeline, matrix })
     }
 
@@ -353,6 +402,59 @@ pub fn pass<'a>(color: &'a [Attachment], items: &'a [Item<'a>]) -> Pass<'a> {
 mod tests {
     use super::*;
 
+    /// **The packing, driven with no GPU at all.** The crate claims the
+    /// bytes cross unchanged in column order; that claim is arithmetic,
+    /// and a claim about bytes that can only be checked by looking at a
+    /// picture is a claim checked nowhere most days.
+    ///
+    /// Sixteen distinct values, so a transposition, a reversal or a
+    /// swapped pair all show as a different byte rather than cancelling.
+    #[test]
+    fn a_camera_packs_its_columns_in_order() {
+        let columns = [
+            [1.0, 2.0, 3.0, 4.0],
+            [5.0, 6.0, 7.0, 8.0],
+            [9.0, 10.0, 11.0, 12.0],
+            [13.0, 14.0, 15.0, 16.0],
+        ];
+        let camera = Camera::from_columns(columns);
+        let bytes = camera.bytes();
+        assert_eq!(bytes.len(), 64, "four columns of four floats");
+        for (index, expected) in (1u8..=16).enumerate() {
+            let at = index * 4;
+            let found =
+                f32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+            assert!(
+                (found - f32::from(expected)).abs() < f32::EPSILON,
+                "float {index} of the packed matrix is {found}, wanted {expected} — \
+                 the columns must arrive in the order GLSL's mat4(c0, c1, c2, c3) takes"
+            );
+        }
+    }
+
+    /// Two cameras built from the same columns are the same camera.
+    ///
+    /// The derived equality is what lets a caller notice the view has not
+    /// moved and skip work; a hand-written one over a byte array is the
+    /// kind of thing that silently compares padding instead.
+    #[test]
+    fn cameras_compare_by_their_matrix() {
+        let columns = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut moved = columns;
+        moved[3][0] = 0.5;
+        assert_eq!(Camera::from_columns(columns), Camera::from_columns(columns));
+        assert_ne!(
+            Camera::from_columns(columns),
+            Camera::from_columns(moved),
+            "a camera that has moved must not compare equal to one that has not"
+        );
+    }
+
     /// **The depth refusal, driven with no GPU at all.** This is the
     /// whole reason the refusal is a translation rather than a device
     /// query: the mapping is exercised on every machine, where a
@@ -406,6 +508,14 @@ mod tests {
             "the upload refusal must hand back what it wraps"
         );
         assert!(
+            Render3dError::CameraBuffer(TargetError::OutOfDeviceMemory {
+                call: "vkAllocateMemory(matrix)",
+            })
+            .source()
+            .is_some_and(|cause| cause.to_string().contains("vkAllocateMemory(matrix)")),
+            "the matrix refusal must hand back what it wraps"
+        );
+        assert!(
             Render3dError::EmptyScene.source().is_none(),
             "an empty scene wraps nothing; a cause here would be invented"
         );
@@ -445,6 +555,32 @@ mod tests {
         assert!(shown.contains("vkAllocateMemory(mesh)"), "{shown}");
     }
 
+    /// **The camera's matrix and a mesh fail differently in words.**
+    /// Both arrive as the same driver refusal, so nothing but this
+    /// mapping distinguishes them, and a reader given "uploading the
+    /// geometry" for a failure inside `new` would go looking at a scene
+    /// that had not been built yet.
+    #[test]
+    fn a_matrix_buffer_failure_is_not_reported_as_a_geometry_upload() {
+        let out_of_memory = || TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory",
+        };
+        let matrix = Render3dError::CameraBuffer(out_of_memory()).to_string();
+        let geometry = Render3dError::from(out_of_memory()).to_string();
+        assert!(
+            matrix.contains("camera's matrix buffer"),
+            "the matrix failure must name the matrix: {matrix}"
+        );
+        assert!(
+            !matrix.contains("geometry"),
+            "the matrix failure must not send a reader to look at a scene: {matrix}"
+        );
+        assert!(
+            geometry.contains("uploading the geometry"),
+            "the geometry failure keeps its own words: {geometry}"
+        );
+    }
+
     /// Every variant says something a reader can act on.
     #[test]
     fn every_variant_displays_its_context() {
@@ -456,6 +592,12 @@ mod tests {
                 "D32_SFLOAT",
             ),
             (Render3dError::EmptyScene, "no geometry"),
+            (
+                Render3dError::CameraBuffer(TargetError::OutOfDeviceMemory {
+                    call: "vkAllocateMemory(matrix)",
+                }),
+                "the camera's matrix buffer",
+            ),
         ];
         for (error, needle) in cases {
             let shown = error.to_string();

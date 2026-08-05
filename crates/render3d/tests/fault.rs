@@ -23,7 +23,7 @@
 // reader is the layer, on this thread, inside the calls below.
 #![allow(unsafe_code)]
 
-use renew_render3d::{MeshRenderer, Render3dError, Scene};
+use renew_render3d::{CameraRenderer, MeshRenderer, Render3dError, Scene};
 use renew_rhi::{Device, DeviceDesc, DeviceError, Extent, TargetError, TargetFormat, Validation};
 
 /// The CI lane sets this: a skip becomes a failure.
@@ -137,5 +137,44 @@ fn every_creation_arm_reports_its_own_failure() {
         other => panic!("R2: expected the buffer failure in the Upload arm, got {other:?}"),
     }
     drop(renderer);
+    drop(device);
+
+    // R3 — the camera pipeline fails: the same arm as R1, reached through
+    // a different constructor. Separate from R1 because the two build
+    // different pipelines, and a camera renderer that quietly built the
+    // mesh pipeline would pass R1 and draw the wrong thing.
+    arm("vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY");
+    let device = new_device().expect("device for R3");
+    match CameraRenderer::new(&device, TargetFormat::Rgba8Unorm) {
+        Err(error @ Render3dError::Pipeline(_)) => {
+            assert!(
+                error.to_string().starts_with("building the mesh pipeline:"),
+                "R3: Display lost its context: {error}"
+            );
+        }
+        other => panic!("R3: expected the pipeline failure in the Pipeline arm, got {other:?}"),
+    }
+    drop(device);
+
+    // R4 — the matrix buffer fails: the arm that exists because the
+    // blanket conversion would otherwise report it as a geometry upload.
+    // The pipeline is built by then, so this also shows the two calls in
+    // one constructor do not share an arm.
+    arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
+    let device = new_device().expect("device for R4");
+    match CameraRenderer::new(&device, TargetFormat::Rgba8Unorm) {
+        Err(error @ Render3dError::CameraBuffer(_)) => {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("allocating the camera's matrix buffer:"),
+                "R4: Display lost its context: {error}"
+            );
+        }
+        other => panic!(
+            "R4: a sixty-four-byte allocation failing must not be reported as a geometry \
+             upload, got {other:?}"
+        ),
+    }
     drop(device);
 }
