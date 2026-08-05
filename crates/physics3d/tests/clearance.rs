@@ -426,3 +426,29 @@ fn the_separation_arithmetic_is_right() {
         "a corner gap of one unit on three axes should be about 1.73 units, was {corner} raw"
     );
 }
+
+/// **Geometry with no room reports that it ran out**, rather than claiming
+/// success or looping forever.
+///
+/// A two-unit body in a slot barely two units wide: no position satisfies both
+/// walls by the skin distance, so the honest answer is the best position found
+/// plus the fact that it is not enough.
+#[test]
+fn a_gap_too_narrow_to_fit_reports_that_it_ran_out() {
+    let walls = [
+        Wall {
+            centre: (-2, 0, 0),
+            half: (1, 20, 20),
+        },
+        Wall {
+            centre: (2, 0, 0),
+            half: (1, 20, 20),
+        },
+    ];
+    let (mut world, mover) = staged((0, 0, 0), &walls);
+    let report = world
+        .clear_of_geometry(mover, ANY, SKIN, 6)
+        .expect("a live body");
+    assert_eq!(report.end, ClearEnd::IterationsExhausted);
+    assert_eq!(report.iterations, 6, "it spent the whole budget trying");
+}
