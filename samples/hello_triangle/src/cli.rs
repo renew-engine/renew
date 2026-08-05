@@ -33,6 +33,12 @@ pub struct Options {
     pub seed: u64,
     /// Where to write the machine-readable report, if anywhere.
     pub dump_stats: Option<PathBuf>,
+    /// Where to write the last rendered frame as a PNG, if anywhere.
+    ///
+    /// Headless only: a windowed run presents its frames rather than
+    /// reading them back, and the swapchain image is not ours to copy
+    /// from.
+    pub capture: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -42,6 +48,7 @@ impl Default for Options {
             frames: DEFAULT_FRAMES,
             seed: 0,
             dump_stats: None,
+            capture: None,
         }
     }
 }
@@ -64,6 +71,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, Sa
             "--seed" => options.seed = number(&mut args, "--seed")?,
             "--dump-stats" => {
                 options.dump_stats = Some(PathBuf::from(value(&mut args, "--dump-stats")?));
+            }
+            "--capture" => {
+                options.capture = Some(PathBuf::from(value(&mut args, "--capture")?));
             }
             other => {
                 return Err(SampleError::Usage(format!(
@@ -173,6 +183,8 @@ mod tests {
             "17",
             "--dump-stats",
             "target/stats.json",
+            "--capture",
+            "target/frame.png",
         ])
         .expect("a full command line");
         assert_eq!(
@@ -182,6 +194,7 @@ mod tests {
                 frames: 8,
                 seed: 17,
                 dump_stats: Some(PathBuf::from("target/stats.json")),
+                capture: Some(PathBuf::from("target/frame.png")),
             }
         );
     }

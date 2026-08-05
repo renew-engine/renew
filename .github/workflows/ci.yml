@@ -301,7 +301,7 @@ jobs:
       # the exclusion look unnecessary is probed directly below.
       - name: Build and test without the image encoder
         run: |
-          sel="--workspace --exclude renew-png --exclude renew-sample-cube"
+          sel="--workspace --exclude renew-png --exclude renew-sample-cube --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png $sel
           cargo build $sel
           cargo test $sel
@@ -800,7 +800,9 @@ jobs:
           # loop reaches.
           mkdir -p "$RUNNER_TEMP/frame-stats"
           cargo llvm-cov --no-report run -p renew-sample-hello-triangle --bin hello_triangle -- \
-            --headless --frames 8 --dump-stats "$RUNNER_TEMP/frame-stats/hello_triangle.json"
+            --headless --frames 8 --dump-stats "$RUNNER_TEMP/frame-stats/hello_triangle.json" \
+            --capture "$RUNNER_TEMP/triangle.png"
+          test -s "$RUNNER_TEMP/triangle.png"
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-hello-triangle --bin hello_triangle -- \
             --frames 30
           # The scripted trace IS the input: no runner supplies

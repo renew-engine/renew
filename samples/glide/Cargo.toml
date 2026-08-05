@@ -61,6 +61,7 @@ audio = ["window", "dep:renew-audio", "renew-platform/audio-out"]
 # plays them is off.
 renew-audio = { path = "../../crates/audio" }
 renew-render2d = { path = "../../crates/render2d" }
+renew-png = { path = "../../crates/png" }
 renew-rhi = { path = "../../crates/rhi", default-features = false }
 
 [lints]
