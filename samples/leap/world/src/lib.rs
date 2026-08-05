@@ -73,6 +73,14 @@ pub struct Footing {
     pub grounded: bool,
     /// Touching a wall on the left or right.
     pub against_wall: bool,
+    /// The move ran out of slide iterations with displacement unspent.
+    ///
+    /// **Its own bit rather than folded into `against_wall`**, which is what
+    /// it was at first. The two are different facts: a character running along
+    /// a wall is against one and moving fine, and a character wedged in a
+    /// crevice has stopped for a reason the caller may want to act on. Merging
+    /// them loses the distinction exactly where it matters.
+    pub wedged: bool,
     /// Ticks since the character last stood on something.
     ///
     /// **This is what coyote time is made of**, and it is state rather than a
@@ -220,6 +228,7 @@ impl Leap {
             footing: Footing {
                 grounded: false,
                 against_wall: false,
+                wedged: false,
                 ticks_airborne: u32::MAX,
             },
             jump_was_held: false,
@@ -272,6 +281,7 @@ impl Leap {
 
         let mut grounded = false;
         let mut against_wall = false;
+        let mut wedged = false;
         if let Some(report) = report {
             let written = report.hits.written.min(MAX_SLIDE_HITS);
             for hit in self.hits.split_at(written).0 {
@@ -293,16 +303,15 @@ impl Leap {
             if against_wall {
                 self.velocity = Vec2::new(Fixed::ZERO, self.velocity.y);
             }
-            // A slide that ran out of tries left displacement unspent; saying
-            // so is what stops that from looking like arrival.
-            if report.end == SlideEnd::IterationsExhausted {
-                against_wall = true;
-            }
+            // A slide that ran out of tries left displacement unspent, and
+            // saying so is what stops that from looking like arrival.
+            wedged = report.end == SlideEnd::IterationsExhausted;
         }
 
         self.footing = Footing {
             grounded,
             against_wall,
+            wedged,
             ticks_airborne: if grounded {
                 0
             } else {

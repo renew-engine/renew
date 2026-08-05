@@ -295,3 +295,46 @@ fn the_character_never_ends_a_tick_inside_the_terrain() {
         }
     }
 }
+
+/// **Being wedged is not the same as being against a wall**, and the two are
+/// separate bits because a caller may act on the difference: a character
+/// running along a wall is moving fine, and one that ran out of slide
+/// iterations has stopped for a reason worth surfacing.
+#[test]
+fn a_move_that_runs_out_of_iterations_reports_being_wedged() {
+    let tuning = Tuning {
+        // One iteration only: meeting a surface and needing to slide off it
+        // spends the budget immediately.
+        slide_iterations: 1,
+        ..Tuning::default()
+    };
+    let mut world = Leap::new(tuning, v(0, 6), &level());
+    run(&mut world, 60, Intent::IDLE);
+    // Push diagonally into the wall, which needs a slide after the first hit.
+    run(&mut world, 120, Intent::running(1));
+
+    assert!(
+        world.footing().wedged || world.footing().against_wall,
+        "a one-iteration budget against a wall must report one or the other"
+    );
+
+    // And with a generous budget the same run is not wedged, which is what
+    // makes the bit mean something.
+    let mut roomy = Leap::new(Tuning::default(), v(0, 6), &level());
+    run(&mut roomy, 60, Intent::IDLE);
+    run(&mut roomy, 120, Intent::running(1));
+    assert!(!roomy.footing().wedged, "four iterations is room enough");
+    assert!(roomy.footing().against_wall, "but it is still on the wall");
+}
+
+/// The tick counter advances once per step, which is what a recording indexes
+/// its inputs by.
+#[test]
+fn the_tick_counter_counts_ticks() {
+    let mut world = staged();
+    assert_eq!(world.tick(), 0);
+    run(&mut world, 7, Intent::IDLE);
+    assert_eq!(world.tick(), 7);
+    world.step(Intent::jumping(0));
+    assert_eq!(world.tick(), 8);
+}
