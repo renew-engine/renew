@@ -419,3 +419,49 @@ fn a_body_with_a_removed_shape_sweeps_only_its_live_ones() {
     assert_eq!(report.hits.existed, 1, "the surviving shape met the wall");
     assert!(report.destination.x < Fixed::from_int(3));
 }
+
+/// A displacement that does not quite reach is not a hit, and one that just
+/// reaches is. The boundary between them is where an off-by-one lives, and
+/// nothing else here travels a distance too short to arrive.
+#[test]
+fn a_sweep_that_falls_short_reports_nothing() {
+    // Surfaces meet when the centres are two apart, so from x = −5 the gap is
+    // three units of clear air.
+    assert!(
+        sweep(
+            sphere(1),
+            at(-5, 0, 0),
+            v(2, 0, 0),
+            sphere(1),
+            Transform::IDENTITY,
+            SKIN
+        )
+        .is_none(),
+        "two units of travel across a three-unit gap"
+    );
+    assert!(
+        sweep(
+            sphere(1),
+            at(-5, 0, 0),
+            v(4, 0, 0),
+            sphere(1),
+            Transform::IDENTITY,
+            SKIN
+        )
+        .is_some(),
+        "four units closes it"
+    );
+
+    // And the same for boxes, on an axis that is not the swept one.
+    assert!(
+        sweep(
+            cube(1),
+            at(0, -5, 0),
+            v(0, 2, 0),
+            cube(1),
+            Transform::IDENTITY,
+            SKIN
+        )
+        .is_none()
+    );
+}
