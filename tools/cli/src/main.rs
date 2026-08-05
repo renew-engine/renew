@@ -995,21 +995,41 @@ fn run_steps(invocation: &Invocation) -> ExitCode {
 /// list rather than one run because a single configuration
 /// exercises one path through the world, and a divergence in a path the
 /// list never walks is a divergence the lane never sees.
-const PINNED_RUNS: [(&str, &[&str]); 4] = [
+/// One simulation the lane pins: what to call it, which package answers,
+/// what to pass, and which fields of the answer carry a digest.
+type PinnedRun = (
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+/// Glide reports two hashes; the samples added since report one each.
+const GLIDE_FIELDS: &[&str] = &["schedule_hash", "state_hash"];
+const ONE_DIGEST: &[&str] = &["digest"];
+
+const PINNED_RUNS: [PinnedRun; 9] = [
     (
         "glide/seed-7-600",
+        "renew-sample-glide",
         &["--seed", "7", "--frames", "600", "--json"],
+        GLIDE_FIELDS,
     ),
     (
         "glide/seed-7-2000",
+        "renew-sample-glide",
         &["--seed", "7", "--frames", "2000", "--json"],
+        GLIDE_FIELDS,
     ),
     (
         "glide/seed-99-600",
+        "renew-sample-glide",
         &["--seed", "99", "--frames", "600", "--json"],
+        GLIDE_FIELDS,
     ),
     (
         "glide/sink-1500",
+        "renew-sample-glide",
         &[
             "--seed",
             "3",
@@ -1019,14 +1039,54 @@ const PINNED_RUNS: [(&str, &[&str]); 4] = [
             "sink",
             "--json",
         ],
+        GLIDE_FIELDS,
+    ),
+    // The platformer: swept motion against geometry, where a divergence would
+    // come from the collision arithmetic rather than from a generator.
+    (
+        "leap/dash-600",
+        "renew-sample-leap",
+        &["--script", "dash", "--ticks", "600", "--json"],
+        ONE_DIGEST,
+    ),
+    (
+        "leap/hop-900",
+        "renew-sample-leap",
+        &["--script", "hop", "--ticks", "900", "--json"],
+        ONE_DIGEST,
+    ),
+    // The voxel world: the same arithmetic in three dimensions, plus terrain
+    // that the run itself edits.
+    (
+        "cube/patrol-600",
+        "renew-sample-cube",
+        &["--script", "patrol", "--ticks", "600", "--json"],
+        ONE_DIGEST,
+    ),
+    (
+        "cube/build-900",
+        "renew-sample-cube",
+        &["--script", "build", "--ticks", "900", "--json"],
+        ONE_DIGEST,
+    ),
+    // Chess: no floating point and no geometry at all, so a divergence here
+    // would be in the integer state itself rather than in any arithmetic the
+    // other three share. A different kind of witness for the same claim.
+    (
+        "chess/play-60",
+        "renew-sample-chess",
+        &["--play", "--depth", "60", "--json"],
+        ONE_DIGEST,
     ),
 ];
 
 /// Run the pinned simulations and write this target's report.
 ///
-/// Every run contributes two digests — the frame schedule's and the
-/// world's — because the sample already computes both and a lane that
-/// dropped one would be proving half of what it claims.
+/// Each run contributes whichever digests its own report carries — two for
+/// the glide sample, which computes a frame-schedule hash beside its world
+/// hash, and one for the three added since. A lane that assumed one shape
+/// would tell the others their report was missing a field, which is true and
+/// useless.
 fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
     let runner = match Runner::anchored("determinism", json_mode) {
         Ok(runner) => runner,
@@ -1047,8 +1107,8 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
     };
 
     let mut digests = BTreeMap::new();
-    for (name, args) in PINNED_RUNS {
-        let mut invocation = vec!["run", "--quiet", "--package", "renew-sample-glide", "--"];
+    for (name, package, args, fields) in PINNED_RUNS {
+        let mut invocation = vec!["run", "--quiet", "--package", package, "--"];
         invocation.extend_from_slice(args);
         let (ok, stdout) = match probe("cargo", &invocation, Some(&runner.root)) {
             Ok(result) => result,
@@ -1060,7 +1120,7 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
                  the comparison must not be told otherwise"
             ));
         }
-        match determinism::digests_from_output(name, &stdout) {
+        match determinism::digests_from_output(name, &stdout, fields) {
             Ok(pairs) => digests.extend(pairs),
             Err(message) => return runner.fail(&message),
         }

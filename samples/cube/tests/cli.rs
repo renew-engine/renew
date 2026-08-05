@@ -166,7 +166,7 @@ fn the_answer_reads_and_parses() {
     let line = describe(&report);
     assert!(line.starts_with("cube script=patrol"));
     assert!(line.contains("ticks=120"));
-    assert!(line.contains(&format!("digest={:016x}", report.digest)));
+    assert!(line.contains(&format!("digest=0x{:016x}", report.digest)));
 
     let json = describe_json(&report);
     assert!(
@@ -176,7 +176,7 @@ fn the_answer_reads_and_parses() {
     assert!(json.contains("\"sample\":\"cube\""));
     assert!(json.contains("\"script\":\"patrol\""));
     assert!(json.contains("\"ticks\":120"));
-    assert!(json.contains(&format!("\"digest\":\"{:016x}\"", report.digest)));
+    assert!(json.contains(&format!("\"digest\":\"0x{:016x}\"", report.digest)));
     assert!(json.starts_with('{') && json.ends_with('}'));
 }
 

@@ -220,7 +220,7 @@ fn the_answer_reads_and_parses() {
     });
     let line = describe(&played);
     assert!(line.starts_with("chess play moves=10"));
-    assert!(line.contains(&format!("digest={:016x}", played.digest)));
+    assert!(line.contains(&format!("digest=0x{:016x}", played.digest)));
     assert!(describe_json(&played).contains("\"mode\":\"play\""));
 }
 
