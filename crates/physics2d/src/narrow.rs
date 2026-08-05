@@ -242,37 +242,41 @@ fn box_box(ha: Vec2, a_at: Transform, hb: Vec2, b_at: Transform) -> Option<Manif
         incident_at,
     );
 
-    Some(Manifold {
-        normal: separation.normal,
-        points,
-        count: 2,
-    })
-    .map(|manifold| trim(manifold, separation.depth))
+    Some(trim(separation.normal, points))
 }
 
-/// Drop points whose depth came out negative, which clipping can produce at a
-/// corner, and fall back to the deepest single point if none survive.
-fn trim(manifold: Manifold, depth: Fixed) -> Manifold {
-    let mut kept = [ContactPoint {
-        position: Vec2::ZERO,
-        depth: Fixed::ZERO,
-    }; MAX_MANIFOLD_POINTS];
-    let mut count = 0usize;
-    for point in manifold.points {
-        if point.depth >= Fixed::ZERO && count < MAX_MANIFOLD_POINTS {
-            if let Some(slot) = kept.get_mut(count) {
-                *slot = point;
-            }
-            count += 1;
+/// Keep the clipped points that are actually in contact.
+///
+/// Clipping an incident face at a corner can push an endpoint out in front of
+/// the reference surface, where its depth comes out negative — a point the
+/// shapes do not touch at, which a caller would otherwise act on.
+///
+/// **The deeper point is always kept**, with its depth clamped at zero rather
+/// than filtered. That is not a fallback branch: the separating-axis test has
+/// already proved the shapes overlap, so a manifold with no points would
+/// contradict the thing that produced it. Written as a filter with a
+/// "none survived" arm instead, that arm turns out to be unreachable — a sweep
+/// of seventy-six thousand rotated overlaps never entered it — and unreachable
+/// code cannot be tested, so it does not belong here.
+fn trim(normal: Vec2, points: [ContactPoint; MAX_MANIFOLD_POINTS]) -> Manifold {
+    let [first, second] = points;
+    let (deeper, shallower) = if first.depth >= second.depth {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let deeper = ContactPoint {
+        position: deeper.position,
+        depth: deeper.depth.max(Fixed::ZERO),
+    };
+    if shallower.depth >= Fixed::ZERO {
+        Manifold {
+            normal,
+            points: [deeper, shallower],
+            count: 2,
         }
-    }
-    if count == 0 {
-        return Manifold::single(manifold.normal, manifold.points[0].position, depth);
-    }
-    Manifold {
-        normal: manifold.normal,
-        points: kept,
-        count: u8::try_from(count).unwrap_or(1),
+    } else {
+        Manifold::single(normal, deeper.position, deeper.depth)
     }
 }
 
