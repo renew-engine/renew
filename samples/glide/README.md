@@ -56,6 +56,38 @@ close, which is not a failed run.
 the length — so the flags it would contradict are refused by name
 rather than silently ignored.
 
+## When something goes wrong
+
+Set `RENEW_LOG` to a file path and the run reports into it: the engine's
+own error channel, any panic, and — because a graphics fault is usually
+inside the driver rather than above it — Vulkan validation, which is off
+by default because it costs frame time and says nothing on a healthy
+run.
+
+```
+RENEW_LOG=run.log glide --window
+```
+
+```powershell
+$env:RENEW_LOG = "$env:USERPROFILE\run.log"
+.\target\debug\glide.exe --window
+```
+
+An environment variable rather than a flag, because a panic that happens
+before the command line is parsed still needs somewhere to go. An empty
+value counts as unset.
+
+The file is appended to, never truncated, so several runs at one path
+accumulate; a run that reports nothing leaves no file at all, which is
+what a healthy run looks like. A sink that cannot write drops its
+records in silence — the reporting channel is the thing that broke, and
+a diagnostic must not become the fault.
+
+**What it cannot catch:** a driver that takes the process down leaves
+nothing to write with. A log that ends mid-run, with a nonzero exit and
+no failure line, is itself the finding — it says the fault was below the
+engine rather than in it.
+
 ## Shape
 
 Two crates. `world/` is the simulation — a pure fixed-step function of

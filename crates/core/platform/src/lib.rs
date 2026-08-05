@@ -37,6 +37,13 @@ mod clock;
 /// code that *produces* these values from the OS stays here, in
 /// [`window`], and does need a windowing library.
 pub use renew_event as event;
+/// A diagnostics sink that writes to a file.
+///
+/// Here because the reporting crate forbids filesystem access in its own
+/// lint configuration and this crate is the filesystem's doorway. It
+/// reads no environment and installs nothing: a binary decides whether
+/// to log and where.
+pub mod diag;
 pub mod fs;
 pub mod thread;
 

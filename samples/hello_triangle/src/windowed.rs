@@ -155,7 +155,11 @@ impl TriangleApp {
     fn bring_up(&mut self, window: NativeWindow, size: Extent) -> Result<(), SampleError> {
         let device = Device::new(&DeviceDesc {
             app_name: "renew-hello-triangle",
-            validation: Validation::Off,
+            validation: if crate::diagnostics_enabled() {
+                Validation::IfAvailable
+            } else {
+                Validation::Off
+            },
         })
         .map_err(device_error)?;
         let target = device

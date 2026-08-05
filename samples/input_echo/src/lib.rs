@@ -72,6 +72,12 @@ const FAILURE_EXIT: u8 = 1;
 /// `1` for a failure, `2` for a bad command line. The last line on
 /// stdout is always the digest line the determinism gate compares.
 pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
+    // Diagnostics, before anything can fail. `RENEW_LOG` names a file;
+    // when it is set the engine's own error channel and any panic land
+    // there, and the device is brought up with validation on.
+    if let Some(path) = diagnostics_path() {
+        renew_platform::diag::log_to_file(path);
+    }
     let strict = std::env::var_os(STRICT).is_some_and(|value| value == "1");
     match run(args) {
         Ok(report) => {
@@ -149,6 +155,33 @@ fn report_error(error: &SampleError, strict: bool) -> u8 {
 #[must_use]
 pub fn exit_code(code: u8) -> ExitCode {
     ExitCode::from(code)
+}
+
+/// The file `RENEW_LOG` names, if it names one.
+///
+/// One variable rather than a flag, so it covers a panic that happens
+/// before the command line is parsed — which is exactly the failure a
+/// flag cannot describe. An empty value is treated as unset, because a
+/// shell that exports an empty string meant to turn it off.
+#[must_use]
+pub fn diagnostics_path() -> Option<std::path::PathBuf> {
+    let value = std::env::var_os("RENEW_LOG")?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(value))
+}
+
+/// Whether this run is logging diagnostics, which also decides whether
+/// the renderer asks for validation.
+///
+/// **`IfAvailable`, never `Required`.** A machine without the validation
+/// layer installed must still run while something else is being
+/// debugged; requiring it would turn a missing optional component into a
+/// failure to start.
+#[must_use]
+pub fn diagnostics_enabled() -> bool {
+    diagnostics_path().is_some()
 }
 
 #[cfg(test)]

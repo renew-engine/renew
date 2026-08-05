@@ -88,7 +88,11 @@ impl HeadlessRun {
     pub fn start(seed: u64, draw: Draw) -> Result<Self, SampleError> {
         let device = Device::new(&DeviceDesc {
             app_name: "renew-hello-triangle",
-            validation: Validation::Off,
+            validation: if crate::diagnostics_enabled() {
+                Validation::IfAvailable
+            } else {
+                Validation::Off
+            },
         })
         .map_err(device_error)?;
         let target = device

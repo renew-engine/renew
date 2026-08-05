@@ -255,9 +255,17 @@ impl GlideApp {
     }
 
     fn bring_up(&mut self, window: NativeWindow, size: Extent) -> Result<(), SampleError> {
+        // Validation follows the diagnostics switch: off for an
+        // ordinary run, where the layer costs frame time and says
+        // nothing, and on for a run that is being debugged, where it is
+        // the only thing that can name a fault inside the driver.
         let device = Device::new(&DeviceDesc {
             app_name: "renew-glide",
-            validation: Validation::Off,
+            validation: if crate::diagnostics_enabled() {
+                Validation::IfAvailable
+            } else {
+                Validation::Off
+            },
         })
         .map_err(|error| SampleError::failed("bringing up the device", &error))?;
         let target = device

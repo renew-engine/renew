@@ -155,6 +155,28 @@ pub fn write(path: &Path, contents: &[u8]) -> Result<(), FsError> {
     std::fs::write(path, contents).map_err(|error| classify(path, &error))
 }
 
+/// Append `contents` to the file at `path`, creating it if it is not
+/// there.
+///
+/// **Open, append, close, once per call — deliberately.** A log that
+/// holds a file handle open must decide who closes it and when, and a
+/// diagnostic that is only written when something has already gone wrong
+/// is the wrong place to spend that complexity. The cost is a syscall
+/// per record on a path that is silent in a healthy run.
+///
+/// # Errors
+///
+/// [`FsError`] naming the path, classified by kind.
+pub fn append(path: &Path, contents: &[u8]) -> Result<(), FsError> {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(contents))
+        .map_err(|error| classify(path, &error))
+}
+
 /// Whether the path exists right now. Honest about failure: an
 /// inaccessible parent is an error, not `false`. Like every existence
 /// check, the answer can be stale by the time it is used — open the
