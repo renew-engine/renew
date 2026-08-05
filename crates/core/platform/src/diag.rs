@@ -134,13 +134,11 @@ pub fn log_to_file(path: impl Into<PathBuf>) {
     // this adds the copy that survives the terminal closing.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map_or_else(|| "unknown location".to_owned(), ToString::to_string);
-        renew_diag::error!(
-            target: "panic",
-            "{info} (at {location})"
-        );
+        // `{info}` already carries the location and the payload — the
+        // same text the default hook prints. Formatting the location
+        // separately duplicated it, and left an arm for a location that
+        // is absent, which no real panic produces.
+        renew_diag::error!(target: "panic", "{info}");
         previous(info);
     }));
 }
@@ -187,6 +185,25 @@ mod tests {
         let text = std::fs::read_to_string(&dir).expect("the sink created the file");
         assert_eq!(text, "WARN a: first\nERROR b: second\n");
         let _ = std::fs::remove_file(&dir);
+    }
+
+    /// The path is reported back, so a caller that built the sink from a
+    /// value can say where records went without keeping its own copy.
+    #[test]
+    fn the_sink_reports_its_own_path() {
+        let path = std::env::temp_dir().join("renew-filesink-path");
+        let sink = FileSink::new(&path);
+        assert_eq!(sink.path(), path);
+    }
+
+    /// The debug form names the file and nothing else — a sink has no
+    /// counts, and the path is the only thing a reader wants.
+    #[test]
+    fn the_debug_form_names_the_file() {
+        let sink = FileSink::new("somewhere.log");
+        let shown = format!("{sink:?}");
+        assert!(shown.starts_with("FileSink"), "{shown}");
+        assert!(shown.contains("somewhere.log"), "{shown}");
     }
 
     /// A path that cannot be written is dropped rather than fatal — the
