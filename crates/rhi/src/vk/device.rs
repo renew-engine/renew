@@ -88,6 +88,17 @@ pub(crate) struct DeviceShared {
     /// target creation; queried once because format support is a static
     /// property of the physical device.
     pub(crate) depth_format: Option<vk::Format>,
+    /// `maxImageDimension2D`, read once at bring-up.
+    ///
+    /// Kept for the same reason `depth_format` is: it is a static
+    /// property of the physical device, so querying it per resource
+    /// would ask the driver a question whose answer cannot change.
+    /// Creation paths compare against it and refuse by name, rather
+    /// than handing an over-limit extent to `vkCreateImage` where it
+    /// becomes a usage violation -- which reddens every lane that
+    /// asserts zero validation errors, and reports the caller's mistake
+    /// as the engine's.
+    pub(crate) max_image_dimension_2d: u32,
     pub(crate) lost: PoisonFlag,
     /// Boxed for address stability: the driver holds this pointer for
     /// the instance's whole life.
@@ -334,6 +345,11 @@ impl Device {
             instance.get_physical_device_format_properties(physical, format)
         });
 
+        // SAFETY: category 2: instance and physical device live; the
+        // query has no failure mode and fills a caller-owned struct.
+        let limits = unsafe { instance.get_physical_device_properties(physical) }.limits;
+        let max_image_dimension_2d = limits.max_image_dimension2_d;
+
         // SAFETY: category 2: instance and physical device live.
         let device_extensions = unsafe { instance.enumerate_device_extension_properties(physical) }
             .map_err(|code| {
@@ -398,6 +414,7 @@ impl Device {
                 entry,
                 adapter,
                 depth_format,
+                max_image_dimension_2d,
                 lost: PoisonFlag::default(),
                 validation: validation_counters,
                 ledger,

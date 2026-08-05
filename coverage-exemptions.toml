@@ -82,12 +82,12 @@ reason = "The width guards on the pack's own header fields. Reaching one needs m
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [367]
+lines = [379]
 reason = "The depthless-adapter arm of target creation: no depth image is built when the adapter refused the whole depth format chain. The pinned software rasterizer offers D32_SFLOAT, the format query is a void call no fault layer can mutate, and the device suite's probe asserts a format exists wherever the strict lane runs — so the arm is reachable only on hardware the lanes do not have. Its logic is one None."
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [480, 481, 482]
+lines = [492, 493, 494]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter. Same unreachability as the creation arm above: every measuring lane's adapter offers a depth format, and the query that decides it cannot be faulted. The error construction is driven by the display test in the error module; the branch condition's false side runs on every depth-carrying frame."
 
 [[exempt]]

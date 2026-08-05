@@ -430,8 +430,6 @@ impl Device {
         );
         let layout = checked?;
         // Gated like every other resource constructor in this crate.
-        // `create_buffer` is the one that does not, which is a recorded
-        // inconsistency rather than a precedent to copy forward.
         if self.shared.lost.poisoned() {
             return Err(TargetError::DeviceLost);
         }

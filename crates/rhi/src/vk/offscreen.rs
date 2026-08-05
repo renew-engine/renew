@@ -65,10 +65,22 @@ pub(crate) fn image_memory_type(
 /// verdict is provable: a dev build asserts on a zero extent long
 /// before the returned error could be observed, and every test runs
 /// with assertions on.
-fn check_extent(extent: Extent) -> Result<(), TargetError> {
+fn check_extent(extent: Extent, max_dimension: u32) -> Result<(), TargetError> {
     if extent.width == 0 || extent.height == 0 {
         return Err(TargetError::Creation {
             call: "create_offscreen_target(zero extent)",
+            code: 0,
+        });
+    }
+    // The device's limit, handed in rather than read from the device
+    // here. A pure function of the two is testable at any limit; one
+    // that asked the device would be reachable only on an adapter whose
+    // real maximum a caller could plausibly exceed, which is no adapter
+    // any lane runs on -- the shape that ships with its message tested
+    // and its trigger never pulled.
+    if extent.width > max_dimension || extent.height > max_dimension {
+        return Err(TargetError::Creation {
+            call: "create_offscreen_target(extent exceeds the device limit)",
             code: 0,
         });
     }
@@ -179,7 +191,7 @@ impl Device {
     pub fn create_offscreen_target(&self, extent: Extent) -> Result<OffscreenTarget, TargetError> {
         // Fatal in dev builds; in release, where the assertion is
         // compiled out, the same verdict is returned instead.
-        let checked = check_extent(extent);
+        let checked = check_extent(extent, self.shared.max_image_dimension_2d);
         debug_assert!(
             checked.is_ok(),
             "offscreen targets need a non-zero extent, got {extent:?}"
@@ -954,6 +966,54 @@ impl Drop for OffscreenTarget {
 
 #[cfg(test)]
 mod tests {
+
+    /// An extent past the adapter's `maxImageDimension2D` is refused
+    /// here, by name, instead of reaching `vkCreateImage`.
+    ///
+    /// **Reachable because the limit is a parameter.** A check that read
+    /// the device would need an adapter whose real maximum a caller
+    /// could plausibly exceed, and every adapter these lanes run on
+    /// reports at least 4096 -- so the arm would ship with its message
+    /// tested and its trigger never pulled. Handing the limit in makes
+    /// both sides of the comparison ordinary to test.
+    #[test]
+    fn an_extent_past_the_device_limit_is_refused_by_name() {
+        for extent in [
+            Extent {
+                width: 65,
+                height: 8,
+            },
+            Extent {
+                width: 8,
+                height: 65,
+            },
+            Extent {
+                width: 65,
+                height: 65,
+            },
+        ] {
+            let refusal = check_extent(extent, 64).expect_err("past the limit is not a target");
+            assert!(
+                matches!(refusal, TargetError::Creation { call, code: 0 }
+                    if call == "create_offscreen_target(extent exceeds the device limit)"),
+                "{extent:?} refused as {refusal:?}, which names no cause"
+            );
+        }
+        // Inclusive: it is a maximum, not a bound to stay under, and an
+        // off-by-one here would refuse the largest target the adapter
+        // actually supports.
+        assert!(
+            check_extent(
+                Extent {
+                    width: 64,
+                    height: 64
+                },
+                64
+            )
+            .is_ok(),
+            "the limit itself is allowed"
+        );
+    }
     use super::*;
 
     /// A memory-properties table with one heap and the given types, in
@@ -1053,7 +1113,7 @@ mod tests {
                 height: 0,
             },
         ] {
-            let refusal = check_extent(extent).expect_err("a zero extent has no target");
+            let refusal = check_extent(extent, u32::MAX).expect_err("a zero extent has no target");
             assert!(
                 matches!(refusal, TargetError::Creation { call, code: 0 }
                     if call == "create_offscreen_target(zero extent)"),
@@ -1061,10 +1121,13 @@ mod tests {
             );
         }
         assert!(
-            check_extent(Extent {
-                width: 1,
-                height: 1
-            })
+            check_extent(
+                Extent {
+                    width: 1,
+                    height: 1
+                },
+                u32::MAX
+            )
             .is_ok(),
             "one pixel is a real target"
         );

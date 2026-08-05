@@ -923,6 +923,39 @@ fn every_driver_failure_ladder_behaves() {
         }));
     }
 
+    // PB5 is not a ladder rung: the ladder above fails one driver call
+    // and checks which one is named, while this checks the refusal that
+    // happens before any call at all.
+    //
+    // **It is the one scenario here whose absence was a real defect.**
+    // `create_buffer` had no poison gate while all seven other resource
+    // entry points did, and none of the four calls it makes lists
+    // `VK_ERROR_DEVICE_LOST` among its return codes -- so on a dead
+    // device it did not fail loudly or even quietly, it *succeeded*, and
+    // handed back a live buffer. The loss is induced through a texture
+    // upload, the same way T17 induces it, because poisoning needs a
+    // submit and creating a buffer performs none.
+    verdicts.push(device_case(
+        "PB5",
+        "vkQueueSubmit2=ERROR_DEVICE_LOST",
+        |device| {
+            match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("PB5", "DeviceLost", &other)),
+                Ok(_) => return Err("PB5: the upload survived a lost device".to_owned()),
+            }
+            match device.create_buffer(64, BufferUsage::PerFrame) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("PB5", "DeviceLost from create_buffer", &other)),
+                Ok(_) => Err(
+                    "PB5: a per-frame buffer was created on a lost device, which is the \
+                     defect this scenario exists for"
+                        .to_owned(),
+                ),
+            }
+        },
+    ));
+
     // ---- MB · mesh buffer ladder --------------------------------------------
     // Every fallible call `create_mesh` makes, in order, on the same
     // terms as the buffer ladder above: surface the right call, leave
