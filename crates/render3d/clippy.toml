@@ -1,0 +1,24 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: this crate turns quads into vertex bytes and rendering-crate
+# descriptors — it never reads a clock, never touches the filesystem,
+# never spawns a thread. Writing an image is the caller's business, which
+# is what keeps this crate testable without one.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock; a scene is a pure function of its quads" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock; a scene is a pure function of its quads" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem; a caller that writes an image owns the file" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem; a caller that writes an image owns the file" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem; a caller that writes an image owns the file" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem; a caller that writes an image owns the file" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem; a caller that writes an image owns the file" },
+    { path = "std::thread::spawn", reason = "this crate never spawns; parallelism belongs to the job system" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

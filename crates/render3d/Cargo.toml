@@ -1,0 +1,25 @@
+[package]
+name = "renew-render3d"
+description = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, one indexed draw per frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, one indexed draw per frame."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# The rendering crate without its presentation feature: this crate builds
+# geometry and describes draws, it never presents, and taking the default
+# would drag windowing crates into every consumer's graph.
+[dependencies]
+renew-rhi = { path = "../rhi", default-features = false }
+
+[lints]
+workspace = true
