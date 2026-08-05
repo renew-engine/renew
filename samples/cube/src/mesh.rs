@@ -165,6 +165,27 @@ pub fn colour(block: Block, face: Face) -> [f32; 4] {
     [base[0] * shade, base[1] * shade, base[2] * shade, base[3]]
 }
 
+/// The same face, lit as the one being aimed at.
+///
+/// **Without this the game is played blind.** Every block is the same
+/// grey, so a player cannot tell which one `enter` will break until it
+/// is gone. Brightening the aimed-at block is the smallest thing that
+/// turns digging from a guess into an action.
+///
+/// Brightened rather than tinted: a hue would compete with block colours
+/// once there is more than one kind of block, where brightness composes
+/// with whatever the block already is.
+#[must_use]
+pub fn aimed_colour(block: Block, face: Face) -> [f32; 4] {
+    let base = colour(block, face);
+    [
+        (base[0] + 0.35).min(1.0),
+        (base[1] + 0.35).min(1.0),
+        (base[2] + 0.30).min(1.0),
+        base[3],
+    ]
+}
+
 /// The unshaded colour of a block type.
 fn base_colour(block: Block) -> [f32; 4] {
     match block {

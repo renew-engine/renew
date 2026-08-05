@@ -258,3 +258,50 @@ fn colour_varies_by_direction_and_names_an_unknown_block() {
         );
     }
 }
+
+/// The aimed-at block is visibly brighter than the same face is normally.
+///
+/// **The feature that makes digging aimable.** Every block is the same
+/// grey, so without this a player cannot tell which one the next keypress
+/// will break until it is already gone.
+#[test]
+fn the_aimed_block_is_brighter_than_the_same_face_unaimed() {
+    use renew_sample_cube::mesh::aimed_colour;
+    for face in EVERY_FACE {
+        let plain = colour(STONE, face);
+        let lit = aimed_colour(STONE, face);
+        assert!(
+            lit[0] > plain[0] && lit[1] > plain[1] && lit[2] > plain[2],
+            "{face:?}: the aimed face should be brighter: {plain:?} then {lit:?}"
+        );
+        assert!(
+            lit.iter().all(|channel| *channel <= 1.0),
+            "{face:?}: brightness must stay inside the range a colour has: {lit:?}"
+        );
+    }
+}
+
+/// Naming an aimed cell changes the scene, and naming none leaves it be.
+///
+/// Behind the feature because the scene builder is: a build with no
+/// renderer has nothing to build a scene for.
+#[cfg(feature = "render")]
+#[test]
+fn an_aimed_cell_changes_the_scene_and_none_leaves_it() {
+    let grid = renew_sample_cube::arena();
+    let plain = renew_sample_cube::render::build_world_space(&grid, None);
+    let same = renew_sample_cube::render::build_world_space(&grid, None);
+    assert_eq!(
+        plain.index_count(),
+        same.index_count(),
+        "the same request should build the same scene"
+    );
+
+    // A cell on the mound's top, which the arena really has.
+    let lit = renew_sample_cube::render::build_world_space(&grid, Some(Cell::new(4, 2, 0)));
+    assert_eq!(
+        lit.index_count(),
+        plain.index_count(),
+        "highlighting changes colour, not geometry"
+    );
+}

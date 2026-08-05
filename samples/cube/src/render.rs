@@ -14,9 +14,9 @@ use renew_render3d::{
     Camera as RenderCamera, CameraRenderer, MeshRenderer, Scene, attachment, pass,
 };
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
-use renew_sample_cube_world::grid::Grid;
+use renew_sample_cube_world::grid::{Cell, Grid};
 
-use crate::mesh::{colour, faces};
+use crate::mesh::{aimed_colour, colour, faces};
 use crate::projection::Projection;
 
 /// Why a render did not happen.
@@ -159,10 +159,15 @@ pub fn build(grid: &Grid) -> Scene {
 /// the room, the walls behind the viewer are what the clipper removes and
 /// the depth test sorts.
 #[must_use]
-pub fn build_world_space(grid: &Grid) -> Scene {
+pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
     let mut scene = Scene::new();
     for quad in faces(grid) {
-        scene.quad(quad.corners(), colour(quad.block, quad.face));
+        let paint = if Some(quad.cell) == aimed {
+            aimed_colour(quad.block, quad.face)
+        } else {
+            colour(quad.block, quad.face)
+        };
+        scene.quad(quad.corners(), paint);
     }
     scene
 }
@@ -173,7 +178,15 @@ pub fn build_world_space(grid: &Grid) -> Scene {
 ///
 /// As [`draw`].
 pub fn draw_through(grid: &Grid, camera: &crate::camera::Camera) -> Result<Vec<u8>, RenderError> {
-    let scene = build_world_space(grid);
+    draw_scene(&build_world_space(grid, None), camera)
+}
+
+/// Draw an already-built scene through `camera`.
+///
+/// # Errors
+///
+/// As [`draw_through`].
+pub fn draw_scene(scene: &Scene, camera: &crate::camera::Camera) -> Result<Vec<u8>, RenderError> {
     if scene.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -194,7 +207,7 @@ pub fn draw_through(grid: &Grid, camera: &crate::camera::Camera) -> Result<Vec<u
     let renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
-        .upload(&device, &scene)
+        .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
     let packed = RenderCamera::from_columns(camera.view_projection());
 
@@ -221,6 +234,26 @@ pub fn to_png_through(
     path: &std::path::Path,
 ) -> Result<(), RenderError> {
     let pixels = draw_through(grid, camera)?;
+    let png = renew_png::encode(SIZE, SIZE, &pixels)
+        .map_err(|error| RenderError::Output(error.to_string()))?;
+    std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
+}
+
+/// Draw a scene already built, through `camera`, to `path`.
+///
+/// Separate from [`to_png_through`] so a caller that has composed its own
+/// scene -- with a block lit as aimed-at, say -- can draw it without the
+/// grid being consulted a second time.
+///
+/// # Errors
+///
+/// As [`draw_through`], plus the file.
+pub fn to_png_scene(
+    scene: &Scene,
+    camera: &crate::camera::Camera,
+    path: &std::path::Path,
+) -> Result<(), RenderError> {
+    let pixels = draw_scene(scene, camera)?;
     let png = renew_png::encode(SIZE, SIZE, &pixels)
         .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))

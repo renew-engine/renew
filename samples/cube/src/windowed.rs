@@ -28,7 +28,7 @@ use renew_platform::window::{
 };
 use renew_render3d::{Camera as RenderCamera, CameraRenderer, attachment, pass};
 use renew_rhi::{Device, DeviceDesc, Extent, Mesh, RenderDesc, Validation, WindowTarget};
-use renew_sample_cube_world::{Cube, Grid, Intent, Tuning};
+use renew_sample_cube_world::{Cell, Cube, Grid, Intent, Tuning};
 
 use crate::{Options, Report, arena};
 
@@ -141,6 +141,13 @@ struct Gpu {
     /// The edit count the mesh was built from, so a dig or a place is
     /// noticed and nothing else provokes a rebuild.
     built_at: (u32, u32),
+    /// The block the mesh was built showing as aimed at.
+    ///
+    /// Colour lives in the vertices, so moving the aim is a rebuild --
+    /// the honest cost of putting the highlight there rather than in a
+    /// second draw. It happens when the aim crosses from one block to
+    /// another, not every time the view turns.
+    aimed_at: Option<Cell>,
 }
 
 impl CubeApp {
@@ -219,7 +226,7 @@ impl CubeApp {
         let mesh = renderer
             .upload(
                 &device,
-                &crate::render::build_world_space(self.world.grid()),
+                &crate::render::build_world_space(self.world.grid(), self.aim_cell()),
             )
             .ok()?;
         Some(Gpu {
@@ -228,6 +235,7 @@ impl CubeApp {
             renderer,
             mesh,
             built_at: self.world.edits(),
+            aimed_at: self.aim_cell(),
         })
     }
 
@@ -235,8 +243,12 @@ impl CubeApp {
     fn draw(&mut self) {
         let camera = crate::camera::player_view(&self.world, self.aspect());
         let edits = self.world.edits();
-        let grid_scene = (edits != self.gpu.as_ref().map_or(edits, |gpu| gpu.built_at))
-            .then(|| crate::render::build_world_space(self.world.grid()));
+        let aimed = self.aim_cell();
+        let stale = self
+            .gpu
+            .as_ref()
+            .is_some_and(|gpu| gpu.built_at != edits || gpu.aimed_at != aimed);
+        let grid_scene = stale.then(|| crate::render::build_world_space(self.world.grid(), aimed));
 
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -248,6 +260,7 @@ impl CubeApp {
         {
             gpu.mesh = mesh;
             gpu.built_at = edits;
+            gpu.aimed_at = aimed;
         }
 
         let packed = RenderCamera::from_columns(camera.view_projection());
@@ -258,6 +271,11 @@ impl CubeApp {
         // swapchain between one frame and the next, and the next frame
         // rebuilds it.
         let _ = gpu.target.render(&RenderDesc::new(&passes));
+    }
+
+    /// The block the player is aiming at, if any.
+    fn aim_cell(&self) -> Option<Cell> {
+        self.world.looking_at().map(|pick| pick.cell)
     }
 
     /// Width over height of the window, for the projection.

@@ -219,7 +219,7 @@ cargo run -p renew-sample-cube --features window --bin cube -- --window
 | **W A S D** | walk, relative to where you are looking |
 | **arrow keys** | turn left and right, look up and down |
 | **space** | jump |
-| **enter** | break the block you are looking at |
+| **enter** | break the block you are looking at, which is lit while you aim at it |
 | **tab** | place one against it |
 | **escape** | stop |
 
@@ -243,6 +243,12 @@ and a float would quietly lose.
 person against a wall clock; a scripted one is a pure function of its
 inputs. Their digests are not comparable, and a line that did not say
 which it was would invite exactly that comparison.
+
+**The block you are aiming at is lit.** Without it the game is played
+blind: every block is the same grey, so you could not tell which one the
+next keypress would break until it was already gone. The colour lives in
+the vertices, so moving the aim rebuilds the geometry -- which happens
+when the aim crosses from one block to another, not every time you turn.
 
 **Pitch stops short of vertical.** At exactly straight up the look
 direction is parallel to world up, the camera basis has no unique answer,
