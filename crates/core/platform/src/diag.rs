@@ -124,6 +124,16 @@ pub fn path_from_value(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 /// Send this process's diagnostics, and any panic, to `path` — or do
 /// nothing at all, when there is no path.
 ///
+/// `note` is recorded first, if given: a line the caller wants at the
+/// top of every log, such as which other switches exist. This crate does
+/// not know what it means and does not interpret it.
+///
+/// # Errors
+///
+/// The path could not be written. Nothing is installed in that case, so
+/// a caller that reports the error is telling the truth about a run that
+/// is not being logged.
+///
 /// Installs a [`FileSink`] as the process-wide sink and chains a panic
 /// hook that records the panic before the default one runs — so a run
 /// that dies leaves its reason on disk rather than only on a console
@@ -146,16 +156,32 @@ pub fn path_from_value(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 /// Never for a bad path — a sink that cannot write drops its records
 /// silently, as its own contract states. Calling this twice is the
 /// reporting crate's contract violation, not this function's.
-pub fn log_to_file(path: Option<impl Into<PathBuf>>) {
+pub fn log_to_file(
+    path: Option<impl Into<PathBuf>>,
+    note: Option<&str>,
+) -> Result<(), crate::fs::FsError> {
     // `None` is the ordinary case — a run nobody asked to log — and it
     // is taken here rather than at every call site so a binary wires
     // this in unconditionally and has one line to get right instead of
     // a condition each.
     let Some(path) = path else {
-        return;
+        return Ok(());
     };
+    let path = path.into();
+
+    // **Written to once, here, before anything is installed.** A sink
+    // drops records it cannot write, which is right for a record and
+    // wrong for the moment somebody switches logging on: a mistyped
+    // path would otherwise look exactly like a run that had nothing to
+    // report, and the reader would draw the opposite conclusion. Failing
+    // here hands the caller something to say, and installs nothing.
+    crate::fs::append(&path, b"")?;
+
     let sink: &'static FileSink = Box::leak(Box::new(FileSink::new(path)));
     renew_diag::install(sink);
+    if let Some(note) = note {
+        renew_diag::info!(target: "diagnostics", "{note}");
+    }
 
     // Chained rather than replaced: the default hook prints to the
     // console, which is what a developer watching a terminal wants, and
@@ -169,6 +195,7 @@ pub fn log_to_file(path: Option<impl Into<PathBuf>>) {
         renew_diag::error!(target: "panic", "{info}");
         previous(info);
     }));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -256,7 +283,7 @@ mod tests {
     /// be, which is why it has an integration test of its own.
     #[test]
     fn no_path_installs_nothing() {
-        log_to_file(None::<PathBuf>);
+        log_to_file(None::<PathBuf>, None).expect("no path is not a failure");
         // Reaching here at all is the assertion: had this installed a
         // sink, the integration test in this crate would then be unable
         // to install its own, and would fail.

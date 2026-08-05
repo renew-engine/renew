@@ -1752,6 +1752,7 @@ dependencies = [
 name = "renew-sample-chess"
 version = "0.1.0"
 dependencies = [
+ "renew-platform",
  "renew-sample-chess-rules",
 ]
 
@@ -1767,6 +1768,7 @@ name = "renew-sample-cube"
 version = "0.1.0"
 dependencies = [
  "renew-fixed",
+ "renew-platform",
  "renew-sample-cube-world",
 ]
 
@@ -1832,6 +1834,7 @@ name = "renew-sample-leap"
 version = "0.1.0"
 dependencies = [
  "renew-fixed",
+ "renew-platform",
  "renew-sample-leap-world",
 ]
 

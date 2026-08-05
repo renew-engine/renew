@@ -35,7 +35,8 @@ fn records_and_panics_both_reach_the_file() {
     // had written things it did not.
     let _ = std::fs::remove_file(&path);
 
-    renew_platform::diag::log_to_file(Some(&path));
+    renew_platform::diag::log_to_file(Some(&path), Some("a note the caller wanted first"))
+        .expect("a writable path installs");
 
     renew_diag::error!(target: "test", "an error with a value: {}", 7);
     renew_diag::warn!(target: "test", "a warning");
@@ -48,6 +49,11 @@ fn records_and_panics_both_reach_the_file() {
     assert!(panicked.is_err(), "the panic must have happened");
 
     let text = std::fs::read_to_string(&path).expect("the sink created the file");
+
+    assert!(
+        text.contains("a note the caller wanted first"),
+        "the caller's opening note is missing from {text:?}"
+    );
 
     assert!(
         text.contains("ERROR test: an error with a value: 7"),
@@ -75,4 +81,24 @@ fn records_and_panics_both_reach_the_file() {
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// A path that cannot be written is reported, and installs nothing.
+///
+/// Separate from the test above because it must run *before* anything is
+/// installed to be meaningful — and it does, because a failing path
+/// returns before it touches the sink slot at all.
+#[test]
+fn an_unwritable_path_is_reported_rather_than_silently_ignored() {
+    // A directory component that is not a directory: the open fails on
+    // every supported platform.
+    let bad = std::env::temp_dir()
+        .join("renew-platform-not-a-directory.log")
+        .join("nested")
+        .join("run.log");
+    let refused = renew_platform::diag::log_to_file(Some(bad), None);
+    assert!(
+        refused.is_err(),
+        "a path that cannot be written must be said out loud, or a mistyped one          looks exactly like a run with nothing to report"
+    );
 }

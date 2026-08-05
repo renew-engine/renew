@@ -404,6 +404,13 @@ pub fn describe_json(report: &Report) -> String {
 /// one — and the parts most worth testing, the refusals, are exactly the parts
 /// a spawned process makes hardest to inspect.
 pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
+    // Diagnostics, before anything can fail. A path that cannot be
+    // written is said out loud once: silence there would look exactly
+    // like a run with nothing to report.
+    if let Err(error) = renew_platform::diag::log_to_file(diagnostics_path(), None) {
+        eprintln!("RENEW_LOG: {error}");
+    }
+
     let options = match parse(arguments) {
         Ok(options) => options,
         Err(error) => {
@@ -430,4 +437,18 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
         println!("{}", describe(&report));
     }
     0
+}
+
+/// The file `RENEW_LOG` names, if it names one.
+///
+/// An environment variable rather than a flag, so a panic that happens
+/// before the command line is parsed still has somewhere to go. Absent
+/// and empty both mean off.
+///
+/// There is no validation switch beside it here: this sample touches no
+/// device, so what a log carries is a panic and nothing a graphics layer
+/// could add to.
+#[must_use]
+pub fn diagnostics_path() -> Option<std::path::PathBuf> {
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
 }

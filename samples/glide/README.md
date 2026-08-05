@@ -59,29 +59,43 @@ rather than silently ignored.
 ## When something goes wrong
 
 Set `RENEW_LOG` to a file path and the run reports into it: the engine's
-own error channel, any panic, and — because a graphics fault is usually
-inside the driver rather than above it — Vulkan validation, which is off
-by default because it costs frame time and says nothing on a healthy
-run.
+own error channel, and any panic.
 
 ```
 RENEW_LOG=run.log glide --window
 ```
 
 ```powershell
-$env:RENEW_LOG = "$env:USERPROFILE\run.log"
-.\target\debug\glide.exe --window
+$env:RENEW_LOG = "$env:USERPROFILEun.log"
+.	arget\debug\glide.exe --window
 ```
 
 An environment variable rather than a flag, because a panic that happens
 before the command line is parsed still needs somewhere to go. An empty
-value counts as unset.
+value counts as unset. Every sample takes it, including the ones with no
+graphics at all, where what it carries is a panic.
+
+**Every log says whether graphics validation was on**, in its first
+line, both ways round. Validation is a separate switch:
+
+```
+RENEW_LOG=run.log RENEW_VALIDATION=1 glide --window
+```
+
+They are separate deliberately. The validation layer reports faults
+inside the driver that nothing else here can see — and it changes
+timing, so a fault that depends on timing can behave differently, or
+vanish, when it is on. The first capture worth having is of the run that
+actually failed, unperturbed; validation is the second look, taken
+knowingly. A log that did not say which kind of run it recorded would be
+impossible to compare against another.
 
 The file is appended to, never truncated, so several runs at one path
-accumulate; a run that reports nothing leaves no file at all, which is
-what a healthy run looks like. A sink that cannot write drops its
-records in silence — the reporting channel is the thing that broke, and
-a diagnostic must not become the fault.
+accumulate. It is created as soon as logging starts, so an **empty file
+means logging was on and nothing was reported** — which is a different
+thing from no file, meaning it was never on. A path that cannot be
+written is said once on the error stream and the run continues; a broken
+log must not become a broken run.
 
 **What it cannot catch:** a driver that takes the process down leaves
 nothing to write with. A log that ends mid-run, with a nonzero exit and

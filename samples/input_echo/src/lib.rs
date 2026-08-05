@@ -75,7 +75,14 @@ pub fn run_cli<I: IntoIterator<Item = String>>(args: I) -> u8 {
     // Diagnostics, before anything can fail. `RENEW_LOG` names a file;
     // when it is set the engine's own error channel and any panic land
     // there, and the device is brought up with validation on.
-    renew_platform::diag::log_to_file(diagnostics_path());
+    // Diagnostics, before anything can fail. A path that cannot be
+    // written is said out loud once: silence there would look exactly
+    // like a run with nothing to report.
+    if let Err(error) =
+        renew_platform::diag::log_to_file(diagnostics_path(), Some(diagnostics_note()))
+    {
+        eprintln!("RENEW_LOG: {error}");
+    }
     let strict = std::env::var_os(STRICT).is_some_and(|value| value == "1");
     match run(args) {
         Ok(report) => {
@@ -157,13 +164,41 @@ pub fn exit_code(code: u8) -> ExitCode {
 
 /// The file `RENEW_LOG` names, if it names one.
 ///
-/// One variable rather than a flag, so it covers a panic that happens
-/// before the command line is parsed — which is exactly the failure a
-/// flag cannot describe. An empty value is treated as unset, because a
-/// shell that exports an empty string meant to turn it off.
+/// An environment variable rather than a flag, so a panic that happens
+/// before the command line is parsed still has somewhere to go. Absent
+/// and empty both mean off.
 #[must_use]
 pub fn diagnostics_path() -> Option<std::path::PathBuf> {
     renew_platform::diag::path_from_value(std::env::var_os("RENEW_LOG"))
+}
+
+/// Whether `RENEW_VALIDATION` asks for the graphics validation layer.
+///
+/// **A separate switch from the log, deliberately.** The layer changes
+/// timing, so a crash that is a race can vanish when it is enabled — and
+/// the first capture anybody wants is of the run that actually failed,
+/// unperturbed. Logging records what happened; this looks closer, and
+/// asks to be turned on knowing that it changes what it observes.
+#[must_use]
+pub fn validation_requested() -> bool {
+    renew_platform::diag::path_from_value(std::env::var_os("RENEW_VALIDATION")).is_some()
+}
+
+/// The line every log opens with, saying which state the graphics
+/// validation layer is in.
+///
+/// **Always said, in both states, and that is the point.** A log that
+/// mentioned the layer only when it was off would leave a reader of the
+/// other kind wondering whether it had been on — and a run recorded with
+/// the layer active is not a stock run, which anybody comparing two logs
+/// needs to know. Saying it either way makes the log self-describing.
+#[must_use]
+pub fn diagnostics_note() -> &'static str {
+    if validation_requested() {
+        "graphics validation is ON: it reports driver-level faults this log would otherwise miss, and it changes timing, so a fault that depends on timing may behave differently here than in an ordinary run."
+    } else {
+        "graphics validation is OFF, so this is an ordinary run and what it records is what really happened. If the fault is graphical and nothing here explains it, set RENEW_VALIDATION=1 and run again: the layer names faults inside the driver, at the cost of changing timing."
+    }
 }
 
 #[cfg(test)]
