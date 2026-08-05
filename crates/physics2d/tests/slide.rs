@@ -227,12 +227,23 @@ fn a_zero_displacement_slide_goes_nowhere_and_says_so() {
 #[test]
 fn a_slide_on_a_handle_naming_no_body_is_refused() {
     let (mut world, _) = staged((0, 0), &[]);
-    let stranger = Entities::new().spawn();
     let mut hits = empty_hits();
-    // A fresh allocator's first entity shares an index with the character but
-    // the world checks the whole handle.
-    let refused = world.move_and_slide(stranger, v(1, 0), ANY, SKIN, LIMIT, &mut hits);
-    assert!(refused.is_none() || refused.is_some_and(|r| r.hits.existed == 0));
+    // A body that existed and does not any more. Using a fresh allocator's
+    // first entity would not do: it is index zero generation zero, the very
+    // handle the character already has, so the world would find a live body
+    // and the test would pass while checking nothing.
+    let mut entities = Entities::new();
+    let _first = entities.spawn();
+    let doomed = entities.spawn();
+    world.create_body(doomed, BodyKind::Kinematic, at(0, 0));
+    world.destroy_body(doomed);
+
+    assert!(
+        world
+            .move_and_slide(doomed, v(1, 0), ANY, SKIN, LIMIT, &mut hits)
+            .is_none(),
+        "a destroyed body has nothing to move"
+    );
 }
 
 /// **A full hit buffer is reported, never silently truncated.** A caller that
