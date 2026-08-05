@@ -13,6 +13,9 @@
 
 pub mod mesh;
 pub mod png;
+pub mod projection;
+#[cfg(feature = "render")]
+pub mod render;
 
 use renew_fixed::{Fixed, Vec3};
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, STONE, Tuning};
@@ -61,6 +64,12 @@ pub struct Options {
     pub json: bool,
     /// Print usage and stop.
     pub help: bool,
+    /// Draw the world to a PNG at this path, if anywhere.
+    ///
+    /// **Needs the `render` feature**, which is off by default: the game
+    /// a player runs carries no graphics crate. A build without it
+    /// refuses the flag by name rather than ignoring it.
+    pub render: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -71,6 +80,7 @@ impl Default for Options {
             show: false,
             json: false,
             help: false,
+            render: None,
         }
     }
 }
@@ -179,6 +189,7 @@ pub fn usage() -> &'static str {
      \n\
      --script NAME   which built-in script drives the player: stand, patrol, build\n\
      --show          draw two slices through the world: the plan and the elevation\n\
+     --render PATH   draw the world to a PNG there (needs --features render)\n\
      --ticks N       how many ticks to run (default 600)\n\
      --json          print the answer as JSON rather than as a sentence\n\
      --help          print this and stop\n"
@@ -195,6 +206,10 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--help" | "-h" => options.help = true,
+            "--render" => {
+                let path = arguments.next().ok_or(CliError::MissingValue("--render"))?;
+                options.render = Some(std::path::PathBuf::from(path));
+            }
             "--show" => options.show = true,
             "--json" => options.json = true,
             "--script" => {
@@ -400,6 +415,31 @@ pub fn describe_json(report: &Report) -> String {
     )
 }
 
+/// Draw the world to `path`, or say why not.
+///
+/// # Errors
+///
+/// A refusal from the renderer, or the message a build without the
+/// feature answers with.
+#[cfg(feature = "render")]
+fn render_to(world: &Cube, path: &std::path::Path) -> Result<(), String> {
+    render::to_png(world.grid(), path).map_err(|error| error.to_string())
+}
+
+/// The honest answer in a build with the rendering stack compiled out.
+///
+/// Named rather than ignored, and it names both roads: a reader who
+/// typed a `renew` command has no use for a cargo flag on its own.
+#[cfg(not(feature = "render"))]
+fn render_to(_world: &Cube, _path: &std::path::Path) -> Result<(), String> {
+    Err(
+        "this build cannot draw. Run `renew --features render run cube -- --render out.png`, \
+         or build it directly with `cargo run -p renew-sample-cube --features render --bin cube \
+         -- --render out.png`"
+            .to_string(),
+    )
+}
+
 /// Parse, run, print, and answer with an exit code.
 ///
 /// **The whole binary, in the library.** A process shell that did any of this
@@ -436,6 +476,12 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
             println!("{}", plan_text(&world));
             println!();
             println!("{}", elevation_text(&world));
+        }
+        if let Some(path) = &options.render
+            && let Err(error) = render_to(&world, path)
+        {
+            eprintln!("usage: {error}");
+            return 2;
         }
         println!("{}", describe(&report));
     }

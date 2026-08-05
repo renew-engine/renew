@@ -114,6 +114,7 @@ fn a_run_is_reproducible() {
         show: false,
         json: false,
         help: false,
+        render: None,
     };
     let first = run(&options);
     let second = run(&options);
@@ -123,14 +124,14 @@ fn a_run_is_reproducible() {
     // watching the thing it claims to.
     let other = run(&Options {
         script: Script::Patrol,
-        ..options
+        ..options.clone()
     });
     assert_ne!(first.digest, other.digest);
 
     // As does a different length.
     let longer = run(&Options {
         ticks: 301,
-        ..options
+        ..options.clone()
     });
     assert_ne!(first.digest, longer.digest);
 }
@@ -209,4 +210,46 @@ fn the_command_line_answers_with_an_exit_code() {
         "so does an unknown script"
     );
     assert_eq!(run_cli(args("--ticks lots")), 1);
+}
+
+/// `--render` takes a path, and keeps it.
+#[test]
+fn the_render_flag_carries_its_path() {
+    let options =
+        parse(["--render".to_string(), "out.png".to_string()]).expect("a path is a legal value");
+    assert_eq!(
+        options.render.as_deref(),
+        Some(std::path::Path::new("out.png"))
+    );
+}
+
+/// And says which flag is short of one, like every other value flag.
+#[test]
+fn the_render_flag_without_a_path_says_which_flag() {
+    let refused = format!("{:?}", parse(["--render".to_string()]));
+    assert!(
+        refused.contains("MissingValue") && refused.contains("--render"),
+        "the refusal must name the flag: {refused}"
+    );
+}
+
+/// A build that cannot draw refuses the flag rather than ignoring it,
+/// and names both ways to get a build that can.
+///
+/// **Gated to the feature being off**, because that is the arm under
+/// test. With the feature on the same command draws a picture, which is
+/// covered by the lane that runs the renderer.
+#[cfg(not(feature = "render"))]
+#[test]
+fn a_build_without_the_renderer_refuses_to_draw() {
+    let code = renew_sample_cube::run_cli(
+        ["--ticks", "1", "--render", "unwritten.png"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    assert_eq!(code, 2, "refusing to draw is a usage error");
+    assert!(
+        !std::path::Path::new("unwritten.png").exists(),
+        "a build that cannot draw must not leave a file behind"
+    );
 }

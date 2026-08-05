@@ -211,7 +211,7 @@ jobs:
       # other side.
       - name: Build and test without the rendering crate
         run: |
-          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-render3d --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-render3d --exclude renew-sample-cube --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi $sel
           cargo build $sel
           cargo test $sel
@@ -282,10 +282,18 @@ jobs:
       # later, that the crate was never actually removable.
       - name: Build and test without the 3D renderer
         run: |
-          sel="--workspace --exclude renew-render3d"
+          sel="--workspace --exclude renew-render3d --exclude renew-sample-cube"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d $sel
           cargo build $sel
           cargo test $sel
+          # The voxel sample takes the 3D renderer only behind its
+          # `render` feature, so its ordinary graph carries none of it.
+          # Excluded above because the structure check counts a declared
+          # edge whether or not a feature enables it -- so the property
+          # is asserted here rather than left implied by a cell that
+          # happens to build.
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d -p renew-sample-cube
+          cargo build -p renew-sample-cube
       # The fixed-point arithmetic, and the collision crate written in it.
       # This cell was a single leaf when it landed, with a comment saying
       # the first crate to depend on it should discover the obligation
@@ -505,6 +513,38 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-render3d --test golden
+      # The voxel sample's own picture, drawn through the whole stack on
+      # the pinned rasterizer. Not compared against the committed image:
+      # that file is drawn on a real GPU and this is a software
+      # rasterizer, so byte equality would be asserting that two
+      # different rasterizers agree -- which they need not, and a golden
+      # that flakes is worse than no golden. What is asserted is that the
+      # path runs end to end and produces a real PNG of the right size,
+      # which is the part that breaks when a projection or a feature
+      # wiring is wrong.
+      - name: The voxel sample draws itself on the pinned software rasterizer
+        run: |
+          cargo run -p renew-sample-cube --features render --bin cube --             --ticks 1 --render "$RUNNER_TEMP/arena.png"
+          python3 - "$RUNNER_TEMP/arena.png" <<'CHECK'
+          import struct, sys, zlib
+          data = open(sys.argv[1], "rb").read()
+          assert data[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]), "not a PNG"
+          width, height = struct.unpack(">II", data[16:24])
+          assert (width, height) == (512, 512), f"unexpected size {width}x{height}"
+          at, idat = 8, b""
+          while at < len(data):
+              length = struct.unpack(">I", data[at:at + 4])[0]
+              if data[at + 4:at + 8] == b"IDAT":
+                  idat += data[at + 8:at + 8 + length]
+              at += 12 + length
+          raw = zlib.decompress(idat)
+          assert len(raw) == height * (1 + width * 4), "the stream is the wrong length"
+          # A picture of one flat colour means nothing was drawn.
+          pixels = {raw[i:i + 4] for row in range(height)
+                    for i in [row * (1 + width * 4) + 1]}
+          assert len(pixels) > 1, "every scanline starts with the same pixel; nothing drew"
+          print(f"{len(data)} bytes, {width}x{height}, stream {len(raw)} bytes")
+          CHECK
       # The game's replay-capture oracle on the same pinned rasterizer:
       # committed traces replayed through the driver's own loop, drawn
       # through the sprite pipeline, compared against committed images.
