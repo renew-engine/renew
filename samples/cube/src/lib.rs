@@ -52,6 +52,8 @@ pub struct Options {
     pub script: Script,
     /// How many ticks to run.
     pub ticks: u32,
+    /// Draw the world as two slices through it.
+    pub show: bool,
     /// Print the answer as JSON rather than as a sentence.
     pub json: bool,
     /// Print usage and stop.
@@ -63,6 +65,7 @@ impl Default for Options {
         Self {
             script: Script::Stand,
             ticks: 600,
+            show: false,
             json: false,
             help: false,
         }
@@ -172,6 +175,7 @@ pub fn usage() -> &'static str {
      Usage: cube [--script NAME] [--ticks N] [--json] [--help]\n\
      \n\
      --script NAME   which built-in script drives the player: stand, patrol, build\n\
+     --show          draw two slices through the world: the plan and the elevation\n\
      --ticks N       how many ticks to run (default 600)\n\
      --json          print the answer as JSON rather than as a sentence\n\
      --help          print this and stop\n"
@@ -188,6 +192,7 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--help" | "-h" => options.help = true,
+            "--show" => options.show = true,
             "--json" => options.json = true,
             "--script" => {
                 let name = arguments.next().ok_or(CliError::MissingValue("--script"))?;
@@ -211,20 +216,41 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
 /// Walled, because outside the grid is not solid and a player who walks off
 /// the floor falls forever — which would make `patrol` answer with a digest
 /// about falling rather than about walking.
+///
+/// **A closed box, filled on every face**, because outside the grid is neither
+/// solid nor air and a player who leaves falls forever with nothing to land on.
+///
+/// The shell coincides with the boundary `Grid::set` refuses to clear, so the
+/// box cannot be opened from inside. That took three tries. Walls three blocks
+/// high let `build` dig through the floor; an unbreakable floor let it build a
+/// tower and step over those walls. A player that can place blocks can reach
+/// any height, so the only enclosure that holds is one with no face missing.
 #[must_use]
 pub fn arena() -> Grid {
-    let mut grid = Grid::new(Cell::new(-20, -2, -20), (41, 14, 41));
-    grid.fill(Cell::new(-20, 0, -20), Cell::new(20, 0, 20), STONE);
-    grid.fill(Cell::new(-20, 1, -20), Cell::new(-20, 3, 20), STONE);
-    grid.fill(Cell::new(20, 1, -20), Cell::new(20, 3, 20), STONE);
-    grid.fill(Cell::new(-20, 1, -20), Cell::new(20, 3, -20), STONE);
-    grid.fill(Cell::new(-20, 1, 20), Cell::new(20, 3, 20), STONE);
+    let mut grid = Grid::new(Cell::new(-20, 0, -20), (41, 12, 41));
+    let (low, high) = (Cell::new(-20, 0, -20), Cell::new(20, 11, 20));
+    grid.fill(low, Cell::new(high.x, low.y, high.z), STONE);
+    grid.fill(Cell::new(low.x, high.y, low.z), high, STONE);
+    grid.fill(low, Cell::new(low.x, high.y, high.z), STONE);
+    grid.fill(Cell::new(high.x, low.y, low.z), high, STONE);
+    grid.fill(low, Cell::new(high.x, high.y, low.z), STONE);
+    grid.fill(Cell::new(low.x, low.y, high.z), high, STONE);
+
+    // A mound inside the box, because the shell cannot be cleared and a
+    // digging script with only the shell in reach digs nothing. It sits in
+    // front of the start, along the direction the player looks.
+    grid.fill(Cell::new(2, 1, -2), Cell::new(6, 2, 2), STONE);
     grid
 }
 
-/// Run a script and answer.
+/// Run a script and answer with the world it left behind.
+///
+/// **Separate from [`run`] because drawing needs the world and a report is not
+/// one.** The grid is edited as the script runs — blocks are broken and placed
+/// — so a drawing made from `arena()` would show the world as it started
+/// rather than as it ended, which is the one thing a picture of it is for.
 #[must_use]
-pub fn run(options: &Options) -> Report {
+pub fn run_world(options: &Options) -> Cube {
     let start = Vec3::new(Fixed::ZERO, Fixed::from_int(4), Fixed::ZERO);
     let mut world = Cube::new(Tuning::default(), arena(), start);
     // Looking down and forward, so `build` has something to dig at.
@@ -237,15 +263,102 @@ pub fn run(options: &Options) -> Report {
     for tick in 0..options.ticks {
         world.step(options.script.intent(tick));
     }
+    world
+}
 
+/// Run a script and answer.
+#[must_use]
+pub fn run(options: &Options) -> Report {
+    report_of(options.script, &run_world(options))
+}
+
+/// What a finished world answers with.
+fn report_of(script: Script, world: &Cube) -> Report {
     Report {
-        script: options.script,
+        script,
         ticks: world.tick(),
         digest: world.digest(),
         solids: world.grid().solid_count(),
         edits: world.edits(),
         grounded: world.grounded(),
     }
+}
+
+/// What a cell is drawn as: the player over the blocks, solid over air.
+fn cell_char(world: &Cube, here: Cell, player: Cell) -> char {
+    if here == player {
+        '@'
+    } else if world.grid().is_solid(here) {
+        '#'
+    } else {
+        '.'
+    }
+}
+
+/// A row label, right-aligned in a four-character gutter so rows line up.
+fn gutter(value: i32, into: &mut String) {
+    let label = value.to_string();
+    for _ in label.len()..4 {
+        into.push(' ');
+    }
+    into.push_str(&label);
+    into.push(' ');
+}
+
+/// The world seen from above, sliced at the height the player is standing in.
+///
+/// **The whole grid, not a window onto it.** The arena is forty-one cells
+/// across and fits a terminal, so every picture has the same frame and two
+/// runs can be compared column for column — which the platformer's view
+/// deliberately gives up, its level being wider than a terminal is.
+#[must_use]
+pub fn plan_text(world: &Cube) -> String {
+    let player = Cell::containing(world.position());
+    let min = world.grid().min();
+    let (width, _, depth) = world.grid().size();
+    let mut text = String::new();
+    text.push_str("plan, looking down, at y=");
+    text.push_str(&player.y.to_string());
+    text.push('\n');
+    for step in 0..depth {
+        let z = min.z + step;
+        gutter(z, &mut text);
+        for column in 0..width {
+            let here = Cell::new(min.x + column, player.y, z);
+            text.push(cell_char(world, here, player));
+        }
+        text.push('\n');
+    }
+    text.push_str("     x from ");
+    text.push_str(&min.x.to_string());
+    text.push_str(", z down the side");
+    text
+}
+
+/// The world seen from the side, sliced at the depth the player is standing
+/// at, with height increasing upward the way a reader expects.
+#[must_use]
+pub fn elevation_text(world: &Cube) -> String {
+    let player = Cell::containing(world.position());
+    let min = world.grid().min();
+    let (width, height, _) = world.grid().size();
+    let mut text = String::new();
+    text.push_str("elevation, looking along z, at z=");
+    text.push_str(&player.z.to_string());
+    text.push('\n');
+    for step in (0..height).rev() {
+        let y = min.y + step;
+        gutter(y, &mut text);
+        for column in 0..width {
+            let here = Cell::new(min.x + column, y, player.z);
+            text.push(cell_char(world, here, player));
+        }
+        text.push('\n');
+    }
+    text.push_str("     x from ");
+    text.push_str(&min.x.to_string());
+    text.push_str(", y up the side");
+    text
 }
 
 /// The one line a run answers with.
@@ -302,10 +415,18 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
         print!("{}", usage());
         return 0;
     }
-    let report = run(&options);
+    let world = run_world(&options);
+    let report = report_of(options.script, &world);
     if options.json {
         println!("{}", describe_json(&report));
     } else {
+        // The pictures first, then the line: a reader scanning a terminal
+        // wants the summary nearest the prompt.
+        if options.show {
+            println!("{}", plan_text(&world));
+            println!();
+            println!("{}", elevation_text(&world));
+        }
         println!("{}", describe(&report));
     }
     0
