@@ -178,25 +178,34 @@ with no recent change to blame.
 
 ## Writing the picture out
 
-`png::encode` turns RGBA bytes into a PNG, in about a hundred lines and
-with no dependency. Encoding one turns out not to need a compressor:
-the data is a zlib stream, and a zlib stream may be made of deflate
-**stored** blocks -- bytes copied verbatim behind a five-byte header. So
-the encoder is four chunks, two checksums and some framing.
+`png::encode` turns RGBA bytes into a PNG, with no dependency. A PNG is
+four chunks, two checksums and a deflate stream -- and deflate's *fixed*
+Huffman tables are published constants, so a compressor good enough for
+pictures of geometry needs no tables of its own.
 
-Stored blocks cost five bytes per 65535, about 0.008% over the raw
-pixels. A real compressor would make the file much *smaller* than raw,
-and for flat-coloured faces the difference would be large -- this trades
-size for having no dependency and a byte layout a reader can check
-against the specification in one sitting.
+It matches against three candidates: the pixel to the left, the pixel
+above, and the byte before. Those are what a rendered picture is made of.
+A 256x256 flat image comes out at about **two kilobytes** against 256 KiB
+raw. Data with no such structure comes out slightly *larger* than raw,
+because fixed Huffman spends nine bits on half the byte values -- an
+honest trade for an encoder meant for renders rather than photographs.
 
-**How it was checked.** The tests assert the layout against the format,
-including a hand-derived single-pixel file and the block split that only
-appears past 65535 bytes. That catches a typo but would not catch a
-specification consistently misread, since the same reading wrote the
-encoder and the test -- so the output was also handed to an independent
-decoder at five sizes, and each opened as RGBA at the right dimensions
-with pixels round-tripping exactly.
+That matters because these pictures are committed: an uncompressed render
+would add a quarter of a megabyte to the repository's history every time
+it changed.
+
+**How it is checked, and why that is not a formality.** The tests assert
+the layout against the format and pin the length and distance symbol
+tables to the published ones. But a deflate stream packs everything
+low-bit-first *except* Huffman codes, and a file that gets that backwards
+decodes into plausible garbage rather than failing -- so the output is
+also handed to an independent decoder across flat, banded, striped and
+incompressible images, each checked for exact pixels.
+
+**It caught a real defect.** The length-symbol arithmetic was off by one,
+so every match of eleven bytes or more encoded as the wrong symbol. The
+file was still small, still structurally a PNG, still had a valid header,
+and every test in the crate passed. Only a decoder refused it.
 
 ## Shape
 
