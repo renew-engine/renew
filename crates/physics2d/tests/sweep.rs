@@ -221,3 +221,34 @@ proptest! {
         }
     }
 }
+
+/// **A box sweeping at a circle**, which is the same geometry the other way
+/// round and a separate arm of the separation query. Every other sweep here
+/// moves the circle, so without this the box-first arm has never run.
+#[test]
+fn a_box_can_sweep_at_a_circle_too() {
+    let hit =
+        sweep(square(1), at(-5, 0), v(10, 0), circle(1), at(0, 0), SKIN).expect("straight at it");
+    // Surfaces meet when the centres are 2 apart, so it stops near x = −2.
+    assert!(
+        (hit.origin.x - Fixed::from_int(-2)).to_bits().abs() <= 1024,
+        "stopped at x = {}, expected about −2",
+        hit.origin.x.to_bits()
+    );
+    assert!(
+        hit.normal.x < Fixed::ZERO,
+        "the circle pushes back along −x"
+    );
+
+    // And it does not end up inside.
+    let (gap, _) = separation(square(1), Transform::at(hit.origin), circle(1), at(0, 0))
+        .expect("both shapes are supported");
+    assert!(
+        gap.to_bits() >= -64,
+        "ended inside by {} raw",
+        -gap.to_bits()
+    );
+
+    // Moving away finds nothing, exercising the same arm's rejection.
+    assert!(sweep(square(1), at(-5, 0), v(-10, 0), circle(1), at(0, 0), SKIN).is_none());
+}

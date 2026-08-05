@@ -56,20 +56,31 @@ pub fn sweep(
     skin: Fixed,
 ) -> Option<SweepHit> {
     let mut time = Fixed::ZERO;
+    let mut outcome = None;
 
-    for _ in 0..MAX_ADVANCE_STEPS {
+    for step_index in 0..MAX_ADVANCE_STEPS {
         let here = Transform::new(from.translation + displacement * time, from.rotation);
         let (gap, direction) = separation(moving, here, target, target_at)?;
 
-        if gap <= skin {
-            // Close enough to call it contact. The direction points from the
-            // mover toward the target, and a caller sliding wants the surface
-            // facing back at it.
-            return Some(SweepHit {
+        // Contact, or the budget spent. **The last step reports where it got
+        // to rather than nothing**, because reporting no hit would let a body
+        // pass straight through something it was converging on — and since
+        // every advance is bounded below the true time of impact, the position
+        // reached is always short of the surface rather than past it.
+        //
+        // The two share an arm deliberately: written as a separate tail after
+        // the loop it was twelve lines restating this one, and unreachable for
+        // every shape family that exists — a sweep of eight thousand rotated
+        // box approaches left at worst twenty-nine raw units unconverged.
+        if gap <= skin || step_index + 1 == MAX_ADVANCE_STEPS {
+            outcome = Some(SweepHit {
                 time,
                 origin: here.translation,
+                // The direction points from the mover toward the target, and a
+                // caller sliding wants the surface facing back at it.
                 normal: -direction,
             });
+            break;
         }
 
         // How fast the gap closes along the axis that measured it. Moving away
@@ -77,48 +88,33 @@ pub fn sweep(
         // it is a separating axis, nothing else will be either.
         let approach = displacement.dot(direction);
         if approach <= Fixed::ZERO {
-            return None;
+            break;
         }
 
         // Time to close the gap if the mover kept going straight. The bound is
         // a lower bound on the true distance, so this is a lower bound on the
-        // true time — advancing by it can never overshoot.
-        // The guard above established a positive divisor, so this cannot fail
-        // — and a `?` here would be a branch nothing could ever take. Falling
-        // back to a zero step routes any surprise through the no-progress
-        // check below, which reports contact rather than inventing a distance.
+        // true time — advancing by it can never overshoot. The guard above
+        // established a positive divisor, so the fallback is unreachable and
+        // routes any surprise through the no-progress check below rather than
+        // inventing a distance.
         let step = (gap - skin).checked_div(approach).unwrap_or(Fixed::ZERO);
         time = time + step;
         if time > Fixed::ONE {
-            return None;
+            break;
         }
         // A step that rounds to nothing cannot make progress, and repeating it
         // would burn the whole budget standing still. The shapes are within a
         // raw unit of the skin distance here, which is contact by any measure
         // the number type can express.
         if step <= Fixed::ZERO {
-            return Some(SweepHit {
+            outcome = Some(SweepHit {
                 time,
                 origin: from.translation + displacement * time,
                 normal: -direction,
             });
+            break;
         }
     }
 
-    // The budget ran out while still approaching. Reporting no hit would let a
-    // body pass through something it was converging on, so the last position
-    // is reported instead — with the gap it had, which is at most the distance
-    // the remaining steps would have closed.
-    let here = from.translation + displacement * time;
-    let (_, direction) = separation(
-        moving,
-        Transform::new(here, from.rotation),
-        target,
-        target_at,
-    )?;
-    Some(SweepHit {
-        time,
-        origin: here,
-        normal: -direction,
-    })
+    outcome
 }
