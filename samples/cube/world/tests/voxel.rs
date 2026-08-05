@@ -443,3 +443,67 @@ fn the_player_never_ends_a_tick_inside_a_block() {
         );
     }
 }
+
+/// A ray beginning inside a block reports that block rather than starting past
+/// it — which is what a player standing in one needs to be told.
+#[test]
+fn a_ray_starting_inside_a_block_reports_it() {
+    let mut grid = Grid::new(Cell::new(-4, -4, -4), (9, 9, 9));
+    grid.set(Cell::new(0, 0, 0), STONE);
+    let picked = pick(
+        &grid,
+        Vec3::ZERO,
+        Vec3::new(Fixed::ONE, Fixed::ZERO, Fixed::ZERO),
+        Fixed::from_int(10),
+    )
+    .expect("the origin is inside a block");
+    assert_eq!(picked.cell, Cell::new(0, 0, 0));
+    // Heading east, so it is treated as having come in through the west face —
+    // which puts a placed block on the side the ray came from.
+    assert_eq!(picked.face, Face::West);
+}
+
+/// **A ray that never leaves the grid still stops.** The reach bounds it in
+/// world units and the step budget bounds it in work; without the second, a
+/// ray very nearly parallel to an axis walks one tiny step at a time.
+#[test]
+fn a_ray_with_a_huge_reach_stops_at_its_step_budget() {
+    // A big empty grid and a reach far beyond what the budget can cover.
+    let grid = Grid::new(Cell::new(-500, -500, -500), (1001, 1001, 1001));
+    assert!(
+        pick(
+            &grid,
+            Vec3::ZERO,
+            Vec3::new(Fixed::ONE, Fixed::ZERO, Fixed::ZERO),
+            Fixed::from_int(10_000)
+        )
+        .is_none(),
+        "nothing to find, and it must give up rather than walk forever"
+    );
+}
+
+/// Placing at the edge of the world is refused rather than silently dropped
+/// somewhere else, and the counter does not move.
+#[test]
+fn placing_outside_the_grid_is_refused() {
+    // A one-block grid holding one block: every neighbour is outside.
+    let mut grid = Grid::new(Cell::new(0, 0, 0), (1, 1, 1));
+    grid.set(Cell::new(0, 0, 0), STONE);
+    let mut world = Cube::new(Tuning::default(), grid, v(0, 4, 0));
+    world.look_at(Vec3::new(Fixed::ZERO, Fixed::from_int(-1), Fixed::ZERO));
+
+    let picked = world.looking_at().expect("the block is below");
+    assert_eq!(picked.cell, Cell::new(0, 0, 0));
+    assert_eq!(picked.neighbour(), Cell::new(0, 1, 0), "outside the grid");
+
+    world.step(Intent {
+        place: true,
+        ..Intent::IDLE
+    });
+    assert_eq!(
+        world.edits(),
+        (0, 0),
+        "a refused placement must not be counted"
+    );
+    assert_eq!(world.grid().solid_count(), 1, "and must not appear");
+}

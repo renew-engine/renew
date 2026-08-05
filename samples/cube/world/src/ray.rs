@@ -104,12 +104,10 @@ pub fn pick(grid: &Grid, origin: Vec3, direction: Vec3, reach: Fixed) -> Option<
             next[axis] = Fixed::MAX;
             continue;
         }
-        let Some(per_cell) = Fixed::ONE.checked_div(towards.abs()) else {
-            step[axis] = 0;
-            delta[axis] = Fixed::MAX;
-            next[axis] = Fixed::MAX;
-            continue;
-        };
+        // The zero case is handled above, so this cannot fail; falling back to
+        // a boundary infinitely far away keeps the arithmetic total without a
+        // branch nothing could take.
+        let per_cell = Fixed::ONE.checked_div(towards.abs()).unwrap_or(Fixed::MAX);
         delta[axis] = per_cell;
         // The cell spans half a unit either side of its centre, so the
         // distance to the boundary ahead depends on which way we are going.
@@ -132,7 +130,7 @@ pub fn pick(grid: &Grid, origin: Vec3, direction: Vec3, reach: Fixed) -> Option<
             cell,
             // Entered from nowhere; the face the ray is heading away from is
             // the useful answer, since that is where a block would go.
-            face: entry_face(0, -step[0].signum()).unwrap_or(Face::Top),
+            face: entry_face(0, step[0] < 0),
         });
     }
 
@@ -161,22 +159,26 @@ pub fn pick(grid: &Grid, origin: Vec3, direction: Vec3, reach: Fixed) -> Option<
         if grid.is_solid(cell) {
             return Some(Pick {
                 cell,
-                face: entry_face(axis, -step[axis])?,
+                face: entry_face(axis, step[axis] < 0),
             });
         }
     }
     None
 }
 
-/// The face a step of this direction on this axis enters through.
-fn entry_face(axis: usize, towards: i32) -> Option<Face> {
-    Some(match (axis, towards.signum()) {
-        (0, 1) => Face::East,
-        (0, -1) => Face::West,
-        (1, 1) => Face::Top,
-        (1, -1) => Face::Bottom,
-        (2, 1) => Face::North,
-        (2, -1) => Face::South,
-        _ => return None,
-    })
+/// The face a step enters through.
+///
+/// `backwards` is whether the ray is travelling in the negative direction on
+/// that axis — a ray heading east enters through the west face. Total by
+/// construction: six arms and no catch-all, so there is no impossible case to
+/// return nothing for.
+const fn entry_face(axis: usize, backwards: bool) -> Face {
+    match (axis, backwards) {
+        (0, false) => Face::West,
+        (0, true) => Face::East,
+        (1, false) => Face::Bottom,
+        (1, true) => Face::Top,
+        (_, false) => Face::South,
+        (_, true) => Face::North,
+    }
 }

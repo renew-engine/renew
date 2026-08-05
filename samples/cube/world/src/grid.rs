@@ -173,16 +173,13 @@ impl Grid {
 
     /// Put a block in a cell. `false` if the cell is outside the grid.
     pub fn set(&mut self, cell: Cell, block: Block) -> bool {
-        let Some(index) = self.index(cell) else {
+        // `index` already proved the cell is inside, so the slot is there. A
+        // second `None` arm would be a branch nothing could take.
+        let Some(slot) = self.index(cell).and_then(|at| self.blocks.get_mut(at)) else {
             return false;
         };
-        match self.blocks.get_mut(index) {
-            Some(slot) => {
-                *slot = block;
-                true
-            }
-            None => false,
-        }
+        *slot = block;
+        true
     }
 
     /// Fill a rectangular region, inclusive of both corners.
