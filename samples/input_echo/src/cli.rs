@@ -267,13 +267,20 @@ mod tests {
     /// recording that happened and was empty.
     #[test]
     fn recording_is_refused_outside_a_headless_run() {
-        let refused = parse(&["--frames", "5", "--record-trace", "out.trace"]);
-        let Err(SampleError::Usage(message)) = refused else {
-            unreachable!("a windowed run cannot record, so it must say so: {refused:?}")
-        };
+        // Read off the formatted result rather than destructured: an
+        // arm for the case where the test fails is a line no passing run
+        // ever executes, and the coverage gate is right to count it.
+        let refused = format!(
+            "{:?}",
+            parse(&["--frames", "5", "--record-trace", "out.trace"])
+        );
         assert!(
-            message.contains("--record-trace") && message.contains("--headless"),
-            "the refusal must name both flags, so the reader knows which to change: {message}"
+            refused.starts_with("Err(Usage("),
+            "a windowed run cannot record, so it must refuse: {refused}"
+        );
+        assert!(
+            refused.contains("--record-trace") && refused.contains("--headless"),
+            "the refusal must name both flags, so the reader knows which to change: {refused}"
         );
     }
 
@@ -288,12 +295,14 @@ mod tests {
             "--record-trace",
             "out.trace",
         ]);
-        let Err(SampleError::Usage(message)) = refused else {
-            unreachable!("re-recording a replay must be refused: {refused:?}")
-        };
+        let refused = format!("{refused:?}");
         assert!(
-            message.contains("--record-trace") && message.contains("--replay-trace"),
-            "the refusal must name both flags: {message}"
+            refused.starts_with("Err(Usage("),
+            "re-recording a replay must be refused: {refused}"
+        );
+        assert!(
+            refused.contains("--record-trace") && refused.contains("--replay-trace"),
+            "the refusal must name both flags: {refused}"
         );
     }
 
