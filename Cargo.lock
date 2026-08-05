@@ -1690,6 +1690,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-physics3d"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-ecs",
+ "renew-fixed",
+]
+
+[[package]]
 name = "renew-platform"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,28 @@
+[package]
+name = "renew-physics3d"
+description = "Three-dimensional collision detection for simulation code that must reproduce bit-for-bit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Bodies, shapes, filtering and collision queries in fixed-point 3D: the collider set, its lifecycle, and the orders that make contacts reproducible."
+maturity = "bootstrap"
+core = false
+extension_points = []
+# Collision state must reproduce, so this crate carries the simulation
+# obligations: the float closure walk and the cross-target digest comparison.
+simulation = true
+
+[dependencies]
+renew-ecs = { path = "../ecs" }
+renew-fixed = { path = "../fixed" }
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true
