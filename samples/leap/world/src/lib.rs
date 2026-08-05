@@ -279,10 +279,17 @@ impl Leap {
             &mut self.hits,
         );
 
+        // The character is created in `new` and never destroyed, so the slide
+        // always finds a body. Written as a branch on `None` this was an arm
+        // no test could reach, and one that would have quietly frozen the
+        // character rather than saying what went wrong.
+        let report =
+            report.unwrap_or_else(|| unreachable!("the character body outlives every step"));
+
         let mut grounded = false;
         let mut against_wall = false;
-        let mut wedged = false;
-        if let Some(report) = report {
+        let wedged;
+        {
             let written = report.hits.written.min(MAX_SLIDE_HITS);
             for hit in self.hits.split_at(written).0 {
                 if is_ground(hit.normal) {
