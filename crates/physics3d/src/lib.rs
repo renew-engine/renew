@@ -38,6 +38,9 @@
 // compiler's instruction selection, and this crate's whole obligation is that
 // it is not. There is no `allow` below.
 #![deny(clippy::float_arithmetic, clippy::print_stdout, clippy::print_stderr)]
+// The README is the crate front page, included so it is built with the
+// crate rather than drifting from it.
+#![doc = include_str!("../README.md")]
 
 pub mod bounds;
 pub mod broadphase;
