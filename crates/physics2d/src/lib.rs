@@ -42,6 +42,7 @@
 
 pub mod bounds;
 pub mod broadphase;
+pub mod clear;
 pub mod contact;
 pub mod filter;
 pub mod narrow;
@@ -54,6 +55,7 @@ pub mod world;
 
 pub use bounds::Aabb;
 pub use broadphase::Broadphase;
+pub use clear::{ClearEnd, ClearReport};
 pub use contact::{Contact, ContactPoint, MAX_MANIFOLD_POINTS, Manifold};
 pub use filter::Filter;
 pub use narrow::collide;
