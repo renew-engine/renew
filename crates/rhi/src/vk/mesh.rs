@@ -590,12 +590,14 @@ mod tests {
             ),
         ];
         for (desc, expected) in cases {
-            match check_desc(&desc) {
-                Err(TargetError::Creation { call, code: 0 }) => {
-                    assert_eq!(call, expected, "wrong rule named for {desc:?}");
-                }
-                other => panic!("{desc:?} should be refused as {expected}, got {other:?}"),
-            }
+            // `matches!` rather than a match with a `panic!` arm, the
+            // shape `texture.rs`'s sibling test uses: an arm that runs
+            // only when the test fails is a line no passing run covers.
+            let outcome = check_desc(&desc);
+            assert!(
+                matches!(&outcome, Err(TargetError::Creation { call, code: 0 }) if *call == expected),
+                "{desc:?} should be refused as {expected}, got {outcome:?}"
+            );
         }
     }
 
