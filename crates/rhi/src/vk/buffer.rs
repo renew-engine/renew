@@ -179,7 +179,8 @@ impl Device {
     ///
     /// # Errors
     ///
-    /// [`TargetError`] naming the Vulkan call that refused.
+    /// [`TargetError`] naming the Vulkan call that refused;
+    /// [`TargetError::DeviceLost`] on a poisoned device.
     ///
     /// # Panics
     ///
@@ -201,13 +202,6 @@ impl Device {
         // bounds every later copy into the mapping.
         assert!(capacity > 0, "a per-frame buffer needs a non-zero capacity");
 
-        let shared = Rc::clone(&self.shared);
-        let mut partial = Partial {
-            shared: Rc::clone(&shared),
-            buffer: None,
-            memory: None,
-        };
-
         let per_slot = (capacity as u64).div_ceil(SLOT_ALIGN) * SLOT_ALIGN;
         let total = per_slot.checked_mul(MAX_FRAME_SLOTS as u64);
         // Same boundary, same retained refusal: an overflowed size would
@@ -219,6 +213,27 @@ impl Device {
         );
         let slot_stride = per_slot;
         let total = total.unwrap_or(0);
+
+        // Gated like every other resource constructor in this crate, and
+        // after the contract checks for the same reason they are: a
+        // malformed request is reported as malformed even on a dead
+        // device, because that is the caller's bug either way.
+        //
+        // **The gate is the only thing that refuses here.** None of the
+        // four driver calls below lists `VK_ERROR_DEVICE_LOST` among its
+        // return codes, so without this the likely outcome after a loss
+        // was not a laundered error — it was success, handing back a live
+        // buffer on a dead device while every sibling refused.
+        if self.shared.lost.poisoned() {
+            return Err(TargetError::DeviceLost);
+        }
+
+        let shared = Rc::clone(&self.shared);
+        let mut partial = Partial {
+            shared: Rc::clone(&shared),
+            buffer: None,
+            memory: None,
+        };
 
         let info = vk::BufferCreateInfo::default()
             .size(total)
