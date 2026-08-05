@@ -64,6 +64,40 @@ impl Move {
         }
         text
     }
+
+    /// A move from the text [`Self::notation`] writes, or nothing if the text
+    /// is not a move.
+    ///
+    /// **This says nothing about legality** — it reads four or five characters
+    /// into two squares and an optional promotion, and whether that move may
+    /// be played is [`legal`]'s question. Keeping the two apart means a
+    /// caller can tell "that is not a move" from "that move is not allowed",
+    /// which are different things to say to a player.
+    ///
+    /// A promotion to pawn or king is refused here rather than downstream:
+    /// `e7e8k` parses into nothing a board can represent, so the earliest
+    /// place to say no is the place that reads it.
+    #[must_use]
+    pub fn from_notation(text: &str) -> Option<Self> {
+        let from = Square::from_name(text.get(0..2)?)?;
+        let to = Square::from_name(text.get(2..4)?)?;
+        let promotion = match text.len() {
+            4 => None,
+            5 => {
+                let kind = Kind::from_letter(text.chars().nth(4)?)?;
+                if matches!(kind, Kind::Pawn | Kind::King) {
+                    return None;
+                }
+                Some(kind)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            from,
+            to,
+            promotion,
+        })
+    }
 }
 
 /// A fixed-capacity list of moves.

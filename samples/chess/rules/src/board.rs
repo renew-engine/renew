@@ -86,6 +86,25 @@ impl Kind {
         }
     }
 
+    /// A kind from the letter [`Self::letter`] gives it, in either case.
+    ///
+    /// **The inverse exists so that only one table maps letters to kinds.**
+    /// Reading Forsyth-Edwards notation and reading a promotion out of a
+    /// move both need it, and a second copy of the mapping is a second
+    /// chance to disagree with the first.
+    #[must_use]
+    pub fn from_letter(letter: char) -> Option<Self> {
+        match letter.to_ascii_lowercase() {
+            'p' => Some(Self::Pawn),
+            'n' => Some(Self::Knight),
+            'b' => Some(Self::Bishop),
+            'r' => Some(Self::Rook),
+            'q' => Some(Self::Queen),
+            'k' => Some(Self::King),
+            _ => None,
+        }
+    }
+
     /// A stable small number, so a digest does not depend on the enum's
     /// declaration order surviving an edit.
     const fn code(self) -> u32 {
@@ -192,6 +211,24 @@ impl Square {
         let file = char::from(b'a' + u8::try_from(self.file()).unwrap_or(0));
         let rank = char::from(b'1' + u8::try_from(self.rank()).unwrap_or(0));
         [file, rank]
+    }
+
+    /// The square a name like `e4` refers to, or nothing if it names none.
+    ///
+    /// **Exactly the inverse of [`Self::name`]**, and the pair is worth a
+    /// property test rather than examples: sixty-four squares is small
+    /// enough to check all of them.
+    #[must_use]
+    pub fn from_name(text: &str) -> Option<Self> {
+        let mut characters = text.chars();
+        let file = characters.next()?;
+        let rank = characters.next()?;
+        if characters.next().is_some() {
+            return None;
+        }
+        let file = i32::from(u8::try_from(file).ok()?) - i32::from(b'a');
+        let rank = i32::from(u8::try_from(rank).ok()?) - i32::from(b'1');
+        Self::at(file, rank)
     }
 }
 
@@ -398,6 +435,88 @@ pub enum FenError {
 }
 
 impl Board {
+    /// Write this position in Forsyth-Edwards notation.
+    ///
+    /// **The inverse of [`Self::from_fen`], and the reason it exists is that
+    /// a command-line game is stateless.** A player who makes one move per
+    /// invocation needs the position handed back in the form the next
+    /// invocation reads, or the game cannot continue past a single move.
+    ///
+    /// The pair is checked by round trip rather than against expected
+    /// strings: every published position this crate is tested against
+    /// survives `from_fen` then `to_fen` unchanged, which catches a field
+    /// that reads correctly and writes wrongly — the failure a one-directional
+    /// test cannot see.
+    #[must_use]
+    pub fn to_fen(&self) -> String {
+        let mut text = String::with_capacity(90);
+        for rank in (0..8).rev() {
+            let mut empty = 0u32;
+            for file in 0..8 {
+                match Square::at(file, rank).and_then(|square| self.piece_at(square)) {
+                    Some(piece) => {
+                        if empty > 0 {
+                            text.push_str(&empty.to_string());
+                            empty = 0;
+                        }
+                        let letter = piece.kind.letter();
+                        text.push(if piece.colour == Colour::White {
+                            letter.to_ascii_uppercase()
+                        } else {
+                            letter
+                        });
+                    }
+                    None => empty += 1,
+                }
+            }
+            if empty > 0 {
+                text.push_str(&empty.to_string());
+            }
+            if rank > 0 {
+                text.push('/');
+            }
+        }
+
+        text.push(' ');
+        text.push(if self.to_move == Colour::White {
+            'w'
+        } else {
+            'b'
+        });
+
+        text.push(' ');
+        let before = text.len();
+        for (held, letter) in [
+            (self.castling.white_king_side, 'K'),
+            (self.castling.white_queen_side, 'Q'),
+            (self.castling.black_king_side, 'k'),
+            (self.castling.black_queen_side, 'q'),
+        ] {
+            if held {
+                text.push(letter);
+            }
+        }
+        if text.len() == before {
+            text.push('-');
+        }
+
+        text.push(' ');
+        match self.en_passant {
+            Some(square) => {
+                let name = square.name();
+                text.push(name[0]);
+                text.push(name[1]);
+            }
+            None => text.push('-'),
+        }
+
+        text.push(' ');
+        text.push_str(&self.halfmove_clock.to_string());
+        text.push(' ');
+        text.push_str(&self.fullmove_number.to_string());
+        text
+    }
+
     /// Read a position in Forsyth–Edwards notation.
     ///
     /// **The reason this exists is the test suite, not the user interface.**
@@ -441,14 +560,8 @@ impl Board {
                 } else {
                     Colour::Black
                 };
-                let kind = match symbol.to_ascii_lowercase() {
-                    'p' => Kind::Pawn,
-                    'n' => Kind::Knight,
-                    'b' => Kind::Bishop,
-                    'r' => Kind::Rook,
-                    'q' => Kind::Queen,
-                    'k' => Kind::King,
-                    _ => return Err(FenError::UnknownPiece),
+                let Some(kind) = Kind::from_letter(symbol) else {
+                    return Err(FenError::UnknownPiece);
                 };
                 board.put(Square::at(file, rank), Some(Piece::new(colour, kind)));
                 file += 1;
@@ -482,13 +595,5 @@ impl Board {
 
 /// A square from its name, like `e4`.
 fn parse_square(text: &str) -> Option<Square> {
-    let mut characters = text.chars();
-    let file = characters.next()?;
-    let rank = characters.next()?;
-    if characters.next().is_some() {
-        return None;
-    }
-    let file = i32::from(u8::try_from(file).ok()?) - i32::from(b'a');
-    let rank = i32::from(u8::try_from(rank).ok()?) - i32::from(b'1');
-    Square::at(file, rank)
+    Square::from_name(text)
 }

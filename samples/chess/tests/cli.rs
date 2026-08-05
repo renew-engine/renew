@@ -1,13 +1,23 @@
 //! The command line, and the line a run answers with.
 
 use renew_sample_chess::{
-    CliError, MAX_DEPTH, Mode, Options, describe, describe_json, next_move, parse, run, run_cli,
-    usage,
+    CliError, MAX_DEPTH, Mode, Options, Report, describe, describe_json, next_move, parse, run,
+    run_cli, usage,
 };
 use renew_sample_chess_rules::{Board, Outcome};
 
 fn args(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_string).collect()
+}
+
+/// `run` for the cases where the setup is legal by construction, so every test
+/// below is not obliged to say so. The ones about refusals call `run` itself.
+#[expect(
+    clippy::expect_used,
+    reason = "a test helper: a panic here is the failure being reported"
+)]
+fn ran(options: &Options) -> Report {
+    run(options).expect("a setup with no illegal move in it")
 }
 
 const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
@@ -119,7 +129,7 @@ fn the_usage_text_documents_every_flag() {
 #[test]
 fn counting_matches_the_published_numbers() {
     for (depth, expected) in [(1u32, 20u64), (2, 400), (3, 8_902), (4, 197_281)] {
-        let report = run(&Options {
+        let report = ran(&Options {
             depth,
             ..Options::default()
         });
@@ -127,7 +137,7 @@ fn counting_matches_the_published_numbers() {
     }
 
     let kiwipete = Board::from_fen(KIWIPETE).expect("a published position");
-    let report = run(&Options {
+    let report = ran(&Options {
         position: kiwipete,
         depth: 3,
         ..Options::default()
@@ -137,7 +147,7 @@ fn counting_matches_the_published_numbers() {
 
 #[test]
 fn counting_to_no_depth_is_the_position_itself() {
-    let report = run(&Options {
+    let report = ran(&Options {
         depth: 0,
         ..Options::default()
     });
@@ -155,14 +165,14 @@ fn playing_is_reproducible_and_discriminating() {
         depth: 30,
         ..Options::default()
     };
-    assert_eq!(run(&options), run(&options), "the same game plays the same");
-    assert_eq!(run(&options).played, 30);
+    assert_eq!(ran(&options), ran(&options), "the same game plays the same");
+    assert_eq!(ran(&options).played, 30);
 
-    let shorter = run(&Options {
+    let shorter = ran(&Options {
         depth: 29,
-        ..options
+        ..options.clone()
     });
-    assert_ne!(run(&options).digest, shorter.digest);
+    assert_ne!(ran(&options).digest, shorter.digest);
 }
 
 /// A game that ends stops rather than playing on, and says how many moves it
@@ -172,7 +182,7 @@ fn playing_past_the_end_of_a_game_stops_there() {
     // A position already checkmated: no legal move exists.
     let mated = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
         .expect("well formed");
-    let report = run(&Options {
+    let report = ran(&Options {
         mode: Mode::Play,
         position: mated,
         depth: 20,
@@ -198,7 +208,7 @@ fn the_next_move_is_the_first_legal_one() {
 
 #[test]
 fn the_answer_reads_and_parses() {
-    let counted = run(&Options {
+    let counted = ran(&Options {
         depth: 3,
         ..Options::default()
     });
@@ -213,7 +223,7 @@ fn the_answer_reads_and_parses() {
     assert!(json.contains("\"nodes\":8902"));
     assert!(json.starts_with('{') && json.ends_with('}'));
 
-    let played = run(&Options {
+    let played = ran(&Options {
         mode: Mode::Play,
         depth: 10,
         ..Options::default()
@@ -238,7 +248,7 @@ fn every_ending_prints_under_a_name() {
         ("4k3/8/8/8/8/8/8/4K3 w - - 0 1", "ongoing"),
     ];
     for (fen, name) in cases {
-        let report = run(&Options {
+        let report = ran(&Options {
             mode: Mode::Play,
             position: Board::from_fen(fen).expect("well formed"),
             depth: 0,
