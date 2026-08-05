@@ -1821,6 +1821,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-sample-leap"
+version = "0.1.0"
+dependencies = [
+ "renew-fixed",
+ "renew-sample-leap-world",
+]
+
+[[package]]
 name = "renew-sample-leap-world"
 version = "0.1.0"
 dependencies = [
