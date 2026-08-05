@@ -12,7 +12,6 @@
 //! world; everything here is the seam that lets a machine ask it a question.
 
 pub mod mesh;
-pub mod png;
 pub mod projection;
 #[cfg(feature = "render")]
 pub mod render;

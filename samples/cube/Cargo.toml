@@ -24,7 +24,7 @@ path = "src/main.rs"
 # carries no graphics crate at all, which is what lets the build matrix
 # prove this sample builds with the renderer removed.
 [features]
-render = ["dep:renew-rhi", "dep:renew-render3d"]
+render = ["dep:renew-rhi", "dep:renew-render3d", "dep:renew-png"]
 
 [dependencies]
 renew-platform = { path = "../../crates/core/platform", default-features = false }
@@ -32,6 +32,7 @@ renew-fixed = { path = "../../crates/fixed" }
 renew-sample-cube-world = { path = "world" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-render3d = { path = "../../crates/render3d", optional = true }
+renew-png = { path = "../../crates/png", optional = true }
 
 # The projection is index-and-vector arithmetic, which is the row in the
 # testing table that asks for properties rather than examples. Same

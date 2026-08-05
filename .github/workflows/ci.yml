@@ -294,6 +294,19 @@ jobs:
           # happens to build.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d -p renew-sample-cube
           cargo build -p renew-sample-cube
+      # The image encoder. Its consumers are samples that draw a picture
+      # for their README, and each takes it optionally -- but the
+      # structure check counts a declared edge whether or not a feature
+      # enables it, so they are named here, and the property that makes
+      # the exclusion look unnecessary is probed directly below.
+      - name: Build and test without the image encoder
+        run: |
+          sel="--workspace --exclude renew-png --exclude renew-sample-cube"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png $sel
+          cargo build $sel
+          cargo test $sel
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png -p renew-sample-cube
+          cargo build -p renew-sample-cube
       # The fixed-point arithmetic, and the collision crate written in it.
       # This cell was a single leaf when it landed, with a comment saying
       # the first crate to depend on it should discover the obligation
@@ -358,7 +371,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

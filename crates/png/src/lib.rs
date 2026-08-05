@@ -45,11 +45,74 @@
 //! files is not in the tree — judging the result needs an image library,
 //! and this repository has none.
 
+// An encoder hands back bytes; whoever asked for them decides where they
+// go. Printing from here would put a message somewhere the caller did
+// not choose, in a crate whose whole value is being a pure function.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 /// The eight bytes every PNG starts with.
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
 /// Bytes per pixel: 8-bit RGBA.
 const CHANNELS: usize = 4;
+
+/// Why an image could not be encoded.
+///
+/// **Three causes rather than one absence.** This began as an
+/// `Option<Vec<u8>>`, which told a caller that something was wrong and
+/// not which of three unrelated things — a shape with no pixels in it, a
+/// buffer that does not match the shape it claims, and an image too large
+/// for the format to describe. A caller can act on each differently, and
+/// the one that returns nothing tells them to guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// A width or a height of zero. An image with no pixels is not a
+    /// small image; PNG cannot describe it.
+    ZeroExtent {
+        /// The width asked for.
+        width: u32,
+        /// The height asked for.
+        height: u32,
+    },
+    /// The pixel buffer does not hold `width * height * 4` bytes.
+    PixelCount {
+        /// What the dimensions require.
+        expected: usize,
+        /// What arrived.
+        found: usize,
+    },
+    /// The image is too large for its size arithmetic to be exact — a
+    /// chunk past what a `u32` length can name, or a byte count past
+    /// what this machine can address.
+    TooLarge {
+        /// The width asked for.
+        width: u32,
+        /// The height asked for.
+        height: u32,
+    },
+}
+
+impl core::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ZeroExtent { width, height } => write!(
+                f,
+                "an image of {width}x{height} has no pixels, and PNG cannot describe one"
+            ),
+            Self::PixelCount { expected, found } => write!(
+                f,
+                "the dimensions need {expected} bytes of RGBA and {found} arrived"
+            ),
+            Self::TooLarge { width, height } => write!(
+                f,
+                "an image of {width}x{height} is past what the format's lengths can name"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
 
 /// Encode `pixels` as an 8-bit RGBA PNG.
 ///
@@ -57,26 +120,34 @@ const CHANNELS: usize = 4;
 ///
 /// # Errors
 ///
-/// `None` when the dimensions are zero, when they disagree with the
-/// length of `pixels`, or when the encoded size would overflow the sizes
-/// PNG can express. Every one of those is a caller mistake rather than a
-/// condition to recover from, but an image writer that panicked on a bad
-/// size would be a poor neighbour to a command line.
-#[must_use]
-pub fn encode(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
+/// [`EncodeError`], naming which of the three caller mistakes it was.
+/// Returned rather than asserted because an image writer that panicked on
+/// a bad size would be a poor neighbour to a command line.
+pub fn encode(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, EncodeError> {
+    let too_large = || EncodeError::TooLarge { width, height };
     if width == 0 || height == 0 {
-        return None;
+        return Err(EncodeError::ZeroExtent { width, height });
     }
     // Checked throughout. The arithmetic here is exactly the arithmetic
     // that decides how much is copied later, so a wrap would produce a
     // plausible-looking header over the wrong number of bytes.
-    let row = usize::try_from(width).ok()?.checked_mul(CHANNELS)?;
-    let rows = usize::try_from(height).ok()?;
-    if pixels.len() != row.checked_mul(rows)? {
-        return None;
+    let row = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(CHANNELS))
+        .ok_or_else(too_large)?;
+    let rows = usize::try_from(height).map_err(|_| too_large())?;
+    let expected = row.checked_mul(rows).ok_or_else(too_large)?;
+    if pixels.len() != expected {
+        return Err(EncodeError::PixelCount {
+            expected,
+            found: pixels.len(),
+        });
     }
     // Each scanline is prefixed with its filter byte.
-    let raw_len = row.checked_add(1)?.checked_mul(rows)?;
+    let raw_len = row
+        .checked_add(1)
+        .and_then(|stride| stride.checked_mul(rows))
+        .ok_or_else(too_large)?;
 
     let mut raw = Vec::with_capacity(raw_len);
     for line in pixels.chunks_exact(row) {
@@ -89,10 +160,10 @@ pub fn encode(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
     header.extend_from_slice(&width.to_be_bytes());
     header.extend_from_slice(&height.to_be_bytes());
     header.extend_from_slice(&[8, 6, 0, 0, 0]); // depth 8, RGBA, no filter or interlace
-    chunk(&mut out, *b"IHDR", &header);
-    chunk(&mut out, *b"IDAT", &zlib(&raw, row + 1));
-    chunk(&mut out, *b"IEND", &[]);
-    Some(out)
+    chunk(&mut out, *b"IHDR", &header, &too_large)?;
+    chunk(&mut out, *b"IDAT", &zlib(&raw, row + 1), &too_large)?;
+    chunk(&mut out, *b"IEND", &[], &too_large)?;
+    Ok(out)
 }
 
 /// One PNG chunk: length, type, data, CRC.
@@ -101,8 +172,17 @@ pub fn encode(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
 /// the data but not the length — a pairing that is easy to state and easy
 /// to get subtly wrong, which is why both are asserted by a hand-checked
 /// byte layout in the tests.
-fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
-    let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
+fn chunk(
+    out: &mut Vec<u8>,
+    kind: [u8; 4],
+    data: &[u8],
+    too_large: &impl Fn() -> EncodeError,
+) -> Result<(), EncodeError> {
+    // Refused rather than saturated. A length clamped to `u32::MAX` would
+    // write a header describing four billion bytes over however many
+    // actually follow, which is a file no decoder can recover from and a
+    // failure this function is the last place to catch.
+    let length = u32::try_from(data.len()).map_err(|_| too_large())?;
     out.extend_from_slice(&length.to_be_bytes());
     out.extend_from_slice(&kind);
     out.extend_from_slice(data);
@@ -111,6 +191,7 @@ fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
     crc.eat(&kind);
     crc.eat(data);
     out.extend_from_slice(&crc.finish().to_be_bytes());
+    Ok(())
 }
 
 /// `raw` wrapped in a zlib stream, compressed with fixed Huffman codes
@@ -541,19 +622,80 @@ mod tests {
         assert_eq!(adler32(b"123456789"), 0x091e_01de);
     }
 
-    /// Malformed requests are refused rather than encoded.
+    /// Malformed requests are refused, and each says which mistake it
+    /// was.
+    ///
+    /// **The point of the error type.** All three of these once returned
+    /// the same `None`, which told a caller that something was wrong and
+    /// left them to work out which of three unrelated things — and they
+    /// call for different fixes: change the shape, send the right number
+    /// of bytes, or ask for a smaller picture.
     #[test]
-    fn impossible_images_are_refused() {
-        assert!(encode(0, 1, &[]).is_none(), "a zero width has no image");
-        assert!(encode(1, 0, &[]).is_none(), "a zero height has no image");
-        assert!(
-            encode(2, 2, &[0; 4]).is_none(),
+    fn each_impossible_image_names_its_own_cause() {
+        assert_eq!(
+            encode(0, 1, &[]),
+            Err(EncodeError::ZeroExtent {
+                width: 0,
+                height: 1
+            })
+        );
+        assert_eq!(
+            encode(1, 0, &[]),
+            Err(EncodeError::ZeroExtent {
+                width: 1,
+                height: 0
+            })
+        );
+        assert_eq!(
+            encode(2, 2, &[0; 4]),
+            Err(EncodeError::PixelCount {
+                expected: 16,
+                found: 4
+            }),
             "four bytes is one pixel, not four"
         );
-        assert!(
-            encode(u32::MAX, u32::MAX, &[0; 4]).is_none(),
+        assert_eq!(
+            encode(u32::MAX, u32::MAX, &[0; 4]),
+            Err(EncodeError::TooLarge {
+                width: u32::MAX,
+                height: u32::MAX
+            }),
             "a size that cannot be allocated is refused, not wrapped"
         );
+    }
+
+    /// Every refusal says something a reader can act on.
+    #[test]
+    fn every_refusal_displays_its_context() {
+        for (error, needle) in [
+            (
+                EncodeError::ZeroExtent {
+                    width: 0,
+                    height: 7,
+                },
+                "0x7",
+            ),
+            (
+                EncodeError::PixelCount {
+                    expected: 16,
+                    found: 4,
+                },
+                "16 bytes",
+            ),
+            (
+                EncodeError::TooLarge {
+                    width: 9,
+                    height: 9,
+                },
+                "9x9",
+            ),
+        ] {
+            let shown = error.to_string();
+            assert!(
+                shown.contains(needle),
+                "`{shown}` does not mention `{needle}`"
+            );
+        }
     }
 
     /// The same pixels encode to the same bytes, which is what lets an
