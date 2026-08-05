@@ -16,9 +16,9 @@
 //! first.** Pushing the deepest overlap out can push the body into a shallower
 //! one, which is why this iterates rather than doing a single pass, and why it
 //! reports how many iterations it took and whether it finished. A corner
-//! between two faces needs two.
+//! between two faces needs two, and a three-way corner more.
 
-use renew_fixed::{Fixed, Vec2};
+use renew_fixed::{Fixed, Vec3};
 
 use crate::narrow::separation;
 use crate::query::Exclude;
@@ -66,9 +66,9 @@ pub enum ClearEnd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClearReport {
     /// Where the body ended up.
-    pub destination: Vec2,
+    pub destination: Vec3,
     /// How far it was moved, which is zero when it was already clear.
-    pub moved: Vec2,
+    pub moved: Vec3,
     /// How many pushes it took.
     pub iterations: u32,
     /// Whether it finished, and how.
@@ -88,10 +88,10 @@ impl World {
         at: Transform,
         mask: u32,
         skin: Fixed,
-    ) -> Option<(Fixed, Vec2)> {
+    ) -> Option<(Fixed, Vec3)> {
         let extent = self.shape_extent(handle)?;
         let excluded = [handle];
-        let mut worst: Option<(Fixed, Vec2, Collider)> = None;
+        let mut worst: Option<(Fixed, Vec3, Collider)> = None;
 
         for index in 0..extent {
             let mine = Collider {
@@ -109,9 +109,7 @@ impl World {
                 else {
                     continue;
                 };
-                let Some((gap, direction)) = separation(shape, placed, other, other_at) else {
-                    continue;
-                };
+                let (gap, direction) = separation(shape, placed, other, other_at);
                 if gap >= skin {
                     continue;
                 }
@@ -133,14 +131,11 @@ impl World {
     /// from its own test: its shapes are parts of one object, and an object is
     /// not inside itself.
     ///
-    /// **Capsules are skipped, because nothing here can measure them.** The
-    /// narrowphase does not implement them — it says so where it declines
-    /// them — and this operation inherits that gap exactly: a capsule is
-    /// neither pushed out of anything nor pushes anything out, and the answer
-    /// will be `AlreadyClear` however deeply it overlaps. That is the crate's
-    /// existing position on capsules, not a new one, and it is stated here
-    /// because the clearance guarantee `move_and_slide` now makes would
-    /// otherwise read as covering them.
+    /// **Every shape pairing this crate has is measurable**, boxes and
+    /// spheres both ways, so nothing is silently skipped and there is no arm
+    /// that declines a pair — the separation routine here returns an answer
+    /// rather than an option. The two-dimensional crate accepts a capsule it
+    /// cannot measure and has to say so; this one does not have that shape.
     ///
     /// **The body moves; nothing else does.** Whatever it was inside stays
     /// where it is, including another body that could have been pushed instead.
@@ -159,7 +154,7 @@ impl World {
         let mut position = start.translation;
         let mut iterations = 0;
         let end = loop {
-            let here = Transform::new(position, start.rotation);
+            let here = Transform::at(position);
             let Some((deficit, direction)) = self.deepest_deficit(handle, here, mask, skin) else {
                 break if iterations == 0 {
                     ClearEnd::AlreadyClear
@@ -176,7 +171,7 @@ impl World {
             position = position - direction * deficit;
         };
 
-        self.set_transform(handle, Transform::new(position, start.rotation));
+        self.set_transform(handle, Transform::at(position));
         Some(ClearReport {
             destination: position,
             moved: position - start.translation,

@@ -80,7 +80,7 @@ impl World {
         // touching — so a body spawned overlapping, or one a platform has been
         // moved into, would otherwise sweep out from inside the thing it is
         // stuck in and stay stuck.
-        self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+        self.clear_of_geometry(handle, mask, skin, crate::clear::CLEARING_ITERATIONS)?;
 
         let start = self.transform(handle)?;
         let mut position = start.translation;
@@ -142,7 +142,8 @@ impl World {
         // the proportional part untouched and makes the constant part worse.
         // Re-establishing the clearance directly is the one thing that does,
         // and it is the same operation the body already needed on the way in.
-        let restored = self.clear_of_geometry(handle, mask, skin, iteration_limit)?;
+        let restored =
+            self.clear_of_geometry(handle, mask, skin, crate::clear::CLEARING_ITERATIONS)?;
 
         Some(SlideReport {
             destination: restored.destination,
