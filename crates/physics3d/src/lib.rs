@@ -43,6 +43,8 @@ pub mod bounds;
 pub mod broadphase;
 pub mod filter;
 pub mod narrow;
+pub mod query;
+pub mod ray;
 pub mod shape;
 pub mod world;
 
@@ -50,5 +52,7 @@ pub use bounds::Aabb;
 pub use broadphase::Broadphase;
 pub use filter::Filter;
 pub use narrow::{Contact, collide, separation};
+pub use query::{Counts, Exclude, Hit};
+pub use ray::{RayHit, cast};
 pub use shape::{Shape, Transform};
 pub use world::{BodyKind, Collider, HandleState, Incarnation, ShapeIndex, World};
