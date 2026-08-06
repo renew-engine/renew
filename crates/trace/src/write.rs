@@ -11,8 +11,8 @@
 use crate::event::{FiniteF32, FiniteF64, TraceEvent};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FOCUS, FOCUS_IN, FOCUS_OUT, FORMAT_VERSION,
-    HEX_PREFIX, KEY, MAGIC, POINTER, REDRAW, REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TICKS,
-    TIMESTEP_NS, UP, WHEEL,
+    HEX_PREFIX, KEY, MAGIC, MOTION, POINTER, REDRAW, REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR,
+    TICKS, TIMESTEP_NS, UP, WHEEL,
 };
 use crate::trace::Trace;
 
@@ -73,6 +73,11 @@ fn event_line(tick: u64, event: &TraceEvent) -> String {
             "{EVENT} {tick} {POINTER} {x} {y}",
             x = hex_f64(x),
             y = hex_f64(y),
+        ),
+        TraceEvent::PointerMotion { dx, dy } => format!(
+            "{EVENT} {tick} {MOTION} {dx} {dy}",
+            dx = hex_f64(dx),
+            dy = hex_f64(dy),
         ),
         TraceEvent::PointerButton { button, pressed } => format!(
             "{EVENT} {tick} {BUTTON} {button} {state}",

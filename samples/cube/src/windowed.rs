@@ -71,6 +71,14 @@ use crate::{Options, Report, arena};
 /// number of ticks and a run that turns and returns ends where it began.
 const TURN_DEGREES: i32 = 3;
 
+/// How far the view turns per unit the mouse reports, in hundredths of
+/// a degree.
+///
+/// A stated unit rather than a tuned number: the platform reports motion
+/// in its own scale, and this converts it. It is the first thing that
+/// should become configurable if anyone asks for a sensitivity slider.
+const MOUSE_HUNDREDTHS: i32 = 12;
+
 /// How far pitch may travel from level, in degrees. Short of a right
 /// angle on purpose: at exactly vertical the look direction and world up
 /// are parallel and the camera basis has no unique answer.
@@ -180,6 +188,23 @@ pub struct CubeApp {
     /// hertz — with nothing on screen saying why.
     limit: Option<u32>,
     closing: bool,
+    /// Mouse movement not yet spent, in hundredths of a degree.
+    ///
+    /// **This is where the mouse's float stops.** Deltas arrive as
+    /// `f64`; the world is fixed point and its digest must depend on
+    /// nothing but its inputs. A float reaching `look_at` would make a
+    /// played run's digest a function of the platform's floating-point
+    /// behaviour, which is exactly what turning with `Angle` was written
+    /// to avoid.
+    ///
+    /// So the float is converted here, once, into hundredths of a degree,
+    /// and only whole degrees are ever handed to `Angle::from_degrees`.
+    /// The remainder stays for the next event, so slow movement
+    /// accumulates rather than rounding to nothing.
+    turn_owed: (i32, i32),
+    /// Whether the cursor is held. `false` on a platform that would not,
+    /// which is ordinary rather than exceptional — the arrows still turn.
+    cursor_held: bool,
     /// The wall clock the frame loop reads. The only clock in the file,
     /// and it reaches the driver alone.
     clock: Clock,
@@ -275,6 +300,8 @@ impl CubeApp {
             limit: options.window_ticks,
             script,
             closing: false,
+            turn_owed: (0, 0),
+            cursor_held: false,
             clock: Clock::start(),
             frame: None,
             size: Extent {
@@ -301,6 +328,70 @@ impl CubeApp {
         ));
     }
 
+    /// Let the cursor go, and forget what it owed.
+    ///
+    /// Both halves matter. A held cursor traps a player who wanted to
+    /// reach something else; a turn left owed across the gap snaps the view
+    /// round when they come back.
+    ///
+    /// The window is told separately, when there is one — this is the
+    /// driver's own state, and it is what every other decision here
+    /// reads.
+    fn release_cursor(&mut self) {
+        self.cursor_held = false;
+        self.turn_owed = (0, 0);
+    }
+
+    /// Turn the view by a mouse movement.
+    ///
+    /// **The float ends here.** The delta is scaled into hundredths of a
+    /// degree and added to an integer owed; `advance` spends the whole
+    /// degrees and keeps the rest. Nothing downstream of this sees
+    /// anything but an `i32`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is rounded to an integer and clamped inside i32's range on the two                   lines above the cast, so there is no fraction left to truncate and no                   magnitude left to lose"
+    )]
+    fn aim_by_mouse(&mut self, dx: f64, dy: f64) {
+        if !self.cursor_held {
+            // Without a grab the cursor wanders out of the window mid-turn
+            // and the view stops for no reason a player can see. Better to
+            // do nothing and leave the arrows in charge.
+            return;
+        }
+        let scale = f64::from(MOUSE_HUNDREDTHS);
+        // Rounded to an integer *before* the conversion, and clamped to a
+        // range an `i32` holds, so the cast can neither truncate a
+        // fraction nor overflow. A delta big enough to reach the clamp is
+        // a device reporting nonsense, and a clamp is the right answer to
+        // that as much as to a real spin.
+        let hundredths = |delta: f64| -> i32 {
+            let scaled = (delta * scale).round();
+            if !scaled.is_finite() {
+                return 0;
+            }
+            // `i32::MAX / 2` as an f64 is exact, and the clamp brings the
+            // value inside it, so `try_from` on the rounded integer part
+            // cannot fail — the fallback is unreachable and says so.
+            let bounded = scaled.clamp(-f64::from(i32::MAX / 2), f64::from(i32::MAX / 2));
+            bounded as i32
+        };
+        self.turn_owed.0 = self.turn_owed.0.saturating_add(hundredths(dx));
+        self.turn_owed.1 = self.turn_owed.1.saturating_add(hundredths(dy));
+    }
+
+    /// The whole degrees owed, taken out of the accumulator.
+    ///
+    /// Truncating toward zero, so a remainder keeps its sign and a slow
+    /// drag in one direction accumulates instead of oscillating.
+    fn spend_owed_turn(&mut self) -> (i32, i32) {
+        let yaw = self.turn_owed.0 / 100;
+        let pitch = self.turn_owed.1 / 100;
+        self.turn_owed.0 -= yaw * 100;
+        self.turn_owed.1 -= pitch * 100;
+        (yaw, pitch)
+    }
+
     /// One simulation step from what is held down.
     fn advance(&mut self) {
         if self.held.turn_left {
@@ -310,8 +401,15 @@ impl CubeApp {
             self.yaw = self.yaw + Angle::from_degrees(TURN_DEGREES);
         }
         let pitch = i32::from(self.held.look_up) - i32::from(self.held.look_down);
-        self.pitch_degrees =
-            (self.pitch_degrees + pitch * TURN_DEGREES).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        // Whole degrees the mouse has earned since the last step. Added
+        // to the keys rather than replacing them: both are ways of
+        // turning, and a player using one should not disable the other.
+        let (mouse_yaw, mouse_pitch) = self.spend_owed_turn();
+        self.yaw = self.yaw + Angle::from_degrees(mouse_yaw);
+        // Down on the screen is down in pitch, which is the sign a player
+        // expects: pushing the mouse forward looks up.
+        self.pitch_degrees = (self.pitch_degrees + pitch * TURN_DEGREES - mouse_pitch)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         self.aim();
 
         let intent = if let Some(script) = self.script {
@@ -562,6 +660,11 @@ impl WindowApp for CubeApp {
         self.aim();
         let (width, height) = window.physical_size();
         self.size = Extent { width, height };
+        // **`false` is ordinary, not a failure.** Cursor confinement is
+        // one of the places the three desktops differ; where it is
+        // refused the arrows still turn and nothing is lost, which is
+        // why nothing here reports it as a problem.
+        self.cursor_held = window.grab_cursor(true);
         let outcome = self.bring_up(window);
         self.record_bring_up(outcome);
         // Anchored after bring-up: device creation can take a noticeable
@@ -583,7 +686,14 @@ impl WindowApp for CubeApp {
             // away mid-stride and the player would walk into a wall until
             // the window came back and the key was pressed and released
             // again.
-            WindowEvent::Focused(false) => self.held = Held::default(),
+            WindowEvent::Focused(false) => {
+                self.held = Held::default();
+                // The cursor goes with the keys: a player who has tabbed
+                // away must be able to reach whatever they tabbed to, and
+                // a held cursor is the one thing that stops them.
+                self.release_cursor();
+            }
+            WindowEvent::PointerMotion { dx, dy } => self.aim_by_mouse(dx, dy),
             // **The mouse does what the mouse does in this genre.** Left
             // breaks the block being aimed at, right places one against
             // it — the same two edges the keys carry, because a player
@@ -611,6 +721,14 @@ impl WindowApp for CubeApp {
                 // block, not one every tick.
                 KeyCode::Enter => self.held.dig |= pressed,
                 KeyCode::Tab => self.held.place |= pressed,
+                // **Escape ends the game, and that releases the cursor
+                // with it.** A two-stage escape — free the cursor, then
+                // quit — is the convention, and it needs the app to
+                // change window state from an event, which this seam
+                // cannot do: only `ready` is handed a window. Routing a
+                // request back through the loop is a larger change than
+                // the difference is worth while alt-tab already frees the
+                // cursor by losing focus. Recorded rather than half-done.
                 KeyCode::Escape => self.closing |= pressed,
                 KeyCode::Unidentified => {}
             },
@@ -1009,6 +1127,157 @@ mod tests {
         play(app, control, 60, now);
     }
 
+    /// **Slow movement accumulates rather than rounding to nothing.**
+    /// Half a degree twice is one degree; a mouse moved gently would
+    /// otherwise turn the view not at all, however long it was moved.
+    #[test]
+    fn a_turn_smaller_than_a_degree_is_owed_rather_than_lost() {
+        let mut app = app();
+        app.cursor_held = true;
+
+        // Half a degree: fifty hundredths, which is under the hundred a
+        // whole degree costs.
+        let half_a_degree = 50.0 / f64::from(MOUSE_HUNDREDTHS);
+        app.aim_by_mouse(half_a_degree, 0.0);
+        assert_eq!(app.spend_owed_turn(), (0, 0), "half a degree is not one");
+        assert_eq!(app.turn_owed.0, 50, "and it is still owed");
+
+        app.aim_by_mouse(half_a_degree, 0.0);
+        assert_eq!(
+            app.spend_owed_turn(),
+            (1, 0),
+            "two halves make the degree the first one did not"
+        );
+        assert_eq!(app.turn_owed.0, 0, "and nothing is owed after it is spent");
+    }
+
+    /// The remainder keeps its sign, so a slow drag one way accumulates
+    /// instead of oscillating about zero.
+    #[test]
+    fn a_remainder_keeps_its_direction() {
+        let mut app = app();
+        app.cursor_held = true;
+        let one_and_a_half = 150.0 / f64::from(MOUSE_HUNDREDTHS);
+
+        app.aim_by_mouse(-one_and_a_half, 0.0);
+        assert_eq!(app.spend_owed_turn(), (-1, 0));
+        assert_eq!(app.turn_owed.0, -50, "the leftover is still leftward");
+    }
+
+    /// **Nothing but whole degrees reaches the world.** The mouse's `f64`
+    /// stops at the accumulator: a float reaching `look_at` would make a
+    /// played run's digest a function of the platform's floating-point
+    /// behaviour, which is what turning with `Angle` exists to avoid.
+    #[test]
+    fn the_world_only_ever_sees_whole_degrees() {
+        let mut app = app();
+        app.cursor_held = true;
+        let before = app.world.look();
+
+        // A movement worth well under a degree changes nothing at all,
+        // rather than nudging the look direction by a fraction.
+        app.aim_by_mouse(0.3, 0.2);
+        app.advance();
+        let after = app.world.look();
+
+        // The yaw is unmoved because nothing whole was owed; the world's
+        // own look is fixed point either way, and comparing it is the
+        // check that no float slipped through.
+        assert_eq!(
+            app.yaw,
+            Angle::ZERO,
+            "a fraction of a degree turned the view"
+        );
+        assert_eq!(before.x, after.x, "the world's look moved by a fraction");
+        assert_eq!(before.z, after.z, "the world's look moved by a fraction");
+    }
+
+    /// Pushing the mouse forward looks up, which is the sign a player
+    /// expects, and pitch still stops short of vertical.
+    #[test]
+    fn the_mouse_pitches_the_way_a_player_expects_and_stops_short() {
+        let mut app = app();
+        app.cursor_held = true;
+
+        // Forward is negative dy on every platform's screen coordinates.
+        app.aim_by_mouse(0.0, -1000.0);
+        app.advance();
+        assert!(app.pitch_degrees > 0, "forward should look up");
+        assert!(
+            app.pitch_degrees <= PITCH_LIMIT,
+            "pitch ran past the limit: {}",
+            app.pitch_degrees
+        );
+
+        app.aim_by_mouse(0.0, 1_000_000.0);
+        app.advance();
+        assert!(
+            app.pitch_degrees >= -PITCH_LIMIT,
+            "pitch ran past the limit the other way: {}",
+            app.pitch_degrees
+        );
+    }
+
+    /// **Without a grab the mouse does nothing**, which is the whole of
+    /// how this degrades on a platform that will not hold a cursor: the
+    /// arrows still turn and nothing is lost.
+    #[test]
+    fn without_a_held_cursor_the_mouse_is_ignored() {
+        let mut app = app();
+        assert!(!app.cursor_held, "nothing has granted a grab");
+
+        app.aim_by_mouse(500.0, 500.0);
+        assert_eq!(
+            app.turn_owed,
+            (0, 0),
+            "an ungrabbed cursor wanders out of the window mid-turn, so it drives nothing"
+        );
+    }
+
+    /// Losing focus lets the cursor go and forgets what it owed.
+    ///
+    /// Both halves matter: a held cursor would trap a player who has
+    /// tabbed away, and a turn left owed across the gap would snap the view
+    /// round when they came back.
+    #[test]
+    fn losing_focus_releases_the_cursor_and_what_it_owed() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.cursor_held = true;
+        app.aim_by_mouse(50.0, 50.0);
+        assert_ne!(app.turn_owed, (0, 0));
+
+        app.event(WindowEvent::Focused(false));
+        assert!(
+            !app.cursor_held,
+            "a held cursor traps a player who tabbed away"
+        );
+        assert_eq!(
+            app.turn_owed,
+            (0, 0),
+            "a kept owed turn snaps the view on return"
+        );
+    }
+
+    /// A device reporting nonsense turns the view a lot, and does not
+    /// overflow the accumulator doing it.
+    #[test]
+    fn an_absurd_delta_is_clamped_rather_than_wrapping() {
+        let mut app = app();
+        app.cursor_held = true;
+
+        for delta in [f64::MAX, f64::INFINITY, f64::NAN, -f64::MAX] {
+            app.turn_owed = (0, 0);
+            app.aim_by_mouse(delta, delta);
+            let (yaw, pitch) = app.spend_owed_turn();
+            assert!(
+                yaw.abs() <= i32::MAX / 100 && pitch.abs() <= i32::MAX / 100,
+                "delta {delta} produced {yaw}, {pitch}"
+            );
+        }
+    }
+
     /// **Played, not simulated: the keys move the player where they are
     /// looking.** Every other test here checks a part — the mapping, the
     /// rotation, the pacing. This presses keys and asks the world what
@@ -1289,6 +1558,7 @@ mod tests {
         closed.event(WindowEvent::CloseRequested);
         assert!(closed.done());
 
+        // With no cursor held, one press ends it.
         let mut escaped = app();
         escaped.event(WindowEvent::Key {
             code: KeyCode::Escape,

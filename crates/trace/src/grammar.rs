@@ -57,6 +57,15 @@ pub(crate) const EVENT: &str = "e";
 /// The nine kinds of event, one per line shape.
 pub(crate) const KEY: &str = "key";
 pub(crate) const POINTER: &str = "pointer";
+
+/// Raw pointer movement, as a delta rather than a position.
+///
+/// A separate token from `pointer` because the two are different
+/// quantities that happen to share a shape: one says where the cursor
+/// is, the other how far the device moved. A recording that stored a
+/// delta under the position's token would replay as a cursor teleporting
+/// to the origin.
+pub(crate) const MOTION: &str = "motion";
 pub(crate) const BUTTON: &str = "button";
 pub(crate) const WHEEL: &str = "wheel";
 pub(crate) const FOCUS: &str = "focus";

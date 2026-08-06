@@ -92,6 +92,41 @@ impl WindowRef<'_> {
     /// An owned, opaque handle to this window for the renderer's surface
     /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
     /// as it (or anything owning it) exists — surface validity is
+    /// Hold the cursor inside the window and hide it, or let it go.
+    ///
+    /// **Answers rather than refuses.** Cursor confinement is one of the
+    /// places the three desktops genuinely differ, and a caller can do
+    /// nothing useful with the distinction between one compositor's
+    /// refusal and another's — what it *can* do is fall back to keys. A
+    /// `Result` would push a platform-specific error into every caller to
+    /// be discarded on the spot.
+    ///
+    /// `true` means the cursor is held and hidden; `false` means this
+    /// platform would not, and the caller should carry on without it. A
+    /// first-person sample must stay playable either way.
+    ///
+    /// Confined first and locked second, which is winit's own documented
+    /// order: Windows supports the first, macOS the second, and the
+    /// X11/Wayland pair varies by compositor.
+    #[must_use]
+    pub fn grab_cursor(&self, held: bool) -> bool {
+        use winit::window::CursorGrabMode;
+
+        let granted = if held {
+            self.window
+                .set_cursor_grab(CursorGrabMode::Confined)
+                .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Locked))
+                .is_ok()
+        } else {
+            self.window.set_cursor_grab(CursorGrabMode::None).is_ok()
+        };
+        // Hidden only when the grab took: a hidden cursor that can still
+        // wander out of the window is worse than a visible one, because
+        // the player cannot see where it went.
+        self.window.set_cursor_visible(!(held && granted));
+        granted
+    }
+
     /// ownership, not convention.
     #[must_use]
     pub fn native(&self) -> NativeWindow {
@@ -332,10 +367,44 @@ impl ApplicationHandler for Adapter<'_> {
         self.dispatch(&event);
     }
 
+    /// Raw device motion, which does not arrive with the window events.
+    ///
+    /// **The only device event forwarded, and deliberately so.** A window
+    /// event says what happened to the window; this says what a device
+    /// did, regardless of which window had focus or whether a cursor
+    /// exists. A first-person view needs exactly this and nothing else on
+    /// this seam, so everything else is dropped rather than translated
+    /// into a vocabulary no caller has asked for.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let Some(translated) = translate_device_event(&event) {
+            self.app.event(translated);
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.tick() {
             event_loop.exit();
         }
+    }
+}
+
+/// Translate one OS device event into the engine vocabulary.
+///
+/// Only motion has a meaning here; everything else returns `None`,
+/// dropped deliberately rather than accidentally — the same rule the
+/// window translation follows.
+fn translate_device_event(event: &winit::event::DeviceEvent) -> Option<WindowEvent> {
+    match event {
+        winit::event::DeviceEvent::MouseMotion { delta } => Some(WindowEvent::PointerMotion {
+            dx: delta.0,
+            dy: delta.1,
+        }),
+        _ => None,
     }
 }
 
@@ -452,6 +521,41 @@ fn translate_wheel(delta: winit::event::MouseScrollDelta) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Raw motion crosses as a delta, not a position.** The two are
+    /// different events for a reason: a view driven by the cursor's
+    /// position stops turning when the cursor stops moving at the edge of
+    /// the window, and the whole point of this one is that it does not.
+    #[test]
+    fn device_motion_crosses_as_a_delta() {
+        assert_eq!(
+            translate_device_event(&winit::event::DeviceEvent::MouseMotion {
+                delta: (-3.5, 1.25)
+            }),
+            Some(WindowEvent::PointerMotion { dx: -3.5, dy: 1.25 })
+        );
+    }
+
+    /// Every other device event is dropped deliberately rather than
+    /// translated into a vocabulary no caller has asked for.
+    #[test]
+    fn other_device_events_are_dropped_on_purpose() {
+        for event in [
+            winit::event::DeviceEvent::MouseWheel {
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+            },
+            winit::event::DeviceEvent::Motion {
+                axis: 0,
+                value: 1.0,
+            },
+            winit::event::DeviceEvent::Button {
+                button: 0,
+                state: winit::event::ElementState::Pressed,
+            },
+        ] {
+            assert_eq!(translate_device_event(&event), None, "{event:?}");
+        }
+    }
     use winit::event::{MouseButton, MouseScrollDelta};
     use winit::keyboard::{KeyCode as Wk, PhysicalKey};
 
