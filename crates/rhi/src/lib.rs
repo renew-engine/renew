@@ -113,6 +113,25 @@ pub mod builtin {
     /// module reads the shader source and fails if the two disagree.
     pub const HORIZON: [f32; 3] = [0.09, 0.10, 0.13];
 
+    /// Vertex stage SPIR-V for the plain mesh path with a texture.
+    pub static MESH_TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_textured.vert.spv");
+    /// Fragment stage SPIR-V sampling set 0, binding 0 and tinting by the
+    /// interpolated vertex colour.
+    pub static MESH_TEXTURED_FS_SPV: &[u8] = include_bytes!("../shaders/mesh_textured.frag.spv");
+
+    /// The plain mesh pair with a texture: **clip-space** positions,
+    /// colours and texture coordinates per vertex, and a combined image
+    /// sampler at set 0, binding 0.
+    ///
+    /// No matrix and no distance fade: positions here are already clip
+    /// space, so there is no view distance to fade by. The per-vertex
+    /// layout is [`MESH_LAYOUT`], shared with every other mesh pair,
+    /// which is what lets one scene feed any of them.
+    pub const MESH_TEXTURED: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_TEXTURED_VS_SPV,
+        fragment: MESH_TEXTURED_FS_SPV,
+    };
+
     /// Vertex stage SPIR-V for the camera mesh path with a texture.
     pub static MESH_CAMERA_TEXTURED_VS_SPV: &[u8] =
         include_bytes!("../shaders/mesh_camera_textured.vert.spv");

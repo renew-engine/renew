@@ -412,6 +412,12 @@ cargo run -p renew-sample-cube --features render --bin cube -- --render arena.pn
 Either command draws it: the isometric view is what `--render` draws when
 no `--view` is given, and naming it changes nothing.
 
+**The isometric view samples the same atlas as the game**, through the
+plain mesh pipeline rather than the camera one: its positions are already
+clip space, so that pair has no matrix and no distance fade. Two pictures
+of one world that disagreed about what the world is made of would be
+worse than either alone.
+
 **The view is a fixed true isometric** -- a 45 degree turn and a 35.264
 degree tilt -- with no camera anywhere, because a camera is a later step.
 Every entry of that basis is a square root rather than a sine, which is

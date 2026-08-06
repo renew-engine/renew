@@ -249,6 +249,69 @@ impl Camera {
     }
 }
 
+/// Draws indexed clip-space geometry, depth-tested, sampling a texture.
+///
+/// [`MeshRenderer`] with a sampler: the texel at each vertex's coordinate
+/// multiplies the interpolated colour. No camera and no distance fade —
+/// positions are clip space already, so there is no view distance to fade
+/// by, and a caller that wants one has projected the world itself.
+pub struct TexturedMeshRenderer {
+    pipeline: RenderPipeline,
+}
+
+impl TexturedMeshRenderer {
+    /// Build the pipeline and upload `pixels` as the texture it samples.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long.
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::new`], plus a refusal to create the texture or
+    /// the sampler.
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_TEXTURED, format, LAYOUT)
+                .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        Ok(Self { pipeline })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// Positions are **clip space**, as [`MeshRenderer::upload`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh`, ready to sit in a pass.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
+        Item::new(&self.pipeline).mesh(mesh)
+    }
+}
+
+impl core::fmt::Debug for TexturedMeshRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TexturedMeshRenderer")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Draws indexed geometry through a camera, depth-tested, sampling a
 /// texture.
 ///

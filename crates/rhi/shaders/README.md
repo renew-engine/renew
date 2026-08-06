@@ -182,7 +182,7 @@ The camera mesh path with a texture: the same geometry and matrix as
 and a combined image sampler at set 0, binding 0.
 
 ```
-> C:\VulkanSDK.4.328.1\Bin\glslc.exe --version
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
 shaderc v2023.8 v2025.3-10-gc7e73e8
 spirv-tools v2025.4 v2022.4-970-g19042c89
 glslang 11.1.0-1302-gd213562e
@@ -207,3 +207,22 @@ shared, because GLSL has no way to share them and two pipelines drawing
 one world must fade alike or the seam between them shows. A test in the
 rendering crate pins the horizon colour against its Rust constant; the
 fade distance is pinned by nothing but this sentence.
+
+## mesh_textured.vert and .frag - compiled 2026-08-06
+
+The plain mesh path with a texture: clip-space positions drawn straight,
+plus the coordinate the fragment stage samples with, and a combined image
+sampler at set 0, binding 0.
+
+```
+> glslc -O mesh_textured.vert -o mesh_textured.vert.spv
+> glslc -O mesh_textured.frag -o mesh_textured.frag.spv
+```
+
+Same toolchain and transcript as the entry above. 900 bytes and 856
+bytes, both recompiled and compared against the committed blobs.
+
+**No matrix and no fade here, unlike the camera pair.** These positions
+are already clip space, so `w` is one everywhere and a fade computed from
+it would be a constant tint. A caller that wants distance on this path has
+projected the world itself and knows the distances it used.

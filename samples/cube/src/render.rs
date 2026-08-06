@@ -11,7 +11,8 @@
 //! all three are pure and tested without a device.
 
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, Scene, TexturedCameraRenderer, attachment, pass,
+    Camera as RenderCamera, MeshRenderer, Scene, TexturedCameraRenderer, TexturedMeshRenderer,
+    attachment, pass,
 };
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
 use renew_sample_cube_world::grid::{Cell, Grid};
@@ -116,8 +117,16 @@ pub fn draw_clip_space(scene: &Scene) -> Result<Vec<u8>, RenderError> {
     let mut target = device
         .create_offscreen_target(extent)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
-        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    let renderer = TexturedMeshRenderer::new(
+        &device,
+        TargetFormat::Rgba8Unorm,
+        Extent {
+            width: crate::atlas::WIDTH,
+            height: crate::atlas::HEIGHT,
+        },
+        &crate::atlas::pixels(),
+    )
+    .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
         .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
@@ -163,7 +172,7 @@ pub fn build(grid: &Grid) -> Scene {
                 paint[3],
             ]
         });
-        scene.quad_shaded(
+        scene.quad_uv(
             [
                 view.project(corners[0]),
                 view.project(corners[1]),
@@ -171,6 +180,7 @@ pub fn build(grid: &Grid) -> Scene {
                 view.project(corners[3]),
             ],
             shaded,
+            crate::atlas::tile_uv(crate::atlas::tile_for(quad.face)),
         );
     }
     scene
