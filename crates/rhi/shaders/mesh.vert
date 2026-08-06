@@ -19,6 +19,11 @@
 
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
+// Declared and unused: this path draws untextured geometry, but the
+// vertex record carries a coordinate for the paths that do, and the
+// pipeline describes the whole record. An attribute a shader does not
+// consume is legal; a record the pipeline mis-describes is not.
+layout(location = 2) in vec2 vertex_uv;
 
 layout(location = 0) out vec4 fragment_colour;
 

@@ -42,7 +42,19 @@
 /// nothing compiles it. It is stated as the reason for a decision, not
 /// relied on: what the code relies on is the assertion in `gpu.rs` that
 /// this constant equals the packed width of the layout actually declared.
-pub(crate) const VERTEX_STRIDE: u32 = 28;
+pub(crate) const VERTEX_STRIDE: u32 = 36;
+
+/// The mapping [`Scene::quad`] and [`Scene::quad_shaded`] supply when the
+/// caller says nothing: the four corners onto the four corners of the
+/// unit square, in the order the corners come.
+///
+/// **A whole tile rather than a point.** Zero everywhere would collapse a
+/// textured draw onto one texel — a quad in a single colour, which looks
+/// like a working texture and is not one. Stretching the whole image
+/// across the quad is the answer a caller who supplied no coordinates
+/// most likely wanted, and it is visibly wrong rather than plausibly
+/// wrong if they did not.
+const WHOLE_TILE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
 /// Geometry accumulated on the host, ready to be uploaded once.
 ///
@@ -122,11 +134,29 @@ impl Scene {
     /// side of that diagonal. That is inherent to drawing a quad as two
     /// triangles and is not hidden here.
     pub fn quad_shaded(&mut self, corners: [[f32; 3]; 4], colours: [[f32; 4]; 4]) {
+        self.quad_uv(corners, colours, WHOLE_TILE);
+    }
+
+    /// The same quad with a texture coordinate for each corner.
+    ///
+    /// **The pair is per-vertex because that is the only place it can
+    /// be.** A voxel face's six neighbours want six different tiles from
+    /// one atlas, and a per-draw uniform would mean a draw per face.
+    ///
+    /// Corners, colours and coordinates are all in the same order: index
+    /// `i` of each belongs to corner `i`. What the coordinates *mean* —
+    /// which atlas, laid out how — is the caller's business entirely;
+    /// this crate packs two floats and says nothing about them.
+    ///
+    /// The colour is not replaced by the texture: they multiply in the
+    /// shader that samples, so corner darkening and a tile survive each
+    /// other.
+    pub fn quad_uv(&mut self, corners: [[f32; 3]; 4], colours: [[f32; 4]; 4], uvs: [[f32; 2]; 4]) {
         // Recorded before the push, so the triangles below index the
         // corners this call adds rather than whatever came before.
         let base = self.vertex_count();
-        for (corner, colour) in corners.into_iter().zip(colours) {
-            self.push_vertex(corner, colour);
+        for ((corner, colour), uv) in corners.into_iter().zip(colours).zip(uvs) {
+            self.push_vertex(corner, colour, uv);
         }
         for offset in [0, 1, 2, 0, 2, 3] {
             self.indices.push(base + offset);
@@ -134,11 +164,14 @@ impl Scene {
     }
 
     /// One vertex record, packed exactly as [`VERTEX_STRIDE`] describes.
-    fn push_vertex(&mut self, position: [f32; 3], colour: [f32; 4]) {
+    fn push_vertex(&mut self, position: [f32; 3], colour: [f32; 4], uv: [f32; 2]) {
         for value in position {
             self.vertices.extend_from_slice(&value.to_ne_bytes());
         }
         for value in colour {
+            self.vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in uv {
             self.vertices.extend_from_slice(&value.to_ne_bytes());
         }
     }
@@ -307,14 +340,18 @@ mod tests {
             4 * VERTEX_STRIDE as usize,
             "four corners at {VERTEX_STRIDE} bytes each"
         );
-        assert_eq!(VERTEX_STRIDE, 12 + 16, "a vec3 position and a vec4 colour");
+        assert_eq!(
+            VERTEX_STRIDE,
+            12 + 16 + 8,
+            "a vec3 position, a vec4 colour and a vec2 texture coordinate"
+        );
     }
 
     /// The bytes are the floats a caller handed over, in order, with
     /// nothing between them — the property a shader reading this layout
     /// depends on.
     #[test]
-    fn a_record_is_its_position_then_its_colour() {
+    fn a_record_is_its_position_then_its_colour_then_its_coordinate() {
         let mut scene = Scene::new();
         scene.quad(CORNERS, [0.25, 0.5, 0.75, 1.0]);
         let first = &scene.vertices()[..VERTEX_STRIDE as usize];
@@ -322,7 +359,74 @@ mod tests {
             .chunks_exact(4)
             .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
-        assert_eq!(floats, vec![-1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0]);
+        // The last two are the default mapping's first corner, which is
+        // the origin of the tile.
+        assert_eq!(
+            floats,
+            vec![-1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 0.0, 0.0]
+        );
+    }
+
+    /// **A quad with no coordinates given gets a whole tile**, not a
+    /// point. Zero everywhere would collapse a textured draw onto one
+    /// texel — a quad in a single colour, which looks like a working
+    /// texture and is not one.
+    #[test]
+    fn a_quad_without_coordinates_spans_the_whole_tile() {
+        let mut scene = Scene::new();
+        scene.quad(CORNERS, WHITE);
+        let bytes = scene.vertices();
+        let uv_of = |corner: usize| {
+            let at = corner * VERTEX_STRIDE as usize + 28;
+            let read = |offset: usize| {
+                let start = at + offset;
+                f32::from_ne_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ])
+            };
+            [read(0), read(4)]
+        };
+        for (corner, wanted) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            .into_iter()
+            .enumerate()
+        {
+            let found = uv_of(corner);
+            assert!(
+                found
+                    .iter()
+                    .zip(wanted)
+                    .all(|(a, b)| (a - b).abs() < f32::EPSILON),
+                "corner {corner} maps to {found:?}, wanted {wanted:?}"
+            );
+        }
+    }
+
+    /// Coordinates given are the coordinates packed, corner for corner.
+    #[test]
+    fn each_corner_keeps_its_own_coordinate() {
+        let uvs = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]];
+        let mut scene = Scene::new();
+        scene.quad_uv(CORNERS, [WHITE; 4], uvs);
+        let bytes = scene.vertices();
+        for (corner, wanted) in uvs.iter().enumerate() {
+            let at = corner * VERTEX_STRIDE as usize + 28;
+            for (channel, expected) in wanted.iter().enumerate() {
+                let start = at + channel * 4;
+                let found = f32::from_ne_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ]);
+                assert!(
+                    (found - expected).abs() < f32::EPSILON,
+                    "corner {corner} channel {channel} is {found}, wanted {expected}"
+                );
+            }
+        }
     }
 
     /// Two triangles per quad, indexing the four corners this push added.

@@ -207,8 +207,11 @@ pub mod builtin {
     /// The per-vertex layout [`MESH`] consumes: clip-space position,
     /// then colour. Packs to 28 bytes, which is the stride every mesh
     /// drawn by that pipeline must carry.
-    pub const MESH_LAYOUT: &[crate::VertexAttribute] =
-        &[crate::VertexAttribute::Vec3, crate::VertexAttribute::Vec4];
+    pub const MESH_LAYOUT: &[crate::VertexAttribute] = &[
+        crate::VertexAttribute::Vec3,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec2,
+    ];
 
     /// The mesh pair with a camera: **world-space** positions and
     /// colours per vertex, multiplied by a matrix supplied once per

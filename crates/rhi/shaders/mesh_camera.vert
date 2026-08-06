@@ -25,17 +25,26 @@
 //
 // Layout here and the `VertexAttribute` slices at pipeline creation
 // describe the same bytes: binding 0 is location 0 = vec3 position
-// (world space now, not clip), location 1 = vec4 colour; binding 1 is
-// locations 2..=5, the matrix columns. Change one and the other in the
-// same commit or the draw reads garbage.
+// (world space now, not clip), location 1 = vec4 colour, location 2 =
+// vec2 texture coordinate; binding 1 is locations 3..=6, the matrix
+// columns. Change one and the other in the same commit or the draw reads
+// garbage.
 
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
+// Declared and unused here for the same reason as in `mesh.vert`: the
+// record carries it, so the pipeline describes it.
+layout(location = 2) in vec2 vertex_uv;
 
-layout(location = 2) in vec4 view_projection_0;
-layout(location = 3) in vec4 view_projection_1;
-layout(location = 4) in vec4 view_projection_2;
-layout(location = 5) in vec4 view_projection_3;
+// **These moved from 2..=5 when the coordinate arrived.** Locations are
+// one space across both bindings, per-vertex first, so a third
+// per-vertex attribute pushes every per-instance one up by one. Get this
+// wrong and the matrix is read from the wrong locations, which produces
+// a picture rather than an error.
+layout(location = 3) in vec4 view_projection_0;
+layout(location = 4) in vec4 view_projection_1;
+layout(location = 5) in vec4 view_projection_2;
+layout(location = 6) in vec4 view_projection_3;
 
 layout(location = 0) out vec4 fragment_colour;
 // How far away this vertex is, as a fraction of the distance at which

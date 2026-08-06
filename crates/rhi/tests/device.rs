@@ -532,7 +532,7 @@ fn malformed_frames_are_refused_by_name() {
         ))
         .expect("mesh pipeline");
     let mesh = device
-        .create_mesh(&MeshDesc::new(&[0u8; 28 * 3], 28, &[0, 1, 2]))
+        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
         .expect("mesh");
     refused(
         "a mesh pipeline drawn with no geometry",

@@ -241,10 +241,16 @@ fn mesh_fixture(
         for value in [0.0f32, 1.0, 0.0, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
+        // The texture coordinate the layout declares. These shaders do
+        // not consume it; the record must still be what the pipeline
+        // says it is.
+        for value in [0.0f32, 0.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
     }
     let mesh = device.create_mesh(&renew_rhi::MeshDesc::new(
         &vertices,
-        28,
+        12 + 16 + 8,
         &[0, 1, 2, 0, 2, 3],
     ))?;
     Ok((pipeline, mesh))
