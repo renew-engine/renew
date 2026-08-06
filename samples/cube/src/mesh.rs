@@ -27,7 +27,7 @@
 //! against `get` is what makes the difference structural rather than a
 //! condition somebody has to remember.
 
-use renew_sample_cube_world::grid::{AIR, Block, Cell, Grid, STONE};
+use renew_sample_cube_world::grid::{AIR, BRICK, Block, Cell, Grid, STONE};
 use renew_sample_cube_world::ray::Face;
 
 /// One block face a renderer would draw.
@@ -255,6 +255,10 @@ pub fn aimed_colour(block: Block, face: Face) -> [f32; 4] {
 fn base_colour(block: Block) -> [f32; 4] {
     match block {
         STONE => [0.62, 0.60, 0.57, 1.0],
+        // Warmer and a little darker, so a placed block reads as placed
+        // against stone from any distance and in any light this world
+        // has — which is none, so the colour is the whole of the signal.
+        BRICK => [0.55, 0.40, 0.34, 1.0],
         // Every other value, including `AIR`, which should never reach
         // here because only solid cells are meshed. Magenta on purpose:
         // a block type nobody gave a colour is a bug, and the picture
@@ -276,6 +280,48 @@ fn shade(face: Face) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A placed block is not the colour of the stone it sits against.**
+    /// The whole point of a second kind is that a player can see what
+    /// they built, and nothing but this comparison says so — the tile is
+    /// shared, so the hue carries all of the signal.
+    #[test]
+    fn a_placed_block_is_a_different_colour_from_the_world() {
+        for face in [Face::Top, Face::North, Face::Bottom] {
+            let stone = colour(STONE, face);
+            let brick = colour(BRICK, face);
+            assert!(
+                stone
+                    .iter()
+                    .zip(brick)
+                    .any(|(a, b)| (a - b).abs() > f32::EPSILON),
+                "{face:?}: brick reads as stone"
+            );
+            // Not merely different: different in hue, so it survives the
+            // face shading that darkens both by the same factor.
+            let stone_warmth = stone[0] - stone[2];
+            let brick_warmth = brick[0] - brick[2];
+            assert!(
+                brick_warmth > stone_warmth + 0.05,
+                "{face:?}: brick should be warmer than stone, got {brick_warmth} against                  {stone_warmth}"
+            );
+        }
+    }
+
+    /// Neither is the magenta that means "nobody gave this a colour".
+    #[test]
+    fn both_kinds_have_a_colour_of_their_own() {
+        let unknown = base_colour(200);
+        for block in [STONE, BRICK] {
+            assert!(
+                base_colour(block)
+                    .iter()
+                    .zip(unknown)
+                    .any(|(a, b)| (a - b).abs() > f32::EPSILON),
+                "block {block} falls through to the unknown-block colour"
+            );
+        }
+    }
 
     /// A block alone in the air is denied nothing: every corner of every
     /// face is at full brightness.

@@ -26,7 +26,7 @@ Every run prints one line last:
 
 ```console
 $ cube --script build --ticks 900
-cube script=build source=script ticks=900 digest=0xc2b4534b2679a6a1 solids=5020 broken=2 placed=10 grounded=false
+cube script=build source=script ticks=900 digest=0xce632722e5698fa1 solids=5020 broken=2 placed=10 grounded=false
 ```
 
 Two runs of the same script and tick count print identical lines —
@@ -47,7 +47,7 @@ are what compare digests.
 
 ```console
 $ cube --script build --ticks 900 --json
-{"schema_version":2,"sample":"cube","script":"build","source":"script","ticks":900,"digest":"0xc2b4534b2679a6a1","solids":5020,"broken":2,"placed":10,"grounded":false}
+{"schema_version":2,"sample":"cube","script":"build","source":"script","ticks":900,"digest":"0xce632722e5698fa1","solids":5020,"broken":2,"placed":10,"grounded":false}
 ```
 
 `--show` draws a plan and an elevation, each sliced through the cell
@@ -326,6 +326,30 @@ geometry behind the eye. Transforming vertices on the way in would mean
 triangle crossing `w = 0` cannot be divided at all — and inside a room,
 with walls behind you, that is not a corner case. It also means the mesh
 never re-uploads when the camera moves.
+
+## What you build looks like something you built
+
+![The arena from outside: a staircase of reddish-brown blocks climbing away from the grey stone mound, plainly placed rather than part of the terrain](built.png)
+
+```
+renew --features render run cube -- --script build --ticks 900 --eye -8,6,-10 --look-at 4,1.5,0 --render built.png
+```
+
+**A placed block is a different kind from the world's own.** Breaking and
+placing is the whole of what this game does, and half of it used to be
+invisible: a block put back into a mound of the same stone is
+indistinguishable from the mound, so the world knew something had changed
+and the player could not see it.
+
+It is a *placed* block rather than a chosen material — there is no
+inventory and nothing to choose between. When there is, this becomes one
+of several.
+
+**Every digest that places moved, and exactly those.** `stand` places
+nothing and its digest is untouched; `build` places ten and its digest is
+new. The README's example lines are checked against the binary by a test,
+so a digest that moves without the document following it is a failing
+build rather than a stale page.
 
 ## The blocks have a texture, and it is generated
 

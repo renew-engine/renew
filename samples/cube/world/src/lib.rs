@@ -34,7 +34,7 @@ use renew_fixed::{Fixed, Vec3};
 use renew_frame::StateHash;
 use renew_physics3d::{Shape, Transform, sweep};
 
-pub use grid::{AIR, Block, Cell, Grid, STONE, block_half_extent};
+pub use grid::{AIR, BRICK, Block, Cell, Grid, STONE, block_half_extent};
 pub use ray::{Face, Pick, pick};
 
 /// What the player is asking for this tick.
@@ -229,7 +229,9 @@ impl Cube {
             // And never inside the player: a block placed where the body
             // stands would trap it with no way out, and the check has to
             // happen here because the grid does not know where anybody is.
-            if !self.body_overlaps(target) && self.grid.set(target, STONE) {
+            // `BRICK`, not `STONE`: what a player builds should be
+            // visible as something they built.
+            if !self.body_overlaps(target) && self.grid.set(target, BRICK) {
                 self.placed += 1;
             }
         }

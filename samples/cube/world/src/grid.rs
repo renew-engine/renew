@@ -12,8 +12,22 @@ pub type Block = u8;
 
 /// Nothing there.
 pub const AIR: Block = 0;
-/// The one solid kind this sample has.
+/// What the world is built from.
 pub const STONE: Block = 1;
+
+/// What a player puts back.
+///
+/// **A second kind, so building is visible.** A block placed into a mound
+/// of the same stone is indistinguishable from the mound: the world knows
+/// something changed and the player cannot see it. Breaking and placing
+/// is the whole of what this game does, and half of it was invisible.
+///
+/// It is a *placed* block rather than a second material, and the
+/// distinction matters for what comes next: nothing here decides what a
+/// player is holding, because there is no inventory and no choice. When
+/// there is, this becomes one of several and the name will have to change
+/// with it.
+pub const BRICK: Block = 2;
 
 /// Integer coordinates of one cell.
 ///
