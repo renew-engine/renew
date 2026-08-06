@@ -581,6 +581,17 @@ pub fn describe_json(report: &Report) -> String {
     )
 }
 
+/// The block the player is aiming at, if any.
+///
+/// **A still is evidence about the game, so it shows what the game
+/// shows.** The window lights the aimed block — without it a player
+/// cannot tell which one breaking will take — and a picture from the same
+/// viewpoint that left it out would be a picture of a different program.
+#[cfg(feature = "render")]
+fn aimed(world: &Cube) -> Option<renew_sample_cube_world::Cell> {
+    world.looking_at().map(|pick| pick.cell)
+}
+
 /// Draw the world to `path`, or say why not.
 ///
 /// # Errors
@@ -593,11 +604,11 @@ fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), Str
         View::Isometric => render::to_png(world.grid(), path),
         View::Player => {
             let camera = camera::player_view(world, 1.0);
-            render::to_png_through(world.grid(), &camera, path)
+            render::to_png_through(world.grid(), &camera, path, aimed(world))
         }
         View::Free { eye, target } => {
             let camera = camera::free_view(eye, target, 1.0);
-            render::to_png_through(world.grid(), &camera, path)
+            render::to_png_through(world.grid(), &camera, path, aimed(world))
         }
     }
     .map_err(|error| error.to_string())

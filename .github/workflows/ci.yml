@@ -862,10 +862,13 @@ jobs:
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 30
           # The same window with a script driving the player, because no
           # runner supplies keystrokes and breaking a block needs one.
+          # `--json` because the window branch formats its own answer, and
+          # a branch that returns before the shared formatter is a branch
+          # nothing else reaches.
           # This run digs and places, so the geometry is rebuilt mid-run
           # — the branch that exists because the mesh is uploaded once
           # and only block edits invalidate it.
-          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --script build --ticks 90
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --script build --ticks 90 --json
           # The same run with the pipeline refused, so the arm that
           # reports a bring-up failure is executed rather than trusted.
           # The fault layer is already in this job's loader path for the

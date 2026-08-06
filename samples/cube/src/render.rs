@@ -182,8 +182,12 @@ pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
 /// # Errors
 ///
 /// As [`draw`].
-pub fn draw_through(grid: &Grid, camera: &crate::camera::Camera) -> Result<Vec<u8>, RenderError> {
-    draw_scene(&build_world_space(grid, None), camera)
+pub fn draw_through(
+    grid: &Grid,
+    camera: &crate::camera::Camera,
+    aimed: Option<Cell>,
+) -> Result<Vec<u8>, RenderError> {
+    draw_scene(&build_world_space(grid, aimed), camera)
 }
 
 /// Draw an already-built scene through `camera`.
@@ -237,8 +241,9 @@ pub fn to_png_through(
     grid: &Grid,
     camera: &crate::camera::Camera,
     path: &std::path::Path,
+    aimed: Option<Cell>,
 ) -> Result<(), RenderError> {
-    let pixels = draw_through(grid, camera)?;
+    let pixels = draw_through(grid, camera, aimed)?;
     let png = renew_png::encode(SIZE, SIZE, &pixels)
         .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
@@ -290,5 +295,95 @@ fn normalised(component: i32) -> f32 {
         1 => 1.0,
         -1 => -1.0,
         _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An all-air world has no faces, and that is data rather than a bug:
+    /// a script that dug everything out would produce one.
+    #[test]
+    fn a_world_with_nothing_in_it_is_refused_by_name() {
+        let empty = Grid::new(Cell::new(0, 0, 0), (2, 2, 2));
+        let camera = crate::camera::free_view([4.0, 4.0, 4.0], [0.0, 0.0, 0.0], 1.0);
+
+        assert!(
+            matches!(draw_through(&empty, &camera, None), Err(RenderError::Empty)),
+            "an empty world through a camera must be refused, not drawn"
+        );
+        assert!(
+            matches!(draw(&empty), Err(RenderError::Empty)),
+            "and the same holds for the view with no camera"
+        );
+    }
+
+    /// Every refusal says what happened in words a reader can act on.
+    ///
+    /// Built by hand: three of the four need a graphics device to occur
+    /// naturally, and what is under test is the wording rather than the
+    /// occasion.
+    #[test]
+    fn every_refusal_says_what_it_was() {
+        let cases = [
+            (
+                RenderError::NoDevice("no adapter".to_string()),
+                "no graphics device",
+            ),
+            (
+                RenderError::Refused("out of memory".to_string()),
+                "refused the frame",
+            ),
+            (RenderError::Empty, "no faces"),
+            (
+                RenderError::Output("permission denied".to_string()),
+                "writing the image",
+            ),
+        ];
+        for (error, needle) in cases {
+            let shown = error.to_string();
+            assert!(shown.contains(needle), "`{shown}` missing `{needle}`");
+        }
+    }
+
+    /// How many bytes two draws disagree on.
+    ///
+    /// Counted rather than compared whole: these buffers are a megabyte
+    /// each, and an `assert_eq!` over them prints both on failure.
+    fn differing_bytes(left: &[u8], right: &[u8]) -> usize {
+        left.iter().zip(right).filter(|(a, b)| a != b).count()
+    }
+
+    /// **The aim reaches the picture.** The window lights the block being
+    /// aimed at; a still from the same viewpoint that left it out would
+    /// be a picture of a different program, and the argument for drawing
+    /// from the player's eyes at all is that the picture is evidence
+    /// about the game.
+    #[test]
+    fn a_still_shows_the_block_being_aimed_at() {
+        let grid = crate::arena();
+        let camera = crate::camera::free_view([-8.0, 6.0, -10.0], [4.0, 1.5, 0.0], 1.0);
+        let plain = draw_through(&grid, &camera, None).expect("the plain draw should succeed");
+
+        // The mound spans x 2..=6, y 1..=2, z -2..=2, so this is a top
+        // face with air above it and nothing between it and the eye.
+        let visible = Cell::new(4, 2, 0);
+        let aimed = draw_through(&grid, &camera, Some(visible)).expect("the draw should succeed");
+        assert!(
+            differing_bytes(&plain, &aimed) > 0,
+            "lighting a visible block changed no pixel, so the aim never reached the scene"
+        );
+
+        // A block enclosed on all six sides is drawn by nobody, so
+        // lighting it must change nothing. Without this the assertion
+        // above would pass on a scene that lit everything.
+        let enclosed = Cell::new(4, 1, 0);
+        let hidden = draw_through(&grid, &camera, Some(enclosed)).expect("the draw should succeed");
+        assert_eq!(
+            differing_bytes(&plain, &hidden),
+            0,
+            "an enclosed block has no face in the mesh, so lighting it must change no pixel"
+        );
     }
 }

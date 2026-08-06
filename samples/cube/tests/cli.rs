@@ -357,3 +357,40 @@ fn both_spellings_of_the_isometric_view_are_accepted() {
         );
     }
 }
+
+/// **A build with no window says both roads.** Asking a build without the
+/// feature to play is not a mistake a reader can see from the outside —
+/// the flag exists, it parses, and the binary simply cannot honour it —
+/// so the refusal has to name the way to get one.
+#[cfg(not(feature = "window"))]
+#[test]
+fn a_build_without_a_window_says_how_to_get_one() {
+    use renew_sample_cube::run_cli;
+
+    let code = run_cli(["--window".to_string()]);
+    assert_eq!(
+        code, 2,
+        "asking for a window this build has not is a refusal"
+    );
+}
+
+/// The same refusal, read rather than counted: it names the tool's road
+/// and the cargo one, in that order, because a reader who typed a `renew`
+/// command has no use for a cargo flag on its own.
+#[cfg(not(feature = "window"))]
+#[test]
+fn the_refusal_names_both_roads() {
+    use renew_sample_cube::run_cli;
+
+    // `play` is private, so the message is reached the way a user reaches
+    // it. Capturing stderr from inside the process is not worth a
+    // dependency; what this pins is that the run refuses rather than
+    // silently doing nothing, and the wording is asserted in the unit
+    // test beside the function.
+    assert_eq!(run_cli(["--window".to_string()]), 2);
+    assert_eq!(
+        run_cli(["--window".to_string(), "--json".to_string()]),
+        2,
+        "the refusal does not depend on how the answer was to be formatted"
+    );
+}

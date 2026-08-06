@@ -209,6 +209,13 @@ and every test in the crate passed. Only a decoder refused it.
 
 ## Playing it
 
+![Standing on the arena floor, looking down: the floor running to a wall, and one block lit brighter than the rest — the one that breaking would take](playing.png)
+
+The block you are aiming at is lit, and that is not decoration: every
+block is the same grey, so without it you cannot tell which one **enter**
+will take until it is gone. Digging is a guess otherwise.
+
+
 ```
 renew --features window run cube -- --window
 cargo run -p renew-sample-cube --features window --bin cube -- --window
