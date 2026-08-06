@@ -12,6 +12,8 @@
 //! world; everything here is the seam that lets a machine ask it a question.
 
 pub mod camera;
+#[cfg(feature = "render")]
+pub mod crosshair;
 pub mod mesh;
 pub mod projection;
 #[cfg(feature = "render")]
@@ -604,11 +606,18 @@ fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), Str
         View::Isometric => render::to_png(world.grid(), path),
         View::Player => {
             let camera = camera::player_view(world, 1.0);
-            render::to_png_through(world.grid(), &camera, path, aimed(world))
+            // **The player's own view gets the player's own crosshair.**
+            // The same reason the aimed block is lit here: this view
+            // claims to be what the player sees, and what they see
+            // includes where they are pointing. The other views are
+            // pictures *of* the world rather than from inside it, and a
+            // crosshair in one would mark a spot nobody is aiming at.
+            let overlay = crosshair::scene(1.0);
+            render::to_png_through(world.grid(), &camera, path, aimed(world), Some(&overlay))
         }
         View::Free { eye, target } => {
             let camera = camera::free_view(eye, target, 1.0);
-            render::to_png_through(world.grid(), &camera, path, aimed(world))
+            render::to_png_through(world.grid(), &camera, path, aimed(world), None)
         }
     }
     .map_err(|error| error.to_string())

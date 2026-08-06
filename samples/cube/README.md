@@ -209,11 +209,14 @@ and every test in the crate passed. Only a decoder refused it.
 
 ## Playing it
 
-![Standing on the arena floor, looking down: the floor running to a wall, and one block lit brighter than the rest — the one that breaking would take](playing.png)
+![Standing on the arena floor, looking down: a white crosshair at the centre of the view, the floor running to a wall, and the mound's corner darkened where it meets the floor](playing.png)
 
-The block you are aiming at is lit, and that is not decoration: every
-block is the same grey, so without it you cannot tell which one **enter**
-will take until it is gone. Digging is a guess otherwise.
+A crosshair marks where you are pointing, and the block you are aiming at
+is lit. Both are needed and neither replaces the other: the highlight says
+*which block*, and says nothing at all when nothing is in reach — which is
+most of the time in an open room, and exactly when you are trying to line
+a shot up. The crosshair is where the aim ray goes whether or not it hits
+anything.
 
 
 ```

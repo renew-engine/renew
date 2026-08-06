@@ -52,7 +52,7 @@ use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
-use renew_render3d::{Camera as RenderCamera, CameraRenderer, attachment, pass};
+use renew_render3d::{Camera as RenderCamera, CameraRenderer, MeshRenderer, attachment, pass};
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
     WindowTarget,
@@ -234,6 +234,13 @@ struct Gpu {
     /// second draw. It happens when the aim crosses from one block to
     /// another, not every time the view turns.
     aimed_at: Option<Cell>,
+    /// The plain mesh pipeline, for geometry that is already clip space.
+    overlay: MeshRenderer,
+    /// The crosshair, uploaded once per shape.
+    crosshair: Mesh,
+    /// The aspect the crosshair was built for, so a resized window gets
+    /// square arms again rather than keeping the old window's stretch.
+    crosshair_aspect: f32,
 }
 
 impl CubeApp {
@@ -356,6 +363,12 @@ impl CubeApp {
                 &crate::render::build_world_space(self.world.grid(), self.aim_cell()),
             )
             .map_err(|error| format!("uploading the world's geometry: {error}"))?;
+        let overlay = MeshRenderer::new(&device, target.format())
+            .map_err(|error| format!("building the overlay pipeline: {error}"))?;
+        let crosshair_aspect = aspect_of(size);
+        let crosshair = overlay
+            .upload(&device, &crate::crosshair::scene(crosshair_aspect))
+            .map_err(|error| format!("uploading the crosshair: {error}"))?;
         Ok(Some(Gpu {
             device,
             target,
@@ -363,6 +376,9 @@ impl CubeApp {
             mesh,
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
+            overlay,
+            crosshair,
+            crosshair_aspect,
         }))
     }
 
@@ -390,9 +406,28 @@ impl CubeApp {
             gpu.aimed_at = aimed;
         }
 
+        // A resized window changes what "square" means, so the arms
+        // are rebuilt rather than left stretched. Two quads; this is not
+        // a cost worth caching around.
+        let wanted = aspect_of(gpu.target.extent());
+        if (wanted - gpu.crosshair_aspect).abs() > f32::EPSILON
+            && let Ok(rebuilt) = gpu
+                .overlay
+                .upload(&gpu.device, &crate::crosshair::scene(wanted))
+        {
+            gpu.crosshair = rebuilt;
+            gpu.crosshair_aspect = wanted;
+        }
+
         let packed = RenderCamera::from_columns(camera.view_projection());
         let color = [attachment(SKY)];
-        let items = [gpu.renderer.item(&gpu.mesh, &packed)];
+        // The world first, the crosshair over it. The overlay sits at the
+        // near plane, so the depth test cannot put a block in front of
+        // it; the order settles it anyway.
+        let items = [
+            gpu.renderer.item(&gpu.mesh, &packed),
+            gpu.overlay.item(&gpu.crosshair),
+        ];
         let passes = [pass(&color, &items)];
         // **The outcome is the recovery signal, not noise.** `render`
         // never rebuilds a swapchain on its own; a target whose surface

@@ -85,7 +85,20 @@ pub fn to_png(grid: &Grid, path: &std::path::Path) -> Result<(), RenderError> {
 ///
 /// As [`to_png`], less the file.
 pub fn draw(grid: &Grid) -> Result<Vec<u8>, RenderError> {
-    let scene = build(grid);
+    draw_clip_space(&build(grid))
+}
+
+/// Draw a scene whose positions are **already clip space**, offscreen.
+///
+/// The guts of [`draw`], named because the world is not the only thing
+/// drawn that way: an overlay is clip space by definition, and a test
+/// that wants to look at one needs somewhere to draw it that is not a
+/// window.
+///
+/// # Errors
+///
+/// As [`draw`].
+pub fn draw_clip_space(scene: &Scene) -> Result<Vec<u8>, RenderError> {
     if scene.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -106,7 +119,7 @@ pub fn draw(grid: &Grid) -> Result<Vec<u8>, RenderError> {
     let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
-        .upload(&device, &scene)
+        .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
 
     let color = [attachment(BACKDROP)];
@@ -210,8 +223,9 @@ pub fn draw_through(
     grid: &Grid,
     camera: &crate::camera::Camera,
     aimed: Option<Cell>,
+    overlay: Option<&Scene>,
 ) -> Result<Vec<u8>, RenderError> {
-    draw_scene(&build_world_space(grid, aimed), camera)
+    draw_scene(&build_world_space(grid, aimed), camera, overlay)
 }
 
 /// Draw an already-built scene through `camera`.
@@ -219,7 +233,11 @@ pub fn draw_through(
 /// # Errors
 ///
 /// As [`draw_through`].
-pub fn draw_scene(scene: &Scene, camera: &crate::camera::Camera) -> Result<Vec<u8>, RenderError> {
+pub fn draw_scene(
+    scene: &Scene,
+    camera: &crate::camera::Camera,
+    overlay: Option<&Scene>,
+) -> Result<Vec<u8>, RenderError> {
     if scene.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -244,8 +262,36 @@ pub fn draw_scene(scene: &Scene, camera: &crate::camera::Camera) -> Result<Vec<u
         .map_err(|error| RenderError::Refused(error.to_string()))?;
     let packed = RenderCamera::from_columns(camera.view_projection());
 
+    // The overlay, if there is one: geometry that is already clip space
+    // and so needs the pipeline that does not transform. Built here
+    // rather than taken as a mesh because a mesh belongs to a device and
+    // the caller has none.
+    let (plain, plain_mesh) = match overlay {
+        Some(overlay) if !overlay.is_empty() => {
+            let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
+                .map_err(|error| RenderError::Refused(error.to_string()))?;
+            let uploaded = plain
+                .upload(&device, overlay)
+                .map_err(|error| RenderError::Refused(error.to_string()))?;
+            (Some(plain), Some(uploaded))
+        }
+        _ => (None, None),
+    };
+
     let color = [attachment(BACKDROP)];
-    let items = [renderer.item(&mesh, &packed)];
+    // The world first, whatever is over it second. Both are in one pass:
+    // the overlay sits at the near plane, so the depth test cannot put
+    // the world in front of it, and the order settles it regardless.
+    let world_item = renderer.item(&mesh, &packed);
+    let over = plain
+        .as_ref()
+        .zip(plain_mesh.as_ref())
+        .map(|(plain, mesh)| plain.item(mesh));
+    let mut items = Vec::with_capacity(2);
+    items.push(world_item);
+    if let Some(over) = over {
+        items.push(over);
+    }
     let passes = [pass(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
@@ -266,8 +312,9 @@ pub fn to_png_through(
     camera: &crate::camera::Camera,
     path: &std::path::Path,
     aimed: Option<Cell>,
+    overlay: Option<&Scene>,
 ) -> Result<(), RenderError> {
-    let pixels = draw_through(grid, camera, aimed)?;
+    let pixels = draw_through(grid, camera, aimed, overlay)?;
     let png = renew_png::encode(SIZE, SIZE, &pixels)
         .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
@@ -323,7 +370,7 @@ fn normalised(component: i32) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// An all-air world has no faces, and that is data rather than a bug:
@@ -334,7 +381,10 @@ mod tests {
         let camera = crate::camera::free_view([4.0, 4.0, 4.0], [0.0, 0.0, 0.0], 1.0);
 
         assert!(
-            matches!(draw_through(&empty, &camera, None), Err(RenderError::Empty)),
+            matches!(
+                draw_through(&empty, &camera, None, None),
+                Err(RenderError::Empty)
+            ),
             "an empty world through a camera must be refused, not drawn"
         );
         assert!(
@@ -379,6 +429,77 @@ mod tests {
         left.iter().zip(right).filter(|(a, b)| a != b).count()
     }
 
+    /// Whether this lane refuses to skip.
+    pub(crate) fn golden_strict() -> bool {
+        std::env::var_os("RENEW_GOLDEN").is_some_and(|value| value == "1")
+    }
+
+    /// Pixels, or `None` meaning "this machine has no device; skip".
+    ///
+    /// **A function rather than a match arm, and the reason is coverage
+    /// rather than tidiness.** Written inline, the skip and the panic are
+    /// arms that run only when the machine has no driver or when the draw
+    /// fails — so on every lane that *does* draw they are lines nothing
+    /// executes, and on the lane that does not they are the only lines
+    /// executed. Neither lane covers both. Passed the outcome and the
+    /// strictness, all four cases can be driven from a test with values
+    /// built by hand.
+    ///
+    /// # Panics
+    ///
+    /// On a refusal that is not an absent device: those are defects
+    /// rather than absences. And on an absent device when `strict`,
+    /// which is the lane that exists to run these — a skip there would
+    /// let the oracle pass by not running.
+    pub(crate) fn pixels_or_skip(
+        outcome: Result<Vec<u8>, RenderError>,
+        strict: bool,
+    ) -> Option<Vec<u8>> {
+        match outcome {
+            Ok(pixels) => Some(pixels),
+            Err(RenderError::NoDevice(why)) => {
+                assert!(!strict, "RENEW_GOLDEN=1 but there is no device: {why}");
+                eprintln!("SKIP: {why}");
+                None
+            }
+            Err(other) => panic!("the draw failed for a reason that is not the device: {other}"),
+        }
+    }
+
+    /// A present device hands the pixels back; an absent one is a skip.
+    #[test]
+    fn an_absent_device_is_a_skip_and_pixels_are_not() {
+        assert_eq!(
+            pixels_or_skip(Ok(vec![1, 2, 3]), false),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            pixels_or_skip(Err(RenderError::NoDevice("no adapter".to_string())), false),
+            None
+        );
+    }
+
+    /// On the lane that exists to run these, an absent device is a
+    /// failure rather than a skip.
+    #[test]
+    #[should_panic(expected = "there is no device")]
+    fn a_strict_lane_refuses_to_skip() {
+        drop(pixels_or_skip(
+            Err(RenderError::NoDevice("no adapter".to_string())),
+            true,
+        ));
+    }
+
+    /// Anything else is a defect, and says so rather than skipping past.
+    #[test]
+    #[should_panic(expected = "not the device")]
+    fn any_other_refusal_is_a_failure() {
+        drop(pixels_or_skip(
+            Err(RenderError::Refused("out of memory".to_string())),
+            false,
+        ));
+    }
+
     /// **The aim reaches the picture.** The window lights the block being
     /// aimed at; a still from the same viewpoint that left it out would
     /// be a picture of a different program, and the argument for drawing
@@ -395,25 +516,16 @@ mod tests {
         // are in the graph rather than what they draw. Under
         // `RENEW_GOLDEN=1`, the lane that exists to run these, a skip is
         // a failure instead, so the oracle can never pass by not running.
-        let plain = match draw_through(&grid, &camera, None) {
-            Ok(pixels) => pixels,
-            Err(RenderError::NoDevice(why)) => {
-                assert!(
-                    std::env::var_os("RENEW_GOLDEN").is_none_or(|value| value != "1"),
-                    "RENEW_GOLDEN=1 but there is no device: {why}"
-                );
-                eprintln!("SKIP: {why}");
-                return;
-            }
-            Err(other) => {
-                panic!("the plain draw failed for a reason that is not the device: {other}")
-            }
+        let Some(plain) = pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
+        else {
+            return;
         };
 
         // The mound spans x 2..=6, y 1..=2, z -2..=2, so this is a top
         // face with air above it and nothing between it and the eye.
         let visible = Cell::new(4, 2, 0);
-        let aimed = draw_through(&grid, &camera, Some(visible)).expect("the draw should succeed");
+        let aimed =
+            draw_through(&grid, &camera, Some(visible), None).expect("the draw should succeed");
         assert!(
             differing_bytes(&plain, &aimed) > 0,
             "lighting a visible block changed no pixel, so the aim never reached the scene"
@@ -423,7 +535,8 @@ mod tests {
         // lighting it must change nothing. Without this the assertion
         // above would pass on a scene that lit everything.
         let enclosed = Cell::new(4, 1, 0);
-        let hidden = draw_through(&grid, &camera, Some(enclosed)).expect("the draw should succeed");
+        let hidden =
+            draw_through(&grid, &camera, Some(enclosed), None).expect("the draw should succeed");
         assert_eq!(
             differing_bytes(&plain, &hidden),
             0,
