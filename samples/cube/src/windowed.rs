@@ -166,7 +166,7 @@ fn aspect_of(size: Extent) -> f32 {
 }
 
 /// The game, running against a window.
-pub struct CubeApp {
+struct CubeApp {
     world: Cube,
     held: Held,
     yaw: Angle,
