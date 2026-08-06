@@ -328,17 +328,17 @@ impl CubeApp {
         ));
     }
 
-    /// Let the cursor go, and forget what it owed.
+    /// Forget the movement not yet spent.
     ///
-    /// Both halves matter. A held cursor traps a player who wanted to
-    /// reach something else; a turn left owed across the gap snaps the view
-    /// round when they come back.
+    /// **The cursor itself is not this file's to release.** The window
+    /// layer frees it when focus is lost and takes it back when focus
+    /// returns, because a caller cannot change window state outside
+    /// bring-up — and because a grab that had to be re-asked for after
+    /// every alt-tab would be a grab that quietly stopped working.
     ///
-    /// The window is told separately, when there is one — this is the
-    /// driver's own state, and it is what every other decision here
-    /// reads.
-    fn release_cursor(&mut self) {
-        self.cursor_held = false;
+    /// What is this file's is the turn: kept across the gap, it would
+    /// snap the view round the moment a player came back.
+    fn forget_owed_turn(&mut self) {
         self.turn_owed = (0, 0);
     }
 
@@ -688,10 +688,11 @@ impl WindowApp for CubeApp {
             // again.
             WindowEvent::Focused(false) => {
                 self.held = Held::default();
-                // The cursor goes with the keys: a player who has tabbed
-                // away must be able to reach whatever they tabbed to, and
-                // a held cursor is the one thing that stops them.
-                self.release_cursor();
+                // The window layer frees the cursor itself and takes it
+                // back when focus returns, so nothing here touches it.
+                // What would survive the gap and should not is the turn
+                // not yet spent.
+                self.forget_owed_turn();
             }
             WindowEvent::PointerMotion { dx, dy } => self.aim_by_mouse(dx, dy),
             // **The mouse does what the mouse does in this genre.** Left
@@ -1240,7 +1241,7 @@ mod tests {
     /// tabbed away, and a turn left owed across the gap would snap the view
     /// round when they came back.
     #[test]
-    fn losing_focus_releases_the_cursor_and_what_it_owed() {
+    fn losing_focus_forgets_the_turn_but_not_the_grab() {
         use renew_event::WindowEvent;
 
         let mut app = app();
@@ -1250,8 +1251,8 @@ mod tests {
 
         app.event(WindowEvent::Focused(false));
         assert!(
-            !app.cursor_held,
-            "a held cursor traps a player who tabbed away"
+            app.cursor_held,
+            "the window layer owns the grab across a focus change; this file must not fight it"
         );
         assert_eq!(
             app.turn_owed,

@@ -73,6 +73,13 @@ impl LoopControl {
 /// A live window, borrowed by [`WindowApp::ready`].
 pub struct WindowRef<'a> {
     window: &'a std::sync::Arc<winit::window::Window>,
+    /// Where a cursor request is remembered, so the loop can reapply it
+    /// when focus returns.
+    ///
+    /// A `Cell` because the application is handed `&WindowRef` and this
+    /// is the one thing it may change — and because the event loop is a
+    /// single thread, so there is nothing here for a lock to protect.
+    cursor_wanted: &'a core::cell::Cell<bool>,
 }
 
 impl WindowRef<'_> {
@@ -105,26 +112,13 @@ impl WindowRef<'_> {
     /// platform would not, and the caller should carry on without it. A
     /// first-person sample must stay playable either way.
     ///
-    /// Confined first and locked second, which is winit's own documented
-    /// order: Windows supports the first, macOS the second, and the
-    /// X11/Wayland pair varies by compositor.
+    /// **Asked for once.** The loop remembers the request and reapplies
+    /// it when focus returns, so a caller does not have to — and cannot,
+    /// since only this seam is handed a window.
     #[must_use]
     pub fn grab_cursor(&self, held: bool) -> bool {
-        use winit::window::CursorGrabMode;
-
-        let granted = if held {
-            self.window
-                .set_cursor_grab(CursorGrabMode::Confined)
-                .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Locked))
-                .is_ok()
-        } else {
-            self.window.set_cursor_grab(CursorGrabMode::None).is_ok()
-        };
-        // Hidden only when the grab took: a hidden cursor that can still
-        // wander out of the window is worse than a visible one, because
-        // the player cannot see where it went.
-        self.window.set_cursor_visible(!(held && granted));
-        granted
+        self.cursor_wanted.set(held);
+        grab_on(self.window, held)
     }
 
     /// ownership, not convention.
@@ -245,6 +239,7 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
         app,
         window: None,
         failure: None,
+        cursor_wanted: core::cell::Cell::new(false),
     };
     let run = event_loop.run_app(&mut adapter);
     adapter.outcome(run)
@@ -259,6 +254,17 @@ struct Adapter<'a> {
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
     failure: Option<String>,
+    /// Whether the application asked for the cursor to be held.
+    ///
+    /// **The layer owns the grab's lifecycle, not the application.** A
+    /// cursor held across a tab away traps a player in a window they are
+    /// trying to leave, so focus loss must release it — and an
+    /// application that had to re-grab afterwards would need to change
+    /// window state from an event, which this seam does not allow. So the
+    /// request is remembered here and reapplied when focus returns, and
+    /// mouse look survives alt-tab without the application knowing it
+    /// happened.
+    cursor_wanted: core::cell::Cell<bool>,
 }
 
 /// Where a window comes from: the running loop's creation call, reduced
@@ -295,7 +301,10 @@ impl Adapter<'_> {
         match create(attributes) {
             Ok(window) => {
                 let window = std::sync::Arc::new(window);
-                self.app.ready(&WindowRef { window: &window });
+                self.app.ready(&WindowRef {
+                    window: &window,
+                    cursor_wanted: &self.cursor_wanted,
+                });
                 self.window = Some(window);
             }
             Err(message) => {
@@ -307,9 +316,26 @@ impl Adapter<'_> {
     /// Deliver one OS event to the app. Events with no engine meaning
     /// are dropped here — deliberately, not accidentally.
     fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        // Before the app sees it: a held cursor is the layer's to manage,
+        // and the app's own handling of focus must not race it.
+        if let winit::event::WindowEvent::Focused(focused) = event
+            && self.cursor_wanted.get()
+        {
+            self.apply_cursor_grab(*focused);
+        }
         if let Some(translated) = translate_event(event) {
             self.app.event(translated);
         }
+    }
+
+    /// Hold or release the cursor on the live window, if there is one.
+    ///
+    /// The request itself is remembered by the caller; this is only the
+    /// asking. A window that has gone away has nothing to hold.
+    fn apply_cursor_grab(&self, held: bool) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|window| grab_on(window, held))
     }
 
     /// One loop iteration's app work, after the events. Returns whether
@@ -406,6 +432,29 @@ fn translate_device_event(event: &winit::event::DeviceEvent) -> Option<WindowEve
         }),
         _ => None,
     }
+}
+
+/// Hold or release the cursor on `window`, and hide it while held.
+///
+/// Confined first and locked second, which is winit's own documented
+/// order: Windows supports the first, macOS the second, and the
+/// X11/Wayland pair varies by compositor. Answers whether it took.
+fn grab_on(window: &winit::window::Window, held: bool) -> bool {
+    use winit::window::CursorGrabMode;
+
+    let granted = if held {
+        window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
+            .is_ok()
+    } else {
+        window.set_cursor_grab(CursorGrabMode::None).is_ok()
+    };
+    // Hidden only when the grab took: a hidden cursor that can still
+    // wander out of the window is worse than a visible one, because the
+    // player cannot see where it went.
+    window.set_cursor_visible(!(held && granted));
+    granted
 }
 
 /// Translate one OS window event into the engine vocabulary. Events
@@ -776,6 +825,7 @@ mod tests {
             app,
             window: None,
             failure: None,
+            cursor_wanted: core::cell::Cell::new(false),
         }
     }
 
