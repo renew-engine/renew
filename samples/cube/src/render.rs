@@ -267,7 +267,7 @@ pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
 /// # Errors
 ///
 /// As [`draw`].
-pub fn draw_through(
+pub(crate) fn draw_through(
     grid: &Grid,
     camera: &crate::camera::Camera,
     aimed: Option<Cell>,
@@ -281,7 +281,7 @@ pub fn draw_through(
 /// # Errors
 ///
 /// As [`draw_through`].
-pub fn draw_scene(
+pub(crate) fn draw_scene(
     scene: &Scene,
     camera: &crate::camera::Camera,
     overlay: Option<&Scene>,
