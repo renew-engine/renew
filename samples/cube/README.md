@@ -219,8 +219,8 @@ cargo run -p renew-sample-cube --features window --bin cube -- --window
 | **W A S D** | walk, relative to where you are looking |
 | **arrow keys** | turn left and right, look up and down |
 | **space** | jump |
-| **enter** | break the block you are looking at, which is lit while you aim at it |
-| **tab** | place one against it |
+| **enter** *or* **left click** | break the block you are looking at, which is lit while you aim at it |
+| **tab** *or* **right click** | place one against it |
 | **escape** | stop |
 
 **Walking is camera-relative, in eight directions.** The world takes
@@ -257,6 +257,12 @@ blind: every block is the same grey, so you could not tell which one the
 next keypress would break until it was already gone. The colour lives in
 the vertices, so moving the aim rebuilds the geometry -- which happens
 when the aim crosses from one block to another, not every time you turn.
+
+**Looking is on the keys, not the pointer.** Turning the view with the
+mouse needs the cursor held inside the window, and this engine's window
+layer has no way to ask for that yet. A mouse-look that stops dead when
+the pointer reaches the edge of the screen is worse than one that is
+honestly absent, so the arrows do it and the mouse breaks and places.
 
 **Pitch stops short of vertical.** At exactly straight up the look
 direction is parallel to world up, the camera basis has no unique answer,

@@ -12,6 +12,16 @@
 //! inputs. Turning with a float would make a wall-clock run's digest a
 //! function of the platform's maths library.
 //!
+//! # Aiming is the keyboard's, breaking is the mouse's
+//!
+//! Left breaks the block being aimed at and right places one against it,
+//! beside the keys that do the same. Looking stays on the arrow keys:
+//! turning the view with the pointer needs the cursor held inside the
+//! window, and this engine's window layer has no way to ask for that
+//! yet. A mouse-look that stops dead at the edge of the screen is worse
+//! than one that is honestly absent: it reads as a bug in the game
+//! rather than as a gap in the engine.
+//!
 //! # The world steps on its own clock, not the panel's
 //!
 //! The event loop spins as fast as the display allows, so a simulation
@@ -465,7 +475,7 @@ impl WindowApp for CubeApp {
     }
 
     fn event(&mut self, event: renew_event::WindowEvent) {
-        use renew_event::{KeyCode, WindowEvent};
+        use renew_event::{KeyCode, PointerButton, WindowEvent};
         match event {
             WindowEvent::CloseRequested => self.closing = true,
             WindowEvent::Resized { width, height } => self.resize(Extent { width, height }),
@@ -474,6 +484,19 @@ impl WindowApp for CubeApp {
             // the window came back and the key was pressed and released
             // again.
             WindowEvent::Focused(false) => self.held = Held::default(),
+            // **The mouse does what the mouse does in this genre.** Left
+            // breaks the block being aimed at, right places one against
+            // it — the same two edges the keys carry, because a player
+            // who has aimed at a block reaches for the button rather
+            // than for a key named after the thing it is not.
+            //
+            // Edges, like the keys: holding a button breaks one block,
+            // not one every tick.
+            WindowEvent::PointerButton { button, pressed } => match button {
+                PointerButton::Left => self.held.dig |= pressed,
+                PointerButton::Right => self.held.place |= pressed,
+                _ => {}
+            },
             WindowEvent::Key { code, pressed, .. } => match code {
                 KeyCode::KeyW => self.held.forward = pressed,
                 KeyCode::KeyS => self.held.back = pressed,
@@ -534,6 +557,68 @@ mod tests {
     /// An app with no window, for the seam tests below.
     fn app() -> CubeApp {
         CubeApp::new(&Options::default())
+    }
+
+    /// The mouse carries the same two edges the keys do.
+    #[test]
+    fn the_mouse_breaks_and_places() {
+        use renew_event::{PointerButton, WindowEvent};
+
+        let mut breaking = app();
+        breaking.event(WindowEvent::PointerButton {
+            button: PointerButton::Left,
+            pressed: true,
+        });
+        assert!(breaking.held.dig, "left breaks");
+        assert!(!breaking.held.place, "and does not place");
+
+        let mut other = app();
+        other.event(WindowEvent::PointerButton {
+            button: PointerButton::Right,
+            pressed: true,
+        });
+        assert!(other.held.place, "right places");
+        assert!(!other.held.dig, "and does not break");
+    }
+
+    /// A held button breaks one block, not one every tick — the same
+    /// edge-not-state rule the keys follow, and the reason a `|=` and a
+    /// clear in `advance` sit either side of it.
+    #[test]
+    fn a_held_mouse_button_breaks_one_block() {
+        use renew_event::{PointerButton, WindowEvent};
+
+        let mut app = app();
+        app.event(WindowEvent::PointerButton {
+            button: PointerButton::Left,
+            pressed: true,
+        });
+        app.advance();
+        assert!(!app.held.dig, "the edge is spent by the step that used it");
+
+        // The button is still down; no new press arrived.
+        app.advance();
+        assert!(!app.held.dig, "a held button is not a second break");
+    }
+
+    /// Buttons this game has no use for change nothing.
+    #[test]
+    fn other_mouse_buttons_do_nothing() {
+        use renew_event::{PointerButton, WindowEvent};
+
+        let mut app = app();
+        for button in [
+            PointerButton::Middle,
+            PointerButton::Back,
+            PointerButton::Forward,
+            PointerButton::Other(9),
+        ] {
+            app.event(WindowEvent::PointerButton {
+                button,
+                pressed: true,
+            });
+        }
+        assert_eq!(app.held, Held::default(), "no button here is bound");
     }
 
     /// **A driver that refuses is not a machine without a GPU.** The two
