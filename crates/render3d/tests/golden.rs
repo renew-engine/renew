@@ -14,12 +14,22 @@
 //! So the expected image is arithmetic, and the assertion is as strong on
 //! real hardware as on a software rasterizer.
 
-use renew_render3d::{MeshRenderer, Render3dError, Scene, attachment, pass};
+use renew_render3d::{
+    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, attachment, pass,
+};
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
 };
 
 const SIZE: u32 = 32;
+
+/// The matrix that changes nothing, as columns.
+const IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 fn strict() -> bool {
     std::env::var_os("RENEW_GOLDEN").is_some_and(|value| value == "1")
@@ -87,6 +97,55 @@ fn full_quad(scene: &mut Scene, depth: f32, colour: [f32; 4]) {
         ],
         colour,
     );
+}
+
+/// A quad covering the left half of clip space at `depth`, in `colour`.
+///
+/// Half rather than full, so where it lands is visible in the picture: a
+/// full-screen quad covers everything under any transform that does not
+/// shrink it, which makes it useless for asking *where* geometry went.
+fn half_quad(scene: &mut Scene, depth: f32, colour: [f32; 4]) {
+    scene.quad(
+        [
+            [-1.0, -1.0, depth],
+            [0.0, -1.0, depth],
+            [0.0, 1.0, depth],
+            [-1.0, 1.0, depth],
+        ],
+        colour,
+    );
+}
+
+/// Which pixels the geometry reached, as one bit each.
+///
+/// **Coverage rather than colour, and that is the point.** The camera
+/// pipeline's fragment stage fades toward a horizon colour, so its bytes
+/// are not the mesh pipeline's bytes and no exact colour is portable —
+/// `mix` lands between two representable values and which way it rounds
+/// is the implementation's business. Where a fragment *landed* is not:
+/// the fill rule decides that, and it decides it the same way everywhere.
+fn covered(pixels: &[u8], clear: [u8; 4]) -> Vec<bool> {
+    (0..SIZE * SIZE)
+        .map(|index| at(pixels, index % SIZE, index / SIZE) != clear)
+        .collect()
+}
+
+/// The pixels a half-quad should reach, given the column its left edge
+/// falls on — computed from the geometry rather than observed.
+///
+/// Clip space is two units across the target, so a slide of `s` clip
+/// units is `s * SIZE / 2` pixels. Both spans used here land on exact
+/// pixel boundaries, which is the only reason a column can be named at
+/// all: with an edge mid-pixel the fill rule's answer would be the
+/// implementation's business rather than arithmetic.
+fn expected_span(left: u32) -> Vec<bool> {
+    let right = left + SIZE / 2;
+    (0..SIZE * SIZE)
+        .map(|index| {
+            let x = index % SIZE;
+            x >= left && x < right
+        })
+        .collect()
 }
 
 /// G1: geometry reaches the screen, byte-exact, everywhere.
@@ -302,6 +361,224 @@ fn the_renderer_names_itself_without_leaking_a_handle() -> Result<(), Box<dyn st
     let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
     let shown = format!("{renderer:?}");
     assert!(shown.contains("MeshRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible rather than silent: {shown}"
+    );
+    Ok(())
+}
+
+/// **An identity camera puts geometry exactly where the mesh path puts
+/// it.** The transform is the only thing the two pipelines share a
+/// contract about, so the transform is what this compares.
+///
+/// It compares coverage, not bytes: the camera pipeline fades with
+/// distance and the mesh pipeline does not, so their colours differ by
+/// design and an equality over bytes would be asserting the fade away.
+#[test]
+fn an_identity_camera_covers_what_the_mesh_path_covers() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let clear_colour = [255, 0, 255, 255];
+    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
+
+    let mut plain_target = device.create_offscreen_target(extent)?;
+    let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let plain_mesh = plain.upload(&device, &scene)?;
+    let plain_items = [plain.item(&plain_mesh)];
+    plain_target.render(&RenderDesc::new(&[pass(&clear, &plain_items)]))?;
+    let mut plain_pixels = vec![0u8; plain_target.byte_len()];
+    plain_target.read_back_into(&mut plain_pixels);
+
+    let mut camera_target = device.create_offscreen_target(extent)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let camera_mesh = through.upload(&device, &scene)?;
+    let camera = Camera::from_columns(IDENTITY);
+    let camera_items = [through.item(&camera_mesh, &camera)];
+    camera_target.render(&RenderDesc::new(&[pass(&clear, &camera_items)]))?;
+    let mut camera_pixels = vec![0u8; camera_target.byte_len()];
+    camera_target.read_back_into(&mut camera_pixels);
+
+    // Against arithmetic first, so two pipelines that both draw nothing
+    // — or both draw everything — cannot agree their way to a pass.
+    let wanted = expected_span(0);
+    assert_eq!(
+        covered(&plain_pixels, clear_colour),
+        wanted,
+        "the mesh path did not cover the left half on adapter {:?}",
+        device.adapter()
+    );
+    assert_eq!(
+        covered(&camera_pixels, clear_colour),
+        wanted,
+        "an identity camera moved the geometry on adapter {:?}",
+        device.adapter()
+    );
+
+    drop(plain_target);
+    drop(camera_target);
+    drop(plain);
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A translation moves the picture; it does not bend it.** This is the
+/// oracle that catches a transposed matrix, which the identity above
+/// cannot — identity is its own transpose.
+///
+/// A translation lives in the last *column*. Read as rows instead, the
+/// same sixty-four bytes put `0.5x` into `w`, and the perspective divide
+/// turns a slide into a taper: the left edge would run off the side while
+/// the right edge stayed put, covering pixels 0 to 16 rather than 8 to
+/// 24. A plausible picture, and a different one.
+///
+/// The span is arithmetic. The quad spans clip x from -0.5 to 0.5, so its
+/// edges fall exactly on pixel boundaries and no sample sits on one.
+#[test]
+fn a_translation_moves_the_picture_rather_than_bending_it() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
+    let mesh = through.upload(&device, &scene)?;
+
+    let mut columns = IDENTITY;
+    columns[3][0] = 0.5;
+    let camera = Camera::from_columns(columns);
+
+    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let items = [through.item(&mesh, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    assert_eq!(
+        covered(&pixels, [255, 0, 255, 255]),
+        expected_span(SIZE / 4),
+        "a translation in the last column must slide the quad a quarter of the width and \
+         keep its size, on adapter {:?}",
+        device.adapter()
+    );
+
+    drop(target);
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The distance fade, pinned as the property it is.** Not as bytes:
+/// `mix` lands between representable values and which way it rounds is
+/// the implementation's business, so an exact colour here would be a
+/// golden that passes on one adapter and fails on the next.
+///
+/// What is portable is the direction. Green fading toward a dim blue-grey
+/// horizon loses green and gains red and blue, monotonically with
+/// distance. That is what the shader promises and all it promises.
+///
+/// The matrix puts `z` into `w`, so the two draws differ in distance and
+/// in nothing else; the centre pixel sits on the view axis, where the
+/// perspective divide moves nothing.
+#[test]
+fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+
+    // Columns of a matrix whose last row is (0, 0, 1, 0): w becomes z.
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+    let camera = Camera::from_columns(columns);
+
+    let mut seen = Vec::new();
+    for depth in [4.0f32, 40.0] {
+        let mut target = device.create_offscreen_target(extent)?;
+        let mut scene = Scene::new();
+        // Positions are world space on this path, so `depth` is distance
+        // along the view axis rather than a clip-space coordinate.
+        full_quad(&mut scene, depth, [0.0, 1.0, 0.0, 1.0]);
+        let mesh = through.upload(&device, &scene)?;
+        let items = [through.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+    }
+
+    let (near, far) = (seen[0], seen[1]);
+    assert_ne!(
+        near,
+        [255, 0, 255, 255],
+        "the near quad did not draw at all, so the comparison would be vacuous"
+    );
+    assert!(
+        far[1] < near[1],
+        "distance must cost green: near {near:?}, far {far:?}"
+    );
+    assert!(
+        far[0] > near[0] && far[2] > near[2],
+        "distance must move colour toward the horizon's red and blue: near {near:?}, far {far:?}"
+    );
+    assert!(
+        near[1] > 200,
+        "a quad four units away should still be plainly green, not washed out: {near:?}"
+    );
+
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// The camera path refuses an empty scene the same way the mesh path
+/// does — the shared refusal is shared in fact, not only in intention.
+#[test]
+fn the_camera_path_refuses_an_empty_scene_too() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let refused = through.upload(&device, &Scene::new());
+    assert!(
+        matches!(refused, Err(Render3dError::EmptyScene)),
+        "an all-air scene is data on this path too"
+    );
+    Ok(())
+}
+
+/// As the mesh renderer, and for the same reasons.
+#[test]
+fn the_camera_renderer_names_itself_without_leaking_a_handle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let shown = format!("{through:?}");
+    assert!(shown.contains("CameraRenderer"), "got: {shown}");
     assert!(
         shown.contains(".."),
         "the omission should be visible rather than silent: {shown}"

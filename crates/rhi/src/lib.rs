@@ -99,6 +99,20 @@ pub mod builtin {
     /// Fragment stage SPIR-V.
     pub static TRIANGLE_FS_SPV: &[u8] = include_bytes!("../shaders/triangle.frag.spv");
 
+    /// What the camera mesh path fades toward with distance.
+    ///
+    /// **Declared here because the shader beside it is the authority.**
+    /// `mesh_camera.frag` mixes toward this colour, and a caller that
+    /// clears to a different one gets a fade that reads as haze sitting
+    /// in front of the backdrop rather than as depth. It was written out
+    /// by hand in three other places, coupled to the shader by a comment
+    /// asking whoever changed one to change the rest.
+    ///
+    /// Linear, not sRGB — the same space the shader mixes in and the
+    /// same one [`Color`](crate::Color) carries. The test beside this
+    /// module reads the shader source and fails if the two disagree.
+    pub const HORIZON: [f32; 3] = [0.09, 0.10, 0.13];
+
     /// Vertex stage SPIR-V for a full-target textured quad.
     pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
     /// Fragment stage SPIR-V sampling set 0, binding 0.
@@ -167,6 +181,14 @@ pub mod builtin {
     /// Fragment stage SPIR-V passing the interpolated colour through.
     pub static MESH_FS_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
 
+    /// The camera-aware mesh vertex stage: world-space positions
+    /// multiplied by a matrix supplied as per-instance input.
+    pub static MESH_CAMERA_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.vert.spv");
+
+    /// The camera-aware mesh fragment stage: the vertex colour, faded
+    /// with distance so a flat-shaded room reads as a space.
+    pub static MESH_CAMERA_FS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.frag.spv");
+
     /// The mesh pair: clip-space positions and colours read per vertex,
     /// walked by an index buffer.
     ///
@@ -187,4 +209,76 @@ pub mod builtin {
     /// drawn by that pipeline must carry.
     pub const MESH_LAYOUT: &[crate::VertexAttribute] =
         &[crate::VertexAttribute::Vec3, crate::VertexAttribute::Vec4];
+
+    /// The mesh pair with a camera: **world-space** positions and
+    /// colours per vertex, multiplied by a matrix supplied once per
+    /// instance.
+    ///
+    /// **The matrix arrives as per-instance vertex input, and that is
+    /// not a workaround.** This crate has no push-constant range
+    /// anywhere, and its one descriptor set layout binds a combined
+    /// image sampler to the fragment stage — so per-instance input at
+    /// binding 1 is the only path a matrix can take today, it is proven
+    /// by the sprite renderer, and it is what the change that introduced
+    /// per-vertex buffers deliberately left composable.
+    ///
+    /// **Why this rather than transforming on the way in.** A caller
+    /// that multiplied its own vertices would have to divide by `w`
+    /// itself, and a triangle crossing `w = 0` cannot be divided — so it
+    /// would also have to clip polygons against the near plane. Here
+    /// `gl_Position` carries a real `w`, and the hardware does both.
+    ///
+    /// The per-vertex layout is [`MESH_LAYOUT`], unchanged; the
+    /// per-instance one is [`MESH_CAMERA_INSTANCE_LAYOUT`].
+    pub const MESH_CAMERA: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_VS_SPV,
+        fragment: MESH_CAMERA_FS_SPV,
+    };
+
+    /// The per-instance layout [`MESH_CAMERA`] consumes: a 4x4 matrix as
+    /// four columns, packing to 64 bytes.
+    ///
+    /// Column-major, matching `renew_math::Mat4` and GLSL's own
+    /// `mat4(c0, c1, c2, c3)`, so the bytes cross unchanged.
+    pub const MESH_CAMERA_INSTANCE_LAYOUT: &[crate::VertexAttribute] = &[
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+    ];
+}
+
+#[cfg(test)]
+mod horizon_tests {
+    /// **The constant and the shader that uses it cannot drift.**
+    /// A colour written in two languages is coupled by nothing but the
+    /// hope that whoever edits one greps for the other. Here the shader
+    /// source is the authority and this reads it.
+    #[test]
+    fn the_horizon_constant_matches_the_shader_that_fades_to_it() {
+        let source = include_str!("../shaders/mesh_camera.frag");
+        let line = source
+            .lines()
+            .find(|line| line.starts_with("const vec3 HORIZON"))
+            .expect("mesh_camera.frag must declare `const vec3 HORIZON`");
+        let inside = line
+            .split_once("vec3(")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inside, _)| inside)
+            .expect("the declaration must be a vec3(...) literal");
+        let found: Vec<f32> = inside
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse()
+                    .expect("each component must be a float literal")
+            })
+            .collect();
+        assert_eq!(
+            found,
+            crate::builtin::HORIZON.to_vec(),
+            "`{line}` disagrees with builtin::HORIZON — the shader is the authority, so the \
+             constant is what needs changing"
+        );
+    }
 }

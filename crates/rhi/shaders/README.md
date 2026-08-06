@@ -99,3 +99,46 @@ real change and is not.
 so a header comment may be corrected without touching the `.spv` beside
 it, and the source-and-blob-together rule is satisfied by the blob
 legitimately not moving rather than by skipping it.
+
+## mesh_camera.vert and mesh_camera.frag — compiled 2026-08-06
+
+Same SDK and the same working directory rule as the entries above (glslc
+embeds the source path, so it is run from this directory):
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+> glslc -O mesh_camera.frag -o mesh_camera.frag.spv
+```
+
+1228 bytes and 748 bytes. Both recompiled on 2026-08-06 and compared
+against the committed blobs: byte-identical.
+
+**A fragment stage of its own, not `mesh.frag.spv`.** The camera path
+fades a fragment toward the horizon with distance, so it does not merely
+pass the interpolated colour through and cannot share the plain path's
+binary. The vertex stage supplies the distance, because `w` is linear in
+it and depth is not.
+
+### The correction this entry is
+
+An earlier version of this section recorded **1024 bytes** and said the
+path *"reuses `mesh.frag.spv` unchanged"*. Both were false by the time
+they were committed: the vertex source changed after the number was
+written, and the fragment stage was added in the same commit without
+touching this file. The `--version` transcript was two lines short of
+what the tool prints, and the SDK path carried a stray control byte where
+`\1` belonged, so the recorded command was not runnable as written.
+
+It is recorded rather than quietly overwritten because the numbers here
+exist to be checked, and a reader who finds one wrong is entitled to know
+whether the file has been wrong before. The rule at the top of this file
+— source and blob change together in one commit — is what failed, and it
+failed in the direction the rule exists to prevent: the blob moved and
+its record did not.

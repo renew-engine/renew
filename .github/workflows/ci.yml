@@ -368,6 +368,16 @@ jobs:
           cargo build -p renew-sample-glide --features window
           cargo clippy -p renew-sample-glide --features window --all-targets -- -D warnings
           cargo test -p renew-sample-glide --features window
+      # The voxel game's window feature, on the same terms and for the
+      # same reason. It shipped without one: a driver, its input mapping
+      # and its frame pacing were compiled by nobody but the author's own
+      # machine, and every fault the first review of it found lived in
+      # that file.
+      - name: Build, lint, and test the voxel game with its window feature
+        run: |
+          cargo build -p renew-sample-cube --features window
+          cargo clippy -p renew-sample-cube --features window --all-targets -- -D warnings
+          cargo test -p renew-sample-cube --features window
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
@@ -577,6 +587,15 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-sample-glide --test golden
+      # The voxel sample's own pixel oracles, on the same rasterizer and
+      # under the same rule: RENEW_GOLDEN=1 turns their graceful skip into
+      # a failure, so a lane that exists to run them cannot pass by not
+      # running them. Several other jobs build this crate on runners with
+      # no driver at all, which is why the skip exists.
+      - name: The voxel sample's pixel oracles on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-sample-cube --features render --lib render::tests
       # The frame loop's rendering evidence, on the same pinned
       # rasterizer and under the same rule: the tick-derived pixel
       # oracle (does the readback match the colour the world computes
@@ -823,7 +842,62 @@ jobs:
           # window), and the windowed arm live under the virtual display.
           # Keyboardless there: the bird falls; a legal run.
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
+          cargo llvm-cov --no-report test -p renew-sample-cube --features window
+          # The voxel game's three views, one run each. The line above
+          # compiles the render code in (`window` implies `render`), so
+          # without these it lands in the denominator with nothing
+          # executing it — a coverage failure that is not a coverage
+          # regression. One tick apiece: the subject is the drawing path,
+          # not the simulation, which the workspace test run covers.
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --render "$RUNNER_TEMP/cube-iso.png"
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --view player --render "$RUNNER_TEMP/cube-player.png"
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --eye -8,6,-10 --look-at 4,1.5,0 --render "$RUNNER_TEMP/cube-free.png"
+          for view in iso player free; do
+            test -s "$RUNNER_TEMP/cube-$view.png" || {
+              echo "the $view view wrote nothing"; exit 1;
+            }
+          done
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-glide --features window --bin glide --             --window --frames 30
+          # The voxel game's windowed arm, the same way. Keyboardless
+          # under xvfb, so the player stands still and falls to the
+          # floor: a legal run, and the half that matters here is the
+          # bring-up, the frame loop and the draw, none of which any
+          # test without a display can reach. Bounded, because without
+          # `--ticks` a window plays until it is closed and nothing
+          # here will ever close it.
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 30
+          # The same window with a script driving the player, because no
+          # runner supplies keystrokes and breaking a block needs one.
+          # `--json` because the window branch formats its own answer, and
+          # a branch that returns before the shared formatter is a branch
+          # nothing else reaches.
+          # This run digs and places, so the geometry is rebuilt mid-run
+          # — the branch that exists because the mesh is uploaded once
+          # and only block edits invalidate it.
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --script build --ticks 90 --json
+          # The same run with the pipeline refused, so the arm that
+          # reports a bring-up failure is executed rather than trusted.
+          # The fault layer is already in this job's loader path for the
+          # rendering crates' own scenarios. A refused bring-up ends the
+          # run at tick zero and says why on stderr, which is the whole
+          # behaviour under test; the exit code stays zero, because the
+          # simulation ran and its digest is real.
+          RENEW_FAULT=vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 5
+          # The device itself refused: a different arm from the pipeline
+          # above, and the one a broken driver actually takes.
+          RENEW_FAULT=vkCreateDevice=ERROR_INITIALIZATION_FAILED \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 5
+          # And a machine with no Vulkan driver at all, which is not a
+          # failure: the window opens, the simulation runs, the digest is
+          # printed and nothing is drawn. That is the arm the sample was
+          # designed around, and it is the one that never runs on a lane
+          # that always has a rasterizer — so the driver is taken away.
+          VK_DRIVER_FILES=/nonexistent/none.json \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 10
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate

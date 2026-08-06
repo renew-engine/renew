@@ -207,6 +207,151 @@ so every match of eleven bytes or more encoded as the wrong symbol. The
 file was still small, still structurally a PNG, still had a valid header,
 and every test in the crate passed. Only a decoder refused it.
 
+## Playing it
+
+![Standing on the arena floor, looking down: a white crosshair at the centre of the view, the floor running to a wall, and the mound's corner darkened where it meets the floor](playing.png)
+
+A crosshair marks where you are pointing, and the block you are aiming at
+is lit. Both are needed and neither replaces the other: the highlight says
+*which block*, and says nothing at all when nothing is in reach — which is
+most of the time in an open room, and exactly when you are trying to line
+a shot up. The crosshair is where the aim ray goes whether or not it hits
+anything.
+
+
+```
+renew --features window run cube -- --window
+cargo run -p renew-sample-cube --features window --bin cube -- --window
+```
+
+| | |
+|---|---|
+| **W A S D** | walk, relative to where you are looking |
+| **arrow keys** | turn left and right, look up and down |
+| **space** | jump |
+| **enter** *or* **left click** | break the block you are looking at, which is lit while you aim at it |
+| **tab** *or* **right click** | place one against it |
+| **escape** | stop |
+
+**Walking is camera-relative, in eight directions.** The world takes
+whole steps on its own axes, clamped to -1, 0 or +1, so the driver
+rotates the key you pressed into a world direction and rounds it to the
+nearest step the world can express. Press forward while facing north-east
+and you walk north-east. It is steppy, and honest: a smoother walk needs a
+fixed-point vector in the world's own vocabulary, which is a change to the
+simulation rather than to the driver.
+
+**A diagonal is about forty per cent faster than a straight line**, since
+the world scales each axis by the walk speed independently and a diagonal
+moves on both. That is the world's arithmetic, not the driver's, and it
+predates any of this — but the driver is the first thing that lets a
+player produce a diagonal at all, so it is the first place worth saying
+so. Normalising it is a change to the simulation and to every digest that
+walks.
+
+**Turning is fixed point, and that is not fussiness.** Yaw and pitch feed
+`Angle::sin_cos`, which is fixed point and identical on every platform,
+and the result reaches the world as a direction. A float here would make
+the world's digest depend on the platform's maths library, and the world's
+whole claim is that it depends on nothing but its inputs. A turn and its
+opposite return the view *exactly* where it began, which a test asserts
+and a float would quietly lose.
+
+**The digest line says `source=window`.** A played run is driven by a
+person against a wall clock; a scripted one is a pure function of its
+inputs. Their digests are not comparable, and a line that did not say
+which it was would invite exactly that comparison.
+
+**The block you are aiming at is lit.** Without it the game is played
+blind: every block is the same grey, so you could not tell which one the
+next keypress would break until it was already gone. The colour lives in
+the vertices, so moving the aim rebuilds the geometry -- which happens
+when the aim crosses from one block to another, not every time you turn.
+
+**A named script can drive it instead of you.** `--window --script
+build` watches the world build itself, with the camera on the player's
+head; `--script` alone with no window runs the same script headless and
+prints its digest. `stand` is genuinely idle, so it is both the default
+and the way to say "no script, I am playing" — which is why watching does
+not need a flag of its own.
+
+**Looking is on the keys, not the pointer.** Turning the view with the
+mouse needs the cursor held inside the window, and this engine's window
+layer has no way to ask for that yet. A mouse-look that stops dead when
+the pointer reaches the edge of the screen is worse than one that is
+honestly absent, so the arrows do it and the mouse breaks and places.
+
+**Pitch stops short of vertical.** At exactly straight up the look
+direction is parallel to world up, the camera basis has no unique answer,
+and the picture would roll on its own axis for no input.
+
+**The geometry is uploaded once and redrawn from every angle.** Turning
+does not rebuild it -- that is what putting the camera matrix on the GPU
+bought. Only breaking or placing a block does.
+
+## Seeing it from inside
+
+![The room in perspective: floor, two walls meeting at a corner, the ceiling above, and the mound standing on the floor](room.png)
+
+A real camera, with a real perspective divide. `--eye` and `--look-at`
+place it; `--view player` uses the player's own eyes.
+
+```
+renew --features render run cube -- --eye -8,6,-10 --look-at 4,1.5,0 --render room.png
+renew --features render run cube -- --view player --render eyes.png
+```
+
+**`--view player` is not the default, and the reason is the picture it
+draws.** The player spawns a step from the mound, so a still from their
+eyes is one grey filling the frame — it would pass a check that geometry
+drew while showing nothing a reader could compare against the world. The
+view from inside is worth having; it is worth asking for, from a
+viewpoint that shows something. The picture above is `--eye`/`--look-at`
+for exactly that reason.
+
+**The matrix goes to the GPU as per-instance vertex input.** That is not
+a workaround for the shortest path: this engine has no push-constant
+range anywhere, and its one descriptor set binds a combined image sampler
+to the fragment stage, so per-instance input at binding 1 is the only
+route a matrix can take — and it is the one the mesh path deliberately
+left composable.
+
+It is also the right answer regardless. `gl_Position` carries a real `w`,
+so the hardware performs the perspective divide and the clipper handles
+geometry behind the eye. Transforming vertices on the way in would mean
+**clipping polygons against the near plane in this sample**, because a
+triangle crossing `w = 0` cannot be divided at all — and inside a room,
+with walls behind you, that is not a corner case. It also means the mesh
+never re-uploads when the camera moves.
+
+**Corners darken where blocks enclose them.** Two walls of the same colour
+meeting at an inner corner are indistinguishable from one flat wall —
+face-direction shading cannot help, because it varies between faces that
+point *differently* and an inner corner is where two same-facing walls
+meet a third. Each corner of each face is dimmed by how many of the three
+blocks touching it are solid, which is a property of the geometry rather
+than of the surface, so it survives whatever textures arrive later instead
+of being replaced by them.
+
+It is baked into the vertices at mesh time, so it costs nothing per frame
+and nothing in the vertex format. The two blocks that share an edge with a
+corner are the dark case whatever sits diagonally behind them: they close
+the corner off between them, and what is behind that cannot be seen from
+here.
+
+**Distance fades toward the horizon colour.** Without it a near wall and
+a far one are the same grey and the space reads as a paper cut-out: no
+per-vertex shading can tell them apart, because they are the same geometry
+at different distances. It is computed from clip `w`, not from depth: after a
+perspective projection `w` is the distance along the view direction while
+depth is compressed toward the near plane, so a fade driven by depth turns
+the whole room to fog a few blocks in. That is not a hypothetical; it was
+the first picture.
+
+**The free camera is explicit, never accumulated.** Two points on a
+command line, not mouse deltas: a picture that depended on how somebody
+moved their hand could not be compared, and these pictures are committed.
+
 ## Drawing it
 
 ![The arena, drawn isometrically: the floor and two inner walls, with the mound at the centre](arena.png)
@@ -217,9 +362,12 @@ feature the flag is refused by name rather than ignored, and the game a
 player runs carries no graphics crate at all.
 
 ```
-renew --features render run cube -- --render arena.png
+renew --features render run cube -- --view iso --render arena.png
 cargo run -p renew-sample-cube --features render --bin cube -- --render arena.png
 ```
+
+Either command draws it: the isometric view is what `--render` draws when
+no `--view` is given, and naming it changes nothing.
 
 **The view is a fixed true isometric** -- a 45 degree turn and a 35.264
 degree tilt -- with no camera anywhere, because a camera is a later step.

@@ -11,10 +11,15 @@
 //! the world headless, and prints one line. Everything interesting is in the
 //! world; everything here is the seam that lets a machine ask it a question.
 
+pub mod camera;
+#[cfg(feature = "render")]
+pub mod crosshair;
 pub mod mesh;
 pub mod projection;
 #[cfg(feature = "render")]
 pub mod render;
+#[cfg(feature = "window")]
+pub mod windowed;
 
 use renew_fixed::{Fixed, Vec3};
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, STONE, Tuning};
@@ -33,6 +38,21 @@ pub enum CliError {
     NotANumber(String),
     /// A script name that names no script.
     UnknownScript(String),
+    /// A flag that asks for a picture, given alongside `--window`.
+    ///
+    /// **A flag that parses and then does nothing is a lie the parser
+    /// tells.** `--window` plays the game; `--render`, `--show`, `--view`,
+    /// `--eye` and `--look-at` all describe a still. Given together, one
+    /// of them was going to be silently ignored — and the user who typed
+    /// it would have no way to discover which.
+    WindowAndStill(&'static str),
+    /// A view name that names no view.
+    ///
+    /// Its own variant rather than [`Self::UnknownFlag`], which is what
+    /// it used to be: `--view sideways` is a flag everyone knows given a
+    /// value nobody does, and telling the user the flag is unknown sends
+    /// them to check the spelling of the one part they got right.
+    UnknownView(String),
 }
 
 impl CliError {
@@ -46,23 +66,52 @@ impl CliError {
             Self::UnknownScript(name) => {
                 format!("no script called `{name}`; try {}", script_names())
             }
+            Self::UnknownView(name) => {
+                format!("no view called `{name}`; try player or iso")
+            }
+            Self::WindowAndStill(flag) => {
+                format!(
+                    "`{flag}` describes a picture and `--window` plays the game; ask for one or \
+                     the other"
+                )
+            }
         }
     }
 }
 
 /// What to run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: a free viewpoint carries coordinates, and float equality is
+/// not the reflexive relation `Eq` promises.
+#[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "command-line switches are independent by nature; packing them into flags would make the parser and every reader translate"
+)]
 pub struct Options {
     /// Which built-in script drives the player.
     pub script: Script,
     /// How many ticks to run.
     pub ticks: u32,
+    /// The windowed run's tick bound: `None` plays until the window is
+    /// closed.
+    ///
+    /// Separate from [`Self::ticks`] because the two runs end for
+    /// different reasons. A headless run has no other ending, so it needs
+    /// a default; a window has one already, and giving it the headless
+    /// default made the game quit itself ten seconds in. Set only when
+    /// `--ticks` is actually passed.
+    pub window_ticks: Option<u32>,
     /// Draw the world as two slices through it.
     pub show: bool,
     /// Print the answer as JSON rather than as a sentence.
     pub json: bool,
     /// Print usage and stop.
     pub help: bool,
+    /// Play it in a window, rather than running a script.
+    pub window: bool,
+    /// Which viewpoint `--render` draws from.
+    pub view: View,
     /// Draw the world to a PNG at this path, if anywhere.
     ///
     /// **Needs the `render` feature**, which is off by default: the game
@@ -76,12 +125,76 @@ impl Default for Options {
         Self {
             script: Script::Stand,
             ticks: 600,
+            window_ticks: None,
             show: false,
             json: false,
             help: false,
+            window: false,
+            view: View::Isometric,
             render: None,
         }
     }
+}
+
+/// Where `--render` draws from.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum View {
+    /// The player's own eyes.
+    ///
+    /// Shows what the player would see, so a wrong picture here means a
+    /// wrong world rather than a wrong viewpoint. **Not the default**,
+    /// and the reason is a picture: the player spawns a step from the
+    /// mound, so the still this draws is a wall of one grey filling the
+    /// frame. That is evidence of nothing — it passes a "did anything
+    /// draw" check while showing no geometry a reader could check
+    /// against the world, and it is what the flag drew for anyone
+    /// following the sample's own documented command.
+    ///
+    /// The view from inside is worth having and worth committing; it is
+    /// worth asking for, from a viewpoint chosen to show something.
+    Player,
+    /// A named point looking at a named point. Explicit rather than
+    /// accumulated, so the same command line always draws the same frame.
+    ///
+    /// This is how to draw the room from inside without standing in a
+    /// wall: two points on a command line, and the same two points always
+    /// draw the same frame.
+    Free {
+        /// Where the eye is.
+        eye: [f32; 3],
+        /// What it looks at.
+        target: [f32; 3],
+    },
+    /// The whole world at once, drawn isometrically with the near walls
+    /// cut away. Not a camera: there is no eye inside the world, and the
+    /// faces turned away are dropped rather than clipped.
+    #[default]
+    Isometric,
+}
+
+/// Parse three comma-separated numbers.
+///
+/// Public so its refusals can be tested directly: a viewpoint typed
+/// wrongly should say so rather than silently becoming the origin.
+///
+/// # Errors
+///
+/// [`CliError::NotANumber`] when there are not exactly three parts, or
+/// when one of them is not a number.
+pub fn triple(text: &str) -> Result<[f32; 3], CliError> {
+    let mut out = [0.0f32; 3];
+    let mut parts = text.split(',');
+    for slot in &mut out {
+        let part = parts.next().ok_or(CliError::NotANumber(text.to_string()))?;
+        *slot = part
+            .trim()
+            .parse()
+            .map_err(|_| CliError::NotANumber(part.to_string()))?;
+    }
+    if parts.next().is_some() {
+        return Err(CliError::NotANumber(text.to_string()));
+    }
+    Ok(out)
 }
 
 /// A built-in input script.
@@ -173,6 +286,16 @@ pub struct Report {
     pub edits: (u32, u32),
     /// Whether the player finished standing on something.
     pub grounded: bool,
+    /// What drove the run: `script` for a scripted one, `window` for a
+    /// played one.
+    ///
+    /// **In the digest line, and that is the point.** A played run is
+    /// driven by a person against a wall clock; a scripted one is a pure
+    /// function of its inputs. The two digests are not comparable, and a
+    /// line that did not say which it was would invite exactly that
+    /// comparison. The platformer carries the same field for the same
+    /// reason.
+    pub source: &'static str,
 }
 
 /// The usage text.
@@ -188,10 +311,19 @@ pub fn usage() -> &'static str {
      \n\
      --script NAME   which built-in script drives the player: stand, patrol, build\n\
      --show          draw two slices through the world: the plan and the elevation\n\
+     --window        play it: WASD walks, arrows look, space jumps\n\
      --render PATH   draw the world to a PNG there (needs --features render)\n\
-     --ticks N       how many ticks to run (default 600)\n\
+     --view NAME     player (default) or iso, for --render\n\
+     --eye X,Y,Z     draw from here instead, looking at --look-at\n\
+     --look-at X,Y,Z where a free view points\n\
+     --ticks N       how many ticks to run (default 600); with --window,\n\
+                     the game plays until closed unless this is given\n\
      --json          print the answer as JSON rather than as a sentence\n\
-     --help          print this and stop\n"
+     --help          print this and stop\n\
+     \n\
+     --window plays the game; --render, --show, --view, --eye and\n\
+     --look-at describe a picture. Asking for both is refused rather\n\
+     than one of them being ignored.\n"
 }
 
 /// Parse a command line.
@@ -205,10 +337,43 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--help" | "-h" => options.help = true,
+            "--view" => {
+                let name = arguments.next().ok_or(CliError::MissingValue("--view"))?;
+                options.view = match name.as_str() {
+                    "player" => View::Player,
+                    "iso" | "isometric" => View::Isometric,
+                    other => return Err(CliError::UnknownView(other.to_string())),
+                };
+            }
+            "--eye" => {
+                let value = arguments.next().ok_or(CliError::MissingValue("--eye"))?;
+                let eye = triple(&value)?;
+                options.view = match options.view {
+                    View::Free { target, .. } => View::Free { eye, target },
+                    _ => View::Free {
+                        eye,
+                        target: [0.0, 1.0, 0.0],
+                    },
+                };
+            }
+            "--look-at" => {
+                let value = arguments
+                    .next()
+                    .ok_or(CliError::MissingValue("--look-at"))?;
+                let target = triple(&value)?;
+                options.view = match options.view {
+                    View::Free { eye, .. } => View::Free { eye, target },
+                    _ => View::Free {
+                        eye: [0.0, 2.0, -8.0],
+                        target,
+                    },
+                };
+            }
             "--render" => {
                 let path = arguments.next().ok_or(CliError::MissingValue("--render"))?;
                 options.render = Some(std::path::PathBuf::from(path));
             }
+            "--window" => options.window = true,
             "--show" => options.show = true,
             "--json" => options.json = true,
             "--script" => {
@@ -221,8 +386,28 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 options.ticks = text
                     .parse()
                     .map_err(|_| CliError::NotANumber(text.clone()))?;
+                // A windowed run is bounded only when asked for, and
+                // this is the asking.
+                options.window_ticks = Some(options.ticks);
             }
             other => return Err(CliError::UnknownFlag(other.to_string())),
+        }
+    }
+    // Refused here rather than ignored later: the run is about to
+    // choose one of two things to do, and the flags for the other would
+    // vanish without a word.
+    if options.window {
+        if options.render.is_some() {
+            return Err(CliError::WindowAndStill("--render"));
+        }
+        if options.show {
+            return Err(CliError::WindowAndStill("--show"));
+        }
+        // The default is the isometric still; anything else was asked
+        // for, including `--eye` and `--look-at`, which set the free
+        // view between them.
+        if options.view != View::default() {
+            return Err(CliError::WindowAndStill("--view"));
         }
     }
     Ok(options)
@@ -291,6 +476,11 @@ pub fn run(options: &Options) -> Report {
 
 /// What a finished world answers with.
 fn report_of(script: Script, world: &Cube) -> Report {
+    report_from(script, world, "script")
+}
+
+/// The same report, with the source named.
+fn report_from(script: Script, world: &Cube, source: &'static str) -> Report {
     Report {
         script,
         ticks: world.tick(),
@@ -298,6 +488,7 @@ fn report_of(script: Script, world: &Cube) -> Report {
         solids: world.grid().solid_count(),
         edits: world.edits(),
         grounded: world.grounded(),
+        source,
     }
 }
 
@@ -383,8 +574,10 @@ pub fn elevation_text(world: &Cube) -> String {
 pub fn describe(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
-        "cube script={} ticks={} digest=0x{:016x} solids={} broken={} placed={} grounded={}",
+        "cube script={} source={} ticks={} digest=0x{:016x} solids={} broken={} placed={} \
+         grounded={}",
         report.script.name(),
+        report.source,
         report.ticks,
         report.digest,
         report.solids,
@@ -396,15 +589,26 @@ pub fn describe(report: &Report) -> String {
 
 /// The same answer, machine-readable.
 ///
+/// **Version 2 added `source`.** The text line has always named whether a
+/// run was scripted or played, because the two are not comparable: a
+/// scripted run is a pure function of its inputs and a played one is
+/// driven by a person against a wall clock. Machines are what compare
+/// digests, and version 1 gave them no way to tell the two apart — so the
+/// field that exists to prevent the comparison was missing from exactly
+/// the output that would make it. The version moved with it, because a
+/// consumer that cannot see the field cannot know to check it.
+///
 /// Carries a `schema_version` from its first release, so a consumer can tell a
 /// shape it understands from one it does not.
 #[must_use]
 pub fn describe_json(report: &Report) -> String {
     let (broken, placed) = report.edits;
     format!(
-        "{{\"schema_version\":1,\"sample\":\"cube\",\"script\":\"{}\",\"ticks\":{},\
-         \"digest\":\"0x{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\"grounded\":{}}}",
+        "{{\"schema_version\":2,\"sample\":\"cube\",\"script\":\"{}\",\"source\":\"{}\",\
+         \"ticks\":{},\"digest\":\"0x{:016x}\",\"solids\":{},\"broken\":{},\"placed\":{},\
+         \"grounded\":{}}}",
         report.script.name(),
+        report.source,
         report.ticks,
         report.digest,
         report.solids,
@@ -414,6 +618,17 @@ pub fn describe_json(report: &Report) -> String {
     )
 }
 
+/// The block the player is aiming at, if any.
+///
+/// **A still is evidence about the game, so it shows what the game
+/// shows.** The window lights the aimed block — without it a player
+/// cannot tell which one breaking will take — and a picture from the same
+/// viewpoint that left it out would be a picture of a different program.
+#[cfg(feature = "render")]
+fn aimed(world: &Cube) -> Option<renew_sample_cube_world::Cell> {
+    world.looking_at().map(|pick| pick.cell)
+}
+
 /// Draw the world to `path`, or say why not.
 ///
 /// # Errors
@@ -421,8 +636,26 @@ pub fn describe_json(report: &Report) -> String {
 /// A refusal from the renderer, or the message a build without the
 /// feature answers with.
 #[cfg(feature = "render")]
-fn render_to(world: &Cube, path: &std::path::Path) -> Result<(), String> {
-    render::to_png(world.grid(), path).map_err(|error| error.to_string())
+fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), String> {
+    match view {
+        View::Isometric => render::to_png(world.grid(), path),
+        View::Player => {
+            let camera = camera::player_view(world, 1.0);
+            // **The player's own view gets the player's own crosshair.**
+            // The same reason the aimed block is lit here: this view
+            // claims to be what the player sees, and what they see
+            // includes where they are pointing. The other views are
+            // pictures *of* the world rather than from inside it, and a
+            // crosshair in one would mark a spot nobody is aiming at.
+            let overlay = crosshair::scene(1.0);
+            render::to_png_through(world.grid(), &camera, path, aimed(world), Some(&overlay))
+        }
+        View::Free { eye, target } => {
+            let camera = camera::free_view(eye, target, 1.0);
+            render::to_png_through(world.grid(), &camera, path, aimed(world), None)
+        }
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// The honest answer in a build with the rendering stack compiled out.
@@ -430,11 +663,36 @@ fn render_to(world: &Cube, path: &std::path::Path) -> Result<(), String> {
 /// Named rather than ignored, and it names both roads: a reader who
 /// typed a `renew` command has no use for a cargo flag on its own.
 #[cfg(not(feature = "render"))]
-fn render_to(_world: &Cube, _path: &std::path::Path) -> Result<(), String> {
+fn render_to(_world: &Cube, _view: View, _path: &std::path::Path) -> Result<(), String> {
     Err(
         "this build cannot draw. Run `renew --features render run cube -- --render out.png`, \
          or build it directly with `cargo run -p renew-sample-cube --features render --bin cube \
          -- --render out.png`"
+            .to_string(),
+    )
+}
+
+/// Play it in a window.
+///
+/// # Errors
+///
+/// The message a build without the feature answers with, or the reason no
+/// window could be opened.
+#[cfg(feature = "window")]
+fn play(options: &Options) -> Result<Report, String> {
+    windowed::run(options).map_err(|error| error.to_string())
+}
+
+/// The honest answer in a build with the windowing stack compiled out.
+///
+/// Names both roads, the tool's first: a reader who typed a `renew`
+/// command has no use for a cargo flag on its own.
+#[cfg(not(feature = "window"))]
+fn play(_options: &Options) -> Result<Report, String> {
+    Err(
+        "this build has no window. Run `renew --features window run cube -- --window`, or \
+         build it directly with `cargo run -p renew-sample-cube --features window --bin cube \
+         -- --window`"
             .to_string(),
     )
 }
@@ -464,6 +722,30 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
         print!("{}", usage());
         return 0;
     }
+    if options.window {
+        return match play(&options) {
+            Ok(report) => {
+                // **`--json` means `--json` here too.** The window
+                // branch returning before the check below printed prose
+                // to a caller that had asked for a machine-readable
+                // line, which is the one thing a machine cannot recover
+                // from.
+                println!(
+                    "{}",
+                    if options.json {
+                        describe_json(&report)
+                    } else {
+                        describe(&report)
+                    }
+                );
+                0
+            }
+            Err(message) => {
+                eprintln!("usage: {message}");
+                2
+            }
+        };
+    }
     let world = run_world(&options);
     let report = report_of(options.script, &world);
     if options.json {
@@ -477,7 +759,7 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
             println!("{}", elevation_text(&world));
         }
         if let Some(path) = &options.render
-            && let Err(error) = render_to(&world, path)
+            && let Err(error) = render_to(&world, options.view, path)
         {
             eprintln!("usage: {error}");
             return 2;

@@ -174,6 +174,7 @@ fn no_text_file_carries_a_stray_control_character() {
     const CARRIAGE_RETURN: u8 = b'\r';
     const LINE_FEED: u8 = b'\n';
     const TAB: u8 = b'\t';
+    const DELETE: u8 = 0x7f;
 
     let root = workspace_root();
     let mut files = Vec::new();
@@ -215,6 +216,24 @@ fn no_text_file_carries_a_stray_control_character() {
             faults.push(format!(
                 "{shown}:{}: a tab, where this tree indents with spaces",
                 line_of(&bytes, offset)
+            ));
+        }
+        // **Every other control byte, not just the two seen so far.**
+        // The first version of this check listed carriage return and tab
+        // because those were the two faults that had actually shipped.
+        // That was a list of symptoms: the cause is a backslash escape
+        // collapsing before it reaches the file, and `\1` becoming byte
+        // 0x01 is exactly as available as `\t` becoming a tab. One did
+        // ship, into a documented SDK path, and this check as written
+        // walked past it.
+        if let Some(offset) = bytes.iter().position(|b| {
+            (*b < 0x20 && *b != LINE_FEED && *b != TAB && *b != CARRIAGE_RETURN) || *b == DELETE
+        }) {
+            faults.push(format!(
+                "{shown}:{}: a control byte (0x{:02x}) in a text file — almost always a \
+                 backslash escape that collapsed before it was written",
+                line_of(&bytes, offset),
+                bytes[offset]
             ));
         }
     }

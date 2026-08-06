@@ -56,7 +56,12 @@ fn the_binary_prints_json_when_asked() {
     assert!(ok);
     let line = out.trim();
     assert!(line.starts_with('{') && line.ends_with('}'), "got: {line}");
-    assert!(line.contains("\"schema_version\":1"), "got: {line}");
+    assert!(line.contains("\"schema_version\":2"), "got: {line}");
+    assert!(
+        line.contains("\"source\":\"script\""),
+        "the machine-readable line must name how the run was driven, or a consumer will \
+         compare a played digest against a scripted one: {line}"
+    );
     assert!(line.contains("\"sample\":\"cube\""), "got: {line}");
 }
 
