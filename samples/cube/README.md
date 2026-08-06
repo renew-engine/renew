@@ -258,6 +258,13 @@ next keypress would break until it was already gone. The colour lives in
 the vertices, so moving the aim rebuilds the geometry -- which happens
 when the aim crosses from one block to another, not every time you turn.
 
+**A named script can drive it instead of you.** `--window --script
+build` watches the world build itself, with the camera on the player's
+head; `--script` alone with no window runs the same script headless and
+prints its digest. `stand` is genuinely idle, so it is both the default
+and the way to say "no script, I am playing" — which is why watching does
+not need a flag of its own.
+
 **Looking is on the keys, not the pointer.** Turning the view with the
 mouse needs the cursor held inside the window, and this engine's window
 layer has no way to ask for that yet. A mouse-look that stops dead when

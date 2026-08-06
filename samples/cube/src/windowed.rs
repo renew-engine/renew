@@ -57,7 +57,9 @@ use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
     WindowTarget,
 };
-use renew_sample_cube_world::{Cell, Cube, Grid, Intent, Tuning};
+use renew_sample_cube_world::{Cell, Cube, Intent, Tuning};
+
+use crate::Script;
 
 use crate::{Options, Report, arena};
 
@@ -138,6 +140,21 @@ fn step_of(value: Fixed) -> i32 {
     }
 }
 
+/// Width over height, or 1.0 where that means nothing.
+///
+/// A free function so the zero-height case is reachable without a
+/// window: a minimised window really does report a height of zero, and
+/// dividing by it would put an infinity into the projection and a blank
+/// frame on the screen — which looks exactly like a driver failure and is
+/// not one.
+fn aspect_of(size: Extent) -> f32 {
+    if size.height == 0 {
+        return 1.0;
+    }
+    f32::from(u16::try_from(size.width).unwrap_or(u16::MAX))
+        / f32::from(u16::try_from(size.height).unwrap_or(u16::MAX))
+}
+
 /// The game, running against a window.
 pub struct CubeApp {
     world: Cube,
@@ -171,6 +188,15 @@ pub struct CubeApp {
     /// swapchain needs the current size and the event that reports it is
     /// not the frame that discovers the loss.
     size: Extent,
+    /// A script driving the player instead of the keyboard.
+    ///
+    /// **`Stand` is genuinely idle**, so "no script" and "the default
+    /// script" are the same run and this needs no separate flag: with
+    /// nothing named, every tick's intent comes from the keys. With a
+    /// script named, the window watches it play — which is a way to show
+    /// the game without touching it, and the only way anything without a
+    /// keyboard can drive the parts of this file that need one.
+    script: Option<Script>,
     /// Why there is nothing to draw, when the reason is not "this machine
     /// has no GPU".
     ///
@@ -213,13 +239,24 @@ struct Gpu {
 impl CubeApp {
     fn new(options: &Options) -> Self {
         let start = Vec3::new(Fixed::ZERO, Fixed::from_int(4), Fixed::ZERO);
+        let script = (options.script != Script::Stand).then_some(options.script);
+        // A script that digs needs something under the aim, so a
+        // scripted run starts looking down and forward — the same
+        // arrangement the headless run makes for the same reason. A
+        // played run starts looking level, because a player would.
+        let (yaw, pitch_degrees) = if script.is_some() {
+            (Angle::from_degrees(45), -40)
+        } else {
+            (Angle::ZERO, 0)
+        };
         Self {
             world: Cube::new(Tuning::default(), arena(), start),
             held: Held::default(),
-            yaw: Angle::ZERO,
-            pitch_degrees: 0,
+            yaw,
+            pitch_degrees,
             ticks: 0,
             limit: options.window_ticks,
+            script,
             closing: false,
             clock: Clock::start(),
             frame: None,
@@ -260,14 +297,19 @@ impl CubeApp {
             (self.pitch_degrees + pitch * TURN_DEGREES).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         self.aim();
 
-        let (walk_x, walk_z) = self.held.walk(self.yaw);
-        self.world.step(Intent {
-            walk_x,
-            walk_z,
-            jump: self.held.jump,
-            dig: self.held.dig,
-            place: self.held.place,
-        });
+        let intent = if let Some(script) = self.script {
+            script.intent(self.ticks)
+        } else {
+            let (walk_x, walk_z) = self.held.walk(self.yaw);
+            Intent {
+                walk_x,
+                walk_z,
+                jump: self.held.jump,
+                dig: self.held.dig,
+                place: self.held.place,
+            }
+        };
+        self.world.step(intent);
         // Digging and placing are edges, not states: holding the key
         // should break one block, not one per tick.
         self.held.dig = false;
@@ -359,6 +401,17 @@ impl CubeApp {
         // back from the first resize showing the last frame it managed,
         // for ever.
         let outcome = gpu.target.render(&RenderDesc::new(&passes));
+        self.record_present(&outcome);
+    }
+
+    /// What a present outcome means — split off so a test can drive the
+    /// recovery with a constructed value, no window and no driver.
+    ///
+    /// A refused frame is not fatal and not silence either: a target
+    /// whose surface has changed reports [`PresentOutcome::NeedsResize`]
+    /// and stays dormant until someone calls `resize`, so this is where
+    /// the picture comes back.
+    fn record_present(&mut self, outcome: &Result<PresentOutcome, renew_rhi::TargetError>) {
         if matches!(outcome, Ok(PresentOutcome::NeedsResize)) {
             let size = self.size;
             self.resize(size);
@@ -434,26 +487,9 @@ impl CubeApp {
 
     /// Width over height of the window, for the projection.
     fn aspect(&self) -> f32 {
-        self.gpu.as_ref().map_or(1.0, |gpu| {
-            let size = gpu.target.extent();
-            if size.height == 0 {
-                return 1.0;
-            }
-            f32::from(u16::try_from(size.width).unwrap_or(u16::MAX))
-                / f32::from(u16::try_from(size.height).unwrap_or(u16::MAX))
-        })
-    }
-
-    /// The world as the run left it.
-    #[must_use]
-    pub fn world(&self) -> &Cube {
-        &self.world
-    }
-
-    /// The grid as the run left it.
-    #[must_use]
-    pub fn grid(&self) -> &Grid {
-        self.world.grid()
+        self.gpu
+            .as_ref()
+            .map_or(1.0, |gpu| aspect_of(gpu.target.extent()))
     }
 }
 
@@ -557,6 +593,227 @@ mod tests {
     /// An app with no window, for the seam tests below.
     fn app() -> CubeApp {
         CubeApp::new(&Options::default())
+    }
+
+    /// **A dormant swapchain is asked to come back.** `render` never
+    /// rebuilds one on its own: it reports `NeedsResize` and stays
+    /// dormant until `resize` is called, so a driver that discards this
+    /// outcome shows the last frame it managed for ever.
+    #[test]
+    fn a_refused_frame_asks_for_the_swapchain_back() {
+        let mut app = app();
+        app.size = Extent {
+            width: 640,
+            height: 480,
+        };
+
+        // With nothing to draw the recovery is a no-op, which is the
+        // point: it must not panic, and it must not lose the size the
+        // recovery would use.
+        app.record_present(&Ok(PresentOutcome::NeedsResize));
+        assert_eq!(
+            app.size,
+            Extent {
+                width: 640,
+                height: 480
+            },
+            "the size a recovery resizes to must survive the recovery"
+        );
+
+        // A presented frame and a failed one both leave it alone.
+        app.record_present(&Ok(PresentOutcome::Presented));
+        app.record_present(&Err(renew_rhi::TargetError::DeviceLost));
+        assert_eq!(
+            app.size,
+            Extent {
+                width: 640,
+                height: 480
+            }
+        );
+        assert_eq!(
+            app.failure(),
+            None,
+            "a refused frame is not a bring-up failure"
+        );
+    }
+
+    /// **A named script drives the player; nothing named leaves the keys
+    /// in charge.** `Stand` is idle, so the default and "no script" are
+    /// the same run and no separate flag is needed to tell them apart.
+    #[test]
+    fn a_named_script_takes_over_from_the_keyboard() {
+        let played = CubeApp::new(&Options::default());
+        assert_eq!(played.script, None, "the default script is no script");
+
+        let watched = CubeApp::new(&Options {
+            script: Script::Build,
+            ..Options::default()
+        });
+        assert_eq!(watched.script, Some(Script::Build));
+        assert!(
+            watched.pitch_degrees < 0,
+            "a script that digs must start looking down at something"
+        );
+    }
+
+    /// **A held key does not steer a scripted run.** The script is
+    /// driving, and a run that answered to both would be neither
+    /// watchable nor reproducible.
+    #[test]
+    fn keys_do_not_steer_a_scripted_run() {
+        // The same script, once with a key held and once without. A
+        // keyboard that reached the world would separate them.
+        let mut quiet = CubeApp::new(&Options {
+            script: Script::Patrol,
+            ..Options::default()
+        });
+        let mut pressed = CubeApp::new(&Options {
+            script: Script::Patrol,
+            ..Options::default()
+        });
+        pressed.held.forward = true;
+        pressed.held.jump = true;
+        for _ in 0..40 {
+            quiet.advance();
+            pressed.advance();
+        }
+        assert_eq!(
+            quiet.world.digest(),
+            pressed.world.digest(),
+            "a key reached a scripted world, so watching it would not be reproducible"
+        );
+
+        // And with nothing named, the keys do reach it.
+        let mut playing = CubeApp::new(&Options::default());
+        let mut still = CubeApp::new(&Options::default());
+        playing.held.forward = true;
+        for _ in 0..40 {
+            playing.advance();
+            still.advance();
+        }
+        assert_ne!(
+            playing.world.digest(),
+            still.world.digest(),
+            "with no script the keys are what drives the world"
+        );
+    }
+
+    /// **Every key the game binds, in one place.** The mapping is the
+    /// game's whole interface; a binding that quietly stopped working
+    /// would read as "the controls feel wrong" rather than as a failure,
+    /// and no other test drives these arms.
+    #[test]
+    fn every_bound_key_moves_what_it_says_it_moves() {
+        use renew_event::{KeyCode, WindowEvent};
+
+        /// A key, and how to read what holding it set.
+        type Binding = (KeyCode, fn(&Held) -> bool);
+
+        let cases: [Binding; 9] = [
+            (KeyCode::KeyW, |h| h.forward),
+            (KeyCode::KeyS, |h| h.back),
+            (KeyCode::KeyA, |h| h.left),
+            (KeyCode::KeyD, |h| h.right),
+            (KeyCode::ArrowLeft, |h| h.turn_left),
+            (KeyCode::ArrowRight, |h| h.turn_right),
+            (KeyCode::ArrowUp, |h| h.look_up),
+            (KeyCode::ArrowDown, |h| h.look_down),
+            (KeyCode::Space, |h| h.jump),
+        ];
+        for (code, reads) in cases {
+            let mut app = app();
+            app.event(WindowEvent::Key {
+                code,
+                pressed: true,
+                repeat: false,
+            });
+            assert!(reads(&app.held), "{code:?} pressed did not register");
+            app.event(WindowEvent::Key {
+                code,
+                pressed: false,
+                repeat: false,
+            });
+            assert!(!reads(&app.held), "{code:?} released did not clear");
+        }
+    }
+
+    /// The two edge keys, and the one that stops the game.
+    #[test]
+    fn the_edge_keys_and_escape() {
+        use renew_event::{KeyCode, WindowEvent};
+
+        /// A key, and how to read what it did to the app.
+        type Effect = (KeyCode, fn(&CubeApp) -> bool);
+
+        let cases: [Effect; 3] = [
+            (KeyCode::Enter, |a| a.held.dig),
+            (KeyCode::Tab, |a| a.held.place),
+            (KeyCode::Escape, |a| a.closing),
+        ];
+        for (code, reads) in cases {
+            let mut app = app();
+            app.event(WindowEvent::Key {
+                code,
+                pressed: true,
+                repeat: false,
+            });
+            assert!(reads(&app), "{code:?} did not take effect");
+        }
+    }
+
+    /// The unidentified key changes nothing.
+    ///
+    /// It is the only unbound variant the event crate has — every other
+    /// one this game binds — so this is the whole of the "does nothing"
+    /// surface rather than a sample of it.
+    #[test]
+    fn an_unidentified_key_changes_nothing() {
+        use renew_event::{KeyCode, WindowEvent};
+
+        let mut app = app();
+        app.event(WindowEvent::Key {
+            code: KeyCode::Unidentified,
+            pressed: true,
+            repeat: false,
+        });
+        assert_eq!(app.held, Held::default());
+        assert!(!app.closing);
+    }
+
+    /// An event this game ignores is ignored, rather than reaching some
+    /// arm by accident.
+    #[test]
+    fn unhandled_events_are_ignored() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.event(WindowEvent::RedrawRequested);
+        app.event(WindowEvent::ScaleFactorChanged { scale: 2.0 });
+        app.event(WindowEvent::Wheel { dx: 1.0, dy: -1.0 });
+        app.event(WindowEvent::PointerMoved { x: 10.0, y: 20.0 });
+        assert_eq!(app.held, Held::default());
+        assert!(!app.closing);
+        assert_eq!(app.failure(), None);
+    }
+
+    /// **A minimised window reports a height of zero**, and dividing by
+    /// it would put an infinity into the projection — a blank frame that
+    /// looks exactly like a driver failure and is not one.
+    #[test]
+    fn a_window_with_no_height_still_gives_a_usable_aspect() {
+        let ordinary = aspect_of(Extent {
+            width: 800,
+            height: 600,
+        });
+        assert!((ordinary - 4.0 / 3.0).abs() < 1e-6, "got {ordinary}");
+        let degenerate = aspect_of(Extent {
+            width: 800,
+            height: 0,
+        });
+        assert!(
+            degenerate.is_finite() && degenerate > 0.0,
+            "a zero height must not reach the projection as an infinity: {degenerate}"
+        );
     }
 
     /// The mouse carries the same two edges the keys do.

@@ -860,6 +860,32 @@ jobs:
           # `--ticks` a window plays until it is closed and nothing
           # here will ever close it.
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 30
+          # The same window with a script driving the player, because no
+          # runner supplies keystrokes and breaking a block needs one.
+          # This run digs and places, so the geometry is rebuilt mid-run
+          # — the branch that exists because the mesh is uploaded once
+          # and only block edits invalidate it.
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --script build --ticks 90
+          # The same run with the pipeline refused, so the arm that
+          # reports a bring-up failure is executed rather than trusted.
+          # The fault layer is already in this job's loader path for the
+          # rendering crates' own scenarios. A refused bring-up ends the
+          # run at tick zero and says why on stderr, which is the whole
+          # behaviour under test; the exit code stays zero, because the
+          # simulation ran and its digest is real.
+          RENEW_FAULT=vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 5
+          # The device itself refused: a different arm from the pipeline
+          # above, and the one a broken driver actually takes.
+          RENEW_FAULT=vkCreateDevice=ERROR_INITIALIZATION_FAILED \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 5
+          # And a machine with no Vulkan driver at all, which is not a
+          # failure: the window opens, the simulation runs, the digest is
+          # printed and nothing is drawn. That is the arm the sample was
+          # designed around, and it is the one that never runs on a lane
+          # that always has a rasterizer — so the driver is taken away.
+          VK_DRIVER_FILES=/nonexistent/none.json \
+            xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 10
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate
