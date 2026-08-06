@@ -458,3 +458,76 @@ fn the_atlas_flag_needs_a_path() {
         "got {refused:?}"
     );
 }
+
+/// **The atlas flag writes an atlas.** The parse tests above check the
+/// path is read; this checks something arrives at it, which is the half
+/// a reader cares about.
+#[cfg(feature = "render")]
+#[test]
+fn asking_for_the_atlas_writes_a_png() {
+    use renew_sample_cube::run_cli;
+
+    let path = std::env::temp_dir().join("renew-cube-atlas-test.png");
+    drop(std::fs::remove_file(&path));
+
+    let code = run_cli(vec![
+        "--atlas".to_string(),
+        path.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(code, 0, "writing the atlas should succeed");
+
+    let written = std::fs::read(&path).expect("the atlas should be on disk");
+    assert_eq!(
+        &written[..8],
+        &[137, 80, 78, 71, 13, 10, 26, 10],
+        "what was written is not a PNG"
+    );
+    // The dimensions the atlas declares, read back out of the header
+    // rather than trusted: this is the one place the two could disagree.
+    let width = u32::from_be_bytes([written[16], written[17], written[18], written[19]]);
+    let height = u32::from_be_bytes([written[20], written[21], written[22], written[23]]);
+    assert_eq!(
+        (width, height),
+        (
+            renew_sample_cube::atlas::WIDTH,
+            renew_sample_cube::atlas::HEIGHT
+        )
+    );
+
+    drop(std::fs::remove_file(&path));
+}
+
+/// A path that cannot be written is said out loud rather than ignored.
+#[cfg(feature = "render")]
+#[test]
+fn an_unwritable_atlas_path_is_refused() {
+    use renew_sample_cube::run_cli;
+
+    // A directory that does not exist, so the write fails for a reason
+    // that has nothing to do with permissions and is the same on every
+    // platform.
+    let path = std::env::temp_dir()
+        .join("renew-cube-no-such-directory")
+        .join("atlas.png");
+    assert_eq!(
+        run_cli(vec![
+            "--atlas".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]),
+        1,
+        "a write that cannot happen is a failure, not a silent success"
+    );
+}
+
+/// A build with no renderer says both roads, as it does for `--render`.
+#[cfg(not(feature = "render"))]
+#[test]
+fn a_build_without_a_renderer_refuses_the_atlas() {
+    use renew_sample_cube::run_cli;
+
+    assert_eq!(
+        run_cli(vec!["--atlas".to_string(), "blocks.png".to_string()]),
+        1,
+        "the atlas is one of the renderer's pictures"
+    );
+}
