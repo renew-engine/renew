@@ -174,3 +174,36 @@ left at 2..=5 would read the matrix from whatever the vertex stream happened to 
 That failure produces **a picture**, not an error: a wrong matrix draws a wrong world perfectly. The
 rendering crate's camera oracles are what catch it, and they were run against a real adapter before
 this record was written.
+
+## mesh_camera_textured.vert and .frag - compiled 2026-08-06
+
+The camera mesh path with a texture: the same geometry and matrix as
+`mesh_camera.vert`, plus the coordinate the fragment stage samples with,
+and a combined image sampler at set 0, binding 0.
+
+```
+> C:\VulkanSDK.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+> glslc -O mesh_camera_textured.frag -o mesh_camera_textured.frag.spv
+```
+
+1376 bytes and 1072 bytes, both recompiled from a clean source tree and
+compared against the committed blobs on 2026-08-06.
+
+**A second pair rather than a branch in the first.** The two pipelines
+differ in what they bind, not only in what they compute: this one carries
+a descriptor set and the plain pair does not. A uniform choosing between
+them would cost a fetch and a branch per fragment for a decision fixed
+when the pipeline was built.
+
+The fade constants are duplicated from `mesh_camera.frag` rather than
+shared, because GLSL has no way to share them and two pipelines drawing
+one world must fade alike or the seam between them shows. A test in the
+rendering crate pins the horizon colour against its Rust constant; the
+fade distance is pinned by nothing but this sentence.

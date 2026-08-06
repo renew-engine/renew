@@ -15,13 +15,24 @@
 //! countable — which is the whole of the complaint that everything is one
 //! grey.
 //!
-//! # Deterministic, because the pictures are committed
+//! # Flat colours and an edge, measured against the alternative
 //!
-//! The speckle comes from an integer hash of the texel's own coordinates,
-//! so the atlas is the same bytes on every machine and every run. No
-//! clock, no randomness, nothing to seed. The renders in this sample's
-//! README are compared byte-for-byte in review, and an atlas that drifted
-//! would make every one of them a false alarm.
+//! The first version speckled each texel by a hash of its own
+//! coordinates, on the reasoning that a flat tile reads as synthetic.
+//! Rendered and compared, it was worse on both counts that matter:
+//!
+//! * **the picture** — at the size a block is drawn a 16-texel tile is
+//!   minified, so the speckle became high-frequency noise competing with
+//!   the very edges it was meant to complement. The grid is easier to
+//!   read without it.
+//! * **the repository** — the room render went from 208 kB to 592 kB.
+//!   Noise is what a deflate stream cannot compress, and this sample's
+//!   pictures are committed.
+//!
+//! So the tiles are flat colours with a bevelled edge, and the two are
+//! told apart by how wide that edge is rather than by their grain. There
+//! is no randomness here at all now, which also makes "the same atlas on
+//! every machine" true by construction rather than by careful hashing.
 
 /// One tile's edge, in texels.
 ///
@@ -35,7 +46,8 @@ pub const TILE: u32 = 16;
 /// **Two, not six.** Orientation is already carried by face shading; what
 /// a tile adds is the *edge*, and an edge looks the same whichever way a
 /// face points. The top is separate because a floor is the surface a
-/// player looks at most and reads better slightly coarser than a wall.
+/// player looks at most, and a wider joint there reads as flagstones
+/// rather than as the same wall laid down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
     /// Sides and undersides.
@@ -51,6 +63,19 @@ impl Tile {
             Self::Stone => 0,
             Self::StoneTop => 1,
         }
+    }
+}
+
+/// The tile a face of that orientation samples.
+///
+/// Upward faces get the coarser tile; everything else gets the plain
+/// one. The choice is orientation only — what a block is made of would
+/// choose the *set* of tiles, and this world has one material.
+#[must_use]
+pub fn tile_for(face: renew_sample_cube_world::ray::Face) -> Tile {
+    match face {
+        renew_sample_cube_world::ray::Face::Top => Tile::StoneTop,
+        _ => Tile::Stone,
     }
 }
 
@@ -104,49 +129,58 @@ pub fn tile_uv(tile: Tile) -> [[f32; 2]; 4] {
 }
 
 /// How bright one texel of a tile is.
+///
+/// Three levels: the interior, a bevel, and the joint at the edge. The
+/// bevel exists so the joint reads as a recess rather than as a line
+/// drawn on a flat surface.
 fn shade(column: u32, (x, y): (u32, u32)) -> u8 {
-    /// The middle of a tile.
+    /// The interior of a tile.
     const BASE: i32 = 168;
-    /// How much darker the outermost ring is, so blocks are countable.
-    const EDGE: i32 = 34;
-    /// How much darker the ring inside that is, so the edge is a bevel
-    /// rather than a drawn-on line.
+    /// How much darker the joint is, so blocks are countable.
+    const JOINT: i32 = 34;
+    /// How much darker the ring inside it is.
     const BEVEL: i32 = 12;
 
     let last = TILE - 1;
-    let border = x == 0 || y == 0 || x == last || y == last;
+    let edge = x == 0 || y == 0 || x == last || y == last;
     let inner = x == 1 || y == 1 || x == last - 1 || y == last - 1;
-    // The top tile is coarser: its speckle swings twice as far, which
-    // reads as grain from above without changing the colour.
-    let swing = if column == 1 { 2 } else { 1 };
+    // The top tile's joint is two texels wide rather than one, which is
+    // what tells the two apart at a glance and what makes a floor read as
+    // flagstones.
+    let wide_joint = column == 1;
 
-    let mut level = BASE + speckle(column, x, y) * swing;
-    if border {
-        level -= EDGE;
+    let level = if edge || (inner && wide_joint) {
+        BASE - JOINT
     } else if inner {
-        level -= BEVEL;
-    }
+        BASE - BEVEL
+    } else {
+        BASE
+    };
     u8::try_from(level.clamp(0, 255)).unwrap_or(0)
-}
-
-/// A small deterministic variation for one texel, in `-4..=3`.
-///
-/// An integer hash rather than a random number generator: there is
-/// nothing to seed, nothing to thread through, and the same texel is the
-/// same shade on every machine — which is what lets the renders that
-/// sample it be committed.
-fn speckle(column: u32, x: u32, y: u32) -> i32 {
-    let mut hash = column.wrapping_mul(0x9E37_79B9);
-    hash ^= x.wrapping_mul(0x85EB_CA6B);
-    hash = hash.rotate_left(13);
-    hash ^= y.wrapping_mul(0xC2B2_AE35);
-    hash ^= hash >> 15;
-    i32::try_from(hash & 0x7).unwrap_or(0) - 4
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upward faces sample the coarser tile; everything else the plain
+    /// one. Orientation is the only thing that chooses, because this
+    /// world has one material.
+    #[test]
+    fn only_upward_faces_take_the_top_tile() {
+        use renew_sample_cube_world::ray::Face;
+
+        assert_eq!(tile_for(Face::Top), Tile::StoneTop);
+        for face in [
+            Face::Bottom,
+            Face::North,
+            Face::South,
+            Face::East,
+            Face::West,
+        ] {
+            assert_eq!(tile_for(face), Tile::Stone, "{face:?}");
+        }
+    }
 
     /// The atlas is the size it says it is, and opaque throughout.
     #[test]
@@ -183,7 +217,10 @@ mod tests {
         }
     }
 
-    /// The same atlas every time, on every machine: no clock, no seed.
+    /// The same atlas every time, on every machine. True by
+    /// construction now — there is nothing in here but constants — and
+    /// asserted anyway, because that is a property the committed renders
+    /// depend on and a future variation could take away silently.
     #[test]
     fn the_atlas_is_reproducible() {
         assert_eq!(pixels(), pixels());

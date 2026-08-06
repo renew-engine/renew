@@ -1,0 +1,51 @@
+#version 450
+
+// The camera mesh path with a texture: the same geometry and the same
+// matrix as `mesh_camera.vert`, plus the coordinate the fragment stage
+// samples with.
+//
+// **A second pair rather than a branch in the first.** A uniform saying
+// "textured or not" would cost a fetch and a branch per fragment for a
+// decision fixed when the pipeline was built, and the pipelines differ
+// anyway: this one carries a descriptor set and the plain one does not.
+//
+// Layout here and the `VertexAttribute` slices at pipeline creation
+// describe the same bytes: binding 0 is location 0 = vec3 position in
+// world space, location 1 = vec4 colour, location 2 = vec2 texture
+// coordinate; binding 1 is locations 3..=6, the matrix columns. Change
+// one and the other in the same commit or the draw reads garbage.
+
+layout(location = 0) in vec3 vertex_position;
+layout(location = 1) in vec4 vertex_colour;
+layout(location = 2) in vec2 vertex_uv;
+
+layout(location = 3) in vec4 view_projection_0;
+layout(location = 4) in vec4 view_projection_1;
+layout(location = 5) in vec4 view_projection_2;
+layout(location = 6) in vec4 view_projection_3;
+
+layout(location = 0) out vec4 fragment_colour;
+// How far away this vertex is, as a fraction of the distance at which
+// the fade is complete. Computed here rather than in the fragment stage
+// because `w` is linear in view distance and depth is not -- see
+// `mesh_camera.vert`, which learned it the hard way.
+layout(location = 1) out float fragment_fade;
+layout(location = 2) out vec2 fragment_uv;
+
+void main() {
+    mat4 view_projection = mat4(
+        view_projection_0,
+        view_projection_1,
+        view_projection_2,
+        view_projection_3
+    );
+    gl_Position = view_projection * vec4(vertex_position, 1.0);
+    fragment_colour = vertex_colour;
+    fragment_uv = vertex_uv;
+    // The distance at which the fade is complete, in world units. A
+    // little over the arena's diagonal, so its far corner is faint
+    // rather than lost. The same constant as the untextured path: two
+    // pipelines drawing one world must fade alike or the seam shows.
+    const float FADE_DISTANCE = 48.0;
+    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+}

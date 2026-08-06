@@ -15,7 +15,8 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, attachment, pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer, attachment,
+    pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -583,5 +584,119 @@ fn the_camera_renderer_names_itself_without_leaking_a_handle()
         shown.contains(".."),
         "the omission should be visible rather than silent: {shown}"
     );
+    Ok(())
+}
+
+/// **The texture reaches the pixels, and it is the texture that was
+/// given.** A fragment stage that ignored its sampler and returned the
+/// vertex colour would draw a perfectly ordinary picture; only feeding it
+/// two different textures says otherwise.
+///
+/// The vertex colour is white, so the texel arrives unmodified but for
+/// the distance fade, which at `w = 1` is about one and a half per cent —
+/// far inside the margins below.
+#[test]
+fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let camera = Camera::from_columns(IDENTITY);
+
+    // Four texels of one colour, so no sampling position can pick up a
+    // neighbour and the oracle is about the fetch rather than the filter.
+    let solid = |rgba: [u8; 4]| -> Vec<u8> { rgba.repeat(4) };
+    let mut seen = Vec::new();
+    for colour in [[220u8, 20, 20, 255], [20, 220, 20, 255]] {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer = TexturedCameraRenderer::new(
+            &device,
+            TargetFormat::Rgba8Unorm,
+            texture_extent,
+            &solid(colour),
+        )?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+        drop(renderer);
+    }
+
+    let (red, green) = (seen[0], seen[1]);
+    assert!(
+        red[0] > 150 && red[1] < 80 && red[2] < 80,
+        "a red texture drew {red:?}"
+    );
+    assert!(
+        green[1] > 150 && green[0] < 80 && green[2] < 80,
+        "a green texture drew {green:?}"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The vertex colour tints the texel rather than being replaced by
+/// it.** The colour is where face shading and corner darkening live; a
+/// fragment stage that returned the texel alone would draw an evenly lit
+/// world with a pattern on it, which is flat again.
+#[test]
+fn the_vertex_colour_tints_the_texture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let mut seen = Vec::new();
+    for tint in [1.0f32, 0.4] {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &white)?;
+        let mut scene = Scene::new();
+        full_quad(&mut scene, 0.5, [tint, tint, tint, 1.0]);
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+        drop(renderer);
+    }
+
+    let (bright, dim) = (seen[0], seen[1]);
+    assert!(
+        dim[0] < bright[0],
+        "a darker vertex colour must darken a white texture: {bright:?} then {dim:?}"
+    );
+    assert!(
+        bright[0] > 200,
+        "a white texture under a white colour should stay bright: {bright:?}"
+    );
+
+    assert_no_validation_errors(&device);
     Ok(())
 }

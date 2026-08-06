@@ -11,7 +11,7 @@
 //! all three are pure and tested without a device.
 
 use renew_render3d::{
-    Camera as RenderCamera, CameraRenderer, MeshRenderer, Scene, attachment, pass,
+    Camera as RenderCamera, MeshRenderer, Scene, TexturedCameraRenderer, attachment, pass,
 };
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
 use renew_sample_cube_world::grid::{Cell, Grid};
@@ -209,7 +209,11 @@ pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
                 paint[3],
             ]
         });
-        scene.quad_shaded(quad.corners(), corners);
+        scene.quad_uv(
+            quad.corners(),
+            corners,
+            crate::atlas::tile_uv(crate::atlas::tile_for(quad.face)),
+        );
     }
     scene
 }
@@ -255,8 +259,18 @@ pub fn draw_scene(
     let mut target = device
         .create_offscreen_target(extent)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)
-        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    // The textured camera path: the atlas is generated, so building the
+    // renderer is where it is uploaded.
+    let renderer = TexturedCameraRenderer::new(
+        &device,
+        TargetFormat::Rgba8Unorm,
+        Extent {
+            width: crate::atlas::WIDTH,
+            height: crate::atlas::HEIGHT,
+        },
+        &crate::atlas::pixels(),
+    )
+    .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
         .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
