@@ -26,7 +26,7 @@ Every run prints one line last:
 
 ```console
 $ cube --script build --ticks 900
-cube script=build ticks=900 digest=0xc2b4534b2679a6a1 solids=5020 broken=2 placed=10 grounded=false
+cube script=build source=script ticks=900 digest=0xc2b4534b2679a6a1 solids=5020 broken=2 placed=10 grounded=false
 ```
 
 Two runs of the same script and tick count print identical lines —
@@ -39,12 +39,15 @@ terrain included: a world whose blocks differ plays differently from
 the next tick on.
 
 `--json` prints the same report as one document instead, carrying a
-`schema_version` from its first release so a consumer can tell a shape
-it understands from one it does not:
+`schema_version` from its first release so a consumer can tell a shape it
+understands from one it does not. Version 2 added `source`: a scripted run
+is a pure function of its inputs and a played one is driven by a person
+against a wall clock, so their digests are not comparable — and machines
+are what compare digests.
 
 ```console
 $ cube --script build --ticks 900 --json
-{"schema_version":1,"sample":"cube","script":"build","ticks":900,"digest":"0xc2b4534b2679a6a1","solids":5020,"broken":2,"placed":10,"grounded":false}
+{"schema_version":2,"sample":"cube","script":"build","source":"script","ticks":900,"digest":"0xc2b4534b2679a6a1","solids":5020,"broken":2,"placed":10,"grounded":false}
 ```
 
 `--show` draws a plan and an elevation, each sliced through the cell
@@ -66,7 +69,7 @@ elevation, looking along z, at z=0
    1 #...................@.#####.............#
    0 #########################################
      x from -20, y up the side
-cube script=stand ticks=100 digest=0x1d07e6e9840ed836 solids=5012 broken=0 placed=0 grounded=true
+cube script=stand source=script ticks=100 digest=0x1d07e6e9840ed836 solids=5012 broken=0 placed=0 grounded=true
 ```
 
 Both views are the whole grid rather than a window onto it, so two
