@@ -73,6 +73,13 @@ impl LoopControl {
 /// A live window, borrowed by [`WindowApp::ready`].
 pub struct WindowRef<'a> {
     window: &'a std::sync::Arc<winit::window::Window>,
+    /// Where a cursor request is remembered, so the loop can reapply it
+    /// when focus returns.
+    ///
+    /// A `Cell` because the application is handed `&WindowRef` and this
+    /// is the one thing it may change — and because the event loop is a
+    /// single thread, so there is nothing here for a lock to protect.
+    cursor_wanted: &'a core::cell::Cell<bool>,
 }
 
 impl WindowRef<'_> {
@@ -92,6 +99,28 @@ impl WindowRef<'_> {
     /// An owned, opaque handle to this window for the renderer's surface
     /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
     /// as it (or anything owning it) exists — surface validity is
+    /// Hold the cursor inside the window and hide it, or let it go.
+    ///
+    /// **Answers rather than refuses.** Cursor confinement is one of the
+    /// places the three desktops genuinely differ, and a caller can do
+    /// nothing useful with the distinction between one compositor's
+    /// refusal and another's — what it *can* do is fall back to keys. A
+    /// `Result` would push a platform-specific error into every caller to
+    /// be discarded on the spot.
+    ///
+    /// `true` means the cursor is held and hidden; `false` means this
+    /// platform would not, and the caller should carry on without it. A
+    /// first-person sample must stay playable either way.
+    ///
+    /// **Asked for once.** The loop remembers the request and reapplies
+    /// it when focus returns, so a caller does not have to — and cannot,
+    /// since only this seam is handed a window.
+    #[must_use]
+    pub fn grab_cursor(&self, held: bool) -> bool {
+        self.cursor_wanted.set(held);
+        grab_on(self.window, held)
+    }
+
     /// ownership, not convention.
     #[must_use]
     pub fn native(&self) -> NativeWindow {
@@ -210,6 +239,7 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
         app,
         window: None,
         failure: None,
+        cursor_wanted: core::cell::Cell::new(false),
     };
     let run = event_loop.run_app(&mut adapter);
     adapter.outcome(run)
@@ -224,6 +254,17 @@ struct Adapter<'a> {
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
     failure: Option<String>,
+    /// Whether the application asked for the cursor to be held.
+    ///
+    /// **The layer owns the grab's lifecycle, not the application.** A
+    /// cursor held across a tab away traps a player in a window they are
+    /// trying to leave, so focus loss must release it — and an
+    /// application that had to re-grab afterwards would need to change
+    /// window state from an event, which this seam does not allow. So the
+    /// request is remembered here and reapplied when focus returns, and
+    /// mouse look survives alt-tab without the application knowing it
+    /// happened.
+    cursor_wanted: core::cell::Cell<bool>,
 }
 
 /// Where a window comes from: the running loop's creation call, reduced
@@ -260,7 +301,10 @@ impl Adapter<'_> {
         match create(attributes) {
             Ok(window) => {
                 let window = std::sync::Arc::new(window);
-                self.app.ready(&WindowRef { window: &window });
+                self.app.ready(&WindowRef {
+                    window: &window,
+                    cursor_wanted: &self.cursor_wanted,
+                });
                 self.window = Some(window);
             }
             Err(message) => {
@@ -272,9 +316,26 @@ impl Adapter<'_> {
     /// Deliver one OS event to the app. Events with no engine meaning
     /// are dropped here — deliberately, not accidentally.
     fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        // Before the app sees it: a held cursor is the layer's to manage,
+        // and the app's own handling of focus must not race it.
+        if let winit::event::WindowEvent::Focused(focused) = event
+            && self.cursor_wanted.get()
+        {
+            self.apply_cursor_grab(*focused);
+        }
         if let Some(translated) = translate_event(event) {
             self.app.event(translated);
         }
+    }
+
+    /// Hold or release the cursor on the live window, if there is one.
+    ///
+    /// The request itself is remembered by the caller; this is only the
+    /// asking. A window that has gone away has nothing to hold.
+    fn apply_cursor_grab(&self, held: bool) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|window| grab_on(window, held))
     }
 
     /// One loop iteration's app work, after the events. Returns whether
@@ -332,11 +393,68 @@ impl ApplicationHandler for Adapter<'_> {
         self.dispatch(&event);
     }
 
+    /// Raw device motion, which does not arrive with the window events.
+    ///
+    /// **The only device event forwarded, and deliberately so.** A window
+    /// event says what happened to the window; this says what a device
+    /// did, regardless of which window had focus or whether a cursor
+    /// exists. A first-person view needs exactly this and nothing else on
+    /// this seam, so everything else is dropped rather than translated
+    /// into a vocabulary no caller has asked for.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let Some(translated) = translate_device_event(&event) {
+            self.app.event(translated);
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.tick() {
             event_loop.exit();
         }
     }
+}
+
+/// Translate one OS device event into the engine vocabulary.
+///
+/// Only motion has a meaning here; everything else returns `None`,
+/// dropped deliberately rather than accidentally — the same rule the
+/// window translation follows.
+fn translate_device_event(event: &winit::event::DeviceEvent) -> Option<WindowEvent> {
+    match event {
+        winit::event::DeviceEvent::MouseMotion { delta } => Some(WindowEvent::PointerMotion {
+            dx: delta.0,
+            dy: delta.1,
+        }),
+        _ => None,
+    }
+}
+
+/// Hold or release the cursor on `window`, and hide it while held.
+///
+/// Confined first and locked second, which is winit's own documented
+/// order: Windows supports the first, macOS the second, and the
+/// X11/Wayland pair varies by compositor. Answers whether it took.
+fn grab_on(window: &winit::window::Window, held: bool) -> bool {
+    use winit::window::CursorGrabMode;
+
+    let granted = if held {
+        window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
+            .is_ok()
+    } else {
+        window.set_cursor_grab(CursorGrabMode::None).is_ok()
+    };
+    // Hidden only when the grab took: a hidden cursor that can still
+    // wander out of the window is worse than a visible one, because the
+    // player cannot see where it went.
+    window.set_cursor_visible(!(held && granted));
+    granted
 }
 
 /// Translate one OS window event into the engine vocabulary. Events
@@ -452,6 +570,41 @@ fn translate_wheel(delta: winit::event::MouseScrollDelta) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Raw motion crosses as a delta, not a position.** The two are
+    /// different events for a reason: a view driven by the cursor's
+    /// position stops turning when the cursor stops moving at the edge of
+    /// the window, and the whole point of this one is that it does not.
+    #[test]
+    fn device_motion_crosses_as_a_delta() {
+        assert_eq!(
+            translate_device_event(&winit::event::DeviceEvent::MouseMotion {
+                delta: (-3.5, 1.25)
+            }),
+            Some(WindowEvent::PointerMotion { dx: -3.5, dy: 1.25 })
+        );
+    }
+
+    /// Every other device event is dropped deliberately rather than
+    /// translated into a vocabulary no caller has asked for.
+    #[test]
+    fn other_device_events_are_dropped_on_purpose() {
+        for event in [
+            winit::event::DeviceEvent::MouseWheel {
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+            },
+            winit::event::DeviceEvent::Motion {
+                axis: 0,
+                value: 1.0,
+            },
+            winit::event::DeviceEvent::Button {
+                button: 0,
+                state: winit::event::ElementState::Pressed,
+            },
+        ] {
+            assert_eq!(translate_device_event(&event), None, "{event:?}");
+        }
+    }
     use winit::event::{MouseButton, MouseScrollDelta};
     use winit::keyboard::{KeyCode as Wk, PhysicalKey};
 
@@ -672,6 +825,7 @@ mod tests {
             app,
             window: None,
             failure: None,
+            cursor_wanted: core::cell::Cell::new(false),
         }
     }
 

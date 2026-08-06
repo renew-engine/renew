@@ -288,6 +288,18 @@ pub enum TraceEvent {
         x: FiniteF64,
         y: FiniteF64,
     },
+    /// Raw pointer movement since the last such event.
+    ///
+    /// Not a position, and not comparable with [`Self::PointerMoved`]'s
+    /// coordinates: the platform reports these in its own scale, and the
+    /// only sound use is as a delta. Recorded because a session driven by
+    /// mouse look is not reproducible without it.
+    PointerMotion {
+        /// Rightward movement.
+        dx: FiniteF64,
+        /// Downward movement.
+        dy: FiniteF64,
+    },
     PointerButton {
         button: TraceButton,
         pressed: bool,

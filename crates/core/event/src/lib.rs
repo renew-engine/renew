@@ -61,6 +61,31 @@ pub enum WindowEvent {
         pressed: bool,
         repeat: bool,
     },
+    /// The pointer moved by this much, in whatever units the platform
+    /// reports.
+    ///
+    /// **Raw movement, not a position**, and the difference is what a
+    /// first-person view needs. [`Self::PointerMoved`] carries where the
+    /// cursor is inside the window: it stops at the edge, and stops
+    /// entirely when the cursor leaves, so a view driven by it stops
+    /// turning halfway through a turn. This carries how far the device
+    /// moved and is unaffected by where any cursor is or whether one
+    /// exists.
+    ///
+    /// A device-scoped event in a window-scoped enum, deliberately. This
+    /// enum is an application's single input channel — [`Self::Key`] is
+    /// already device-scoped — and a second enum would buy accuracy of
+    /// naming at the cost of a second seam in every application.
+    ///
+    /// Not comparable with [`Self::PointerMoved`]'s coordinates: the
+    /// platform may report these in a different scale entirely, and the
+    /// only sound use is as a delta multiplied by a sensitivity.
+    PointerMotion {
+        /// Rightward movement.
+        dx: f64,
+        /// Downward movement.
+        dy: f64,
+    },
     PointerMoved {
         x: f64,
         y: f64,
@@ -151,6 +176,7 @@ pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[
         repeat: false,
     },
     WindowEvent::PointerMoved { x: 12.5, y: 34.5 },
+    WindowEvent::PointerMotion { dx: -3.5, dy: 1.25 },
     WindowEvent::PointerButton {
         button: PointerButton::Left,
         pressed: true,
@@ -183,9 +209,10 @@ pub const fn shape_index(event: &WindowEvent) -> usize {
         WindowEvent::RedrawRequested => 3,
         WindowEvent::Key { .. } => 4,
         WindowEvent::PointerMoved { .. } => 5,
-        WindowEvent::PointerButton { .. } => 6,
-        WindowEvent::Wheel { .. } => 7,
-        WindowEvent::Focused(_) => 8,
+        WindowEvent::PointerMotion { .. } => 6,
+        WindowEvent::PointerButton { .. } => 7,
+        WindowEvent::Wheel { .. } => 8,
+        WindowEvent::Focused(_) => 9,
     }
 }
 

@@ -129,6 +129,10 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
             (Some(x), Some(y)) => TraceEvent::PointerMoved { x, y },
             _ => return Err(Unencodable { shape }),
         },
+        WindowEvent::PointerMotion { dx, dy } => match (FiniteF64::new(dx), FiniteF64::new(dy)) {
+            (Some(dx), Some(dy)) => TraceEvent::PointerMotion { dx, dy },
+            _ => return Err(Unencodable { shape }),
+        },
         WindowEvent::Wheel { dx, dy } => match (FiniteF32::new(dx), FiniteF32::new(dy)) {
             (Some(dx), Some(dy)) => TraceEvent::Wheel { dx, dy },
             _ => return Err(Unencodable { shape }),
@@ -197,6 +201,10 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
             button: button_from_trace(button),
             pressed,
         },
+        TraceEvent::PointerMotion { dx, dy } => WindowEvent::PointerMotion {
+            dx: dx.value(),
+            dy: dy.value(),
+        },
         TraceEvent::PointerMoved { x, y } => WindowEvent::PointerMoved {
             x: x.value(),
             y: y.value(),
@@ -213,8 +221,33 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{Unencodable, to_trace};
+    use super::{Unencodable, from_trace, to_trace};
     use renew_event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
+
+    /// **Raw pointer motion round-trips like everything else.** The
+    /// format gained a token of its own for it rather than storing a
+    /// delta under the position's: a recording that confused the two
+    /// would replay as a cursor teleporting to the origin.
+    #[test]
+    fn raw_pointer_motion_survives_the_round_trip() {
+        let motion = WindowEvent::PointerMotion { dx: 1.5, dy: -2.0 };
+        let encoded = to_trace(motion).expect("motion encodes");
+        assert_eq!(from_trace(encoded), motion);
+    }
+
+    /// A delta that is not a number is refused, like every other
+    /// float-bearing shape: the format holds finite values only.
+    #[test]
+    fn a_motion_that_is_not_a_number_is_refused() {
+        let refused = to_trace(WindowEvent::PointerMotion {
+            dx: f64::NAN,
+            dy: 0.0,
+        });
+        assert!(
+            matches!(refused, Err(Unencodable { .. })),
+            "got {refused:?}"
+        );
+    }
 
     /// Every shape the window seam can produce has an encoding.
     ///

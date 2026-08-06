@@ -20,8 +20,8 @@ use crate::error::{TraceError, TraceErrorKind};
 use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FIRST_EVENT_LINE, FOCUS, FOCUS_IN, FOCUS_OUT,
-    FORMAT_VERSION, HEADER_LINE, HEX_PREFIX, KEY, MAGIC, OTHER_BUTTON, POINTER, REDRAW, REPEAT,
-    RESIZE, SAMPLE, SCALE, SEPARATOR, TICKS, TIMESTEP_NS, UP, WHEEL,
+    FORMAT_VERSION, HEADER_LINE, HEX_PREFIX, KEY, MAGIC, MOTION, OTHER_BUTTON, POINTER, REDRAW,
+    REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TICKS, TIMESTEP_NS, UP, WHEEL,
 };
 use crate::trace::{Trace, TraceHeader};
 
@@ -180,6 +180,10 @@ fn parse_event(number: usize, line: &str) -> Result<(u64, TraceEvent), TraceErro
         POINTER => TraceEvent::PointerMoved {
             x: cursor.hex_f64("the pointer's x coordinate")?,
             y: cursor.hex_f64("the pointer's y coordinate")?,
+        },
+        MOTION => TraceEvent::PointerMotion {
+            dx: cursor.hex_f64("the pointer's rightward movement")?,
+            dy: cursor.hex_f64("the pointer's downward movement")?,
         },
         BUTTON => {
             let name = cursor.expect("the pointer button")?;
@@ -534,6 +538,14 @@ mod tests {
             TraceEvent::PointerMoved {
                 x: FiniteF64::new(1.5).unwrap(),
                 y: FiniteF64::new(-2.0).unwrap(),
+            }
+        );
+        // The delta's own token, read back as a delta.
+        assert_eq!(
+            one("e 0 motion 0x3ff8000000000000 0xc000000000000000"),
+            TraceEvent::PointerMotion {
+                dx: FiniteF64::new(1.5).unwrap(),
+                dy: FiniteF64::new(-2.0).unwrap(),
             }
         );
         assert_eq!(

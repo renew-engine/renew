@@ -234,6 +234,7 @@ cargo run -p renew-sample-cube --features window --bin cube -- --window
 | **space** | jump |
 | **enter** *or* **left click** | break the block you are looking at, which is lit while you aim at it |
 | **tab** *or* **right click** | place one against it |
+| **mouse** | look around |
 | **escape** | stop |
 
 **Walking is camera-relative, in eight directions.** The world takes
@@ -276,11 +277,22 @@ prints its digest. `stand` is genuinely idle, so it is both the default
 and the way to say "no script, I am playing" — which is why watching does
 not need a flag of its own.
 
-**Looking is on the keys, not the pointer.** Turning the view with the
-mouse needs the cursor held inside the window, and this engine's window
-layer has no way to ask for that yet. A mouse-look that stops dead when
-the pointer reaches the edge of the screen is worse than one that is
-honestly absent, so the arrows do it and the mouse breaks and places.
+**Look with the mouse, or with the arrows.** The cursor is held inside
+the window so a turn does not stop when the pointer reaches the edge of
+the screen. Where a platform will not hold it — cursor confinement is one
+of the places the three desktops genuinely differ — the mouse simply does
+not turn the view, the arrows still do, and nothing is lost.
+
+**Escape stops the game, and the window takes the cursor with it.** Tab
+away and the cursor is freed too, by the same event that drops whatever
+keys were held.
+
+**The mouse's float never reaches the world.** Deltas arrive as `f64`;
+they are scaled into hundredths of a degree, accumulated in an integer,
+and only whole degrees are handed to the angle. The remainder stays for
+the next movement, so a slow drag turns the view rather than rounding
+away to nothing — and a played run's digest stays a function of its
+inputs rather than of the platform's floating-point behaviour.
 
 **Pitch stops short of vertical.** At exactly straight up the look
 direction is parallel to world up, the camera basis has no unique answer,
