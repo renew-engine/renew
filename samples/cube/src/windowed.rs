@@ -44,7 +44,8 @@ use renew_platform::window::{
 };
 use renew_render3d::{Camera as RenderCamera, CameraRenderer, attachment, pass};
 use renew_rhi::{
-    Device, DeviceDesc, Extent, Mesh, PresentOutcome, RenderDesc, Validation, WindowTarget,
+    Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
+    WindowTarget,
 };
 use renew_sample_cube_world::{Cell, Cube, Grid, Intent, Tuning};
 
@@ -160,6 +161,14 @@ pub struct CubeApp {
     /// swapchain needs the current size and the event that reports it is
     /// not the frame that discovers the loss.
     size: Extent,
+    /// Why there is nothing to draw, when the reason is not "this machine
+    /// has no GPU".
+    ///
+    /// **The two used to be the same thing**, five `.ok()?` calls that
+    /// turned a driver refusal, an out-of-memory and a genuinely absent
+    /// adapter alike into an empty window and a run that exited zero.
+    /// Only the last of those is an outcome the sample was designed for.
+    failure: Option<String>,
     /// The drawing half, which exists only once there is a window.
     ///
     /// `None` is not a failure: a machine with no adapter still runs the
@@ -208,6 +217,7 @@ impl CubeApp {
                 width: 1,
                 height: 1,
             },
+            failure: None,
             gpu: None,
         }
     }
@@ -257,33 +267,51 @@ impl CubeApp {
 
     /// Stand up a device, a window target and the geometry.
     ///
-    /// Returns `None` rather than an error when there is no adapter: a
-    /// machine without one should still be able to run the game's
-    /// simulation and print its digest.
-    fn bring_up(&self, window: &WindowRef<'_>) -> Option<Gpu> {
+    /// **Three outcomes, not two.** `Ok(None)` is "this machine cannot
+    /// draw" — no Vulkan runtime, or no adapter that fits — and is not a
+    /// failure: the simulation still runs and still answers with a
+    /// digest, which is the half a test can check and the half a
+    /// headless machine is owed. `Err` is everything else: a driver that
+    /// refused, memory that ran out, a pipeline that would not build. A
+    /// player on a working machine is owed a sentence about those, and
+    /// used to get an empty window instead.
+    ///
+    /// # Errors
+    ///
+    /// The failing call, named, carrying what the layer below said.
+    fn bring_up(&self, window: &WindowRef<'_>) -> Result<Option<Gpu>, String> {
         let (width, height) = window.physical_size();
         let size = Extent { width, height };
-        let device = Device::new(&DeviceDesc {
+        let device = match Device::new(&DeviceDesc {
             app_name: "cube",
             validation: Validation::IfAvailable,
-        })
-        .ok()?;
-        let target = device.create_window_target(window.native(), size).ok()?;
-        let renderer = CameraRenderer::new(&device, target.format()).ok()?;
+        }) {
+            Ok(device) => device,
+            // The two ways a machine can simply not have the hardware.
+            Err(DeviceError::LoaderUnavailable { .. } | DeviceError::NoSuitableAdapter { .. }) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("creating the device: {error}")),
+        };
+        let target = device
+            .create_window_target(window.native(), size)
+            .map_err(|error| format!("creating the window target: {error}"))?;
+        let renderer = CameraRenderer::new(&device, target.format())
+            .map_err(|error| format!("building the camera pipeline: {error}"))?;
         let mesh = renderer
             .upload(
                 &device,
                 &crate::render::build_world_space(self.world.grid(), self.aim_cell()),
             )
-            .ok()?;
-        Some(Gpu {
+            .map_err(|error| format!("uploading the world's geometry: {error}"))?;
+        Ok(Some(Gpu {
             device,
             target,
             renderer,
             mesh,
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
-        })
+        }))
     }
 
     /// Draw one frame.
@@ -347,7 +375,24 @@ impl CubeApp {
     /// a lagging frame that owes several steps executes all of them and
     /// the reported tick count never disagrees with the world.
     fn done(&self) -> bool {
-        self.closing || self.limit.is_some_and(|bound| self.ticks >= bound)
+        self.failure.is_some()
+            || self.closing
+            || self.limit.is_some_and(|bound| self.ticks >= bound)
+    }
+
+    /// What a bring-up outcome means — split off so a test can drive the
+    /// failing arm with a constructed value, no window and no driver.
+    fn record_bring_up(&mut self, outcome: Result<Option<Gpu>, String>) {
+        match outcome {
+            Ok(gpu) => self.gpu = gpu,
+            Err(message) => self.failure = Some(message),
+        }
+    }
+
+    /// Why the run stopped, when it stopped for a reason worth saying.
+    #[must_use]
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
     }
 
     /// The update as a pure function of the frame's timestamp — the
@@ -407,7 +452,8 @@ impl WindowApp for CubeApp {
         self.aim();
         let (width, height) = window.physical_size();
         self.size = Extent { width, height };
-        self.gpu = self.bring_up(window);
+        let outcome = self.bring_up(window);
+        self.record_bring_up(outcome);
         // Anchored after bring-up: device creation can take a noticeable
         // fraction of a second, and anchoring before it would bank that
         // as catch-up steps the player never asked for.
@@ -471,6 +517,13 @@ pub fn run(options: &Options) -> Result<Report, WindowError> {
         resizable: true,
     };
     run_window_app(&config, &mut app)?;
+    // Said out loud rather than folded into the return: the simulation
+    // ran and its digest is real, so the report is still the answer —
+    // but a player who asked to play and got an empty window is owed the
+    // reason, on the stream reserved for it.
+    if let Some(message) = app.failure() {
+        eprintln!("cube: {message}");
+    }
     Ok(crate::report_from(options.script, &app.world, "window"))
 }
 
@@ -481,6 +534,38 @@ mod tests {
     /// An app with no window, for the seam tests below.
     fn app() -> CubeApp {
         CubeApp::new(&Options::default())
+    }
+
+    /// **A driver that refuses is not a machine without a GPU.** The two
+    /// used to be the same `None`: an empty window, no explanation, and a
+    /// run that exited zero as though nothing had gone wrong.
+    #[test]
+    fn a_failed_bring_up_is_reported_and_ends_the_run() {
+        let mut app = app();
+        assert_eq!(app.failure(), None, "nothing has failed yet");
+        assert!(!app.done(), "and nothing has ended it");
+
+        app.record_bring_up(Err("creating the device: out of host memory".to_string()));
+        assert_eq!(
+            app.failure(),
+            Some("creating the device: out of host memory"),
+            "the reason must survive to whoever reads it"
+        );
+        assert!(
+            app.done(),
+            "a run that cannot draw should stop, not spin drawing nothing"
+        );
+    }
+
+    /// The other outcome: no adapter at all. Quiet on purpose — the
+    /// simulation still runs and still answers with a digest, which is
+    /// what a machine without a GPU is owed.
+    #[test]
+    fn a_machine_without_a_gpu_is_not_a_failure() {
+        let mut app = app();
+        app.record_bring_up(Ok(None));
+        assert_eq!(app.failure(), None, "an absent adapter is not an error");
+        assert!(!app.done(), "and the simulation should carry on without it");
     }
 
     /// **The window must not quit itself.** The headless run needs a tick

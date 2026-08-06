@@ -834,7 +834,32 @@ jobs:
           # Keyboardless there: the bird falls; a legal run.
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
           cargo llvm-cov --no-report test -p renew-sample-cube --features window
+          # The voxel game's three views, one run each. The line above
+          # compiles the render code in (`window` implies `render`), so
+          # without these it lands in the denominator with nothing
+          # executing it — a coverage failure that is not a coverage
+          # regression. One tick apiece: the subject is the drawing path,
+          # not the simulation, which the workspace test run covers.
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --render "$RUNNER_TEMP/cube-iso.png"
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --view player --render "$RUNNER_TEMP/cube-player.png"
+          cargo llvm-cov --no-report run -p renew-sample-cube --features render --bin cube -- \
+            --ticks 1 --eye -8,6,-10 --look-at 4,1.5,0 --render "$RUNNER_TEMP/cube-free.png"
+          for view in iso player free; do
+            test -s "$RUNNER_TEMP/cube-$view.png" || {
+              echo "the $view view wrote nothing"; exit 1;
+            }
+          done
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-glide --features window --bin glide --             --window --frames 30
+          # The voxel game's windowed arm, the same way. Keyboardless
+          # under xvfb, so the player stands still and falls to the
+          # floor: a legal run, and the half that matters here is the
+          # bring-up, the frame loop and the draw, none of which any
+          # test without a display can reach. Bounded, because without
+          # `--ticks` a window plays until it is closed and nothing
+          # here will ever close it.
+          xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-cube --features window --bin cube -- --window --ticks 30
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps
           # test sources out of the denominator — its tool crate
