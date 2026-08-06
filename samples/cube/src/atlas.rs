@@ -34,12 +34,14 @@
 //! is no randomness here at all now, which also makes "the same atlas on
 //! every machine" true by construction rather than by careful hashing.
 
+use renew_sample_cube_world::ray::Face;
+
 /// One tile's edge, in texels.
 ///
-/// Sixteen is small enough that the whole atlas is a few kilobytes and
-/// large enough for a border and some variation to read at the sizes a
-/// block is drawn.
-pub const TILE: u32 = 16;
+/// Sixteen is small enough that the whole atlas is under two kilobytes,
+/// and large enough for a joint and a bevel inside it to survive the
+/// minification a block gets at the sizes it is drawn.
+const TILE: u32 = 16;
 
 /// Which tile a face should sample.
 ///
@@ -66,27 +68,27 @@ impl Tile {
     }
 }
 
-/// The tile a face of that orientation samples.
-///
-/// Upward faces get the coarser tile; everything else gets the plain
-/// one. The choice is orientation only — what a block is made of would
-/// choose the *set* of tiles, and this world has one material.
-#[must_use]
-pub fn tile_for(face: renew_sample_cube_world::ray::Face) -> Tile {
-    match face {
-        renew_sample_cube_world::ray::Face::Top => Tile::StoneTop,
-        _ => Tile::Stone,
-    }
-}
-
 /// How many tiles the atlas holds, laid out in one row.
-pub const COUNT: u32 = 2;
+const COUNT: u32 = 2;
 
 /// The atlas width in texels.
 pub const WIDTH: u32 = TILE * COUNT;
 
 /// The atlas height in texels.
 pub const HEIGHT: u32 = TILE;
+
+/// The tile a face of that orientation samples.
+///
+/// Upward faces get the coarser tile; everything else gets the plain
+/// one. The choice is orientation only — what a block is made of would
+/// choose the *set* of tiles, and this world has one material.
+#[must_use]
+pub fn tile_for(face: Face) -> Tile {
+    match face {
+        Face::Top => Tile::StoneTop,
+        _ => Tile::Stone,
+    }
+}
 
 /// The atlas, RGBA8, row-major from the top-left.
 ///
@@ -168,8 +170,6 @@ mod tests {
     /// world has one material.
     #[test]
     fn only_upward_faces_take_the_top_tile() {
-        use renew_sample_cube_world::ray::Face;
-
         assert_eq!(tile_for(Face::Top), Tile::StoneTop);
         for face in [
             Face::Bottom,
