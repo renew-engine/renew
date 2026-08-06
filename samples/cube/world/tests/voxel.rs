@@ -1,7 +1,7 @@
 //! The behaviours a voxel game is judged on.
 
 use renew_fixed::{Fixed, Vec3};
-use renew_sample_cube_world::{AIR, Cell, Cube, Face, Grid, Intent, STONE, Tuning, pick};
+use renew_sample_cube_world::{AIR, BRICK, Cell, Cube, Face, Grid, Intent, STONE, Tuning, pick};
 
 fn v(x: i32, y: i32, z: i32) -> Vec3 {
     Vec3::new(Fixed::from_int(x), Fixed::from_int(y), Fixed::from_int(z))
@@ -506,4 +506,46 @@ fn placing_outside_the_grid_is_refused() {
         "a refused placement must not be counted"
     );
     assert_eq!(world.grid().solid_count(), 1, "and must not appear");
+}
+
+/// **A placed block is a different kind from the world's own.** Breaking
+/// and placing is the whole of what this game does, and half of it was
+/// invisible: a block put back into a mound of the same stone is
+/// indistinguishable from the mound, so the world knew something had
+/// changed and the player could not see it.
+///
+/// Asserted on the grid rather than on a count. `placed` says how many
+/// times it happened; only the cell says what arrived.
+#[test]
+fn a_placed_block_is_not_the_stone_it_was_placed_against() {
+    let mut world = Cube::new(Tuning::default(), flat_world(), v(0, 4, 0));
+    // Down *and forward*, not straight down: the cell above the one
+    // directly underfoot is where the player is standing, and the world
+    // refuses to fill that — a block placed inside the body would trap
+    // it with no way out.
+    world.look_at(Vec3::new(Fixed::ONE, -Fixed::ONE, Fixed::ZERO));
+    for _ in 0..40 {
+        world.step(Intent::IDLE);
+    }
+    let looked_at = world
+        .looking_at()
+        .expect("standing on the floor, something is underfoot");
+    let target = looked_at.neighbour();
+    assert_eq!(
+        world.grid().get(looked_at.cell),
+        Some(STONE),
+        "the floor is what the world is built from"
+    );
+
+    world.step(Intent {
+        place: true,
+        ..Intent::IDLE
+    });
+
+    assert_eq!(
+        world.grid().get(target),
+        Some(BRICK),
+        "what a player puts back must not be what was already there"
+    );
+    assert_ne!(BRICK, STONE, "or the distinction is a name only");
 }
