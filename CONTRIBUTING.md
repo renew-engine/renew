@@ -40,6 +40,12 @@ please open an issue first** — not as a formality, but because the shape
 of a module is usually already decided, and a pull request that cuts
 across that decision is work nobody enjoys discarding.
 
+Every pull request also needs its author to have agreed to the
+[Contributor License Agreement](CLA.md) — once, not per change. It is
+worth reading before you write code rather than after, because it says
+what the project may do with your contribution. The short version is in
+[License and the CLA](#license-and-the-cla) below.
+
 Expect review to be slow. The project has one maintainer.
 
 ## The bar a change is held to
@@ -113,10 +119,29 @@ listing the files it touched.
 crate, read from that crate's own manifest. That manifest is the only
 place maturity is recorded, so it cannot disagree with anything else.
 
-## License
+## License and the CLA
 
-renew is licensed under the [Apache License, Version 2.0](LICENSE). Unless you
-explicitly state otherwise, any contribution intentionally submitted for
-inclusion in the project by you shall be licensed under the same terms, as
-defined in Section 5 of the license, without any additional terms or
-conditions.
+renew is licensed under the [Apache License, Version 2.0](LICENSE), and
+every contribution is distributed under those terms.
+
+Beyond that, contributors agree to a [Contributor License Agreement](CLA.md)
+before their first pull request is merged. Three things are worth saying
+plainly, because a CLA that surprises someone has failed at its job:
+
+- **You keep your copyright.** It is a license, not a transfer. Your work
+  stays yours to use anywhere else, including in a competing project.
+- **The project may one day be offered under other terms**, including
+  commercial ones, with your contribution part of that. This is what
+  allows the project to fund its own maintenance.
+- **The open source version cannot be withdrawn.** Section 9 of the
+  agreement commits renew to remaining available under an OSI-approved
+  license, at no charge. A commercial edition could exist beside it,
+  never instead of it — and anything already released stays released,
+  since an Apache-2.0 grant cannot be revoked.
+
+Agreeing takes one filled-in block in your pull request description; the
+template puts it there for you. You do it once, and it covers everything
+you contribute afterwards.
+
+If you are contributing as part of your job, read section 4 of the
+agreement first — your employer may need to agree rather than you.
