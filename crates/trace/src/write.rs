@@ -189,6 +189,15 @@ mod tests {
             }),
             "e 4 pointer 0x3ff8000000000000 0xc000000000000000"
         );
+        // A delta gets a token of its own. Stored under `pointer` it
+        // would read back as a cursor teleporting to the origin.
+        assert_eq!(
+            line(TraceEvent::PointerMotion {
+                dx: FiniteF64::new(1.5).unwrap(),
+                dy: FiniteF64::new(-2.0).unwrap(),
+            }),
+            "e 4 motion 0x3ff8000000000000 0xc000000000000000"
+        );
         assert_eq!(
             line(TraceEvent::PointerButton {
                 button: TraceButton::Left,

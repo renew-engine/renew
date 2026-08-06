@@ -540,6 +540,14 @@ mod tests {
                 y: FiniteF64::new(-2.0).unwrap(),
             }
         );
+        // The delta's own token, read back as a delta.
+        assert_eq!(
+            one("e 0 motion 0x3ff8000000000000 0xc000000000000000"),
+            TraceEvent::PointerMotion {
+                dx: FiniteF64::new(1.5).unwrap(),
+                dy: FiniteF64::new(-2.0).unwrap(),
+            }
+        );
         assert_eq!(
             one("e 0 button middle down"),
             TraceEvent::PointerButton {

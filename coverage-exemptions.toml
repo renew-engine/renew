@@ -65,17 +65,6 @@ lines = [455, 517]
 reason = "A release-mode refusal guarded by a debug assertion on the same condition, so it is unreachable in any build that measures coverage. It is the last defence against dispatching on a poisoned pool, or over a live batch, in a build with assertions off."
 
 [[exempt]]
-file = "crates/core/platform/src/window.rs"
-lines = [358, 359]
-reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
-
-[[exempt]]
-file = "crates/core/platform/src/window.rs"
-lines = [651]
-reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
-
-
-[[exempt]]
 file = "crates/asset/src/write.rs"
 lines = [94, 95, 100, 101, 105, 106, 129, 130, 133, 134]
 reason = "The width guards on the pack's own header fields. Reaching one needs more than four billion entries, or more than four gibibytes of names or of payload in a single pack; the per-entry pair is narrower still, since a name is already bounded to 1024 bytes and a blob length is a usize widening to u64. They are checked conversions rather than casts because a silently wrapped length is a reader pointed at arbitrary bytes, and because the count field is the kind that gets widened later. Unreachable on a 64-bit target and retained for the 32-bit one the platform list does not exclude."
@@ -122,5 +111,20 @@ reason = "The comparison refusing to start because no workspace root is above it
 
 [[exempt]]
 file = "samples/cube/src/windowed.rs"
-lines = [436, 437, 438, 439, 440, 441, 495]
+lines = [534, 535, 536, 537, 538, 539, 593]
 reason = "The two places a window resize is acted on: rebuilding the crosshair for the new shape, and telling the swapchain its new size. Both need a real window-system resize, and the lane that measures coverage has none - its windowed runs happen under a virtual display with no window manager, so the window it opens is the only size it will ever be. Note for anyone running coverage on a desktop: these lines ARE covered there, because a real window manager sends a resize on the way up, and the gate will call this exemption stale. The gate that decides is the headless one. Everything these lines follow from is covered everywhere: record_present drives the recovery from a dormant swapchain with a constructed outcome, the resize event handler is driven with a constructed event, and the crosshair geometry is checked at four aspects without a device."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [476, 477]
+reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [804]
+reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [404, 405, 406, 407, 408, 409, 410, 411, 412, 413]
+reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run."

@@ -1128,6 +1128,27 @@ mod tests {
         play(app, control, 60, now);
     }
 
+    /// **Motion reaches the view through the event, not only the
+    /// helper.** Every test above calls `aim_by_mouse` directly, which
+    /// says nothing about whether the event is wired to it — and a
+    /// mapping that compiled but was never matched would look exactly
+    /// like a mouse nobody had plugged in.
+    #[test]
+    fn a_motion_event_turns_the_view() {
+        use renew_event::WindowEvent;
+
+        let mut app = app();
+        app.cursor_held = true;
+        app.event(WindowEvent::PointerMotion {
+            dx: 500.0 / f64::from(MOUSE_HUNDREDTHS),
+            dy: 0.0,
+        });
+        assert_eq!(
+            app.turn_owed.0, 500,
+            "the event should reach the accumulator the helper fills"
+        );
+    }
+
     /// **Slow movement accumulates rather than rounding to nothing.**
     /// Half a degree twice is one degree; a mouse moved gently would
     /// otherwise turn the view not at all, however long it was moved.
