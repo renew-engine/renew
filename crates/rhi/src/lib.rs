@@ -99,6 +99,20 @@ pub mod builtin {
     /// Fragment stage SPIR-V.
     pub static TRIANGLE_FS_SPV: &[u8] = include_bytes!("../shaders/triangle.frag.spv");
 
+    /// What the camera mesh path fades toward with distance.
+    ///
+    /// **Declared here because the shader beside it is the authority.**
+    /// `mesh_camera.frag` mixes toward this colour, and a caller that
+    /// clears to a different one gets a fade that reads as haze sitting
+    /// in front of the backdrop rather than as depth. It was written out
+    /// by hand in three other places, coupled to the shader by a comment
+    /// asking whoever changed one to change the rest.
+    ///
+    /// Linear, not sRGB — the same space the shader mixes in and the
+    /// same one [`Color`](crate::Color) carries. The test beside this
+    /// module reads the shader source and fails if the two disagree.
+    pub const HORIZON: [f32; 3] = [0.09, 0.10, 0.13];
+
     /// Vertex stage SPIR-V for a full-target textured quad.
     pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
     /// Fragment stage SPIR-V sampling set 0, binding 0.
@@ -232,4 +246,39 @@ pub mod builtin {
         crate::VertexAttribute::Vec4,
         crate::VertexAttribute::Vec4,
     ];
+}
+
+#[cfg(test)]
+mod horizon_tests {
+    /// **The constant and the shader that uses it cannot drift.**
+    /// A colour written in two languages is coupled by nothing but the
+    /// hope that whoever edits one greps for the other. Here the shader
+    /// source is the authority and this reads it.
+    #[test]
+    fn the_horizon_constant_matches_the_shader_that_fades_to_it() {
+        let source = include_str!("../shaders/mesh_camera.frag");
+        let line = source
+            .lines()
+            .find(|line| line.starts_with("const vec3 HORIZON"))
+            .expect("mesh_camera.frag must declare `const vec3 HORIZON`");
+        let inside = line
+            .split_once("vec3(")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inside, _)| inside)
+            .expect("the declaration must be a vec3(...) literal");
+        let found: Vec<f32> = inside
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse()
+                    .expect("each component must be a float literal")
+            })
+            .collect();
+        assert_eq!(
+            found,
+            crate::builtin::HORIZON.to_vec(),
+            "`{line}` disagrees with builtin::HORIZON — the shader is the authority, so the \
+             constant is what needs changing"
+        );
+    }
 }

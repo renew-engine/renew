@@ -36,6 +36,13 @@ pub enum CliError {
     NotANumber(String),
     /// A script name that names no script.
     UnknownScript(String),
+    /// A view name that names no view.
+    ///
+    /// Its own variant rather than [`Self::UnknownFlag`], which is what
+    /// it used to be: `--view sideways` is a flag everyone knows given a
+    /// value nobody does, and telling the user the flag is unknown sends
+    /// them to check the spelling of the one part they got right.
+    UnknownView(String),
 }
 
 impl CliError {
@@ -48,6 +55,9 @@ impl CliError {
             Self::NotANumber(text) => format!("`{text}` is not a number"),
             Self::UnknownScript(name) => {
                 format!("no script called `{name}`; try {}", script_names())
+            }
+            Self::UnknownView(name) => {
+                format!("no view called `{name}`; try player or iso")
             }
         }
     }
@@ -104,7 +114,7 @@ impl Default for Options {
             json: false,
             help: false,
             window: false,
-            view: View::Player,
+            view: View::Isometric,
             render: None,
         }
     }
@@ -115,14 +125,24 @@ impl Default for Options {
 pub enum View {
     /// The player's own eyes.
     ///
-    /// **The default, because a picture of what the simulation believes
-    /// is evidence about the simulation.** A view from outside shows the
-    /// world; this shows what the player would see, so a wrong picture
-    /// here means a wrong world rather than a wrong viewpoint.
-    #[default]
+    /// Shows what the player would see, so a wrong picture here means a
+    /// wrong world rather than a wrong viewpoint. **Not the default**,
+    /// and the reason is a picture: the player spawns a step from the
+    /// mound, so the still this draws is a wall of one grey filling the
+    /// frame. That is evidence of nothing — it passes a "did anything
+    /// draw" check while showing no geometry a reader could check
+    /// against the world, and it is what the flag drew for anyone
+    /// following the sample's own documented command.
+    ///
+    /// The view from inside is worth having and worth committing; it is
+    /// worth asking for, from a viewpoint chosen to show something.
     Player,
     /// A named point looking at a named point. Explicit rather than
     /// accumulated, so the same command line always draws the same frame.
+    ///
+    /// This is how to draw the room from inside without standing in a
+    /// wall: two points on a command line, and the same two points always
+    /// draw the same frame.
     Free {
         /// Where the eye is.
         eye: [f32; 3],
@@ -132,6 +152,7 @@ pub enum View {
     /// The whole world at once, drawn isometrically with the near walls
     /// cut away. Not a camera: there is no eye inside the world, and the
     /// faces turned away are dropped rather than clipped.
+    #[default]
     Isometric,
 }
 
@@ -301,7 +322,7 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 options.view = match name.as_str() {
                     "player" => View::Player,
                     "iso" | "isometric" => View::Isometric,
-                    other => return Err(CliError::UnknownFlag(other.to_string())),
+                    other => return Err(CliError::UnknownView(other.to_string())),
                 };
             }
             "--eye" => {

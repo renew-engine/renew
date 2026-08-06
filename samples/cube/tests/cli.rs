@@ -324,3 +324,36 @@ fn the_view_flag_selects_a_viewpoint() {
         "the refusal names it: {refused}"
     );
 }
+
+/// A flag everyone knows, given a value nobody does.
+///
+/// The distinction is not pedantry: told the *flag* is unknown, a reader
+/// checks the spelling of `--view`, which was never the problem.
+#[test]
+fn a_bad_view_name_blames_the_value_rather_than_the_flag() {
+    let refused = parse(["--view".to_string(), "sideways".to_string()]);
+    assert!(
+        matches!(&refused, Err(CliError::UnknownView(name)) if name == "sideways"),
+        "got {refused:?}"
+    );
+    let message = refused.unwrap_err().message();
+    assert!(message.contains("sideways"), "{message}");
+    assert!(
+        message.contains("player") && message.contains("iso"),
+        "the refusal should say what the choices are: {message}"
+    );
+}
+
+/// The names the parser takes are the names the usage text offers.
+#[test]
+fn both_spellings_of_the_isometric_view_are_accepted() {
+    for name in ["iso", "isometric"] {
+        let options = parse(["--view".to_string(), name.to_string()])
+            .unwrap_or_else(|error| panic!("`{name}` should parse: {}", error.message()));
+        assert_eq!(
+            options.view,
+            renew_sample_cube::View::Isometric,
+            "for `{name}`"
+        );
+    }
+}

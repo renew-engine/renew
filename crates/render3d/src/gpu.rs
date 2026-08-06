@@ -204,7 +204,12 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
 ///
 /// Four columns of four floats, column-major — the order
 /// `renew_math::Mat4` stores and the order GLSL's `mat4(c0, c1, c2, c3)`
-/// takes, so the bytes cross unchanged.
+/// takes, so the *order* crosses unchanged.
+///
+/// Each float is written in native byte order, which is what a Vulkan
+/// device on every target this repository builds for expects. That is a
+/// statement about those targets, not a law: on a big-endian host the
+/// bytes would need swapping, and the place to do it is here.
 ///
 /// **Plain columns rather than a matrix type**, so this crate keeps its
 /// single dependency. Whoever owns a camera owns the maths that built it;

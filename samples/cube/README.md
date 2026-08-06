@@ -231,6 +231,14 @@ and you walk north-east. It is steppy, and honest: a smoother walk needs a
 fixed-point vector in the world's own vocabulary, which is a change to the
 simulation rather than to the driver.
 
+**A diagonal is about forty per cent faster than a straight line**, since
+the world scales each axis by the walk speed independently and a diagonal
+moves on both. That is the world's arithmetic, not the driver's, and it
+predates any of this — but the driver is the first thing that lets a
+player produce a diagonal at all, so it is the first place worth saying
+so. Normalising it is a change to the simulation and to every digest that
+walks.
+
 **Turning is fixed point, and that is not fussiness.** Yaw and pitch feed
 `Angle::sin_cos`, which is fixed point and identical on every platform,
 and the result reaches the world as a direction. A float here would make
@@ -263,14 +271,20 @@ bought. Only breaking or placing a block does.
 ![The room in perspective: floor, two walls meeting at a corner, the ceiling above, and the mound standing on the floor](room.png)
 
 A real camera, with a real perspective divide. `--eye` and `--look-at`
-place it; `--view player` uses the player's own eyes, which is the
-default, because a picture of what the simulation believes is evidence
-about the simulation rather than about a viewpoint.
+place it; `--view player` uses the player's own eyes.
 
 ```
 renew --features render run cube -- --eye -8,6,-10 --look-at 4,1.5,0 --render room.png
 renew --features render run cube -- --view player --render eyes.png
 ```
+
+**`--view player` is not the default, and the reason is the picture it
+draws.** The player spawns a step from the mound, so a still from their
+eyes is one grey filling the frame — it would pass a check that geometry
+drew while showing nothing a reader could compare against the world. The
+view from inside is worth having; it is worth asking for, from a
+viewpoint that shows something. The picture above is `--eye`/`--look-at`
+for exactly that reason.
 
 **The matrix goes to the GPU as per-instance vertex input.** That is not
 a workaround for the shortest path: this engine has no push-constant
@@ -310,9 +324,12 @@ feature the flag is refused by name rather than ignored, and the game a
 player runs carries no graphics crate at all.
 
 ```
-renew --features render run cube -- --render arena.png
+renew --features render run cube -- --view iso --render arena.png
 cargo run -p renew-sample-cube --features render --bin cube -- --render arena.png
 ```
+
+Either command draws it: the isometric view is what `--render` draws when
+no `--view` is given, and naming it changes nothing.
 
 **The view is a fixed true isometric** -- a 45 degree turn and a 35.264
 degree tilt -- with no camera anywhere, because a camera is a later step.

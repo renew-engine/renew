@@ -368,6 +368,16 @@ jobs:
           cargo build -p renew-sample-glide --features window
           cargo clippy -p renew-sample-glide --features window --all-targets -- -D warnings
           cargo test -p renew-sample-glide --features window
+      # The voxel game's window feature, on the same terms and for the
+      # same reason. It shipped without one: a driver, its input mapping
+      # and its frame pacing were compiled by nobody but the author's own
+      # machine, and every fault the first review of it found lived in
+      # that file.
+      - name: Build, lint, and test the voxel game with its window feature
+        run: |
+          cargo build -p renew-sample-cube --features window
+          cargo clippy -p renew-sample-cube --features window --all-targets -- -D warnings
+          cargo test -p renew-sample-cube --features window
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
@@ -823,6 +833,7 @@ jobs:
           # window), and the windowed arm live under the virtual display.
           # Keyboardless there: the bird falls; a legal run.
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
+          cargo llvm-cov --no-report test -p renew-sample-cube --features window
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-glide --features window --bin glide --             --window --frames 30
           # The fault layer is test scaffolding that runs inside the
           # loader, not engine code, and cargo-llvm-cov already keeps

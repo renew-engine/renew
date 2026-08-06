@@ -55,7 +55,12 @@ pub const SIZE: u32 = 512;
 
 /// The background. Not black and not any face colour, so a gap in the
 /// geometry reads as a gap rather than as a shadowed surface.
-const BACKDROP: Color = Color::new(0.09, 0.10, 0.13, 1.0);
+const BACKDROP: Color = Color::new(
+    renew_rhi::builtin::HORIZON[0],
+    renew_rhi::builtin::HORIZON[1],
+    renew_rhi::builtin::HORIZON[2],
+    1.0,
+);
 
 /// Draw `grid` and write it to `path` as a PNG.
 ///
@@ -234,26 +239,6 @@ pub fn to_png_through(
     path: &std::path::Path,
 ) -> Result<(), RenderError> {
     let pixels = draw_through(grid, camera)?;
-    let png = renew_png::encode(SIZE, SIZE, &pixels)
-        .map_err(|error| RenderError::Output(error.to_string()))?;
-    std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
-}
-
-/// Draw a scene already built, through `camera`, to `path`.
-///
-/// Separate from [`to_png_through`] so a caller that has composed its own
-/// scene -- with a block lit as aimed-at, say -- can draw it without the
-/// grid being consulted a second time.
-///
-/// # Errors
-///
-/// As [`draw_through`], plus the file.
-pub fn to_png_scene(
-    scene: &Scene,
-    camera: &crate::camera::Camera,
-    path: &std::path::Path,
-) -> Result<(), RenderError> {
-    let pixels = draw_scene(scene, camera)?;
     let png = renew_png::encode(SIZE, SIZE, &pixels)
         .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))

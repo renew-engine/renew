@@ -63,7 +63,12 @@ const PITCH_LIMIT: i32 = 85;
 
 /// The colour beyond the world. Not black, so the edge of the geometry
 /// reads as an edge rather than as an unlit surface.
-const SKY: renew_rhi::Color = renew_rhi::Color::new(0.09, 0.10, 0.13, 1.0);
+const SKY: renew_rhi::Color = renew_rhi::Color::new(
+    renew_rhi::builtin::HORIZON[0],
+    renew_rhi::builtin::HORIZON[1],
+    renew_rhi::builtin::HORIZON[2],
+    1.0,
+);
 
 /// What the player is holding down.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
