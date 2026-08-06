@@ -380,11 +380,12 @@ pub(crate) mod tests {
         let empty = Grid::new(Cell::new(0, 0, 0), (2, 2, 2));
         let camera = crate::camera::free_view([4.0, 4.0, 4.0], [0.0, 0.0, 0.0], 1.0);
 
+        // Bound first so `matches!` fits on one line: spread across
+        // several, its non-matching arm is a region no passing run
+        // executes, and the gate is right to say so.
+        let through = draw_through(&empty, &camera, None, None);
         assert!(
-            matches!(
-                draw_through(&empty, &camera, None, None),
-                Err(RenderError::Empty)
-            ),
+            matches!(through, Err(RenderError::Empty)),
             "an empty world through a camera must be refused, not drawn"
         );
         assert!(
