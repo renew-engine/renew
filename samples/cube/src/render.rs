@@ -266,16 +266,20 @@ pub fn draw_scene(
     // and so needs the pipeline that does not transform. Built here
     // rather than taken as a mesh because a mesh belongs to a device and
     // the caller has none.
-    let (plain, plain_mesh) = match overlay {
+    //
+    // One `Option` of a pair, not a pair of `Option`s: the pipeline and
+    // the mesh are made together or not at all, and two of them would
+    // need every reader to work that out again.
+    let over = match overlay {
         Some(overlay) if !overlay.is_empty() => {
             let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             let uploaded = plain
                 .upload(&device, overlay)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
-            (Some(plain), Some(uploaded))
+            Some((plain, uploaded))
         }
-        _ => (None, None),
+        _ => None,
     };
 
     let color = [attachment(BACKDROP)];
@@ -283,14 +287,10 @@ pub fn draw_scene(
     // the overlay sits at the near plane, so the depth test cannot put
     // the world in front of it, and the order settles it regardless.
     let world_item = renderer.item(&mesh, &packed);
-    let over = plain
-        .as_ref()
-        .zip(plain_mesh.as_ref())
-        .map(|(plain, mesh)| plain.item(mesh));
     let mut items = Vec::with_capacity(2);
     items.push(world_item);
-    if let Some(over) = over {
-        items.push(over);
+    if let Some((plain, mesh)) = over.as_ref() {
+        items.push(plain.item(mesh));
     }
     let passes = [pass(&color, &items)];
     target
