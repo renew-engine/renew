@@ -15,8 +15,8 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer, attachment,
-    pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer,
+    TexturedMeshRenderer, attachment, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -697,6 +697,108 @@ fn the_vertex_colour_tints_the_texture() -> Result<(), Box<dyn std::error::Error
         "a white texture under a white colour should stay bright: {bright:?}"
     );
 
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// As the plain renderers, and for the same reasons: the type's name has
+/// to be there for a caller printing a struct that holds one, and the
+/// pipeline's handle must not be.
+#[test]
+fn the_textured_renderers_name_themselves_without_leaking_a_handle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let shown = format!("{through:?}");
+    assert!(shown.contains("TexturedCameraRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible: {shown}"
+    );
+
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let shown = format!("{plain:?}");
+    assert!(shown.contains("TexturedMeshRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible: {shown}"
+    );
+    Ok(())
+}
+
+/// The textured paths refuse an empty scene the same way every other
+/// path does — the shared refusal is shared in fact, not intention.
+#[test]
+fn the_textured_paths_refuse_an_empty_scene() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    assert!(matches!(
+        through.upload(&device, &Scene::new()),
+        Err(Render3dError::EmptyScene)
+    ));
+
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    assert!(matches!(
+        plain.upload(&device, &Scene::new()),
+        Err(Render3dError::EmptyScene)
+    ));
+    Ok(())
+}
+
+/// **The plain textured path draws its texture**, with no camera in
+/// sight: clip-space positions, one sampler, and the vertex colour as a
+/// tint.
+#[test]
+fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let blue: Vec<u8> = [30u8, 30, 220, 255].repeat(4);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &blue)?;
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let mesh = renderer.upload(&device, &scene)?;
+
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let items = [renderer.item(&mesh)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[2] > 150 && centre[0] < 90 && centre[1] < 90,
+        "a blue texture drew {centre:?}"
+    );
+
+    drop(target);
+    drop(renderer);
     assert_no_validation_errors(&device);
     Ok(())
 }

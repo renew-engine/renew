@@ -681,6 +681,14 @@ mod tests {
             "the matrix refusal must hand back what it wraps"
         );
         assert!(
+            Render3dError::Texture(TargetError::OutOfDeviceMemory {
+                call: "vkAllocateMemory(atlas)",
+            })
+            .source()
+            .is_some_and(|cause| cause.to_string().contains("vkAllocateMemory(atlas)")),
+            "the texture refusal must hand back what it wraps"
+        );
+        assert!(
             Render3dError::EmptyScene.source().is_none(),
             "an empty scene wraps nothing; a cause here would be invented"
         );
@@ -746,6 +754,27 @@ mod tests {
         );
     }
 
+    /// **A texture failure names the texture.** It happens while a
+    /// renderer is being built, before any scene exists, so reporting it
+    /// as an upload of geometry would send a reader to look at something
+    /// nobody has offered yet — the same trap the matrix buffer fell
+    /// into.
+    #[test]
+    fn a_texture_failure_is_not_reported_as_a_geometry_upload() {
+        let out_of_memory = || TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory",
+        };
+        let texture = Render3dError::Texture(out_of_memory()).to_string();
+        assert!(
+            texture.contains("texture"),
+            "the texture failure must name the texture: {texture}"
+        );
+        assert!(
+            !texture.contains("geometry"),
+            "the texture failure must not send a reader to look at a scene: {texture}"
+        );
+    }
+
     /// Every variant says something a reader can act on.
     #[test]
     fn every_variant_displays_its_context() {
@@ -762,6 +791,12 @@ mod tests {
                     call: "vkAllocateMemory(matrix)",
                 }),
                 "the camera's matrix buffer",
+            ),
+            (
+                Render3dError::Texture(TargetError::OutOfDeviceMemory {
+                    call: "vkAllocateMemory(atlas)",
+                }),
+                "creating the texture",
             ),
         ];
         for (error, needle) in cases {

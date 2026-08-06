@@ -86,7 +86,24 @@ pub fn to_png(grid: &Grid, path: &std::path::Path) -> Result<(), RenderError> {
 ///
 /// As [`to_png`], less the file.
 pub fn draw(grid: &Grid) -> Result<Vec<u8>, RenderError> {
-    draw_clip_space(&build(grid))
+    draw_clip_space(&build(grid), ClipSurface::Textured)
+}
+
+/// What a clip-space draw samples.
+///
+/// **Explicit, because getting it wrong is invisible until you look.**
+/// Drawing an overlay through the world's pipeline samples the block
+/// atlas at whatever coordinates the overlay happened to carry — which
+/// tints a white crosshair grey and looks like a shading bug rather than
+/// a wrong pipeline. The caller knows which it wants; this makes it say
+/// so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipSurface {
+    /// The vertex colour, sampling nothing. Overlays: a crosshair is not
+    /// made of stone.
+    Flat,
+    /// The block atlas, tinted by the vertex colour. The world.
+    Textured,
 }
 
 /// Draw a scene whose positions are **already clip space**, offscreen.
@@ -99,7 +116,7 @@ pub fn draw(grid: &Grid) -> Result<Vec<u8>, RenderError> {
 /// # Errors
 ///
 /// As [`draw`].
-pub fn draw_clip_space(scene: &Scene) -> Result<Vec<u8>, RenderError> {
+pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
     if scene.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -117,22 +134,39 @@ pub fn draw_clip_space(scene: &Scene) -> Result<Vec<u8>, RenderError> {
     let mut target = device
         .create_offscreen_target(extent)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let renderer = TexturedMeshRenderer::new(
-        &device,
-        TargetFormat::Rgba8Unorm,
-        Extent {
-            width: crate::atlas::WIDTH,
-            height: crate::atlas::HEIGHT,
-        },
-        &crate::atlas::pixels(),
-    )
-    .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let mesh = renderer
-        .upload(&device, scene)
-        .map_err(|error| RenderError::Refused(error.to_string()))?;
+
+    // Either renderer, held for as long as the item that borrows it.
+    let flat;
+    let textured;
+    let mesh;
+    let items = match surface {
+        ClipSurface::Flat => {
+            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
+                .map_err(|error| RenderError::Refused(error.to_string()))?;
+            mesh = flat
+                .upload(&device, scene)
+                .map_err(|error| RenderError::Refused(error.to_string()))?;
+            [flat.item(&mesh)]
+        }
+        ClipSurface::Textured => {
+            textured = TexturedMeshRenderer::new(
+                &device,
+                TargetFormat::Rgba8Unorm,
+                Extent {
+                    width: crate::atlas::WIDTH,
+                    height: crate::atlas::HEIGHT,
+                },
+                &crate::atlas::pixels(),
+            )
+            .map_err(|error| RenderError::Refused(error.to_string()))?;
+            mesh = textured
+                .upload(&device, scene)
+                .map_err(|error| RenderError::Refused(error.to_string()))?;
+            [textured.item(&mesh)]
+        }
+    };
 
     let color = [attachment(BACKDROP)];
-    let items = [renderer.item(&mesh)];
     let passes = [pass(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
