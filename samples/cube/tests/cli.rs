@@ -531,3 +531,64 @@ fn a_build_without_a_renderer_refuses_the_atlas() {
         "the atlas is one of the renderer's pictures"
     );
 }
+
+/// **Every report line the README quotes is one the binary produces.**
+///
+/// This has drifted twice. Adding `source` to the report and moving the
+/// JSON to version 2 changed three example lines, and all three sat in
+/// the README describing the shape before it — including the JSON one,
+/// which claimed a version it no longer had and omitted the field that
+/// exists so a machine does not compare a played digest against a
+/// scripted one. Both times the code change was correct and the doc was
+/// somewhere the author was not looking.
+///
+/// Written this way round on purpose. Asserting that the README *quotes*
+/// a given run would say nothing about a third example nobody thought
+/// to check; asserting that every line it quotes is reproducible catches
+/// a stale example and an invented one alike.
+///
+/// Whole lines, so a field that appeared, vanished or changed order fails
+/// here rather than in a reader's expectations.
+#[test]
+fn every_report_line_the_readme_quotes_is_one_the_binary_prints() {
+    let readme = include_str!("../README.md");
+
+    // The runs the README documents. A quoted line from any other run
+    // fails below, which is the point: it would be a line nobody can
+    // reproduce from the commands beside it.
+    let produced: Vec<String> = [
+        (Script::Build, 900u32),
+        (Script::Stand, 100),
+        (Script::Patrol, 900),
+    ]
+    .into_iter()
+    .flat_map(|(script, ticks)| {
+        let report = run(&Options {
+            script,
+            ticks,
+            ..Options::default()
+        });
+        [describe(&report), describe_json(&report)]
+    })
+    .collect();
+
+    let quoted: Vec<&str> = readme
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cube script=") || line.starts_with("{\"schema_version\""))
+        .collect();
+
+    assert!(
+        quoted.len() >= 3,
+        "found only {} quoted report lines — the filter is not reaching the README, and this \
+         would pass vacuously",
+        quoted.len()
+    );
+
+    for line in quoted {
+        assert!(
+            produced.iter().any(|made| made == line),
+            "the README quotes a line the binary does not print:\n  {line}"
+        );
+    }
+}
