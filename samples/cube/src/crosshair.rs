@@ -2,34 +2,29 @@
 //!
 //! **A first-person game has to say where you are pointing.** The lit
 //! block answers it when something is in reach and says nothing at all
-//! when nothing is -- which is most of the time in an open room, and
-//! exactly when a player is lining a shot up.
+//! when nothing is — which is most of the time in an open room, and
+//! exactly when a player is lining a shot up. Two bars at the centre of
+//! the screen are what the aim ray actually is.
 //!
-//! Its own module because two callers need it and they sit behind
-//! different features: the window draws it every frame, and a still
-//! from the player's eyes draws it for the same reason that view lights
-//! the aimed block -- it claims to be what the player sees.
+//! **Drawn through the plain mesh pipeline rather than the camera one**,
+//! because these positions *are* clip space: an overlay is the one thing
+//! a first-person driver draws that must not move when the view does.
+//! That pipeline culls nothing, so the winding here decides nothing.
+//!
+//! **Clip space is square in its coordinates and not on the screen**: x
+//! spans the window's width and y its height, so bars of equal length in
+//! clip units are drawn unequal in pixels on any window that is not
+//! square. The horizontal extents are divided by the aspect to undo
+//! that, which is why everything here takes one.
+//!
+//! Its own module because two callers need it from behind different
+//! features: the window draws it every frame, and a still from the
+//! player's eyes draws it for the same reason that view lights the aimed
+//! block — it claims to be what the player sees.
 
 use renew_render3d::Scene;
 
-/// The crosshair, as clip-space geometry.
-///
-/// **A first-person game has to say where you are pointing.** The lit
-/// block answers it when something is in reach, and says nothing at all
-/// when nothing is — which is most of the time in an open room, and
-/// exactly when a player is trying to line a shot up. Two bars at the
-/// centre of the screen are what the aim ray actually is.
-///
-/// Drawn through the plain mesh pipeline rather than the camera one,
-/// because these positions *are* clip space: an overlay is the one thing
-/// in this file that must not move when the view does. The pipeline
-/// culls nothing, so the winding here decides nothing either.
-///
-/// **Clip space is square in coordinates and not on screen**: x spans the
-/// window's width and y its height, so bars of equal length in clip units
-/// are drawn unequal in pixels on any window that is not square. The
-/// horizontal extents are divided by the aspect to undo that, which is
-/// why this takes one and why the mesh is rebuilt when it changes.
+/// The crosshair as a scene, ready to upload.
 #[must_use]
 pub fn scene(aspect: f32) -> Scene {
     let mut scene = Scene::new();
@@ -41,16 +36,15 @@ pub fn scene(aspect: f32) -> Scene {
 
 /// Bright and slightly cool, so it reads against stone and against the
 /// horizon alike.
-pub const INK: [f32; 4] = [0.93, 0.95, 0.97, 1.0];
+const INK: [f32; 4] = [0.93, 0.95, 0.97, 1.0];
 
 /// The two bars, as clip-space corners.
 ///
-/// Separate from the scene because this is where every decision is —
-/// the sizes, the aspect correction, the near-plane depth — and a scene
-/// keeps its bytes to itself. A test can read corners; it cannot read a
-/// vertex buffer belonging to another crate.
-#[must_use]
-pub fn bars(aspect: f32) -> [[[f32; 3]; 4]; 2] {
+/// Separate from the scene because this is where every decision is — the
+/// sizes, the aspect correction, the near-plane depth — and a scene keeps
+/// its bytes to itself. A test beside this can read corners; it cannot
+/// read a vertex buffer belonging to another crate.
+fn bars(aspect: f32) -> [[[f32; 3]; 4]; 2] {
     /// Half the length of an arm, as a fraction of half the window height.
     const ARM: f32 = 0.024;
     /// Half the thickness of an arm, the same way.
