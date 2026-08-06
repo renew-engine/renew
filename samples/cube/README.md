@@ -26,7 +26,7 @@ Every run prints one line last:
 
 ```console
 $ cube --script build --ticks 900
-cube script=build ticks=900 digest=0xc2b4534b2679a6a1 solids=5020 broken=2 placed=10 grounded=false
+cube script=build source=script ticks=900 digest=0xc2b4534b2679a6a1 solids=5020 broken=2 placed=10 grounded=false
 ```
 
 Two runs of the same script and tick count print identical lines —
@@ -39,12 +39,15 @@ terrain included: a world whose blocks differ plays differently from
 the next tick on.
 
 `--json` prints the same report as one document instead, carrying a
-`schema_version` from its first release so a consumer can tell a shape
-it understands from one it does not:
+`schema_version` from its first release so a consumer can tell a shape it
+understands from one it does not. Version 2 added `source`: a scripted run
+is a pure function of its inputs and a played one is driven by a person
+against a wall clock, so their digests are not comparable — and machines
+are what compare digests.
 
 ```console
 $ cube --script build --ticks 900 --json
-{"schema_version":1,"sample":"cube","script":"build","ticks":900,"digest":"0xc2b4534b2679a6a1","solids":5020,"broken":2,"placed":10,"grounded":false}
+{"schema_version":2,"sample":"cube","script":"build","source":"script","ticks":900,"digest":"0xc2b4534b2679a6a1","solids":5020,"broken":2,"placed":10,"grounded":false}
 ```
 
 `--show` draws a plan and an elevation, each sliced through the cell
@@ -66,7 +69,7 @@ elevation, looking along z, at z=0
    1 #...................@.#####.............#
    0 #########################################
      x from -20, y up the side
-cube script=stand ticks=100 digest=0x1d07e6e9840ed836 solids=5012 broken=0 placed=0 grounded=true
+cube script=stand source=script ticks=100 digest=0x1d07e6e9840ed836 solids=5012 broken=0 placed=0 grounded=true
 ```
 
 Both views are the whole grid rather than a window onto it, so two
@@ -263,7 +266,7 @@ inputs. Their digests are not comparable, and a line that did not say
 which it was would invite exactly that comparison.
 
 **The block you are aiming at is lit.** Without it the game is played
-blind: every block is the same grey, so you could not tell which one the
+blind: every block is made of the same stone, so you could not tell which one the
 next keypress would break until it was already gone. The colour lives in
 the vertices, so moving the aim rebuilds the geometry -- which happens
 when the aim crosses from one block to another, not every time you turn.
@@ -324,6 +327,49 @@ triangle crossing `w = 0` cannot be divided at all — and inside a room,
 with walls behind you, that is not a corner case. It also means the mesh
 never re-uploads when the camera moves.
 
+## The blocks have a texture, and it is generated
+
+![The block atlas: two sixteen-texel tiles, one with a narrow joint and one with a wide one](blocks.png)
+
+```
+renew --features render run cube -- --atlas blocks.png
+```
+
+**An image in the tree would be a dependency with a licence.** It needs
+provenance, an entry saying where it came from, and a reason it could not
+have been built instead. A function needs a test, and this one has seven.
+
+**What a tile buys that shading cannot.** Faces are already shaded by
+which way they point and corners by how enclosed they are, and neither
+says anything about a *flat* surface: forty floor blocks in a row share an
+orientation and have no enclosed corners between them, so they drew as one
+unbroken plane. A tile with a darker joint is what makes the blocks
+countable.
+
+Two tiles, not six. An edge looks the same whichever way a face points, so
+orientation stays with the shading; the top is separate because a floor is
+what a player looks at most, and a wider joint there reads as flagstones
+rather than as the same wall laid down.
+
+**The texture multiplies the vertex colour rather than replacing it.** The
+colour is where face shading and corner darkening live. A fragment stage
+that returned the texel alone would draw an evenly lit world with a
+pattern on it, which is flat again.
+
+**The first version speckled each texel, and measuring killed it.** The
+reasoning was that a flat tile reads as synthetic. Rendered and compared,
+it was worse on both counts that matter: at the size a block is drawn a
+sixteen-texel tile is minified, so the speckle became high-frequency noise
+competing with the edges it was meant to complement — and the room render
+went from 208 kB to 592 kB, because noise is exactly what a deflate stream
+cannot compress and these pictures are committed. The tiles are flat
+colours with a bevelled joint.
+
+**Coordinates are inset half a texel.** Sampling exactly at a tile's
+boundary lets the filter reach into its neighbour, which shows as a
+one-pixel fringe of the wrong tile along every block edge — and only at
+some distances, so a still can look perfect while the game does not.
+
 **Corners darken where blocks enclose them.** Two walls of the same colour
 meeting at an inner corner are indistinguishable from one flat wall —
 face-direction shading cannot help, because it varies between faces that
@@ -368,6 +414,12 @@ cargo run -p renew-sample-cube --features render --bin cube -- --render arena.pn
 
 Either command draws it: the isometric view is what `--render` draws when
 no `--view` is given, and naming it changes nothing.
+
+**The isometric view samples the same atlas as the game**, through the
+plain mesh pipeline rather than the camera one: its positions are already
+clip space, so that pair has no matrix and no distance fade. Two pictures
+of one world that disagreed about what the world is made of would be
+worse than either alone.
 
 **The view is a fixed true isometric** -- a 45 degree turn and a 35.264
 degree tilt -- with no camera anywhere, because a camera is a later step.

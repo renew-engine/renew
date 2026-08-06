@@ -206,10 +206,16 @@ impl WindowApp for GateApp {
                     for value in [0.2f32, 0.8, 0.4, 1.0] {
                         vertices.extend_from_slice(&value.to_ne_bytes());
                     }
+                    // The texture coordinate the layout declares. These
+                    // shaders do not consume it; the record must still be
+                    // what the pipeline says it is.
+                    for value in [0.0f32, 0.0] {
+                        vertices.extend_from_slice(&value.to_ne_bytes());
+                    }
                 }
                 match device.create_mesh(&renew_rhi::MeshDesc::new(
                     &vertices,
-                    28,
+                    12 + 16 + 8,
                     &[0, 1, 2, 0, 2, 3],
                 )) {
                     Ok(mesh) => (mesh_pipeline, mesh),

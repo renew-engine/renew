@@ -810,15 +810,27 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+/// The bytes one mesh vertex occupies, as `MESH_LAYOUT` declares them.
+const MESH_VERTEX_STRIDE: u32 = 12 + 16 + 8;
+
 /// One mesh vertex, packed exactly as `MESH_LAYOUT` declares:
-/// clip-space position vec3, colour vec4. The layout slice, the shader's
-/// locations and this function describe the same 28 bytes.
+/// clip-space position vec3, colour vec4, texture coordinate vec2. The
+/// layout slice, the shader's locations and this function describe the
+/// same bytes.
+///
+/// The coordinate is zero here: these oracles draw through the untextured
+/// mesh shaders, which do not consume it. It is packed because the layout
+/// says the record contains it, and a record that disagrees with its
+/// layout fails at the draw rather than here.
 fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(28);
+    let mut bytes = Vec::with_capacity(MESH_VERTEX_STRIDE as usize);
     for value in position {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
     for value in colour {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    for value in [0.0f32, 0.0] {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
     bytes
@@ -880,10 +892,14 @@ fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn 
     }
     // Two triangles sharing the 0-2 diagonal, covering the whole target.
     let whole = [0u32, 1, 2, 0, 2, 3];
-    let mesh = device.create_mesh(&MeshDesc::new(&vertices, 28, &whole))?;
+    let mesh = device.create_mesh(&MeshDesc::new(&vertices, MESH_VERTEX_STRIDE, &whole))?;
     assert_eq!(mesh.vertex_count(), 4, "four corners");
     assert_eq!(mesh.index_count(), 6, "two triangles");
-    assert_eq!(mesh.vertex_stride(), 28, "vec3 position plus vec4 colour");
+    assert_eq!(
+        mesh.vertex_stride(),
+        MESH_VERTEX_STRIDE,
+        "vec3 position, vec4 colour, vec2 texture coordinate"
+    );
     let shown = format!("{mesh:?}");
     assert!(shown.starts_with("Mesh"), "{shown}");
     assert!(shown.contains("index_count"), "{shown}");
@@ -909,7 +925,7 @@ fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn 
     // Half the index list, same vertices: only the first triangle. It
     // spans corners 0, 1, 2 — top-left, top-right, bottom-right — so the
     // bottom-left corner falls outside it and keeps the clear colour.
-    let half = device.create_mesh(&MeshDesc::new(&vertices, 28, &whole[..3]))?;
+    let half = device.create_mesh(&MeshDesc::new(&vertices, MESH_VERTEX_STRIDE, &whole[..3]))?;
     assert_eq!(half.index_count(), 3, "one triangle");
     let items = [Item::new(&pipeline).mesh(&half)];
     target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
@@ -1017,7 +1033,11 @@ fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
     ] {
         vertices.extend(mesh_vertex(corner, [0.0, 0.0, 1.0, 1.0]));
     }
-    let mesh = device.create_mesh(&MeshDesc::new(&vertices, 28, &[0, 1, 2, 0, 2, 3]))?;
+    let mesh = device.create_mesh(&MeshDesc::new(
+        &vertices,
+        MESH_VERTEX_STRIDE,
+        &[0, 1, 2, 0, 2, 3],
+    ))?;
     let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
     let bytes = instance([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]);
 

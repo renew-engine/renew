@@ -56,6 +56,13 @@ pub enum Render3dError {
     Pipeline(PipelineError),
     /// Uploading the geometry failed.
     Upload(TargetError),
+    /// The texture or its sampler could not be created.
+    ///
+    /// Its own variant for the same reason as [`Self::CameraBuffer`]:
+    /// this happens while building a renderer, before any geometry
+    /// exists, and reporting it as an upload of geometry would send a
+    /// reader to look at a scene nobody has offered yet.
+    Texture(TargetError),
     /// The buffer the camera's matrix rides in could not be allocated.
     ///
     /// **Its own variant rather than [`Self::Upload`]**, which is where
@@ -91,6 +98,7 @@ impl core::fmt::Display for Render3dError {
             Self::CameraBuffer(error) => {
                 write!(f, "allocating the camera's matrix buffer: {error}")
             }
+            Self::Texture(error) => write!(f, "creating the texture: {error}"),
             Self::EmptyScene => write!(f, "the scene has no geometry to upload"),
         }
     }
@@ -104,7 +112,7 @@ impl std::error::Error for Render3dError {
             // that two arms with one body is a distinction without a
             // difference. They differ in what they *say*, which is
             // Display's business, not this one's.
-            Self::Upload(error) | Self::CameraBuffer(error) => Some(error),
+            Self::Upload(error) | Self::CameraBuffer(error) | Self::Texture(error) => Some(error),
             Self::DepthUnsupported { .. } | Self::EmptyScene => None,
         }
     }
@@ -238,6 +246,157 @@ impl Camera {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+/// Draws indexed clip-space geometry, depth-tested, sampling a texture.
+///
+/// [`MeshRenderer`] with a sampler: the texel at each vertex's coordinate
+/// multiplies the interpolated colour. No camera and no distance fade —
+/// positions are clip space already, so there is no view distance to fade
+/// by, and a caller that wants one has projected the world itself.
+pub struct TexturedMeshRenderer {
+    pipeline: RenderPipeline,
+}
+
+impl TexturedMeshRenderer {
+    /// Build the pipeline and upload `pixels` as the texture it samples.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long.
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::new`], plus a refusal to create the texture or
+    /// the sampler.
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_TEXTURED, format, LAYOUT)
+                .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        Ok(Self { pipeline })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// Positions are **clip space**, as [`MeshRenderer::upload`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh`, ready to sit in a pass.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
+        Item::new(&self.pipeline).mesh(mesh)
+    }
+}
+
+impl core::fmt::Debug for TexturedMeshRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TexturedMeshRenderer")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Draws indexed geometry through a camera, depth-tested, sampling a
+/// texture.
+///
+/// The difference from [`CameraRenderer`] is one multiplication in the
+/// fragment stage: the texel at each vertex's coordinate multiplies the
+/// interpolated colour rather than replacing it. **Replacing it would
+/// throw away the shading** — which way a face points, how enclosed each
+/// of its corners is — and leave an evenly lit world that is flat again,
+/// with a pattern on it.
+///
+/// The texture is bound to the pipeline, so one renderer draws one
+/// atlas. That is the shape the rendering crate offers and it suits a
+/// voxel world, where every block samples the same sheet.
+///
+/// # Colour is not carried through unchanged
+///
+/// As [`CameraRenderer`]: this path fades toward a horizon with distance,
+/// with the same two constants, because two pipelines drawing one world
+/// must fade alike or the seam between them shows.
+pub struct TexturedCameraRenderer {
+    pipeline: RenderPipeline,
+    matrix: renew_rhi::Buffer,
+}
+
+impl TexturedCameraRenderer {
+    /// Build the pipeline, upload `pixels` as the texture it samples, and
+    /// allocate the buffer the matrix rides in.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long.
+    ///
+    /// # Errors
+    ///
+    /// As [`CameraRenderer::new`], plus a refusal to create the texture
+    /// or the sampler.
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        // A sampler is part of building the pipeline, and the existing
+        // arm already says so; only the image itself is a texture
+        // failure.
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
+                .instance_input(builtin::MESH_CAMERA_INSTANCE_LAYOUT)
+                .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        let matrix = device
+            .create_buffer(64, renew_rhi::BufferUsage::PerFrame)
+            .map_err(Render3dError::CameraBuffer)?;
+        Ok(Self { pipeline, matrix })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// Positions are **world space**, and the coordinates each vertex
+    /// carries index the texture this renderer was built with.
+    ///
+    /// # Errors
+    ///
+    /// As [`CameraRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh` seen through `camera`.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .frame_data(renew_rhi::FrameData::new(&self.matrix, camera.bytes(), 1))
+    }
+}
+
+impl core::fmt::Debug for TexturedCameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TexturedCameraRenderer")
+            .finish_non_exhaustive()
     }
 }
 
@@ -522,6 +681,14 @@ mod tests {
             "the matrix refusal must hand back what it wraps"
         );
         assert!(
+            Render3dError::Texture(TargetError::OutOfDeviceMemory {
+                call: "vkAllocateMemory(atlas)",
+            })
+            .source()
+            .is_some_and(|cause| cause.to_string().contains("vkAllocateMemory(atlas)")),
+            "the texture refusal must hand back what it wraps"
+        );
+        assert!(
             Render3dError::EmptyScene.source().is_none(),
             "an empty scene wraps nothing; a cause here would be invented"
         );
@@ -587,6 +754,27 @@ mod tests {
         );
     }
 
+    /// **A texture failure names the texture.** It happens while a
+    /// renderer is being built, before any scene exists, so reporting it
+    /// as an upload of geometry would send a reader to look at something
+    /// nobody has offered yet — the same trap the matrix buffer fell
+    /// into.
+    #[test]
+    fn a_texture_failure_is_not_reported_as_a_geometry_upload() {
+        let out_of_memory = || TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory",
+        };
+        let texture = Render3dError::Texture(out_of_memory()).to_string();
+        assert!(
+            texture.contains("texture"),
+            "the texture failure must name the texture: {texture}"
+        );
+        assert!(
+            !texture.contains("geometry"),
+            "the texture failure must not send a reader to look at a scene: {texture}"
+        );
+    }
+
     /// Every variant says something a reader can act on.
     #[test]
     fn every_variant_displays_its_context() {
@@ -603,6 +791,12 @@ mod tests {
                     call: "vkAllocateMemory(matrix)",
                 }),
                 "the camera's matrix buffer",
+            ),
+            (
+                Render3dError::Texture(TargetError::OutOfDeviceMemory {
+                    call: "vkAllocateMemory(atlas)",
+                }),
+                "creating the texture",
             ),
         ];
         for (error, needle) in cases {

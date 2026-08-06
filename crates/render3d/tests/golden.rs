@@ -15,7 +15,8 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, attachment, pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer,
+    TexturedMeshRenderer, attachment, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -583,5 +584,221 @@ fn the_camera_renderer_names_itself_without_leaking_a_handle()
         shown.contains(".."),
         "the omission should be visible rather than silent: {shown}"
     );
+    Ok(())
+}
+
+/// **The texture reaches the pixels, and it is the texture that was
+/// given.** A fragment stage that ignored its sampler and returned the
+/// vertex colour would draw a perfectly ordinary picture; only feeding it
+/// two different textures says otherwise.
+///
+/// The vertex colour is white, so the texel arrives unmodified but for
+/// the distance fade, which at `w = 1` is about one and a half per cent —
+/// far inside the margins below.
+#[test]
+fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let camera = Camera::from_columns(IDENTITY);
+
+    // Four texels of one colour, so no sampling position can pick up a
+    // neighbour and the oracle is about the fetch rather than the filter.
+    let solid = |rgba: [u8; 4]| -> Vec<u8> { rgba.repeat(4) };
+    let mut seen = Vec::new();
+    for colour in [[220u8, 20, 20, 255], [20, 220, 20, 255]] {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer = TexturedCameraRenderer::new(
+            &device,
+            TargetFormat::Rgba8Unorm,
+            texture_extent,
+            &solid(colour),
+        )?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+        drop(renderer);
+    }
+
+    let (red, green) = (seen[0], seen[1]);
+    assert!(
+        red[0] > 150 && red[1] < 80 && red[2] < 80,
+        "a red texture drew {red:?}"
+    );
+    assert!(
+        green[1] > 150 && green[0] < 80 && green[2] < 80,
+        "a green texture drew {green:?}"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The vertex colour tints the texel rather than being replaced by
+/// it.** The colour is where face shading and corner darkening live; a
+/// fragment stage that returned the texel alone would draw an evenly lit
+/// world with a pattern on it, which is flat again.
+#[test]
+fn the_vertex_colour_tints_the_texture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let mut seen = Vec::new();
+    for tint in [1.0f32, 0.4] {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &white)?;
+        let mut scene = Scene::new();
+        full_quad(&mut scene, 0.5, [tint, tint, tint, 1.0]);
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+        drop(renderer);
+    }
+
+    let (bright, dim) = (seen[0], seen[1]);
+    assert!(
+        dim[0] < bright[0],
+        "a darker vertex colour must darken a white texture: {bright:?} then {dim:?}"
+    );
+    assert!(
+        bright[0] > 200,
+        "a white texture under a white colour should stay bright: {bright:?}"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// As the plain renderers, and for the same reasons: the type's name has
+/// to be there for a caller printing a struct that holds one, and the
+/// pipeline's handle must not be.
+#[test]
+fn the_textured_renderers_name_themselves_without_leaking_a_handle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let shown = format!("{through:?}");
+    assert!(shown.contains("TexturedCameraRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible: {shown}"
+    );
+
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let shown = format!("{plain:?}");
+    assert!(shown.contains("TexturedMeshRenderer"), "got: {shown}");
+    assert!(
+        shown.contains(".."),
+        "the omission should be visible: {shown}"
+    );
+    Ok(())
+}
+
+/// The textured paths refuse an empty scene the same way every other
+/// path does — the shared refusal is shared in fact, not intention.
+#[test]
+fn the_textured_paths_refuse_an_empty_scene() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    assert!(matches!(
+        through.upload(&device, &Scene::new()),
+        Err(Render3dError::EmptyScene)
+    ));
+
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    assert!(matches!(
+        plain.upload(&device, &Scene::new()),
+        Err(Render3dError::EmptyScene)
+    ));
+    Ok(())
+}
+
+/// **The plain textured path draws its texture**, with no camera in
+/// sight: clip-space positions, one sampler, and the vertex colour as a
+/// tint.
+#[test]
+fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let blue: Vec<u8> = [30u8, 30, 220, 255].repeat(4);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &blue)?;
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let mesh = renderer.upload(&device, &scene)?;
+
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let items = [renderer.item(&mesh)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[2] > 150 && centre[0] < 90 && centre[1] < 90,
+        "a blue texture drew {centre:?}"
+    );
+
+    drop(target);
+    drop(renderer);
+    assert_no_validation_errors(&device);
     Ok(())
 }

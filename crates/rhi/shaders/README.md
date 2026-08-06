@@ -142,3 +142,87 @@ whether the file has been wrong before. The rule at the top of this file
 — source and blob change together in one commit — is what failed, and it
 failed in the direction the rule exists to prevent: the blob moved and
 its record did not.
+
+## mesh.vert and mesh_camera.vert — recompiled 2026-08-06, for the texture coordinate
+
+The per-vertex record gained a `vec2` at location 2. Both vertex shaders declare it; neither
+consumes it yet.
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh.vert -o mesh.vert.spv
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+```
+
+**`mesh.vert.spv` did not move**, and that is the comment-only case this file already allows: the
+new input is unused, so the optimiser drops it and the bytes are what they were. 752 bytes,
+unchanged.
+
+**`mesh_camera.vert.spv` did move**, at the same 1228 bytes, and the reason is the one thing about
+this change worth reading twice. Locations are **one space across both bindings, per-vertex
+first**. A third per-vertex attribute therefore pushes every per-instance attribute up by one, so
+the camera matrix moved from locations 2..=5 to 3..=6. Nothing in the Rust says those numbers — they
+are computed from the layout — so the GLSL is the only place they are written down, and a shader
+left at 2..=5 would read the matrix from whatever the vertex stream happened to have there.
+
+That failure produces **a picture**, not an error: a wrong matrix draws a wrong world perfectly. The
+rendering crate's camera oracles are what catch it, and they were run against a real adapter before
+this record was written.
+
+## mesh_camera_textured.vert and .frag - compiled 2026-08-06
+
+The camera mesh path with a texture: the same geometry and matrix as
+`mesh_camera.vert`, plus the coordinate the fragment stage samples with,
+and a combined image sampler at set 0, binding 0.
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+> glslc -O mesh_camera_textured.frag -o mesh_camera_textured.frag.spv
+```
+
+1376 bytes and 1072 bytes, both recompiled from a clean source tree and
+compared against the committed blobs on 2026-08-06.
+
+**A second pair rather than a branch in the first.** The two pipelines
+differ in what they bind, not only in what they compute: this one carries
+a descriptor set and the plain pair does not. A uniform choosing between
+them would cost a fetch and a branch per fragment for a decision fixed
+when the pipeline was built.
+
+The fade constants are duplicated from `mesh_camera.frag` rather than
+shared, because GLSL has no way to share them and two pipelines drawing
+one world must fade alike or the seam between them shows. A test in the
+rendering crate pins the horizon colour against its Rust constant; the
+fade distance is pinned by nothing but this sentence.
+
+## mesh_textured.vert and .frag - compiled 2026-08-06
+
+The plain mesh path with a texture: clip-space positions drawn straight,
+plus the coordinate the fragment stage samples with, and a combined image
+sampler at set 0, binding 0.
+
+```
+> glslc -O mesh_textured.vert -o mesh_textured.vert.spv
+> glslc -O mesh_textured.frag -o mesh_textured.frag.spv
+```
+
+Same toolchain and transcript as the entry above. 900 bytes and 856
+bytes, both recompiled and compared against the committed blobs.
+
+**No matrix and no fade here, unlike the camera pair.** These positions
+are already clip space, so `w` is one everywhere and a fade computed from
+it would be a constant tint. A caller that wants distance on this path has
+projected the world itself and knows the distances it used.

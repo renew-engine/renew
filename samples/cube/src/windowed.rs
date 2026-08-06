@@ -52,7 +52,9 @@ use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
-use renew_render3d::{Camera as RenderCamera, CameraRenderer, MeshRenderer, attachment, pass};
+use renew_render3d::{
+    Camera as RenderCamera, MeshRenderer, TexturedCameraRenderer, attachment, pass,
+};
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
     WindowTarget,
@@ -217,7 +219,7 @@ pub struct CubeApp {
 struct Gpu {
     device: Device,
     target: WindowTarget,
-    renderer: CameraRenderer,
+    renderer: TexturedCameraRenderer,
     /// The world's geometry, uploaded once and redrawn from every angle.
     ///
     /// **This is what putting the matrix on the GPU bought.** The mesh is
@@ -363,8 +365,19 @@ impl CubeApp {
         let target = device
             .create_window_target(window.native(), size)
             .map_err(|error| format!("creating the window target: {error}"))?;
-        let renderer = CameraRenderer::new(&device, target.format())
-            .map_err(|error| format!("building the camera pipeline: {error}"))?;
+        // The atlas is generated, so building the renderer is where it
+        // is uploaded. One renderer, one atlas: every block in this world
+        // samples the same sheet.
+        let renderer = TexturedCameraRenderer::new(
+            &device,
+            target.format(),
+            Extent {
+                width: crate::atlas::WIDTH,
+                height: crate::atlas::HEIGHT,
+            },
+            &crate::atlas::pixels(),
+        )
+        .map_err(|error| format!("building the camera pipeline: {error}"))?;
         let mesh = renderer
             .upload(
                 &device,

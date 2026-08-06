@@ -23,7 +23,10 @@
 // reader is the layer, on this thread, inside the calls below.
 #![allow(unsafe_code)]
 
-use renew_render3d::{CameraRenderer, MeshRenderer, Render3dError, Scene};
+use renew_render3d::{
+    CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer,
+    TexturedMeshRenderer,
+};
 use renew_rhi::{Device, DeviceDesc, DeviceError, Extent, TargetError, TargetFormat, Validation};
 
 /// The CI lane sets this: a skip becomes a failure.
@@ -175,6 +178,98 @@ fn every_creation_arm_reports_its_own_failure() {
             "R4: a sixty-four-byte allocation failing must not be reported as a geometry \
              upload, got {other:?}"
         ),
+    }
+    drop(device);
+
+    textured_constructors_report_their_own_failures();
+}
+
+/// Four white texels: the smallest texture a renderer will accept, and
+/// these scenarios are about the refusal rather than the picture.
+const WHITE: [u8; 16] = [255; 16];
+
+/// The textured constructors' failure arms.
+///
+/// **A function rather than a second `#[test]`.** Arming a fault is an
+/// environment write, and the safety argument at the top of this file is
+/// that there is exactly one test in the binary — a sibling test would
+/// run on another thread and both would be writing `RENEW_FAULT` while
+/// the other read it. Called from the one test, this runs on that test's
+/// thread and the argument holds.
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test scaffolding: the allowance clippy grants a #[test] body does not reach a               function it calls, and this is the same assertion code the test beside it uses"
+)]
+fn textured_constructors_report_their_own_failures() {
+    /// A constructor under test: hand it a device, get back why it
+    /// refused.
+    type Build = fn(&Device) -> Option<Render3dError>;
+
+    // R5 and R6 — the two textured constructors fail their pipeline the
+    // same way the untextured ones do. Separate scenarios because each
+    // builds a different pipeline from different shaders, and a
+    // constructor that quietly built the wrong one would pass its
+    // sibling's test and then draw the wrong thing.
+    let small = Extent {
+        width: 2,
+        height: 2,
+    };
+    let camera: Build = |device| {
+        TexturedCameraRenderer::new(
+            device,
+            TargetFormat::Rgba8Unorm,
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &WHITE,
+        )
+        .err()
+    };
+    let plain: Build = |device| {
+        TexturedMeshRenderer::new(
+            device,
+            TargetFormat::Rgba8Unorm,
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &WHITE,
+        )
+        .err()
+    };
+
+    for (label, build) in [("R5", camera), ("R6", plain)] {
+        arm("vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY");
+        let device = new_device().expect("the device should come up with only a pipeline armed");
+        match build(&device) {
+            Some(error @ Render3dError::Pipeline(_)) => {
+                assert!(
+                    error.to_string().starts_with("building the mesh pipeline:"),
+                    "{label}: Display lost its context: {error}"
+                );
+            }
+            other => {
+                panic!("{label}: expected the pipeline failure in the Pipeline arm, got {other:?}")
+            }
+        }
+        drop(device);
+    }
+
+    // R7 — the image itself is refused. Its own arm, because it happens
+    // before any scene exists, and reporting it as a geometry upload
+    // would send a reader to look at something nobody has offered.
+    arm("vkCreateImage=ERROR_OUT_OF_HOST_MEMORY");
+    let device = new_device().expect("device for R7");
+    match TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE) {
+        Err(error @ Render3dError::Texture(_)) => {
+            assert!(
+                error.to_string().starts_with("creating the texture:"),
+                "R7: Display lost its context: {error}"
+            );
+        }
+        other => panic!("R7: expected the image failure in the Texture arm, got {other:?}"),
     }
     drop(device);
 }

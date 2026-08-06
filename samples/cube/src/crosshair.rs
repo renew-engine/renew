@@ -151,7 +151,7 @@ mod tests {
         // return would be a line that only a lane with no driver ever
         // runs, and so a line no lane that draws can cover.
         if let Some(pixels) = crate::render::tests::pixels_or_skip(
-            crate::render::draw_clip_space(&scene(1.0)),
+            crate::render::draw_clip_space(&scene(1.0), crate::render::ClipSurface::Flat),
             crate::render::tests::golden_strict(),
         ) {
             assert_a_cross_at_the_centre(&pixels);

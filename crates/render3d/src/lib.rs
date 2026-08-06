@@ -41,6 +41,7 @@ mod gpu;
 mod scene;
 
 pub use gpu::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, attachment, depth_attachment, pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, TexturedCameraRenderer,
+    TexturedMeshRenderer, attachment, depth_attachment, pass,
 };
 pub use scene::Scene;

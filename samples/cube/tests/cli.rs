@@ -118,6 +118,7 @@ fn a_run_is_reproducible() {
         window: false,
         view: renew_sample_cube::View::Player,
         render: None,
+        atlas: None,
     };
     let first = run(&options);
     let second = run(&options);
@@ -431,4 +432,163 @@ fn a_window_still_takes_a_script_a_bound_and_a_format() {
     assert_eq!(options.script, Script::Build);
     assert_eq!(options.window_ticks, Some(30));
     assert!(options.json);
+}
+
+/// The atlas has a command line, because a texture nobody can look at is
+/// a texture nobody can check.
+#[test]
+fn the_atlas_flag_parses_a_path() {
+    let arguments: Vec<String> = ["--atlas", "blocks.png"]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect();
+    let options = parse(arguments).expect("--atlas takes a path");
+    assert_eq!(
+        options.atlas.as_deref(),
+        Some(std::path::Path::new("blocks.png"))
+    );
+}
+
+/// And says so when the path is missing.
+#[test]
+fn the_atlas_flag_needs_a_path() {
+    let refused = parse(["--atlas".to_string()]);
+    assert!(
+        matches!(&refused, Err(CliError::MissingValue("--atlas"))),
+        "got {refused:?}"
+    );
+}
+
+/// **The atlas flag writes an atlas.** The parse tests above check the
+/// path is read; this checks something arrives at it, which is the half
+/// a reader cares about.
+#[cfg(feature = "render")]
+#[test]
+fn asking_for_the_atlas_writes_a_png() {
+    use renew_sample_cube::run_cli;
+
+    let path = std::env::temp_dir().join("renew-cube-atlas-test.png");
+    drop(std::fs::remove_file(&path));
+
+    let code = run_cli(vec![
+        "--atlas".to_string(),
+        path.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(code, 0, "writing the atlas should succeed");
+
+    let written = std::fs::read(&path).expect("the atlas should be on disk");
+    assert_eq!(
+        &written[..8],
+        &[137, 80, 78, 71, 13, 10, 26, 10],
+        "what was written is not a PNG"
+    );
+    // The dimensions the atlas declares, read back out of the header
+    // rather than trusted: this is the one place the two could disagree.
+    let width = u32::from_be_bytes([written[16], written[17], written[18], written[19]]);
+    let height = u32::from_be_bytes([written[20], written[21], written[22], written[23]]);
+    assert_eq!(
+        (width, height),
+        (
+            renew_sample_cube::atlas::WIDTH,
+            renew_sample_cube::atlas::HEIGHT
+        )
+    );
+
+    drop(std::fs::remove_file(&path));
+}
+
+/// A path that cannot be written is said out loud rather than ignored.
+#[cfg(feature = "render")]
+#[test]
+fn an_unwritable_atlas_path_is_refused() {
+    use renew_sample_cube::run_cli;
+
+    // A directory that does not exist, so the write fails for a reason
+    // that has nothing to do with permissions and is the same on every
+    // platform.
+    let path = std::env::temp_dir()
+        .join("renew-cube-no-such-directory")
+        .join("atlas.png");
+    assert_eq!(
+        run_cli(vec![
+            "--atlas".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]),
+        1,
+        "a write that cannot happen is a failure, not a silent success"
+    );
+}
+
+/// A build with no renderer says both roads, as it does for `--render`.
+#[cfg(not(feature = "render"))]
+#[test]
+fn a_build_without_a_renderer_refuses_the_atlas() {
+    use renew_sample_cube::run_cli;
+
+    assert_eq!(
+        run_cli(vec!["--atlas".to_string(), "blocks.png".to_string()]),
+        1,
+        "the atlas is one of the renderer's pictures"
+    );
+}
+
+/// **Every report line the README quotes is one the binary produces.**
+///
+/// This has drifted twice. Adding `source` to the report and moving the
+/// JSON to version 2 changed three example lines, and all three sat in
+/// the README describing the shape before it — including the JSON one,
+/// which claimed a version it no longer had and omitted the field that
+/// exists so a machine does not compare a played digest against a
+/// scripted one. Both times the code change was correct and the doc was
+/// somewhere the author was not looking.
+///
+/// Written this way round on purpose. Asserting that the README *quotes*
+/// a given run would say nothing about a third example nobody thought
+/// to check; asserting that every line it quotes is reproducible catches
+/// a stale example and an invented one alike.
+///
+/// Whole lines, so a field that appeared, vanished or changed order fails
+/// here rather than in a reader's expectations.
+#[test]
+fn every_report_line_the_readme_quotes_is_one_the_binary_prints() {
+    let readme = include_str!("../README.md");
+
+    // The runs the README documents. A quoted line from any other run
+    // fails below, which is the point: it would be a line nobody can
+    // reproduce from the commands beside it.
+    let produced: Vec<String> = [
+        (Script::Build, 900u32),
+        (Script::Stand, 100),
+        (Script::Patrol, 900),
+    ]
+    .into_iter()
+    .flat_map(|(script, ticks)| {
+        let report = run(&Options {
+            script,
+            ticks,
+            ..Options::default()
+        });
+        [describe(&report), describe_json(&report)]
+    })
+    .collect();
+
+    let quoted: Vec<&str> = readme
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cube script=") || line.starts_with("{\"schema_version\""))
+        .collect();
+
+    assert!(
+        quoted.len() >= 3,
+        "found only {} quoted report lines — the filter is not reaching the README, and this \
+         would pass vacuously",
+        quoted.len()
+    );
+
+    for line in quoted {
+        assert!(
+            produced.iter().any(|made| made == line),
+            "the README quotes a line the binary does not print:\n  {line}"
+        );
+    }
 }
