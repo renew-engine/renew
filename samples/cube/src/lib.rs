@@ -11,6 +11,8 @@
 //! the world headless, and prints one line. Everything interesting is in the
 //! world; everything here is the seam that lets a machine ask it a question.
 
+#[cfg(feature = "render")]
+pub mod atlas;
 pub mod camera;
 #[cfg(feature = "render")]
 pub mod crosshair;
@@ -118,6 +120,12 @@ pub struct Options {
     /// a player runs carries no graphics crate. A build without it
     /// refuses the flag by name rather than ignoring it.
     pub render: Option<std::path::PathBuf>,
+    /// Where `--atlas` writes the block textures, if anywhere.
+    ///
+    /// The atlas is generated rather than loaded, so the only way to look
+    /// at it is to ask for it. A texture nobody can see is a texture
+    /// nobody can check.
+    pub atlas: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -132,6 +140,7 @@ impl Default for Options {
             window: false,
             view: View::Isometric,
             render: None,
+            atlas: None,
         }
     }
 }
@@ -314,6 +323,7 @@ pub fn usage() -> &'static str {
      --window        play it: WASD walks, arrows look, space jumps\n\
      --render PATH   draw the world to a PNG there (needs --features render)\n\
      --view NAME     player (default) or iso, for --render\n\
+     --atlas PATH    write the generated block textures there as a PNG\n\
      --eye X,Y,Z     draw from here instead, looking at --look-at\n\
      --look-at X,Y,Z where a free view points\n\
      --ticks N       how many ticks to run (default 600); with --window,\n\
@@ -380,6 +390,10 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 let name = arguments.next().ok_or(CliError::MissingValue("--script"))?;
                 options.script =
                     Script::from_name(&name).ok_or(CliError::UnknownScript(name.clone()))?;
+            }
+            "--atlas" => {
+                let path = arguments.next().ok_or(CliError::MissingValue("--atlas"))?;
+                options.atlas = Some(std::path::PathBuf::from(path));
             }
             "--ticks" => {
                 let text = arguments.next().ok_or(CliError::MissingValue("--ticks"))?;
@@ -697,6 +711,30 @@ fn play(_options: &Options) -> Result<Report, String> {
     )
 }
 
+/// Write the generated block textures to `path` as a PNG.
+///
+/// # Errors
+///
+/// The message a caller should see, if the encode or the write fails.
+#[cfg(feature = "render")]
+fn write_atlas(path: &std::path::Path) -> Result<(), String> {
+    let pixels = atlas::pixels();
+    let png = renew_png::encode(atlas::WIDTH, atlas::HEIGHT, &pixels)
+        .map_err(|error| format!("encoding the atlas: {error}"))?;
+    std::fs::write(path, png).map_err(|error| format!("writing the atlas: {error}"))
+}
+
+/// The honest answer in a build with the rendering stack compiled out.
+#[cfg(not(feature = "render"))]
+fn write_atlas(_path: &std::path::Path) -> Result<(), String> {
+    Err(
+        "this build has no renderer, and the atlas is one of its pictures. Run \
+         `renew --features render run cube -- --atlas PATH`, or build it directly with \
+         `cargo run -p renew-sample-cube --features render --bin cube -- --atlas PATH`"
+            .to_string(),
+    )
+}
+
 /// Parse, run, print, and answer with an exit code.
 ///
 /// **The whole binary, in the library.** A process shell that did any of this
@@ -720,6 +758,15 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
     };
     if options.help {
         print!("{}", usage());
+        return 0;
+    }
+    // Before the world: this asks for a picture of the textures rather
+    // than of anything the simulation did, so it needs no run at all.
+    if let Some(path) = options.atlas.as_deref() {
+        if let Err(message) = write_atlas(path) {
+            eprintln!("cube: {message}");
+            return 1;
+        }
         return 0;
     }
     if options.window {

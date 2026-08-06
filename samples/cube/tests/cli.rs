@@ -118,6 +118,7 @@ fn a_run_is_reproducible() {
         window: false,
         view: renew_sample_cube::View::Player,
         render: None,
+        atlas: None,
     };
     let first = run(&options);
     let second = run(&options);
@@ -431,4 +432,29 @@ fn a_window_still_takes_a_script_a_bound_and_a_format() {
     assert_eq!(options.script, Script::Build);
     assert_eq!(options.window_ticks, Some(30));
     assert!(options.json);
+}
+
+/// The atlas has a command line, because a texture nobody can look at is
+/// a texture nobody can check.
+#[test]
+fn the_atlas_flag_parses_a_path() {
+    let arguments: Vec<String> = ["--atlas", "blocks.png"]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect();
+    let options = parse(arguments).expect("--atlas takes a path");
+    assert_eq!(
+        options.atlas.as_deref(),
+        Some(std::path::Path::new("blocks.png"))
+    );
+}
+
+/// And says so when the path is missing.
+#[test]
+fn the_atlas_flag_needs_a_path() {
+    let refused = parse(["--atlas".to_string()]);
+    assert!(
+        matches!(&refused, Err(CliError::MissingValue("--atlas"))),
+        "got {refused:?}"
+    );
 }
