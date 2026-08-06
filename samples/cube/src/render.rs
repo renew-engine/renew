@@ -516,18 +516,30 @@ pub(crate) mod tests {
         // are in the graph rather than what they draw. Under
         // `RENEW_GOLDEN=1`, the lane that exists to run these, a skip is
         // a failure instead, so the oracle can never pass by not running.
-        let Some(plain) = pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
-        else {
-            return;
-        };
+        //
+        // `if let` rather than an early return, so the skip costs no line
+        // that a lane which draws can never execute.
+        if let Some(plain) =
+            pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
+        {
+            assert_the_highlight_reaches_the_pixels(&grid, &camera, &plain);
+        }
+    }
 
+    /// Lighting a visible block changes the picture; lighting one nobody
+    /// can see changes nothing.
+    fn assert_the_highlight_reaches_the_pixels(
+        grid: &Grid,
+        camera: &crate::camera::Camera,
+        plain: &[u8],
+    ) {
         // The mound spans x 2..=6, y 1..=2, z -2..=2, so this is a top
         // face with air above it and nothing between it and the eye.
         let visible = Cell::new(4, 2, 0);
         let aimed =
-            draw_through(&grid, &camera, Some(visible), None).expect("the draw should succeed");
+            draw_through(grid, camera, Some(visible), None).expect("the draw should succeed");
         assert!(
-            differing_bytes(&plain, &aimed) > 0,
+            differing_bytes(plain, &aimed) > 0,
             "lighting a visible block changed no pixel, so the aim never reached the scene"
         );
 
@@ -536,9 +548,9 @@ pub(crate) mod tests {
         // above would pass on a scene that lit everything.
         let enclosed = Cell::new(4, 1, 0);
         let hidden =
-            draw_through(&grid, &camera, Some(enclosed), None).expect("the draw should succeed");
+            draw_through(grid, camera, Some(enclosed), None).expect("the draw should succeed");
         assert_eq!(
-            differing_bytes(&plain, &hidden),
+            differing_bytes(plain, &hidden),
             0,
             "an enclosed block has no face in the mesh, so lighting it must change no pixel"
         );

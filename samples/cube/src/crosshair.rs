@@ -119,13 +119,14 @@ mod tests {
         for (name, value) in [("across", across), ("down", down)] {
             assert!(value > 0.0, "the {name} arm has no length");
         }
-        for corner in corners_of(1.6) {
-            assert!(
-                corner[2].abs() < f32::EPSILON,
-                "the overlay must sit at the near plane, found depth {}",
-                corner[2]
-            );
-        }
+        let depths: Vec<f32> = corners_of(1.6)
+            .into_iter()
+            .map(|corner| corner[2])
+            .collect();
+        assert!(
+            depths.iter().all(|depth| depth.abs() < f32::EPSILON),
+            "the overlay must sit at the near plane: {depths:?}"
+        );
     }
 
     /// A window that reports nothing usable must not put a NaN in the
@@ -152,13 +153,20 @@ mod tests {
     /// `RENEW_GOLDEN=1`, like the other picture oracles.
     #[test]
     fn the_crosshair_lands_in_the_middle_of_the_picture() {
-        let Some(pixels) = crate::render::tests::pixels_or_skip(
+        // `if let` rather than a `let ... else { return }`: the early
+        // return would be a line that only a lane with no driver ever
+        // runs, and so a line no lane that draws can cover.
+        if let Some(pixels) = crate::render::tests::pixels_or_skip(
             crate::render::draw_clip_space(&scene(1.0)),
             crate::render::tests::golden_strict(),
-        ) else {
-            return;
-        };
+        ) {
+            assert_a_cross_at_the_centre(&pixels);
+        }
+    }
 
+    /// What the picture must show: ink in the middle, backdrop between
+    /// the arms.
+    fn assert_a_cross_at_the_centre(pixels: &[u8]) {
         let size = crate::render::SIZE;
         let at = |x: u32, y: u32| {
             let index = ((y * size + x) * 4) as usize;
@@ -175,8 +183,8 @@ mod tests {
             centre.iter().all(|channel| *channel > 200),
             "the centre is {centre:?}, which is not the crosshair's ink"
         );
-        // And an arm's length out along the diagonal is backdrop: the
-        // cross has arms rather than being a filled square.
+        // An arm's length out along the diagonal is backdrop: the cross
+        // has arms rather than being a filled square.
         let out = size / 2 + size / 8;
         assert_eq!(
             at(out, out),

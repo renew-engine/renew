@@ -122,5 +122,5 @@ reason = "The comparison refusing to start because no workspace root is above it
 
 [[exempt]]
 file = "samples/cube/src/windowed.rs"
-lines = [431]
+lines = [471]
 reason = "Telling the swapchain its new size, inside the branch that has a device. Reaching it needs both a graphics device and a real window-system resize, and no lane has the second: the windowed runs happen under a virtual display with no window manager, so nothing ever resizes the window. The decision this line follows from is covered - record_present drives the recovery from a dormant swapchain with a constructed outcome, and the resize event handler is driven with a constructed event - so what is exempt is the single call that hands the size to the driver, not the logic that decides to."

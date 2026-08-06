@@ -236,10 +236,16 @@ struct Gpu {
     aimed_at: Option<Cell>,
     /// The plain mesh pipeline, for geometry that is already clip space.
     overlay: MeshRenderer,
-    /// The crosshair, uploaded once per shape.
-    crosshair: Mesh,
-    /// The aspect the crosshair was built for, so a resized window gets
-    /// square arms again rather than keeping the old window's stretch.
+    /// The crosshair, built by the first frame that draws one and rebuilt
+    /// when the window's shape changes.
+    ///
+    /// **Built there rather than at bring-up**, so one place decides what
+    /// shape it should be. Built in both, the two would have to agree
+    /// about the aspect for ever, and the bring-up copy would be right
+    /// only until the first resize.
+    crosshair: Option<Mesh>,
+    /// The aspect the crosshair was built for. Meaningless until there is
+    /// a crosshair, which is what the `Option` beside it says.
     crosshair_aspect: f32,
 }
 
@@ -365,10 +371,6 @@ impl CubeApp {
             .map_err(|error| format!("uploading the world's geometry: {error}"))?;
         let overlay = MeshRenderer::new(&device, target.format())
             .map_err(|error| format!("building the overlay pipeline: {error}"))?;
-        let crosshair_aspect = aspect_of(size);
-        let crosshair = overlay
-            .upload(&device, &crate::crosshair::scene(crosshair_aspect))
-            .map_err(|error| format!("uploading the crosshair: {error}"))?;
         Ok(Some(Gpu {
             device,
             target,
@@ -377,8 +379,8 @@ impl CubeApp {
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
             overlay,
-            crosshair,
-            crosshair_aspect,
+            crosshair: None,
+            crosshair_aspect: 0.0,
         }))
     }
 
@@ -406,16 +408,16 @@ impl CubeApp {
             gpu.aimed_at = aimed;
         }
 
-        // A resized window changes what "square" means, so the arms
-        // are rebuilt rather than left stretched. Two quads; this is not
-        // a cost worth caching around.
+        // The first frame builds the crosshair; a resize rebuilds it,
+        // because a resized window changes what "square" means and the
+        // arms would otherwise keep the old window's stretch. Two quads:
+        // not a cost worth caching around.
         let wanted = aspect_of(gpu.target.extent());
-        if (wanted - gpu.crosshair_aspect).abs() > f32::EPSILON
-            && let Ok(rebuilt) = gpu
+        if gpu.crosshair.is_none() || (wanted - gpu.crosshair_aspect).abs() > f32::EPSILON {
+            gpu.crosshair = gpu
                 .overlay
                 .upload(&gpu.device, &crate::crosshair::scene(wanted))
-        {
-            gpu.crosshair = rebuilt;
+                .ok();
             gpu.crosshair_aspect = wanted;
         }
 
@@ -423,11 +425,14 @@ impl CubeApp {
         let color = [attachment(SKY)];
         // The world first, the crosshair over it. The overlay sits at the
         // near plane, so the depth test cannot put a block in front of
-        // it; the order settles it anyway.
-        let items = [
-            gpu.renderer.item(&gpu.mesh, &packed),
-            gpu.overlay.item(&gpu.crosshair),
-        ];
+        // it; the order settles it anyway. A crosshair that failed to
+        // upload is simply absent — a frame of the world is worth more
+        // than no frame at all.
+        let mut items = Vec::with_capacity(2);
+        items.push(gpu.renderer.item(&gpu.mesh, &packed));
+        if let Some(crosshair) = gpu.crosshair.as_ref() {
+            items.push(gpu.overlay.item(crosshair));
+        }
         let passes = [pass(&color, &items)];
         // **The outcome is the recovery signal, not noise.** `render`
         // never rebuilds a swapchain on its own; a target whose surface
@@ -943,6 +948,185 @@ mod tests {
         app.record_bring_up(Ok(None));
         assert_eq!(app.failure(), None, "an absent adapter is not an error");
         assert!(!app.done(), "and the simulation should carry on without it");
+    }
+
+    /// Press a key, or let go of it.
+    fn key(app: &mut CubeApp, code: renew_event::KeyCode, pressed: bool) {
+        app.event(renew_event::WindowEvent::Key {
+            code,
+            pressed,
+            repeat: false,
+        });
+    }
+
+    /// An app with its clock anchored, ready to be played.
+    fn session() -> (CubeApp, LoopControl, u64) {
+        let mut app = app();
+        app.frame = Some(FrameLoop::new(
+            Timestep::HZ_60,
+            StepBudget::DEFAULT,
+            Timestamp::from_nanos(0),
+        ));
+        (app, LoopControl::default(), 0)
+    }
+
+    /// Let `ticks` of wall clock pass, a sixtieth at a time.
+    fn play(app: &mut CubeApp, control: &mut LoopControl, ticks: u64, now: &mut u64) {
+        let step = Timestep::HZ_60.nanos().get();
+        for _ in 0..ticks {
+            *now += step;
+            app.update_at(Timestamp::from_nanos(*now), control);
+        }
+    }
+
+    /// Stand on the floor rather than in the air, which is where a run
+    /// starts and is not what any of this is about.
+    fn land(app: &mut CubeApp, control: &mut LoopControl, now: &mut u64) {
+        play(app, control, 60, now);
+    }
+
+    /// **Played, not simulated: the keys move the player where they are
+    /// looking.** Every other test here checks a part — the mapping, the
+    /// rotation, the pacing. This presses keys and asks the world what
+    /// happened, which is the only thing that catches two correct parts
+    /// wired together wrongly.
+    #[test]
+    fn a_played_session_walks_where_it_is_facing() {
+        use renew_event::KeyCode;
+
+        let (mut app, mut control, mut now) = session();
+        land(&mut app, &mut control, &mut now);
+        let landed = app.world.eye();
+
+        // Yaw zero looks along +z, so forward is north.
+        key(&mut app, KeyCode::KeyW, true);
+        play(&mut app, &mut control, 40, &mut now);
+        key(&mut app, KeyCode::KeyW, false);
+        let north = app.world.eye();
+        assert!(
+            north.z > landed.z,
+            "holding forward at yaw zero should walk north: {landed:?} to {north:?}"
+        );
+        assert!(
+            (north.x - landed.x).abs() <= Fixed::from_ratio(1, 4),
+            "and should not drift sideways: {landed:?} to {north:?}"
+        );
+
+        // Back is not another word for forward.
+        key(&mut app, KeyCode::KeyS, true);
+        play(&mut app, &mut control, 40, &mut now);
+        key(&mut app, KeyCode::KeyS, false);
+        let returned = app.world.eye();
+        assert!(
+            returned.z < north.z,
+            "back should undo forward: {north:?} to {returned:?}"
+        );
+
+        // A quarter turn to the right, then forward: now east. Three
+        // degrees a tick, so thirty ticks is ninety degrees.
+        key(&mut app, KeyCode::ArrowRight, true);
+        play(&mut app, &mut control, 30, &mut now);
+        key(&mut app, KeyCode::ArrowRight, false);
+        key(&mut app, KeyCode::KeyW, true);
+        play(&mut app, &mut control, 40, &mut now);
+        key(&mut app, KeyCode::KeyW, false);
+        assert!(
+            app.world.eye().x > returned.x,
+            "after a quarter turn, forward should walk east: {returned:?} to {:?}",
+            app.world.eye()
+        );
+
+        assert!(!app.done(), "a played session should still be playable");
+        assert_eq!(app.failure(), None);
+    }
+
+    /// The other half of playing it: the world changes when you tell it
+    /// to, and refuses when it should.
+    #[test]
+    fn a_played_session_digs_and_places_and_jumps() {
+        use renew_event::KeyCode;
+
+        let (mut app, mut control, mut now) = session();
+        land(&mut app, &mut control, &mut now);
+
+        // Look down. Seven ticks of three degrees is about twenty, which
+        // from standing height puts the aim a few blocks ahead rather
+        // than at the player's own feet.
+        key(&mut app, KeyCode::ArrowDown, true);
+        play(&mut app, &mut control, 7, &mut now);
+        key(&mut app, KeyCode::ArrowDown, false);
+        let floor = app
+            .aim_cell()
+            .expect("looking down from standing height should reach the floor");
+        assert_eq!(floor.y, 0, "the thing ahead and below is the arena's floor");
+
+        // **The shell refuses to be dug**, which is why this world has a
+        // mound in it at all: a player with only the box in reach could
+        // break nothing. A test that dug the floor would assert the
+        // opposite of what this world does.
+        let (shell_broken, _) = app.world.edits();
+        key(&mut app, KeyCode::Enter, true);
+        key(&mut app, KeyCode::Enter, false);
+        play(&mut app, &mut control, 2, &mut now);
+        assert_eq!(
+            app.world.edits().0,
+            shell_broken,
+            "the arena's shell must not be breakable, or the box can be walked out of"
+        );
+
+        // The mound sits east of where the player starts. Turn to it and
+        // walk, then look down at it.
+        key(&mut app, KeyCode::ArrowUp, true);
+        play(&mut app, &mut control, 7, &mut now);
+        key(&mut app, KeyCode::ArrowUp, false);
+        key(&mut app, KeyCode::ArrowRight, true);
+        play(&mut app, &mut control, 30, &mut now);
+        key(&mut app, KeyCode::ArrowRight, false);
+        key(&mut app, KeyCode::KeyW, true);
+        play(&mut app, &mut control, 40, &mut now);
+        key(&mut app, KeyCode::KeyW, false);
+        key(&mut app, KeyCode::ArrowDown, true);
+        play(&mut app, &mut control, 7, &mut now);
+        key(&mut app, KeyCode::ArrowDown, false);
+
+        let mound = app
+            .aim_cell()
+            .expect("the mound should be in reach after walking to it");
+        assert!(
+            mound.y >= 1,
+            "the mound stands above the floor, and the floor cannot be dug: {mound:?}"
+        );
+
+        // Break it, and put one back.
+        let (broken_before, placed_before) = app.world.edits();
+        key(&mut app, KeyCode::Enter, true);
+        key(&mut app, KeyCode::Enter, false);
+        play(&mut app, &mut control, 2, &mut now);
+        assert_eq!(
+            app.world.edits(),
+            (broken_before + 1, placed_before),
+            "enter should break exactly the block aimed at, and place nothing"
+        );
+
+        key(&mut app, KeyCode::Tab, true);
+        key(&mut app, KeyCode::Tab, false);
+        play(&mut app, &mut control, 2, &mut now);
+        assert_eq!(
+            app.world.edits().1,
+            placed_before + 1,
+            "tab should place one block against what is aimed at"
+        );
+
+        // Jumping leaves the ground, which is the whole of what it does.
+        let before_jump = app.world.eye();
+        key(&mut app, KeyCode::Space, true);
+        play(&mut app, &mut control, 4, &mut now);
+        key(&mut app, KeyCode::Space, false);
+        assert!(
+            app.world.eye().y > before_jump.y,
+            "space should leave the ground: {before_jump:?} to {:?}",
+            app.world.eye()
+        );
     }
 
     /// **The window must not quit itself.** The headless run needs a tick
