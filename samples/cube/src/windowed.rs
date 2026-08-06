@@ -236,16 +236,18 @@ struct Gpu {
     aimed_at: Option<Cell>,
     /// The plain mesh pipeline, for geometry that is already clip space.
     overlay: MeshRenderer,
-    /// The crosshair, built by the first frame that draws one and rebuilt
-    /// when the window's shape changes.
+    /// The crosshair, built at bring-up and rebuilt when the window's
+    /// shape changes.
     ///
-    /// **Built there rather than at bring-up**, so one place decides what
-    /// shape it should be. Built in both, the two would have to agree
-    /// about the aspect for ever, and the bring-up copy would be right
-    /// only until the first resize.
-    crosshair: Option<Mesh>,
-    /// The aspect the crosshair was built for. Meaningless until there is
-    /// a crosshair, which is what the `Option` beside it says.
+    /// **Built at bring-up rather than lazily**, because that is where a
+    /// device failure is already reported: built on the first frame, a
+    /// refused upload would have to be either swallowed — leaving the
+    /// game to draw without one for ever, silently — or turned into a
+    /// branch that draws a frame with no crosshair, which no working
+    /// device ever takes and no test can therefore reach.
+    crosshair: Mesh,
+    /// The aspect the crosshair was built for, so a resized window gets
+    /// square arms again rather than keeping the old window's stretch.
     crosshair_aspect: f32,
 }
 
@@ -371,6 +373,10 @@ impl CubeApp {
             .map_err(|error| format!("uploading the world's geometry: {error}"))?;
         let overlay = MeshRenderer::new(&device, target.format())
             .map_err(|error| format!("building the overlay pipeline: {error}"))?;
+        let crosshair_aspect = aspect_of(size);
+        let crosshair = overlay
+            .upload(&device, &crate::crosshair::scene(crosshair_aspect))
+            .map_err(|error| format!("uploading the crosshair: {error}"))?;
         Ok(Some(Gpu {
             device,
             target,
@@ -379,8 +385,8 @@ impl CubeApp {
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
             overlay,
-            crosshair: None,
-            crosshair_aspect: 0.0,
+            crosshair,
+            crosshair_aspect,
         }))
     }
 
@@ -408,16 +414,17 @@ impl CubeApp {
             gpu.aimed_at = aimed;
         }
 
-        // The first frame builds the crosshair; a resize rebuilds it,
-        // because a resized window changes what "square" means and the
-        // arms would otherwise keep the old window's stretch. Two quads:
-        // not a cost worth caching around.
+        // A resize changes what "square" means, so the arms are rebuilt
+        // rather than left with the old window's stretch. Two quads: not
+        // a cost worth caching around. A refused rebuild keeps the arms
+        // it has, which are stretched rather than absent.
         let wanted = aspect_of(gpu.target.extent());
-        if gpu.crosshair.is_none() || (wanted - gpu.crosshair_aspect).abs() > f32::EPSILON {
-            gpu.crosshair = gpu
+        if (wanted - gpu.crosshair_aspect).abs() > f32::EPSILON
+            && let Ok(rebuilt) = gpu
                 .overlay
                 .upload(&gpu.device, &crate::crosshair::scene(wanted))
-                .ok();
+        {
+            gpu.crosshair = rebuilt;
             gpu.crosshair_aspect = wanted;
         }
 
@@ -442,15 +449,9 @@ impl CubeApp {
         // of it; the order settles it anyway. A crosshair that failed to
         // upload is simply absent — a frame of the world is worth more
         // than no frame at all.
-        let outcome = if let Some(crosshair) = gpu.crosshair.as_ref() {
-            let items = [world, gpu.overlay.item(crosshair)];
-            let passes = [pass(&color, &items)];
-            gpu.target.render(&RenderDesc::new(&passes))
-        } else {
-            let items = [world];
-            let passes = [pass(&color, &items)];
-            gpu.target.render(&RenderDesc::new(&passes))
-        };
+        let items = [world, gpu.overlay.item(&gpu.crosshair)];
+        let passes = [pass(&color, &items)];
+        let outcome = gpu.target.render(&RenderDesc::new(&passes));
         self.record_present(&outcome);
     }
 
