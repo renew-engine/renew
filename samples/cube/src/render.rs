@@ -527,6 +527,50 @@ pub(crate) mod tests {
         }
     }
 
+    /// **The overlay reaches the still.** The window draws the crosshair
+    /// every frame; the player's-eye still draws it for the same reason
+    /// that view lights the aimed block. Nothing else asserts that the
+    /// argument is used — the command-line run executes the branch
+    /// without checking what came out of it.
+    #[test]
+    fn an_overlay_is_drawn_over_the_world() {
+        let grid = crate::arena();
+        let camera = crate::camera::free_view([-8.0, 6.0, -10.0], [4.0, 1.5, 0.0], 1.0);
+        if let Some(plain) =
+            pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
+        {
+            let overlay = crate::crosshair::scene(1.0);
+            let marked = draw_through(&grid, &camera, None, Some(&overlay))
+                .expect("the overlay draw should succeed");
+            assert!(
+                differing_bytes(&plain, &marked) > 0,
+                "an overlay changed no pixel, so it never reached the pass"
+            );
+
+            // And it is at the centre, where the aim goes — not merely
+            // somewhere.
+            let middle = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+            assert_ne!(
+                marked[middle..middle + 3],
+                plain[middle..middle + 3],
+                "the overlay drew somewhere other than the middle of the picture"
+            );
+
+            // An empty overlay is not an error and not a mark: it is the
+            // same picture. The guard that decides this is otherwise a
+            // branch nothing takes, since the one real overlay is never
+            // empty.
+            let nothing = Scene::new();
+            let unmarked = draw_through(&grid, &camera, None, Some(&nothing))
+                .expect("an empty overlay should draw the world and nothing else");
+            assert_eq!(
+                differing_bytes(&plain, &unmarked),
+                0,
+                "an empty overlay must leave the picture alone"
+            );
+        }
+    }
+
     /// Lighting a visible block changes the picture; lighting one nobody
     /// can see changes nothing.
     fn assert_the_highlight_reaches_the_pixels(

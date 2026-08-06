@@ -38,6 +38,14 @@ pub enum CliError {
     NotANumber(String),
     /// A script name that names no script.
     UnknownScript(String),
+    /// A flag that asks for a picture, given alongside `--window`.
+    ///
+    /// **A flag that parses and then does nothing is a lie the parser
+    /// tells.** `--window` plays the game; `--render`, `--show`, `--view`,
+    /// `--eye` and `--look-at` all describe a still. Given together, one
+    /// of them was going to be silently ignored — and the user who typed
+    /// it would have no way to discover which.
+    WindowAndStill(&'static str),
     /// A view name that names no view.
     ///
     /// Its own variant rather than [`Self::UnknownFlag`], which is what
@@ -60,6 +68,12 @@ impl CliError {
             }
             Self::UnknownView(name) => {
                 format!("no view called `{name}`; try player or iso")
+            }
+            Self::WindowAndStill(flag) => {
+                format!(
+                    "`{flag}` describes a picture and `--window` plays the game; ask for one or \
+                     the other"
+                )
             }
         }
     }
@@ -305,7 +319,11 @@ pub fn usage() -> &'static str {
      --ticks N       how many ticks to run (default 600); with --window,\n\
                      the game plays until closed unless this is given\n\
      --json          print the answer as JSON rather than as a sentence\n\
-     --help          print this and stop\n"
+     --help          print this and stop\n\
+     \n\
+     --window plays the game; --render, --show, --view, --eye and\n\
+     --look-at describe a picture. Asking for both is refused rather\n\
+     than one of them being ignored.\n"
 }
 
 /// Parse a command line.
@@ -373,6 +391,23 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Options, Cl
                 options.window_ticks = Some(options.ticks);
             }
             other => return Err(CliError::UnknownFlag(other.to_string())),
+        }
+    }
+    // Refused here rather than ignored later: the run is about to
+    // choose one of two things to do, and the flags for the other would
+    // vanish without a word.
+    if options.window {
+        if options.render.is_some() {
+            return Err(CliError::WindowAndStill("--render"));
+        }
+        if options.show {
+            return Err(CliError::WindowAndStill("--show"));
+        }
+        // The default is the isometric still; anything else was asked
+        // for, including `--eye` and `--look-at`, which set the free
+        // view between them.
+        if options.view != View::default() {
+            return Err(CliError::WindowAndStill("--view"));
         }
     }
     Ok(options)

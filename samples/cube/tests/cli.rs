@@ -394,3 +394,41 @@ fn the_refusal_names_both_roads() {
         "the refusal does not depend on how the answer was to be formatted"
     );
 }
+
+/// **Asking to play and to draw at once is refused**, rather than one of
+/// the two being dropped without a word.
+#[test]
+fn playing_and_drawing_at_once_is_refused() {
+    let cases = [
+        (vec!["--window", "--render", "out.png"], "--render"),
+        (vec!["--window", "--show"], "--show"),
+        (vec!["--window", "--view", "player"], "--view"),
+        (vec!["--window", "--eye", "1,2,3"], "--view"),
+        (vec!["--window", "--look-at", "0,0,0"], "--view"),
+    ];
+    for (arguments, named) in cases {
+        let owned: Vec<String> = arguments.iter().map(|a| (*a).to_string()).collect();
+        let refused = parse(owned);
+        assert!(
+            matches!(&refused, Err(CliError::WindowAndStill(flag)) if *flag == named),
+            "{arguments:?} should be refused naming `{named}`, got {refused:?}"
+        );
+        let message = refused.unwrap_err().message();
+        assert!(message.contains(named), "{message}");
+        assert!(message.contains("--window"), "{message}");
+    }
+}
+
+/// The flags a window *does* honour keep working.
+#[test]
+fn a_window_still_takes_a_script_a_bound_and_a_format() {
+    let arguments: Vec<String> = ["--window", "--script", "build", "--ticks", "30", "--json"]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect();
+    let options = parse(arguments).expect("these belong with a window");
+    assert!(options.window);
+    assert_eq!(options.script, Script::Build);
+    assert_eq!(options.window_ticks, Some(30));
+    assert!(options.json);
+}
