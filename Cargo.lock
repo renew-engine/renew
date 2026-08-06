@@ -1785,6 +1785,7 @@ dependencies = [
  "proptest",
  "renew-event",
  "renew-fixed",
+ "renew-frame",
  "renew-platform",
  "renew-png",
  "renew-render3d",
