@@ -423,24 +423,34 @@ impl CubeApp {
 
         let packed = RenderCamera::from_columns(camera.view_projection());
         let color = [attachment(SKY)];
-        // The world first, the crosshair over it. The overlay sits at the
-        // near plane, so the depth test cannot put a block in front of
-        // it; the order settles it anyway. A crosshair that failed to
-        // upload is simply absent — a frame of the world is worth more
-        // than no frame at all.
-        let mut items = Vec::with_capacity(2);
-        items.push(gpu.renderer.item(&gpu.mesh, &packed));
-        if let Some(crosshair) = gpu.crosshair.as_ref() {
-            items.push(gpu.overlay.item(crosshair));
-        }
-        let passes = [pass(&color, &items)];
+        let world = gpu.renderer.item(&gpu.mesh, &packed);
+
         // **The outcome is the recovery signal, not noise.** `render`
         // never rebuilds a swapchain on its own; a target whose surface
         // has changed reports `NeedsResize` and stays dormant until
         // someone calls `resize`. Discarding this is how a window comes
         // back from the first resize showing the last frame it managed,
         // for ever.
-        let outcome = gpu.target.render(&RenderDesc::new(&passes));
+        //
+        // Two arrays rather than one `Vec`, because this runs once a
+        // frame and the steady-state loop is meant to reach the heap
+        // never: a two-element `Vec` would be an allocation and a free
+        // every frame, to hold a count known at compile time.
+        //
+        // The world first, the crosshair over it. The overlay sits at
+        // the near plane, so the depth test cannot put a block in front
+        // of it; the order settles it anyway. A crosshair that failed to
+        // upload is simply absent — a frame of the world is worth more
+        // than no frame at all.
+        let outcome = if let Some(crosshair) = gpu.crosshair.as_ref() {
+            let items = [world, gpu.overlay.item(crosshair)];
+            let passes = [pass(&color, &items)];
+            gpu.target.render(&RenderDesc::new(&passes))
+        } else {
+            let items = [world];
+            let passes = [pass(&color, &items)];
+            gpu.target.render(&RenderDesc::new(&passes))
+        };
         self.record_present(&outcome);
     }
 
