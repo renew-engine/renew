@@ -1030,10 +1030,10 @@ mod tests {
         key(&mut app, KeyCode::KeyW, true);
         play(&mut app, &mut control, 40, &mut now);
         key(&mut app, KeyCode::KeyW, false);
+        let east = app.world.eye();
         assert!(
-            app.world.eye().x > returned.x,
-            "after a quarter turn, forward should walk east: {returned:?} to {:?}",
-            app.world.eye()
+            east.x > returned.x,
+            "after a quarter turn, forward should walk east: {returned:?} to {east:?}"
         );
 
         assert!(!app.done(), "a played session should still be playable");
@@ -1122,10 +1122,10 @@ mod tests {
         key(&mut app, KeyCode::Space, true);
         play(&mut app, &mut control, 4, &mut now);
         key(&mut app, KeyCode::Space, false);
+        let airborne = app.world.eye();
         assert!(
-            app.world.eye().y > before_jump.y,
-            "space should leave the ground: {before_jump:?} to {:?}",
-            app.world.eye()
+            airborne.y > before_jump.y,
+            "space should leave the ground: {before_jump:?} to {airborne:?}"
         );
     }
 
