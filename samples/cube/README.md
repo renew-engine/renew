@@ -244,13 +244,11 @@ and you walk north-east. It is steppy, and honest: a smoother walk needs a
 fixed-point vector in the world's own vocabulary, which is a change to the
 simulation rather than to the driver.
 
-**A diagonal is about forty per cent faster than a straight line**, since
-the world scales each axis by the walk speed independently and a diagonal
-moves on both. That is the world's arithmetic, not the driver's, and it
-predates any of this — but the driver is the first thing that lets a
-player produce a diagonal at all, so it is the first place worth saying
-so. Normalising it is a change to the simulation and to every digest that
-walks.
+**Every one of the eight directions is the same speed.** Scaling each
+axis by the walk speed independently would make a diagonal `sqrt(2)` times
+faster — about forty per cent — so both axes are scaled by `1/sqrt(2)`
+when both are moving. The world does this rather than the driver, because
+it is the world that decides what a step covers.
 
 **Turning is fixed point, and that is not fussiness.** Yaw and pitch feed
 `Angle::sin_cos`, which is fixed point and identical on every platform,

@@ -186,8 +186,26 @@ impl Cube {
 
         self.act(intent);
 
-        let walk_x = Fixed::from_int(intent.walk_x.clamp(-1, 1)) * self.tuning.walk_speed;
-        let walk_z = Fixed::from_int(intent.walk_z.clamp(-1, 1)) * self.tuning.walk_speed;
+        // **A diagonal is not faster than a straight line.** Scaling each
+        // axis by the walk speed independently gives a diagonal a
+        // magnitude of sqrt(2) times the speed, so a player crossing the
+        // arena corner to corner arrives about forty per cent sooner for
+        // no reason they can see. Both axes are scaled by 1/sqrt(2) when
+        // both are moving, which makes every one of the eight directions
+        // the same speed.
+        //
+        // `sqrt` here rather than a written-down constant: it is exact in
+        // this crate's own arithmetic and cannot drift from the two it is
+        // reconciling. It costs a handful of integer operations on a tick
+        // that is about to do collision resolution.
+        let (step_x, step_z) = (intent.walk_x.clamp(-1, 1), intent.walk_z.clamp(-1, 1));
+        let speed = if step_x != 0 && step_z != 0 {
+            self.tuning.walk_speed * Fixed::from_ratio(1, 2).sqrt()
+        } else {
+            self.tuning.walk_speed
+        };
+        let walk_x = Fixed::from_int(step_x) * speed;
+        let walk_z = Fixed::from_int(step_z) * speed;
 
         let pressed = intent.jump && !self.jump_was_held;
         let mut vertical = if pressed && self.grounded {

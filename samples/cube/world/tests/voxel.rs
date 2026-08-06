@@ -549,3 +549,68 @@ fn a_placed_block_is_not_the_stone_it_was_placed_against() {
     );
     assert_ne!(BRICK, STONE, "or the distinction is a name only");
 }
+
+/// **Every direction is the same speed.** Scaling each axis by the walk
+/// speed independently made a diagonal `sqrt(2)` times faster, so a
+/// player crossing the arena corner to corner arrived about forty per
+/// cent sooner for no reason they could see.
+///
+/// Measured as distance covered rather than as a velocity, because the
+/// velocity is an implementation detail and the distance is what a player
+/// experiences.
+#[test]
+fn walking_a_diagonal_is_not_faster_than_walking_straight() {
+    let travelled = |x: i32, z: i32| {
+        let mut world = Cube::new(Tuning::default(), flat_world(), v(0, 4, 0));
+        // Land first: falling is not what this measures.
+        for _ in 0..40 {
+            world.step(Intent::IDLE);
+        }
+        let start = world.eye();
+        for _ in 0..30 {
+            world.step(Intent::walking(x, z));
+        }
+        let end = world.eye();
+        let (dx, dz) = (end.x - start.x, end.z - start.z);
+        // Squared, so the comparison needs no square root and no
+        // tolerance for one.
+        dx * dx + dz * dz
+    };
+
+    let straight = travelled(1, 0);
+    let diagonal = travelled(1, 1);
+    let slack = straight / Fixed::from_int(20);
+    assert!(
+        (diagonal - straight).abs() <= slack,
+        "a diagonal covered {diagonal:?} against a straight line's {straight:?}"
+    );
+}
+
+/// And the other diagonals agree with the first, so the fix is about
+/// magnitude rather than about one lucky sign.
+#[test]
+fn all_four_diagonals_cover_the_same_ground() {
+    let travelled = |x: i32, z: i32| {
+        let mut world = Cube::new(Tuning::default(), flat_world(), v(0, 4, 0));
+        for _ in 0..40 {
+            world.step(Intent::IDLE);
+        }
+        let start = world.eye();
+        for _ in 0..30 {
+            world.step(Intent::walking(x, z));
+        }
+        let end = world.eye();
+        let (dx, dz) = (end.x - start.x, end.z - start.z);
+        dx * dx + dz * dz
+    };
+
+    let first = travelled(1, 1);
+    for (x, z) in [(1, -1), (-1, 1), (-1, -1)] {
+        let other = travelled(x, z);
+        let slack = first / Fixed::from_int(20);
+        assert!(
+            (other - first).abs() <= slack,
+            "({x}, {z}) covered {other:?} against the (1, 1) diagonal's {first:?}"
+        );
+    }
+}
