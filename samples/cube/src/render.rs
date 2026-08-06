@@ -16,7 +16,7 @@ use renew_render3d::{
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
 use renew_sample_cube_world::grid::{Cell, Grid};
 
-use crate::mesh::{aimed_colour, colour, faces};
+use crate::mesh::{aimed_colour, colour, corner_shades, faces};
 use crate::projection::Projection;
 
 /// Why a render did not happen.
@@ -138,14 +138,26 @@ pub fn build(grid: &Grid) -> Scene {
             continue;
         }
         let corners = quad.corners();
-        scene.quad(
+        let paint = colour(quad.block, quad.face);
+        // The same corner darkening the perspective views get. It is a
+        // property of the geometry, so the view it is drawn through
+        // changes nothing about which corners are enclosed.
+        let shaded = corner_shades(grid, quad).map(|shade| {
+            [
+                paint[0] * shade,
+                paint[1] * shade,
+                paint[2] * shade,
+                paint[3],
+            ]
+        });
+        scene.quad_shaded(
             [
                 view.project(corners[0]),
                 view.project(corners[1]),
                 view.project(corners[2]),
                 view.project(corners[3]),
             ],
-            colour(quad.block, quad.face),
+            shaded,
         );
     }
     scene
@@ -172,7 +184,19 @@ pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
         } else {
             colour(quad.block, quad.face)
         };
-        scene.quad(quad.corners(), paint);
+        // Corner darkening rides on the colour rather than replacing it:
+        // the face still says which way it points, and the corners say
+        // where the geometry turns.
+        let shades = corner_shades(grid, quad);
+        let corners = shades.map(|shade| {
+            [
+                paint[0] * shade,
+                paint[1] * shade,
+                paint[2] * shade,
+                paint[3],
+            ]
+        });
+        scene.quad_shaded(quad.corners(), corners);
     }
     scene
 }
@@ -364,7 +388,27 @@ mod tests {
     fn a_still_shows_the_block_being_aimed_at() {
         let grid = crate::arena();
         let camera = crate::camera::free_view([-8.0, 6.0, -10.0], [4.0, 1.5, 0.0], 1.0);
-        let plain = draw_through(&grid, &camera, None).expect("the plain draw should succeed");
+
+        // **The graceful skip, and the lane that refuses it.** Several
+        // jobs build this crate on runners with no Vulkan driver at all —
+        // the removability matrix, for one, whose subject is which crates
+        // are in the graph rather than what they draw. Under
+        // `RENEW_GOLDEN=1`, the lane that exists to run these, a skip is
+        // a failure instead, so the oracle can never pass by not running.
+        let plain = match draw_through(&grid, &camera, None) {
+            Ok(pixels) => pixels,
+            Err(RenderError::NoDevice(why)) => {
+                assert!(
+                    std::env::var_os("RENEW_GOLDEN").is_none_or(|value| value != "1"),
+                    "RENEW_GOLDEN=1 but there is no device: {why}"
+                );
+                eprintln!("SKIP: {why}");
+                return;
+            }
+            Err(other) => {
+                panic!("the plain draw failed for a reason that is not the device: {other}")
+            }
+        };
 
         // The mound spans x 2..=6, y 1..=2, z -2..=2, so this is a top
         // face with air above it and nothing between it and the eye.

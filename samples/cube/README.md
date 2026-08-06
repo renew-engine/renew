@@ -321,10 +321,25 @@ triangle crossing `w = 0` cannot be divided at all — and inside a room,
 with walls behind you, that is not a corner case. It also means the mesh
 never re-uploads when the camera moves.
 
-**Distance fades toward the horizon colour**, which is the only depth cue
-a flat-shaded room has beyond the outline where two faces meet -- without
-it a near wall and a far one are the same grey and the space reads as a
-paper cut-out. It is computed from clip `w`, not from depth: after a
+**Corners darken where blocks enclose them.** Two walls of the same colour
+meeting at an inner corner are indistinguishable from one flat wall —
+face-direction shading cannot help, because it varies between faces that
+point *differently* and an inner corner is where two same-facing walls
+meet a third. Each corner of each face is dimmed by how many of the three
+blocks touching it are solid, which is a property of the geometry rather
+than of the surface, so it survives whatever textures arrive later instead
+of being replaced by them.
+
+It is baked into the vertices at mesh time, so it costs nothing per frame
+and nothing in the vertex format. The two blocks that share an edge with a
+corner are the dark case whatever sits diagonally behind them: they close
+the corner off between them, and what is behind that cannot be seen from
+here.
+
+**Distance fades toward the horizon colour.** Without it a near wall and
+a far one are the same grey and the space reads as a paper cut-out: no
+per-vertex shading can tell them apart, because they are the same geometry
+at different distances. It is computed from clip `w`, not from depth: after a
 perspective projection `w` is the distance along the view direction while
 depth is compressed toward the near plane, so a fade driven by depth turns
 the whole room to fog a few blocks in. That is not a hypothetical; it was

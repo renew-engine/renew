@@ -99,10 +99,33 @@ impl Scene {
     /// vertex stage unmodified. A projection is a later step, and until
     /// it exists a caller drawing a world transforms on its own side.
     pub fn quad(&mut self, corners: [[f32; 3]; 4], colour: [f32; 4]) {
+        self.quad_shaded(corners, [colour; 4]);
+    }
+
+    /// The same quad with a colour for each corner, interpolated across
+    /// it by the rasterizer.
+    ///
+    /// **The vertex format always allowed this**; [`Self::quad`] simply
+    /// did not offer it, and a caller that wanted corner-varying colour
+    /// had to push vertices itself and get the winding right.
+    ///
+    /// What it is for: shading that belongs to the *geometry* rather than
+    /// to the surface. Corner darkening where blocks meet is the obvious
+    /// case — a flat-coloured world has no cue at all for an inner
+    /// corner, because two faces of the same colour meeting at one is
+    /// indistinguishable from one flat face.
+    ///
+    /// Corners are in the same order as the positions: the colour at
+    /// index `i` belongs to the corner at index `i`. The two triangles
+    /// share the diagonal from corner 0 to corner 2, so a quad whose
+    /// corner colours disagree is shaded slightly differently on either
+    /// side of that diagonal. That is inherent to drawing a quad as two
+    /// triangles and is not hidden here.
+    pub fn quad_shaded(&mut self, corners: [[f32; 3]; 4], colours: [[f32; 4]; 4]) {
         // Recorded before the push, so the triangles below index the
         // corners this call adds rather than whatever came before.
         let base = self.vertex_count();
-        for corner in corners {
+        for (corner, colour) in corners.into_iter().zip(colours) {
             self.push_vertex(corner, colour);
         }
         for offset in [0, 1, 2, 0, 2, 3] {
@@ -199,6 +222,69 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shaded quad is the same geometry with four colours instead of
+    /// one, and a flat one is the case where the four agree.
+    #[test]
+    fn a_flat_quad_is_a_shaded_one_whose_corners_agree() {
+        let corners = [
+            [-1.0, -1.0, 0.5],
+            [1.0, -1.0, 0.5],
+            [1.0, 1.0, 0.5],
+            [-1.0, 1.0, 0.5],
+        ];
+        let colour = [0.25, 0.5, 0.75, 1.0];
+
+        let mut flat = Scene::new();
+        flat.quad(corners, colour);
+
+        let mut shaded = Scene::new();
+        shaded.quad_shaded(corners, [colour; 4]);
+
+        assert_eq!(
+            flat.vertices(),
+            shaded.vertices(),
+            "the flat call must be the shaded one with four equal corners"
+        );
+        assert_eq!(flat.indices(), shaded.indices());
+    }
+
+    /// Corner colours land on their own corners, in order.
+    #[test]
+    fn each_corner_keeps_its_own_colour() {
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let colours = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+        ];
+        let mut scene = Scene::new();
+        scene.quad_shaded(corners, colours);
+
+        let bytes = scene.vertices();
+        for (index, expected) in colours.iter().enumerate() {
+            let at = index * VERTEX_STRIDE as usize + 12;
+            for (channel, wanted) in expected.iter().enumerate() {
+                let start = at + channel * 4;
+                let found = f32::from_ne_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ]);
+                assert!(
+                    (found - wanted).abs() < f32::EPSILON,
+                    "corner {index} channel {channel} is {found}, wanted {wanted}"
+                );
+            }
+        }
+    }
 
     const CORNERS: [[f32; 3]; 4] = [
         [-1.0, -1.0, 0.0],

@@ -263,14 +263,15 @@ impl Camera {
 /// and their own transform, not this.
 ///
 /// **Why a renderer fades at all**, when a fade is a look and this crate
-/// is not in the business of looks: flat-shaded geometry with no lighting
-/// gives a viewer exactly one depth cue, the outline where two faces of
-/// different orientation meet. Inside a room every wall is one flat
-/// colour, so near and far walls are indistinguishable and the space
-/// reads as a cut-out. Perspective without that cue is not perspective a
-/// viewer can see. It is a readability floor rather than a feature, and
-/// it is stated here because behaviour a caller cannot predict from the
-/// type's name is behaviour the type must name itself.
+/// is not in the business of looks: geometry with no lighting gives a
+/// viewer very little to judge distance by. A caller can put cues in the
+/// vertex colours it supplies — this crate's [`Scene::quad_shaded`]
+/// exists so it can — but no per-vertex colour distinguishes a near wall
+/// from a far one, because the two are the same geometry seen from
+/// different distances. Perspective without a distance cue is not
+/// perspective a viewer can see. It is a readability floor rather than a
+/// feature, and it is stated here because behaviour a caller cannot
+/// predict from the type's name is behaviour the type must name itself.
 ///
 /// The constants are constants because this crate has no channel for
 /// per-draw scalars that is not already carrying the camera matrix. When

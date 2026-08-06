@@ -587,6 +587,15 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-sample-glide --test golden
+      # The voxel sample's own pixel oracles, on the same rasterizer and
+      # under the same rule: RENEW_GOLDEN=1 turns their graceful skip into
+      # a failure, so a lane that exists to run them cannot pass by not
+      # running them. Several other jobs build this crate on runners with
+      # no driver at all, which is why the skip exists.
+      - name: The voxel sample's pixel oracles on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-sample-cube --features render --lib render::tests
       # The frame loop's rendering evidence, on the same pinned
       # rasterizer and under the same rule: the tick-derived pixel
       # oracle (does the readback match the colour the world computes
