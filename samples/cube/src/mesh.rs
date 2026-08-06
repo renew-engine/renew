@@ -281,6 +281,48 @@ fn shade(face: Face) -> f32 {
 mod tests {
     use super::*;
 
+    /// **A placed block is not the colour of the stone it sits against.**
+    /// The whole point of a second kind is that a player can see what
+    /// they built, and nothing but this comparison says so — the tile is
+    /// shared, so the hue carries all of the signal.
+    #[test]
+    fn a_placed_block_is_a_different_colour_from_the_world() {
+        for face in [Face::Top, Face::North, Face::Bottom] {
+            let stone = colour(STONE, face);
+            let brick = colour(BRICK, face);
+            assert!(
+                stone
+                    .iter()
+                    .zip(brick)
+                    .any(|(a, b)| (a - b).abs() > f32::EPSILON),
+                "{face:?}: brick reads as stone"
+            );
+            // Not merely different: different in hue, so it survives the
+            // face shading that darkens both by the same factor.
+            let stone_warmth = stone[0] - stone[2];
+            let brick_warmth = brick[0] - brick[2];
+            assert!(
+                brick_warmth > stone_warmth + 0.05,
+                "{face:?}: brick should be warmer than stone, got {brick_warmth} against                  {stone_warmth}"
+            );
+        }
+    }
+
+    /// Neither is the magenta that means "nobody gave this a colour".
+    #[test]
+    fn both_kinds_have_a_colour_of_their_own() {
+        let unknown = base_colour(200);
+        for block in [STONE, BRICK] {
+            assert!(
+                base_colour(block)
+                    .iter()
+                    .zip(unknown)
+                    .any(|(a, b)| (a - b).abs() > f32::EPSILON),
+                "block {block} falls through to the unknown-block colour"
+            );
+        }
+    }
+
     /// A block alone in the air is denied nothing: every corner of every
     /// face is at full brightness.
     #[test]
