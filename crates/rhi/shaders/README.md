@@ -226,3 +226,33 @@ bytes, both recompiled and compared against the committed blobs.
 are already clip space, so `w` is one everywhere and a fade computed from
 it would be a constant tint. A caller that wants distance on this path has
 projected the world itself and knows the distances it used.
+
+## push_color.vert and .frag - compiled 2026-08-11
+
+**Test fixtures, not builtins**: the smallest consumer of a vertex-stage
+push-constant range, embedded by the device suite alone (`tests/device.rs`,
+`tests/present_smoke.rs`) and deliberately absent from `builtin` — an
+engine-facing export with no engine consumer would be dead public surface.
+They live here so one directory carries every GLSL source and one record
+attests every blob.
+
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O push_color.vert -o push_color.vert.spv
+> glslc -O push_color.frag -o push_color.frag.spv
+```
+
+1064 bytes and 324 bytes, the exact blobs the tests embed. The vertex
+stage reads a sixteen-byte `push_constant` block (one vec4 color) and
+covers the target with the classic oversized triangle from
+`gl_VertexIndex`, so a frame's every pixel answers with exactly the bytes
+that frame pushed — which is what makes the device test's oracle a
+readback comparison rather than a smoke call.

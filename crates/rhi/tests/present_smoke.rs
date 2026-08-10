@@ -26,6 +26,11 @@ fn clear(color: Color) -> [Attachment; 1] {
     )]
 }
 
+/// The push-constant test fixture the device suite also embeds; its
+/// compile record lives in the shaders README beside the builtins'.
+static PUSH_COLOR_VS_SPV: &[u8] = include_bytes!("../shaders/push_color.vert.spv");
+static PUSH_COLOR_FS_SPV: &[u8] = include_bytes!("../shaders/push_color.frag.spv");
+
 const FRAMES_WANTED: u32 = 10;
 /// Poll-loop iterations before declaring the run wedged.
 const UPDATE_BUDGET: u32 = 20_000;
@@ -39,6 +44,11 @@ struct SmokeApp {
     /// depth passes off the strict lane, a failure on it (the exercise
     /// must not go silently vacuous where it is the point).
     depth_pipeline: Option<renew_rhi::RenderPipeline>,
+    /// The push-constant path on the asynchronous target: constants
+    /// recorded fresh into every frame's command buffer while several
+    /// frames are in flight, under sync validation — the one exercise
+    /// the synchronous offscreen suite cannot provide.
+    push_pipeline: Option<renew_rhi::RenderPipeline>,
     /// The mesh path on the asynchronous target, and the only place its
     /// retention rule can be proved.
     mesh_pipeline: Option<renew_rhi::RenderPipeline>,
@@ -61,6 +71,7 @@ impl SmokeApp {
             target: None,
             pipeline: None,
             depth_pipeline: None,
+            push_pipeline: None,
             mesh_pipeline: None,
             mesh: None,
             size: Extent {
@@ -145,46 +156,12 @@ impl WindowApp for SmokeApp {
             }
         };
         // **Textured, so that the window record path actually binds a
-        // descriptor set.** The bind is one method shared by both
-        // targets, and until now only the offscreen target ever reached
-        // its body — on this path it always took the early return, so a
-        // bind recorded outside the render pass, or after the draw,
-        // would have passed every check. Validation is `Required` here
-        // and the run asserts zero errors, which is what makes that
-        // reachable at all.
-        //
-        // The pipeline takes shared ownership of both, so neither needs
-        // a field on this struct: the keep-alive is the point of the
-        // design and letting them drop here exercises it.
-        let texels: [u8; 16] = [
-            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
-        ];
-        let texture = match device.create_texture(&TextureDesc::new(
-            Extent {
-                width: 2,
-                height: 2,
-            },
-            &texels,
-        )) {
-            Ok(texture) => Rc::new(texture),
-            Err(error) => {
-                self.failure = Some(format!("atlas upload failed: {error}"));
-                return;
-            }
-        };
-        let sampler = match device.create_sampler(&SamplerDesc::atlas()) {
-            Ok(sampler) => Rc::new(sampler),
-            Err(error) => {
-                self.failure = Some(format!("sampler failed: {error}"));
-                return;
-            }
-        };
-        let pipeline = match device.create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, target.format()).texture(texture, sampler),
-        ) {
+        // descriptor set** — see `textured_fixture` for the reasoning,
+        // which is the point of this suite drawing anything at all.
+        let pipeline = match textured_fixture(&device, target.format()) {
             Ok(pipeline) => pipeline,
             Err(error) => {
-                self.failure = Some(format!("pipeline failed: {error}"));
+                self.failure = Some(error);
                 return;
             }
         };
@@ -214,6 +191,16 @@ impl WindowApp for SmokeApp {
             eprintln!("SKIP depth passes: adapter offers no chain depth format");
             None
         };
+        // The push-constant fixture: sixteen bytes of color, pushed
+        // fresh each frame so the window record path's push call runs
+        // under sync validation with several frames in flight.
+        let push_pipeline = match push_fixture(&device, target.format()) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                self.failure = Some(error);
+                return;
+            }
+        };
         // The mesh path, on the one target where its lifetime rule can
         // be tested. Built here so the run can drop the handle later
         // while a submit that reads it is still outstanding.
@@ -228,6 +215,7 @@ impl WindowApp for SmokeApp {
         self.target = Some(target);
         self.pipeline = Some(pipeline);
         self.depth_pipeline = depth_pipeline;
+        self.push_pipeline = Some(push_pipeline);
         self.mesh_pipeline = Some(mesh_pipeline);
         self.mesh = Some(mesh);
     }
@@ -303,14 +291,32 @@ impl WindowApp for SmokeApp {
                 // ever taken away, so "a mesh without its pipeline" is a
                 // state this app cannot reach and does not need an arm.
                 let geometry = self.mesh_pipeline.as_ref().zip(self.mesh.as_ref());
-                let items: &[Item<'_>] = match (self.pipeline.as_ref(), geometry) {
-                    (Some(pipeline), Some((mesh_pipeline, mesh))) => {
-                        items_with_mesh =
-                            [Item::new(pipeline), Item::new(mesh_pipeline).mesh(mesh)];
+                // A color that changes per frame, drawn FIRST so the
+                // textured quad covers it: what this proves is the
+                // record path re-pushing constants into each in-flight
+                // frame's command buffer, not a picture.
+                let level = f32::from(u8::try_from(self.frames % 8).unwrap_or(0)) / 8.0;
+                let mut pushed = [0u8; 16];
+                for slot in pushed.chunks_exact_mut(4) {
+                    slot.copy_from_slice(&level.to_ne_bytes());
+                }
+                // Built together in `ready`, like the mesh pair: "one
+                // without the other" is a state this app cannot reach.
+                let drawn = self.pipeline.as_ref().zip(self.push_pipeline.as_ref());
+                let items: &[Item<'_>] = match (drawn, geometry) {
+                    (Some((pipeline, push_pipeline)), Some((mesh_pipeline, mesh))) => {
+                        items_with_mesh = [
+                            Item::new(push_pipeline).push_data(&pushed),
+                            Item::new(pipeline),
+                            Item::new(mesh_pipeline).mesh(mesh),
+                        ];
                         &items_with_mesh
                     }
-                    (Some(pipeline), None) => {
-                        items_storage = [Item::new(pipeline)];
+                    (Some((pipeline, push_pipeline)), None) => {
+                        items_storage = [
+                            Item::new(push_pipeline).push_data(&pushed),
+                            Item::new(pipeline),
+                        ];
                         &items_storage
                     }
                     (None, _) => &[],
@@ -389,6 +395,66 @@ impl WindowApp for SmokeApp {
             control.request_redraw();
         }
     }
+}
+
+/// The textured pipeline, so that the window record path actually
+/// binds a descriptor set.
+///
+/// The bind is one method shared by both targets, and until this
+/// fixture existed only the offscreen target ever reached its body —
+/// on this path it always took the early return, so a bind recorded
+/// outside the render pass, or after the draw, would have passed every
+/// check. Validation is `Required` here and the run asserts zero
+/// errors, which is what makes that reachable at all.
+///
+/// The pipeline takes shared ownership of the texture and sampler, so
+/// neither needs a field on the app: the keep-alive is the point of
+/// the design and letting them drop here exercises it. Extracted for
+/// the reason `mesh_fixture` was: fixture work, out of a `ready` at
+/// the length the lint refuses.
+fn textured_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<renew_rhi::RenderPipeline, String> {
+    let texels: [u8; 16] = [
+        10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+    ];
+    let texture = device
+        .create_texture(&TextureDesc::new(
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &texels,
+        ))
+        .map(Rc::new)
+        .map_err(|error| format!("atlas upload failed: {error}"))?;
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .map(Rc::new)
+        .map_err(|error| format!("sampler failed: {error}"))?;
+    device
+        .create_pipeline(&PipelineDesc::new(builtin::TEXTURED, format).texture(texture, sampler))
+        .map_err(|error| format!("pipeline failed: {error}"))
+}
+
+/// The push-constant pipeline, built outside the frame loop.
+///
+/// Extracted for the reason `mesh_fixture` was: it is fixture work,
+/// and `ready` is already at the length the lint refuses.
+fn push_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<renew_rhi::RenderPipeline, String> {
+    device
+        .create_pipeline(
+            &PipelineDesc::new(
+                renew_rhi::Shaders::new(PUSH_COLOR_VS_SPV, PUSH_COLOR_FS_SPV, 3),
+                format,
+            )
+            .push_constant_size(16),
+        )
+        .map_err(|error| format!("push-constant pipeline failed: {error}"))
 }
 
 /// A mesh pipeline and one indexed quad, built outside the frame loop.

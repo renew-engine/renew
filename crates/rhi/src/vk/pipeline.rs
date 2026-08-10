@@ -108,12 +108,12 @@ pub(crate) const INSTANCE_BINDING: u32 = 1;
 /// slices — [`crate::builtin`] provides the embedded v0 shaders.
 ///
 /// `#[non_exhaustive]`, so it is built through [`PipelineDesc::new`]
-/// rather than as a struct literal. Every field this will grow — vertex
-/// input, blend state, depth state, push-constant ranges — is optional
-/// with a defined absence, so each can arrive as a builder method
-/// without touching a single existing caller. Without the attribute,
-/// adding one field edits every construction site in the workspace, and
-/// the count only rises.
+/// rather than as a struct literal. Every field it has grown — vertex
+/// input, blend state, depth state, and the push-constant range — is
+/// optional with a defined absence, and each arrived as a builder
+/// method touching no existing caller, which is the attribute paying
+/// for itself. Without it, adding one field edits every construction
+/// site in the workspace, and the count only rises.
 ///
 /// **Not `Default`.** A default would have to supply empty shader bytes,
 /// and empty SPIR-V is rejected by name during validation — so the
@@ -177,6 +177,44 @@ pub struct PipelineDesc<'a> {
     /// inside a pass that carries a depth attachment, and the reverse —
     /// the targets assert the match by name.
     pub depth_state: Option<DepthState>,
+    /// Vertex-stage push-constant range, in bytes; zero for none.
+    ///
+    /// The per-draw constant channel: bytes recorded into the command
+    /// stream per item, never a buffer, never a retention slot. At most
+    /// [`MAX_PUSH_CONSTANT_BYTES`] and a multiple of four — anything
+    /// else is a contract violation, asserted at creation. An item
+    /// drawn through a declaring pipeline must carry exactly this many
+    /// bytes; presence and length are both frame-contract refusals.
+    pub push_constant_size: u32,
+}
+
+/// The push-constant ceiling: Vulkan's guaranteed minimum
+/// `maxPushConstantsSize`, so a range this accepts is one every
+/// conformant adapter accepts — the same reasoning that sizes
+/// [`MAX_VERTEX_ATTRIBUTES`]. Larger device limits exist and are
+/// deliberately not queried: a range sized to one machine's limit is a
+/// pipeline that fails to build on another's.
+pub const MAX_PUSH_CONSTANT_BYTES: u32 = 128;
+
+/// Refuse a push-constant declaration outside what the spec guarantees.
+/// A pure function so both rules are unit-tested without a device.
+///
+/// # Panics
+///
+/// Over [`MAX_PUSH_CONSTANT_BYTES`], or not a multiple of four (the
+/// spec's granularity) — caller mistakes, asserted rather than
+/// returned: the environment did not decline, the declaration was
+/// never valid anywhere.
+pub(crate) fn validate_push_constant_size(size: u32) {
+    assert!(
+        size <= MAX_PUSH_CONSTANT_BYTES,
+        "a push-constant range is at most {MAX_PUSH_CONSTANT_BYTES} bytes (the guaranteed \
+         device minimum), got {size}"
+    );
+    assert!(
+        size.is_multiple_of(4),
+        "a push-constant range is a multiple of four bytes (the spec's granularity), got {size}"
+    );
 }
 
 /// How a pipeline's output is combined with what the target already
@@ -297,6 +335,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_input: None,
             instance_input: None,
             depth_state: None,
+            push_constant_size: 0,
         }
     }
 
@@ -347,6 +386,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_input: Some(layout),
             instance_input: None,
             depth_state: None,
+            push_constant_size: 0,
         }
     }
 
@@ -381,6 +421,21 @@ impl<'a> PipelineDesc<'a> {
     #[must_use]
     pub fn depth_state(mut self, depth: DepthState) -> Self {
         self.depth_state = Some(depth);
+        self
+    }
+
+    /// Declare a vertex-stage push-constant range of `bytes` bytes —
+    /// the per-draw constant channel, for values that change every
+    /// draw and belong to no instance stream.
+    ///
+    /// At most [`MAX_PUSH_CONSTANT_BYTES`] and a multiple of four;
+    /// anything else is refused at creation rather than quietly
+    /// clamped. Every item drawn through this pipeline must then carry
+    /// exactly `bytes` bytes of push data — the frame contract refuses
+    /// a missing, surplus, or mis-sized push by name.
+    #[must_use]
+    pub fn push_constant_size(mut self, bytes: u32) -> Self {
+        self.push_constant_size = bytes;
         self
     }
 }
@@ -623,6 +678,10 @@ pub struct RenderPipeline {
     /// Whether this pipeline carries depth state — the targets assert
     /// it matches the pass it draws in.
     pub(crate) depth: bool,
+    /// Declared vertex-stage push-constant range in bytes; zero for
+    /// none. The frame contract asserts every item's push data matches
+    /// it exactly, the same way it matches depth state to the pass.
+    pub(crate) push_constant_size: u32,
     descriptors: Option<Descriptors>,
     /// Kept alive because the descriptor set points at them. Never read
     /// through — the set holds the handles the GPU uses, and these hold
@@ -689,6 +748,36 @@ impl RenderPipeline {
                 0,
                 &[descriptors.set],
                 &[],
+            );
+        }
+    }
+
+    /// Record an item's push-constant bytes into `cmd`.
+    ///
+    /// **One implementation, called by both targets**, for the reason
+    /// [`Self::bind_descriptors`] states: the stage flags and offset
+    /// must agree with the one range the layout built here declares,
+    /// not with whichever target happens to be recording.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording, and its command pool must belong to
+    /// this pipeline's device. `bytes` must be exactly the declared
+    /// range — the frame contract refused anything else before
+    /// recording began.
+    pub(crate) unsafe fn push_frame_constants(&self, cmd: vk::CommandBuffer, bytes: &[u8]) {
+        // SAFETY: category 2 (ash dispatch): device live via the spine
+        // Rc; the command buffer is forwarded to the caller; the layout
+        // is live for as long as `self` is; the vertex stage flag and
+        // zero offset match the one range `create_pipeline` declares,
+        // and the contract proved `bytes` is its exact length.
+        unsafe {
+            self.shared.device.cmd_push_constants(
+                cmd,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytes,
             );
         }
     }
@@ -957,6 +1046,11 @@ impl Device {
         desc: &PipelineDesc<'_>,
     ) -> Result<RenderPipeline, PipelineError> {
         let shared = &self.shared;
+        // Contract, not environment: the ceiling is the spec's
+        // guaranteed minimum, so a size this refuses was never valid on
+        // any adapter — asserted, like the vertex-attribute ceiling,
+        // and before anything is created so the panic owns nothing.
+        validate_push_constant_size(desc.push_constant_size);
         // Checked before anything is created so this failure path owns
         // nothing. The environment declined, not the caller — a Result,
         // never an assert.
@@ -1035,7 +1129,17 @@ impl Device {
             Some(descriptors) => core::slice::from_ref(&descriptors.set_layout),
             None => &[],
         };
-        let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(set_layouts);
+        // One vertex-stage range at offset zero, present exactly when
+        // the descriptor declares a size — the record path pushes with
+        // the same stage flags and offset, one definition apart.
+        let push_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(desc.push_constant_size)];
+        let mut layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(set_layouts);
+        if desc.push_constant_size > 0 {
+            layout_info = layout_info.push_constant_ranges(&push_ranges);
+        }
         // SAFETY: category 2: device live; the layout array is a local
         // outliving the call.
         let layout = match unsafe {
@@ -1182,6 +1286,7 @@ impl Device {
             vertex_input: desc.vertex_input.is_some(),
             vertex_stride: vertex_layout.vertex_stride,
             depth: desc.depth_state.is_some(),
+            push_constant_size: desc.push_constant_size,
             descriptors,
             _bound: desc.texture.clone(),
         })
@@ -1349,5 +1454,44 @@ mod tests {
         assert!(both.test && both.write);
         let read = DepthState::test_only();
         assert!(read.test && !read.write);
+    }
+
+    /// Both push-constant rules, both sides of each, with no device
+    /// involved — the same reasoning that keeps the layout numbering
+    /// tests here rather than behind a device skip.
+    #[test]
+    fn push_constant_sizes_outside_the_spec_floor_are_refused() {
+        // Legal: absent, the smallest real range, and exactly the
+        // ceiling — the guaranteed minimum every adapter honours.
+        validate_push_constant_size(0);
+        validate_push_constant_size(4);
+        validate_push_constant_size(MAX_PUSH_CONSTANT_BYTES);
+        // Over the ceiling: valid on some adapters, which is exactly
+        // why it is refused — a pipeline that builds on one machine
+        // and fails on another is the portability bug this floor
+        // exists to prevent.
+        assert!(
+            std::panic::catch_unwind(|| validate_push_constant_size(MAX_PUSH_CONSTANT_BYTES + 4))
+                .is_err(),
+            "over the guaranteed minimum must refuse"
+        );
+        // Off-granularity: the spec requires four-byte multiples.
+        assert!(
+            std::panic::catch_unwind(|| validate_push_constant_size(66)).is_err(),
+            "a non-multiple-of-four range must refuse"
+        );
+    }
+
+    /// The builder writes the field it names; the descriptor starts
+    /// with no range.
+    #[test]
+    fn the_push_constant_builder_declares_the_range() {
+        let desc = PipelineDesc::new(
+            Shaders::new(&[1, 2, 3, 4], &[5, 6, 7, 8], 3),
+            TargetFormat::Rgba8Unorm,
+        );
+        assert_eq!(desc.push_constant_size, 0, "no range unless declared");
+        let desc = desc.push_constant_size(64);
+        assert_eq!(desc.push_constant_size, 64);
     }
 }

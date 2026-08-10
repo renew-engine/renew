@@ -863,6 +863,13 @@ impl WindowTarget {
                         item.pipeline.pipeline,
                     );
                     item.pipeline.bind_descriptors(cmd);
+                    if let Some(bytes) = item.push_data {
+                        // The contract proved presence and length match
+                        // the pipeline's declared range; the bytes are
+                        // copied into the command stream here, so no
+                        // retention slot is spent.
+                        item.pipeline.push_frame_constants(cmd, bytes);
+                    }
                     if let Some(mesh) = item.mesh {
                         // No slot arithmetic: a mesh was written once at
                         // creation and has one region, so this bind is
