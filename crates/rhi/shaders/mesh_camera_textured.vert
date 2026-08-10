@@ -9,20 +9,21 @@
 // decision fixed when the pipeline was built, and the pipelines differ
 // anyway: this one carries a descriptor set and the plain one does not.
 //
-// Layout here and the `VertexAttribute` slices at pipeline creation
-// describe the same bytes: binding 0 is location 0 = vec3 position in
-// world space, location 1 = vec4 colour, location 2 = vec2 texture
-// coordinate; binding 1 is locations 3..=6, the matrix columns. Change
-// one and the other in the same commit or the draw reads garbage.
+// The matrix arrives as a push-constant block, exactly as in
+// `mesh_camera.vert` — see that file for why it left the instance
+// stream. Layout here and the `VertexAttribute` slice at pipeline
+// creation describe the same bytes: binding 0 is location 0 = vec3
+// position in world space, location 1 = vec4 colour, location 2 = vec2
+// texture coordinate. No per-instance stream. Change one and the other
+// in the same commit or the draw reads garbage.
+
+layout(push_constant) uniform Camera {
+    mat4 view_projection;
+} camera;
 
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
 layout(location = 2) in vec2 vertex_uv;
-
-layout(location = 3) in vec4 view_projection_0;
-layout(location = 4) in vec4 view_projection_1;
-layout(location = 5) in vec4 view_projection_2;
-layout(location = 6) in vec4 view_projection_3;
 
 layout(location = 0) out vec4 fragment_colour;
 // How far away this vertex is, as a fraction of the distance at which
@@ -33,13 +34,7 @@ layout(location = 1) out float fragment_fade;
 layout(location = 2) out vec2 fragment_uv;
 
 void main() {
-    mat4 view_projection = mat4(
-        view_projection_0,
-        view_projection_1,
-        view_projection_2,
-        view_projection_3
-    );
-    gl_Position = view_projection * vec4(vertex_position, 1.0);
+    gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
     fragment_colour = vertex_colour;
     fragment_uv = vertex_uv;
     // The distance at which the fade is complete, in world units. A

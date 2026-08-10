@@ -1,6 +1,6 @@
 [package]
 name = "renew-render3d"
-description = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, indexed draws in submission order"
+description = "Indexed 3D geometry over the rendering crate: mesh pipelines with and without a camera or a texture, depth-tested, indexed draws in submission order"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Indexed 3D geometry over the rendering crate: one mesh pipeline, depth-tested, indexed draws in submission order."
+purpose = "Indexed 3D geometry over the rendering crate: mesh pipelines with and without a camera or a texture, depth-tested, indexed draws in submission order."
 maturity = "bootstrap"
 core = false
 extension_points = []

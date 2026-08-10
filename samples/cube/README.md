@@ -310,9 +310,14 @@ A real camera, with a real perspective divide. `--eye` and `--look-at`
 place it; `--view player` uses the player's own eyes.
 
 ```
-renew --features render run cube -- --eye -8,6,-10 --look-at 4,1.5,0 --render room.png
+renew --features render run cube -- --ticks 1 --eye -8,6,-10 --look-at 4,1.5,0 --render room.png
 renew --features render run cube -- --view player --render eyes.png
 ```
+
+The `--ticks 1` matters for reproducing the picture above: the world is
+in it, so the tick count is part of the recipe, and the committed bytes
+were drawn at tick one. Without it the default six hundred ticks produce
+a subtly different image of the same room.
 
 **`--view player` is not the default, and the reason is the picture it
 draws.** The player spawns a step from the mound, so a still from their
@@ -322,14 +327,15 @@ view from inside is worth having; it is worth asking for, from a
 viewpoint that shows something. The picture above is `--eye`/`--look-at`
 for exactly that reason.
 
-**The matrix goes to the GPU as per-instance vertex input.** That is not
-a workaround for the shortest path: this engine has no push-constant
-range anywhere, and its one descriptor set binds a combined image sampler
-to the fragment stage, so per-instance input at binding 1 is the only
-route a matrix can take — and it is the one the mesh path deliberately
-left composable.
+**The matrix goes to the GPU as a push-constant block.** It rode the
+per-instance channel first, when that was the only route a matrix could
+take; the engine grew a vertex-stage push-constant range since, built
+for exactly this kind of per-draw constant, and the camera moved onto
+it — sixty-four bytes recorded into the command stream each draw,
+costing no buffer and freeing the instance channel for things that
+genuinely come in instances.
 
-It is also the right answer regardless. `gl_Position` carries a real `w`,
+Either way the transform belongs on the GPU. `gl_Position` carries a real `w`,
 so the hardware performs the perspective divide and the clipper handles
 geometry behind the eye. Transforming vertices on the way in would mean
 **clipping polygons against the near plane in this sample**, because a

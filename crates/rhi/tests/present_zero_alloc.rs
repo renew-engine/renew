@@ -77,6 +77,12 @@ struct GateApp {
     /// offscreen gate alone would leave the binds, the indexed draw and
     /// the dedupe scan on this path gated by nothing.
     mesh: Option<(renew_rhi::RenderPipeline, renew_rhi::Mesh)>,
+    /// The camera-shaped push pipeline and an identity matrix's bytes:
+    /// the camera's every-frame item shape — a mesh draw carrying
+    /// sixty-four bytes of push data — measured on the window path so
+    /// the claim that a push allocates nothing is gate-observed here
+    /// too, not inherited from the offscreen gate by reading.
+    push_camera: Option<(renew_rhi::RenderPipeline, [u8; 64])>,
     size: Extent,
     presented: u32,
     updates: u32,
@@ -102,6 +108,7 @@ impl GateApp {
             pipeline: None,
             instanced: None,
             mesh: None,
+            push_camera: None,
             size: Extent {
                 width: 0,
                 height: 0,
@@ -187,46 +194,17 @@ impl WindowApp for GateApp {
                 return;
             }
         };
-        let mesh = match device.create_pipeline(&PipelineDesc::mesh(
-            builtin::MESH,
-            target.format(),
-            builtin::MESH_LAYOUT,
-        )) {
-            Ok(mesh_pipeline) => {
-                let mut vertices = Vec::new();
-                for corner in [
-                    [-0.6f32, -0.6, 0.0],
-                    [0.6, -0.6, 0.0],
-                    [0.6, 0.6, 0.0],
-                    [-0.6, 0.6, 0.0],
-                ] {
-                    for value in corner {
-                        vertices.extend_from_slice(&value.to_ne_bytes());
-                    }
-                    for value in [0.2f32, 0.8, 0.4, 1.0] {
-                        vertices.extend_from_slice(&value.to_ne_bytes());
-                    }
-                    // The texture coordinate the layout declares. These
-                    // shaders do not consume it; the record must still be
-                    // what the pipeline says it is.
-                    for value in [0.0f32, 0.0] {
-                        vertices.extend_from_slice(&value.to_ne_bytes());
-                    }
-                }
-                match device.create_mesh(&renew_rhi::MeshDesc::new(
-                    &vertices,
-                    12 + 16 + 8,
-                    &[0, 1, 2, 0, 2, 3],
-                )) {
-                    Ok(mesh) => (mesh_pipeline, mesh),
-                    Err(error) => {
-                        self.failure = Some(format!("mesh failed: {error}"));
-                        return;
-                    }
-                }
-            }
+        let mesh = match mesh_fixture(&device, target.format()) {
+            Ok(pair) => pair,
             Err(error) => {
-                self.failure = Some(format!("mesh pipeline failed: {error}"));
+                self.failure = Some(error);
+                return;
+            }
+        };
+        let push_camera = match push_camera_fixture(&device, target.format()) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.failure = Some(error);
                 return;
             }
         };
@@ -235,6 +213,7 @@ impl WindowApp for GateApp {
         self.pipeline = Some(pipeline);
         self.instanced = Some(instanced);
         self.mesh = Some(mesh);
+        self.push_camera = Some(push_camera);
     }
 
     #[expect(
@@ -289,7 +268,8 @@ impl WindowApp for GateApp {
                 let passes_one;
                 let passes_two;
                 let mesh_storage;
-                let passes: &[Pass<'_>] = match self.presented % 4 {
+                let push_storage;
+                let passes: &[Pass<'_>] = match self.presented % 5 {
                     0 => {
                         if let Some(pipeline) = self.pipeline.as_ref() {
                             items_storage = [Item::new(pipeline)];
@@ -331,6 +311,22 @@ impl WindowApp for GateApp {
                                 Item::new(mesh_pipeline).mesh(mesh),
                             ];
                             passes_one = [Pass::new(&color, &mesh_storage)];
+                            &passes_one
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
+                    }
+                    // The push frame: the camera's every-frame shape on
+                    // the asynchronous path — an indexed draw whose
+                    // sixty-four matrix bytes are recorded as push
+                    // constants into this slot's command buffer.
+                    3 => {
+                        if let (Some((push_pipeline, matrix)), Some((_, mesh))) =
+                            (self.push_camera.as_ref(), self.mesh.as_ref())
+                        {
+                            push_storage = [Item::new(push_pipeline).mesh(mesh).push_data(matrix)];
+                            passes_one = [Pass::new(&color, &push_storage)];
                             &passes_one
                         } else {
                             passes_one = [Pass::new(&color, &[])];
@@ -431,6 +427,75 @@ impl WindowApp for GateApp {
             control.request_redraw();
         }
     }
+}
+
+/// The mesh pipeline and one small indexed quad, built outside the
+/// measured window. Extracted for the reason the offscreen gate's
+/// fixtures are: fixture work, out of a `ready` at the length the lint
+/// refuses. The texture coordinate is packed unread because the record
+/// must be what the pipeline's layout says it is.
+fn mesh_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Mesh), String> {
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::mesh(
+            builtin::MESH,
+            format,
+            builtin::MESH_LAYOUT,
+        ))
+        .map_err(|error| format!("mesh pipeline failed: {error}"))?;
+    let mut vertices = Vec::new();
+    for corner in [
+        [-0.6f32, -0.6, 0.0],
+        [0.6, -0.6, 0.0],
+        [0.6, 0.6, 0.0],
+        [-0.6, 0.6, 0.0],
+    ] {
+        for value in corner {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in [0.2f32, 0.8, 0.4, 1.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in [0.0f32, 0.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    let mesh = device
+        .create_mesh(&renew_rhi::MeshDesc::new(
+            &vertices,
+            12 + 16 + 8,
+            &[0, 1, 2, 0, 2, 3],
+        ))
+        .map_err(|error| format!("mesh failed: {error}"))?;
+    Ok((pipeline, mesh))
+}
+
+/// The camera-shaped push pipeline and an identity matrix's sixty-four
+/// bytes, built outside the measured window. Extracted for the reason
+/// the offscreen gate's fixtures are: fixture work, out of a `ready`
+/// at the length the lint refuses.
+fn push_camera_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), String> {
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA, format, builtin::MESH_LAYOUT)
+                .push_constant_size(64),
+        )
+        .map_err(|error| format!("push pipeline failed: {error}"))?;
+    let mut matrix = [0u8; 64];
+    for (index, value) in [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+    .iter()
+    .enumerate()
+    {
+        matrix[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    Ok((pipeline, matrix))
 }
 
 fn main() {
