@@ -81,7 +81,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [1061, 1062, 1063]
+lines = [1075, 1076, 1077]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
