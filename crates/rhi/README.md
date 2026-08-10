@@ -41,7 +41,8 @@ display server, and the golden-image tests attest the bytes.
   most 128 bytes, the guaranteed device minimum; items then carry
   exactly that many bytes per draw), an optional sampled texture bound
   at creation, and optional `DepthState` (test/write, compare fixed
-  `LESS_OR_EQUAL`). Two pipeline shapes: `PipelineDesc::new` takes
+  `GREATER_OR_EQUAL` — depth is reversed: nearer is larger, the far
+  plane is zero, depth clears to zero). Two pipeline shapes: `PipelineDesc::new` takes
   `Shaders`, whose stages write their own vertex list and carry the
   count they generate; `PipelineDesc::mesh` takes `MeshShaders` and a
   per-vertex layout, and has no count at all because the geometry

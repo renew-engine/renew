@@ -417,7 +417,8 @@ impl<'a> PipelineDesc<'a> {
     }
 
     /// Test (and per `depth`, write) the pass's depth attachment. The
-    /// compare op is `LESS_OR_EQUAL` in v0.
+    /// compare op is `GREATER_OR_EQUAL`: depth is reversed, nearer is
+    /// larger, and the far plane is zero.
     #[must_use]
     pub fn depth_state(mut self, depth: DepthState) -> Self {
         self.depth_state = Some(depth);
@@ -479,8 +480,21 @@ impl<'a> FrameData<'a> {
 /// Whether a pipeline tests and writes the pass's depth attachment.
 ///
 /// `#[non_exhaustive]` with constructors: the compare op is fixed
-/// `LESS_OR_EQUAL` in v0 and arrives as a builder when a consumer needs
-/// another.
+/// `GREATER_OR_EQUAL` — **depth is reversed**, the engine's single
+/// convention: nearer is larger, the far plane is zero, depth clears to
+/// zero. Reversed rather than conventional because a perspective
+/// mapping is hyperbolic either way, and the conventional direction
+/// lands most of a scene at depths near 1.0 — where f32 spacing is at
+/// its coarsest — starving the far field of distinct values until
+/// distant surfaces z-fight. Reversed, the hyperbola's dense end and
+/// the float format's dense end coincide, and a consumer's regression
+/// test measures the difference in representable steps rather than
+/// asserting it. (The fade-fog defect the depth range caused earlier
+/// was a different cost — hyperbolic compression fools a depth-driven
+/// fade under either convention, which is why fades read clip `w`.)
+/// A compare-op builder arrives when a consumer genuinely needs
+/// another op — a knob with no consumer is a knob that exists to be
+/// wrong.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct DepthState {
@@ -1218,13 +1232,14 @@ impl Device {
         if let Some(format) = depth_format {
             rendering = rendering.depth_attachment_format(format);
         }
-        // Compare op fixed LESS_OR_EQUAL in v0; another op arrives as a
-        // builder on `DepthState` when a consumer needs it.
+        // Reversed depth: nearer is larger, so the compare keeps the
+        // larger value. Fixed rather than configurable; another op
+        // arrives as a builder on `DepthState` when a consumer needs it.
         let depth_stencil = desc.depth_state.map(|state| {
             vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(state.test)
                 .depth_write_enable(state.write)
-                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
         });
 
         let mut info = vk::GraphicsPipelineCreateInfo::default()

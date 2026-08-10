@@ -335,8 +335,16 @@ impl WindowApp for SmokeApp {
                 let passes: &[Pass<'_>] = if let Some(depth_pipeline) = self.depth_pipeline.as_ref()
                 {
                     depth_items_storage = [Item::new(depth_pipeline)];
+                    // The triangle writes z = 0.0, so against a 0.0
+                    // clear it survives only on the compare's or-equal
+                    // boundary — deterministic, and these passes exist
+                    // for depth-image barrier coverage, not compare
+                    // semantics. A future strictly-greater compare
+                    // would quietly turn them into draws of nothing;
+                    // whoever adds that builder gives this exercise an
+                    // interior margin in the same change.
                     let fresh =
-                        Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+                        Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard);
                     passes_three = [
                         Pass::new(&color, items),
                         Pass::new(&load, &depth_items_storage).depth(fresh),

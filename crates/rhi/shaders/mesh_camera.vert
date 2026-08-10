@@ -47,10 +47,12 @@ layout(location = 0) out vec4 fragment_colour;
 //
 // **Computed here because `w` is linear in view distance and depth is
 // not.** After a perspective projection `gl_Position.w` is the distance
-// along the view direction, while `gl_FragCoord.z` is compressed toward
-// the near plane -- with a near plane of a twentieth of a block, depth
-// passes 0.99 within a few blocks and a fade driven by it turns the whole
-// room to fog. That was not a guess; it was the first picture.
+// along the view direction, while `gl_FragCoord.z` spends nearly its
+// whole value range beside the eye -- under the reversed mapping it
+// falls from 1.0 to below 0.01 within a few blocks of a near plane a
+// twentieth of a block away. A fade driven by depth therefore saturates
+// almost immediately; driven the conventional way it turned the whole
+// room to fog, and that was not a guess -- it was the first picture.
 layout(location = 1) out float fragment_fade;
 
 void main() {

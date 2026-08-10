@@ -13,10 +13,14 @@
 //! carries an explicit minus; without it the world renders upside down,
 //! which looks like an ordinary picture taken from an odd angle.
 //!
-//! **Clip `z` runs `[0, 1]`, near being small.** Depth clears to one and
-//! the compare is `LESS_OR_EQUAL`, so the smaller value survives. This is
-//! not OpenGL's `[-1, 1]`, and using OpenGL's projection here puts half
-//! the world behind the near plane while the rest still draws.
+//! **Clip `z` runs `[0, 1]` REVERSED: near is one, far is zero.** Depth
+//! clears to zero and the compare is `GREATER_OR_EQUAL`, so the larger
+//! value survives — the engine's single depth convention, chosen because
+//! float precision concentrates toward zero and a conventional mapping
+//! spends nearly all of its distinct values within a few blocks of the
+//! near plane. This is not OpenGL's `[-1, 1]`, and not the conventional
+//! Vulkan mapping either; a projection built for either draws the far
+//! wall over everything in front of it.
 //!
 //! **The matrix goes to the GPU, and the divide happens there.** That is
 //! the whole reason the shader takes a matrix: a triangle crossing
@@ -72,15 +76,20 @@ impl Camera {
             ],
         ];
 
-        // Perspective, for Vulkan's clip space: y negated because screen
-        // y grows downward, and z mapped to [0, 1] rather than [-1, 1].
+        // Perspective, for the engine's clip space: y negated because
+        // screen y grows downward, and z mapped REVERSED into [0, 1] —
+        // near lands on one, far on zero, so the depth values with the
+        // most float precision describe the distances that need it.
+        // Derivation: ndc(z) = (A z + B) / z with ndc(near) = 1 and
+        // ndc(far) = 0 gives A = -near / (far - near) and
+        // B = far * near / (far - near).
         let focal = 1.0 / (self.fov * 0.5).tan();
         let range = self.far - self.near;
         let projection = [
             [focal / self.aspect, 0.0, 0.0, 0.0],
             [0.0, -focal, 0.0, 0.0],
-            [0.0, 0.0, self.far / range, 1.0],
-            [0.0, 0.0, -(self.far * self.near) / range, 0.0],
+            [0.0, 0.0, -self.near / range, 1.0],
+            [0.0, 0.0, (self.far * self.near) / range, 0.0],
         ];
 
         multiply(projection, view)
@@ -337,18 +346,21 @@ mod tests {
         );
     }
 
-    /// The near and far planes land on nought and one, which is Vulkan's
-    /// depth range and not OpenGL's.
+    /// The near and far planes land on one and nought — the reversed
+    /// mapping, deliberately, and not OpenGL's range either.
     #[test]
-    fn the_planes_map_to_the_vulkan_depth_range() {
+    fn the_planes_map_to_the_reversed_depth_range() {
         let camera = looking_north();
         let matrix = camera.view_projection();
         let near = project(matrix, [0.0, 0.0, camera.near]);
         let far = project(matrix, [0.0, 0.0, camera.far]);
-        assert!(near[2].abs() < 1e-4, "the near plane should be 0: {near:?}");
         assert!(
-            (far[2] - 1.0).abs() < 1e-4,
-            "the far plane should be 1: {far:?}"
+            (near[2] - 1.0).abs() < 1e-4,
+            "the near plane should be 1 under reversed depth: {near:?}"
+        );
+        assert!(
+            far[2].abs() < 1e-4,
+            "the far plane should be 0 under reversed depth: {far:?}"
         );
     }
 
@@ -367,14 +379,64 @@ mod tests {
         }
     }
 
+    /// **Why the depth mapping is reversed, as a measurement.** Two
+    /// walls a block apart at the far end of the arena must land on
+    /// distinct f32 depths, or the depth test cannot order them and
+    /// which one shows becomes a rounding accident. Under the
+    /// conventional mapping (near to 0, far to 1) this camera's
+    /// near/far ratio of four thousand crushes the far half of the
+    /// range into a handful of representable values — measured here so
+    /// the motivation is a number, not a memory: at 190 and 191 blocks
+    /// the conventional mapping's gap is several times fewer f32 steps
+    /// than the reversed one's.
+    #[test]
+    fn reversed_depth_separates_the_far_field_better_than_conventional() {
+        let camera = Camera {
+            eye: [0.0, 0.0, 0.0],
+            target: [0.0, 0.0, 10.0],
+            fov: core::f32::consts::FRAC_PI_2,
+            aspect: 1.0,
+            near: NEAR,
+            far: FAR,
+        };
+        // Both mappings, computed the way the projection computes them.
+        let range = camera.far - camera.near;
+        let conventional =
+            |z: f32| (z * (camera.far / range) - (camera.far * camera.near) / range) / z;
+        let reversed =
+            |z: f32| (z * (-camera.near / range) + (camera.far * camera.near) / range) / z;
+        // Distinct representable values between the two depths: count
+        // f32 bit-steps between the mapped endpoints.
+        let steps = |mapping: &dyn Fn(f32) -> f32, a: f32, b: f32| {
+            let (lo, hi) = (mapping(a).min(mapping(b)), mapping(a).max(mapping(b)));
+            hi.to_bits() - lo.to_bits()
+        };
+        let far_pair = (190.0f32, 191.0f32);
+        let conventional_steps = steps(&conventional, far_pair.0, far_pair.1);
+        let reversed_steps = steps(&reversed, far_pair.0, far_pair.1);
+        assert!(
+            reversed_steps > 4 * conventional_steps,
+            "reversed depth must separate the far field far better: {reversed_steps} \
+             f32 steps against {conventional_steps} between {} and {} blocks",
+            far_pair.0,
+            far_pair.1
+        );
+        assert!(
+            reversed_steps > 0 && conventional_steps > 0,
+            "both mappings must at least distinguish the pair at all: \
+             reversed {reversed_steps}, conventional {conventional_steps}"
+        );
+    }
+
     proptest::proptest! {
         /// Anything in front of the eye is nearer than anything behind
-        /// it, over arbitrary points.
+        /// it, over arbitrary points — and under reversed depth, nearer
+        /// means larger.
         ///
         /// The property the depth test rests on. A projection monotone
         /// at the two points somebody typed can still fold in between.
         #[test]
-        fn depth_grows_with_distance_from_the_eye(
+        fn depth_shrinks_with_distance_from_the_eye(
             x in -20.0f32..20.0,
             y in -20.0f32..20.0,
             near_z in 1.0f32..40.0,
@@ -384,8 +446,8 @@ mod tests {
             let here = project(matrix, [x, y, near_z]);
             let there = project(matrix, [x, y, near_z + step]);
             proptest::prop_assert!(
-                there[2] > here[2],
-                "further should be deeper: {:?} then {:?}", here, there
+                there[2] < here[2],
+                "further should be smaller under reversed depth: {:?} then {:?}", here, there
             );
         }
 

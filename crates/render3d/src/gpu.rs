@@ -505,15 +505,16 @@ pub fn attachment(clear: Color) -> Attachment {
 ///
 /// **No load spelling and no clear value to choose.** Loading depth on a
 /// frame's first depth use is a contract violation the rendering crate
-/// refuses with a retained assertion, and one is the only clear value
-/// that means "nothing is in front yet" under the fixed compare. A
-/// parameter here would be a way to spell a mistake.
+/// refuses with a retained assertion, and zero is the only clear value
+/// that means "nothing is in front yet" under the reversed compare —
+/// depth is reversed engine-wide, nearer is larger, and the far plane
+/// is zero. A parameter here would be a way to spell a mistake.
 ///
 /// Discarded rather than stored because nothing reads depth after the
 /// frame; a caller that grows a use for it composes its own attachment.
 #[must_use]
 pub fn depth_attachment() -> Attachment {
-    Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard)
+    Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard)
 }
 
 /// A pass over `color` drawing `items`, with depth attached.
@@ -755,7 +756,8 @@ mod tests {
     }
 
     /// The depth attachment clears to the far plane and keeps nothing —
-    /// asserted because both are decisions rather than defaults.
+    /// asserted because both are decisions rather than defaults. Under
+    /// reversed depth the far plane is zero.
     #[test]
     fn the_depth_attachment_clears_far_and_discards() {
         let depth = depth_attachment();
@@ -763,8 +765,8 @@ mod tests {
             // Bit equality, the rendering crate's own precedent for this:
             // the value is a literal this code wrote and nothing computes
             // on it, so a tolerance would be looser than the truth.
-            matches!(depth.load, LoadOp::Clear(ClearValue::Depth(value)) if value.to_bits() == 1.0f32.to_bits()),
-            "depth clears to the far plane, or nothing is in front of anything"
+            matches!(depth.load, LoadOp::Clear(ClearValue::Depth(value)) if value.to_bits() == 0.0f32.to_bits()),
+            "depth clears to the far plane (zero, reversed), or nothing is in front of anything"
         );
         assert!(matches!(depth.store, StoreOp::Discard));
     }

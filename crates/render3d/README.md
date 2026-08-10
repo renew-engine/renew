@@ -101,9 +101,9 @@ and the fill rule gives a sample on it to exactly one of them.
 
 One of those oracles carries more than it looks. `at_equal_depth_the_later_push_wins`
 draws two quads at the same depth in each order; under the fixed
-`LESS_OR_EQUAL` compare the later one wins, so it is the only test here
-that fails if submission order is perturbed anywhere between a push and
-a draw. Verified by doing exactly that: reversing the index order makes
+`GREATER_OR_EQUAL` compare (depth is reversed engine-wide) the later
+one wins, so it is the only test here that fails if submission order is
+perturbed anywhere between a push and a draw. Verified by doing exactly that: reversing the index order makes
 it the single failure, while every other test in the crate passes.
 
 Those oracles skip where there is no adapter, which is why the software
