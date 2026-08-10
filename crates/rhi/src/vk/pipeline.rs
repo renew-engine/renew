@@ -237,6 +237,19 @@ pub enum Blend {
     /// that are not premultiplied composite wrong, visibly, not
     /// unsafely.
     PremultipliedAlpha,
+    /// `src + dst`, color and alpha alike — light on light, for
+    /// sources that accumulate rather than occlude: glows, sparks, the
+    /// particle shapes that read as energy.
+    ///
+    /// **Order-independent by arithmetic**: saturating addition is
+    /// commutative, so draw order cannot change the picture — which is
+    /// what lets unsorted batches of additive geometry stay
+    /// byte-stable under any submission order, and what makes this the
+    /// recommended mode where sorting has not been paid for. The
+    /// premultiplied convention still applies to the source bytes; the
+    /// difference from [`Self::PremultipliedAlpha`] is only the
+    /// destination factor.
+    Additive,
 }
 
 /// A vertex/fragment pair and the number of vertices its vertex stage
@@ -1220,6 +1233,18 @@ impl Device {
                 .color_blend_op(vk::BlendOp::ADD)
                 .src_alpha_blend_factor(vk::BlendFactor::ONE)
                 .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD),
+            // The one difference from the arm above is the destination
+            // factor: the target keeps everything it has, and the
+            // source adds to it.
+            Blend::Additive => vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE)
                 .alpha_blend_op(vk::BlendOp::ADD),
         }];
         let color_blend =
