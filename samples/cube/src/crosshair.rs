@@ -49,8 +49,9 @@ fn bars(aspect: f32) -> [[[f32; 3]; 4]; 2] {
     const ARM: f32 = 0.024;
     /// Half the thickness of an arm, the same way.
     const THICK: f32 = 0.0035;
-    /// Nearest, so nothing in the world can be in front of it.
-    const DEPTH: f32 = 0.0;
+    /// Nearest, so nothing in the world can be in front of it — and
+    /// under reversed depth, nearest is one.
+    const DEPTH: f32 = 1.0;
 
     // A degenerate aspect would put an infinity in the geometry, and a
     // corner that is not a number takes the whole quad off the screen —
@@ -118,8 +119,10 @@ mod tests {
             .map(|corner| corner[2])
             .collect();
         assert!(
-            depths.iter().all(|depth| depth.abs() < f32::EPSILON),
-            "the overlay must sit at the near plane: {depths:?}"
+            depths
+                .iter()
+                .all(|depth| (depth - 1.0).abs() < f32::EPSILON),
+            "the overlay must sit at the near plane, which reversed depth puts at one: {depths:?}"
         );
     }
 

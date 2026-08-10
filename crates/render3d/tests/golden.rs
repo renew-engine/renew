@@ -215,9 +215,11 @@ fn the_nearer_quad_wins_in_either_push_order() -> Result<(), Box<dyn std::error:
     let near = [0.0, 0.0, 1.0, 1.0];
     let far = [1.0, 0.0, 0.0, 1.0];
 
+    // Depth is reversed: nearer is LARGER. The blue quad is still the
+    // near one and must still win.
     for (label, first, second) in [
-        ("far pushed first", (0.75, far), (0.25, near)),
-        ("near pushed first", (0.25, near), (0.75, far)),
+        ("far pushed first", (0.25, far), (0.75, near)),
+        ("near pushed first", (0.75, near), (0.25, far)),
     ] {
         let mut scene = Scene::new();
         full_quad(&mut scene, first.0, first.1);
@@ -246,9 +248,9 @@ fn the_nearer_quad_wins_in_either_push_order() -> Result<(), Box<dyn std::error:
 /// see it.**
 ///
 /// Two quads at the *same* depth. Under the compare the rendering crate
-/// fixes — `LESS_OR_EQUAL` — a fragment at equal depth passes, so the one
-/// submitted later wins. Reverse the push order and the colour reverses
-/// with it.
+/// fixes — `GREATER_OR_EQUAL`, reversed — a fragment at equal depth
+/// passes, so the one submitted later wins. Reverse the push order and
+/// the colour reverses with it.
 ///
 /// Every other oracle here would survive a reordering somewhere in the
 /// scene, the upload or the draw. This one would not, which is what makes

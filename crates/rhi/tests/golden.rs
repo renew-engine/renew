@@ -596,12 +596,16 @@ fn depth_test_keeps_the_near_quad_in_either_draw_order() -> Result<(), Box<dyn s
             .depth_state(DepthState::read_write()),
     )?;
     let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
-    let far = depth_instance([0.0, 0.0], 0.75, [1.0, 0.0, 0.0, 1.0]);
-    let near = depth_instance([0.0, 0.0], 0.25, [0.0, 0.0, 1.0, 1.0]);
+    // Depth is reversed: nearer is LARGER, and the far plane is zero.
+    // The blue quad is still the near one and still wins — the values
+    // flipped with the convention so the oracle's meaning (and its
+    // committed golden) survive the flip byte-identically.
+    let far = depth_instance([0.0, 0.0], 0.25, [1.0, 0.0, 0.0, 1.0]);
+    let near = depth_instance([0.0, 0.0], 0.75, [0.0, 0.0, 1.0, 1.0]);
     let far_first: Vec<u8> = [far.clone(), near.clone()].concat();
     let near_first: Vec<u8> = [near, far].concat();
     let black = Color::new(0.0, 0.0, 0.0, 1.0);
-    let depth_attachment = Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+    let depth_attachment = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard);
     let mut pixels = vec![0u8; target.byte_len()];
 
     let color = clear(black);
@@ -773,7 +777,7 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
     let mut pass_a = Pass::new(&color, &items_a);
     let mut pass_b = Pass::new(&load, &items_b);
     if with_depth {
-        let fresh = Attachment::new(LoadOp::Clear(ClearValue::Depth(1.0)), StoreOp::Discard);
+        let fresh = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard);
         pass_a = pass_a.depth(fresh);
         pass_b = pass_b.depth(fresh);
     }

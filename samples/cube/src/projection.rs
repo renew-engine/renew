@@ -15,11 +15,12 @@
 //! ordinary picture of a corner, because the box is nearly symmetric. The
 //! tell is the mound hanging off the ceiling.
 //!
-//! **Clip `z` runs `[0, 1]`, and nearer must be smaller.** Depth clears to
-//! one and the compare is `LESS_OR_EQUAL`, so the smallest `z` survives.
-//! Flip the sign and the depth test keeps the *furthest* surface: you see
-//! the far wall through everything in front of it, which again looks like
-//! a real render rather than a bug.
+//! **Clip `z` runs `[0, 1]` REVERSED, and nearer must be larger.** Depth
+//! clears to zero and the compare is `GREATER_OR_EQUAL`, so the largest
+//! `z` survives — the engine's single depth convention. Flip the sign
+//! and the depth test keeps the *furthest* surface: you see the far wall
+//! through everything in front of it, which again looks like a real
+//! render rather than a bug.
 //!
 //! **No trigonometry.** The rotation is a true isometric one — a 45°
 //! turn and a 35.264° tilt — and every entry of that basis is expressible
@@ -113,9 +114,10 @@ impl Projection {
             along(self.right) / self.half[0],
             // Negated: screen y grows downward, world y grows up.
             -along(self.up) / self.half[1],
-            // Depth into [0, 1], further along the view direction being
-            // larger, so the smaller value the compare keeps is nearer.
-            0.5f32.mul_add(along(self.forward) / self.half[2], 0.5),
+            // Depth into [0, 1] REVERSED: further along the view
+            // direction is smaller, so the larger value the compare
+            // keeps is nearer.
+            (-0.5f32).mul_add(along(self.forward) / self.half[2], 0.5),
         ]
     }
 
@@ -202,20 +204,20 @@ mod tests {
         );
     }
 
-    /// **Nearer is smaller**, which is what the depth compare keeps.
+    /// **Nearer is larger**, which is what the reversed compare keeps.
     ///
     /// Same shape of failure as the test above: get this backwards and
     /// the far wall draws over everything in front of it, which still
     /// looks like a rendered room.
     #[test]
-    fn a_nearer_point_gets_a_smaller_depth() {
+    fn a_nearer_point_gets_a_larger_depth() {
         let view = arena_box();
         // The eye is toward +x +y +z, so that corner is the near one.
         let near = view.project([18.0, 9.0, 18.0]);
         let far = view.project([-18.0, 1.0, -18.0]);
         assert!(
-            near[2] < far[2],
-            "the compare keeps the smaller depth, so nearer must be smaller: \
+            near[2] > far[2],
+            "the reversed compare keeps the larger depth, so nearer must be larger: \
              near {near:?} against far {far:?}"
         );
         assert!(
@@ -287,7 +289,8 @@ mod tests {
             );
         }
 
-        /// Moving away from the eye never decreases depth.
+        /// Moving away from the eye never increases depth — reversed,
+        /// so away means smaller.
         ///
         /// Stated over arbitrary points because the depth test is the one
         /// thing separating a solid world from a soup of faces, and a
@@ -309,8 +312,8 @@ mod tests {
                 z + view.forward[2] * step,
             ]);
             proptest::prop_assert!(
-                there[2] > here[2],
-                "a step away should be deeper: {:?} then {:?}", here, there
+                there[2] < here[2],
+                "a step away should be smaller under reversed depth: {:?} then {:?}", here, there
             );
         }
 

@@ -212,7 +212,15 @@ and every test in the crate passed. Only a decoder refused it.
 
 ## Playing it
 
-![Standing on the arena floor, looking down: a white crosshair at the centre of the view, the floor running to a wall, and the mound's corner darkened where it meets the floor](playing.png)
+![From the player's eyes, mid-build: the crosshair centred on a lit floor tile about to be dug, a placed reddish-brown block in the foreground, the flagstone floor running to the arena wall](playing.png)
+
+The picture is a still from the build script, at the tick where the
+player's aim rests on the block the next tick digs — which is why that
+tile is lit:
+
+```
+renew --features render run cube -- --script build --ticks 230 --view player --render playing.png
+```
 
 A crosshair marks where you are pointing, and the block you are aiming at
 is lit. Both are needed and neither replaces the other: the highlight says
@@ -430,9 +438,10 @@ a far one are the same grey and the space reads as a paper cut-out: no
 per-vertex shading can tell them apart, because they are the same geometry
 at different distances. It is computed from clip `w`, not from depth: after a
 perspective projection `w` is the distance along the view direction while
-depth is compressed toward the near plane, so a fade driven by depth turns
-the whole room to fog a few blocks in. That is not a hypothetical; it was
-the first picture.
+depth spends nearly its whole value range within the first few blocks — it
+is hyperbolic in distance under either depth convention — so a fade driven
+by it saturates almost immediately and turns the whole room to fog. That is
+not a hypothetical; it was the first picture.
 
 **The free camera is explicit, never accumulated.** Two points on a
 command line, not mouse deltas: a picture that depended on how somebody

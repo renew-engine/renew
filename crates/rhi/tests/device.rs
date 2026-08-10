@@ -422,7 +422,7 @@ fn malformed_frames_are_refused_by_name() {
         "clears to ClearValue::Color",
         &|target| {
             let color = [Attachment::new(
-                LoadOp::Clear(ClearValue::Depth(1.0)),
+                LoadOp::Clear(ClearValue::Depth(0.0)),
                 StoreOp::Store,
             )];
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &[])]));
@@ -471,7 +471,7 @@ fn malformed_frames_are_refused_by_name() {
             let color = clear(black);
             let items = [Item::new(&pipeline)];
             let pass = Pass::new(&color, &items).depth(Attachment::new(
-                LoadOp::Clear(ClearValue::Depth(1.0)),
+                LoadOp::Clear(ClearValue::Depth(0.0)),
                 StoreOp::Discard,
             ));
             let _ = target.render(&RenderDesc::new(&[pass]));
