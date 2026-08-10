@@ -28,23 +28,27 @@ display server, and the golden-image tests attest the bytes.
   `ClearValue`, so a clear value without a clearing load is
   unrepresentable); depth is a per-target internal image a pass opts
   into, sized and owned by the target. An `Item` may name geometry
-  (`Item::mesh`), which makes its draw indexed. Malformed frames — no
-  passes, a first-pass `Load`, a clear value of the wrong kind, a
-  depth-testing pipeline in a depthless pass, two items naming one
-  per-frame buffer, an item whose geometry and whose pipeline's
+  (`Item::mesh`), which makes its draw indexed, and may carry push data
+  (`Item::push_data`) for a pipeline that declares a range. Malformed
+  frames — no passes, a first-pass `Load`, a clear value of the wrong
+  kind, a depth-testing pipeline in a depthless pass, two items naming
+  one per-frame buffer, an item whose geometry and whose pipeline's
   per-vertex input disagree, a mesh whose stride the pipeline does not
-  pack to — are refused by named assertions before any GPU call.
+  pack to, push data missing or mis-sized against the declared range —
+  are refused by named assertions before any GPU call.
 - `RenderPipeline` — two SPIR-V stages, optional per-vertex and
-  per-instance input, an optional sampled texture bound at creation, and
-  optional `DepthState` (test/write, compare fixed `LESS_OR_EQUAL`). Two
-  pipeline shapes: `PipelineDesc::new` takes `Shaders`, whose stages
-  write their own vertex list and carry the count they generate;
-  `PipelineDesc::mesh` takes `MeshShaders` and a per-vertex layout, and
-  has no count at all because the geometry supplies it. `builtin` carries
-  the embedded shader bundles — a colored triangle, a textured
-  full-target quad, instanced quads with and without per-instance depth,
-  and the mesh pair (sources and compile record in
-  [shaders/](shaders/README.md)).
+  per-instance input, an optional vertex-stage push-constant range (at
+  most 128 bytes, the guaranteed device minimum; items then carry
+  exactly that many bytes per draw), an optional sampled texture bound
+  at creation, and optional `DepthState` (test/write, compare fixed
+  `LESS_OR_EQUAL`). Two pipeline shapes: `PipelineDesc::new` takes
+  `Shaders`, whose stages write their own vertex list and carry the
+  count they generate; `PipelineDesc::mesh` takes `MeshShaders` and a
+  per-vertex layout, and has no count at all because the geometry
+  supplies it. `builtin` carries the embedded shader bundles — a colored
+  triangle, a textured full-target quad, instanced quads with and
+  without per-instance depth, and the mesh pairs (sources and compile
+  record in [shaders/](shaders/README.md)).
 - `Mesh` — vertex and index bytes written once at creation and read-only
   to the GPU thereafter, in one allocation. Indices are `&[u32]`, and
   **every index is checked against the vertex count at creation**: an
@@ -108,10 +112,10 @@ presents frames where a display exists.
 
 Early-stage: the surface is exactly device + two target kinds + the
 pass vocabulary + two pipeline shapes + one sampled texture + geometry
-— per-vertex and per-instance input, indexed draws and target-owned
-depth exist; no MSAA, no image identity on attachments, no push
-constants, one fixed descriptor layout (a combined image sampler at set
-0, binding 0) — grown only when a consumer demands it. Mesh memory is
+— per-vertex and per-instance input, vertex-stage push constants,
+indexed draws and target-owned depth exist; no MSAA, no image identity
+on attachments, one fixed descriptor layout (a combined image sampler at
+set 0, binding 0) — grown only when a consumer demands it. Mesh memory is
 host-visible rather than device-local, which is a recorded decision with
 a written reopening trigger (a real-GPU frame-time measurement showing
 vertex fetch matters) and not an oversight. The `[package.metadata.renew]` table

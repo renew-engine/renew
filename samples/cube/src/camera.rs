@@ -51,8 +51,8 @@ const UP: [f32; 3] = [0.0, 1.0, 0.0];
 impl Camera {
     /// The view-projection matrix, as four columns.
     ///
-    /// Column-major, matching what the instance stream and the shader
-    /// both expect.
+    /// Column-major, matching what the push-constant block and the
+    /// shader both expect.
     #[must_use]
     pub fn view_projection(&self) -> [[f32; 4]; 4] {
         let (right, up, forward) = self.basis();

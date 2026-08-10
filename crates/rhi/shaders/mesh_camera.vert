@@ -3,18 +3,18 @@
 // The mesh path with a camera: the same geometry `mesh.vert` draws, but
 // transformed on the GPU by a matrix the caller supplies.
 //
-// **Why the matrix arrives as per-instance vertex input rather than as a
-// push constant or a uniform.** Neither exists in this crate: there is no
-// push-constant range anywhere, and the one descriptor set layout binds a
-// combined image sampler to the fragment stage. Per-instance input at
-// binding 1 does exist, is proven by the sprite path, and was left
-// composable by the change that introduced per-vertex buffers precisely
-// so a camera could ride it. So the matrix is four vec4 columns at
-// locations 2 to 5, supplied once for a single instance.
+// **The matrix arrives as a push-constant block.** It rode binding 1 as
+// four per-instance vec4 columns before the push channel existed — a
+// per-draw constant on a per-instance road, which pinned the instance
+// count at one and held four attribute locations that real instancing
+// wants. The push block is the channel built for exactly this: sixty-four
+// bytes, vertex stage, recorded per draw, costing no buffer and no
+// retention slot.
 //
 // Column-major, matching `renew_math::Mat4`, which stores four Vec4
-// columns in order. `mat4(c0, c1, c2, c3)` in GLSL takes columns too, so
-// the bytes go across unchanged.
+// columns in order. A GLSL `mat4` inside a push-constant block is
+// column-major by default, so the bytes go across unchanged — the same
+// order the instance stream carried.
 //
 // The multiply is `matrix * position`, and `gl_Position` carries a real
 // `w` — so the hardware performs the perspective divide and the clipper
@@ -23,28 +23,23 @@
 // plane in the caller, because a triangle crossing w = 0 cannot be
 // divided at all.
 //
-// Layout here and the `VertexAttribute` slices at pipeline creation
+// Layout here and the `VertexAttribute` slice at pipeline creation
 // describe the same bytes: binding 0 is location 0 = vec3 position
 // (world space now, not clip), location 1 = vec4 colour, location 2 =
-// vec2 texture coordinate; binding 1 is locations 3..=6, the matrix
-// columns. Change one and the other in the same commit or the draw reads
-// garbage.
+// vec2 texture coordinate. No per-instance stream — the pipeline
+// declares none, and the block below is the sixty-four bytes its
+// push-constant size names. Change one and the other in the same commit
+// or the draw reads garbage.
+
+layout(push_constant) uniform Camera {
+    mat4 view_projection;
+} camera;
 
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
 // Declared and unused here for the same reason as in `mesh.vert`: the
 // record carries it, so the pipeline describes it.
 layout(location = 2) in vec2 vertex_uv;
-
-// **These moved from 2..=5 when the coordinate arrived.** Locations are
-// one space across both bindings, per-vertex first, so a third
-// per-vertex attribute pushes every per-instance one up by one. Get this
-// wrong and the matrix is read from the wrong locations, which produces
-// a picture rather than an error.
-layout(location = 3) in vec4 view_projection_0;
-layout(location = 4) in vec4 view_projection_1;
-layout(location = 5) in vec4 view_projection_2;
-layout(location = 6) in vec4 view_projection_3;
 
 layout(location = 0) out vec4 fragment_colour;
 // How far away this vertex is, as a fraction of the distance at which
@@ -59,13 +54,7 @@ layout(location = 0) out vec4 fragment_colour;
 layout(location = 1) out float fragment_fade;
 
 void main() {
-    mat4 view_projection = mat4(
-        view_projection_0,
-        view_projection_1,
-        view_projection_2,
-        view_projection_3
-    );
-    gl_Position = view_projection * vec4(vertex_position, 1.0);
+    gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
     fragment_colour = vertex_colour;
     // The distance at which the fade is complete, in world units. A
     // little over the arena's diagonal, so its far corner is faint

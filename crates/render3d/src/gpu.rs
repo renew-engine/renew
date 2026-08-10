@@ -58,23 +58,15 @@ pub enum Render3dError {
     Upload(TargetError),
     /// The texture or its sampler could not be created.
     ///
-    /// Its own variant for the same reason as [`Self::CameraBuffer`]:
-    /// this happens while building a renderer, before any geometry
-    /// exists, and reporting it as an upload of geometry would send a
-    /// reader to look at a scene nobody has offered yet.
+    /// Its own variant rather than [`Self::Upload`], which is where the
+    /// blanket conversion from a target failure would have put it: this
+    /// happens while building a renderer, before any geometry exists,
+    /// and reporting it as an upload of geometry would send a reader to
+    /// look at a scene nobody has offered yet. (A `CameraBuffer` variant
+    /// once stood beside it for the same reason; it left when the camera
+    /// moved to push constants and the renderers stopped owning a
+    /// buffer at all.)
     Texture(TargetError),
-    /// The buffer the camera's matrix rides in could not be allocated.
-    ///
-    /// **Its own variant rather than [`Self::Upload`]**, which is where
-    /// the blanket conversion from a target failure would have put it.
-    /// The two are the same kind of refusal from the driver and different
-    /// events entirely for a reader: this one happens in
-    /// [`CameraRenderer::new`], before any scene exists, so reporting it
-    /// as an upload of geometry describes something that had not been
-    /// asked for yet. A sixty-four-byte allocation failing also means
-    /// something quite different from a mesh failing — it is not a large
-    /// mesh, it is a device with nothing left.
-    CameraBuffer(TargetError),
     /// The scene has no geometry.
     ///
     /// **Refused here rather than downstream, and that is deliberate.**
@@ -95,9 +87,6 @@ impl core::fmt::Display for Render3dError {
             ),
             Self::Pipeline(error) => write!(f, "building the mesh pipeline: {error}"),
             Self::Upload(error) => write!(f, "uploading the geometry: {error}"),
-            Self::CameraBuffer(error) => {
-                write!(f, "allocating the camera's matrix buffer: {error}")
-            }
             Self::Texture(error) => write!(f, "creating the texture: {error}"),
             Self::EmptyScene => write!(f, "the scene has no geometry to upload"),
         }
@@ -112,7 +101,7 @@ impl std::error::Error for Render3dError {
             // that two arms with one body is a distinction without a
             // difference. They differ in what they *say*, which is
             // Display's business, not this one's.
-            Self::Upload(error) | Self::CameraBuffer(error) | Self::Texture(error) => Some(error),
+            Self::Upload(error) | Self::Texture(error) => Some(error),
             Self::DepthUnsupported { .. } | Self::EmptyScene => None,
         }
     }
@@ -208,11 +197,11 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
     Ok(mesh)
 }
 
-/// A view-projection matrix, packed for the instance stream.
+/// A view-projection matrix, packed for the push-constant block.
 ///
 /// Four columns of four floats, column-major — the order
-/// `renew_math::Mat4` stores and the order GLSL's `mat4(c0, c1, c2, c3)`
-/// takes, so the *order* crosses unchanged.
+/// `renew_math::Mat4` stores and the order a GLSL `mat4` inside a push
+/// block reads, so the *order* crosses unchanged.
 ///
 /// Each float is written in native byte order, which is what a Vulkan
 /// device on every target this repository builds for expects. That is a
@@ -242,7 +231,8 @@ impl Camera {
         Self { bytes }
     }
 
-    /// The packed bytes, as the instance stream wants them.
+    /// The packed bytes, exactly the length the pipelines' declared
+    /// push-constant range wants.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -333,12 +323,10 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 /// must fade alike or the seam between them shows.
 pub struct TexturedCameraRenderer {
     pipeline: RenderPipeline,
-    matrix: renew_rhi::Buffer,
 }
 
 impl TexturedCameraRenderer {
-    /// Build the pipeline, upload `pixels` as the texture it samples, and
-    /// allocate the buffer the matrix rides in.
+    /// Build the pipeline and upload `pixels` as the texture it samples.
     ///
     /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
     /// bytes long.
@@ -362,14 +350,11 @@ impl TexturedCameraRenderer {
         let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
-                .instance_input(builtin::MESH_CAMERA_INSTANCE_LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
                 .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        let matrix = device
-            .create_buffer(64, renew_rhi::BufferUsage::PerFrame)
-            .map_err(Render3dError::CameraBuffer)?;
-        Ok(Self { pipeline, matrix })
+        Ok(Self { pipeline })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -389,7 +374,7 @@ impl TexturedCameraRenderer {
     pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
         Item::new(&self.pipeline)
             .mesh(mesh)
-            .frame_data(renew_rhi::FrameData::new(&self.matrix, camera.bytes(), 1))
+            .push_data(camera.bytes())
     }
 }
 
@@ -432,39 +417,40 @@ impl core::fmt::Debug for TexturedCameraRenderer {
 /// feature, and it is stated here because behaviour a caller cannot
 /// predict from the type's name is behaviour the type must name itself.
 ///
-/// The constants are constants because this crate has no channel for
-/// per-draw scalars that is not already carrying the camera matrix. When
-/// one exists they should be the first thing to use it, at which point
-/// this section describes a default rather than a fact.
+/// The constants stay in the shader deliberately, even though the push
+/// block has room beside the matrix: where arithmetic folds decides its
+/// floating-point result, and the committed pictures pin the result as
+/// it is. They move only when something needs them to vary per draw.
 pub struct CameraRenderer {
     pipeline: RenderPipeline,
-    matrix: renew_rhi::Buffer,
 }
 
+/// The camera's push-constant range: one column-major matrix, and the
+/// length [`Camera::bytes`] always is. Declared once so the two camera
+/// pipelines cannot drift apart.
+const CAMERA_PUSH_BYTES: u32 = 64;
+
+// Drift between the declared range and the pack type is a compile
+// error, not a record-time panic in a device-requiring test.
+const _: () = assert!(CAMERA_PUSH_BYTES as usize == core::mem::size_of::<Camera>());
+
 impl CameraRenderer {
-    /// Build the pipeline and the buffer the matrix rides in.
+    /// Build the pipeline.
+    ///
+    /// No buffer: the matrix crosses as push data recorded into the
+    /// command stream per draw, so a camera costs no allocation, no
+    /// retention slot, and cannot fail for a reason of its own.
     ///
     /// # Errors
     ///
-    /// As [`MeshRenderer::new`], plus [`Render3dError::CameraBuffer`]
-    /// when the per-frame buffer the matrix is written into cannot be
-    /// allocated.
+    /// As [`MeshRenderer::new`].
     pub fn new(device: &Device, format: TargetFormat) -> Result<Self, Render3dError> {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
-                .instance_input(builtin::MESH_CAMERA_INSTANCE_LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        // One matrix, sixty-four bytes, rewritten every frame. The
-        // per-frame buffer is the crate's own answer to "written by the
-        // host while an earlier frame may still be reading".
-        // Mapped by hand rather than through `?`: the blanket
-        // conversion from a target failure means "uploading the
-        // geometry", and no geometry has been offered at this point.
-        let matrix = device
-            .create_buffer(64, renew_rhi::BufferUsage::PerFrame)
-            .map_err(Render3dError::CameraBuffer)?;
-        Ok(Self { pipeline, matrix })
+        Ok(Self { pipeline })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -480,13 +466,16 @@ impl CameraRenderer {
 
     /// The draw for `mesh` seen through `camera`.
     ///
-    /// One instance: the matrix is the same for every vertex, and the
-    /// instance stream is how it reaches them.
+    /// The matrix is recorded as the item's push data — copied into the
+    /// command stream at record time, so nothing outlives the call, and
+    /// several camera items in one frame spend no allocation, no
+    /// retention slot, and no buffer (each records its own sixty-four
+    /// bytes; that is the whole per-item cost).
     #[must_use]
     pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
         Item::new(&self.pipeline)
             .mesh(mesh)
-            .frame_data(renew_rhi::FrameData::new(&self.matrix, camera.bytes(), 1))
+            .push_data(camera.bytes())
     }
 }
 
@@ -673,14 +662,6 @@ mod tests {
             "the upload refusal must hand back what it wraps"
         );
         assert!(
-            Render3dError::CameraBuffer(TargetError::OutOfDeviceMemory {
-                call: "vkAllocateMemory(matrix)",
-            })
-            .source()
-            .is_some_and(|cause| cause.to_string().contains("vkAllocateMemory(matrix)")),
-            "the matrix refusal must hand back what it wraps"
-        );
-        assert!(
             Render3dError::Texture(TargetError::OutOfDeviceMemory {
                 call: "vkAllocateMemory(atlas)",
             })
@@ -728,32 +709,6 @@ mod tests {
         assert!(shown.contains("vkAllocateMemory(mesh)"), "{shown}");
     }
 
-    /// **The camera's matrix and a mesh fail differently in words.**
-    /// Both arrive as the same driver refusal, so nothing but this
-    /// mapping distinguishes them, and a reader given "uploading the
-    /// geometry" for a failure inside `new` would go looking at a scene
-    /// that had not been built yet.
-    #[test]
-    fn a_matrix_buffer_failure_is_not_reported_as_a_geometry_upload() {
-        let out_of_memory = || TargetError::OutOfDeviceMemory {
-            call: "vkAllocateMemory",
-        };
-        let matrix = Render3dError::CameraBuffer(out_of_memory()).to_string();
-        let geometry = Render3dError::from(out_of_memory()).to_string();
-        assert!(
-            matrix.contains("camera's matrix buffer"),
-            "the matrix failure must name the matrix: {matrix}"
-        );
-        assert!(
-            !matrix.contains("geometry"),
-            "the matrix failure must not send a reader to look at a scene: {matrix}"
-        );
-        assert!(
-            geometry.contains("uploading the geometry"),
-            "the geometry failure keeps its own words: {geometry}"
-        );
-    }
-
     /// **A texture failure names the texture.** It happens while a
     /// renderer is being built, before any scene exists, so reporting it
     /// as an upload of geometry would send a reader to look at something
@@ -786,12 +741,6 @@ mod tests {
                 "D32_SFLOAT",
             ),
             (Render3dError::EmptyScene, "no geometry"),
-            (
-                Render3dError::CameraBuffer(TargetError::OutOfDeviceMemory {
-                    call: "vkAllocateMemory(matrix)",
-                }),
-                "the camera's matrix buffer",
-            ),
             (
                 Render3dError::Texture(TargetError::OutOfDeviceMemory {
                     call: "vkAllocateMemory(atlas)",

@@ -159,24 +159,24 @@ fn every_creation_arm_reports_its_own_failure() {
     }
     drop(device);
 
-    // R4 — the matrix buffer fails: the arm that exists because the
-    // blanket conversion would otherwise report it as a geometry upload.
-    // The pipeline is built by then, so this also shows the two calls in
-    // one constructor do not share an arm.
+    // R4 — the camera constructor allocates no buffer, proven by arming
+    // the FIRST buffer allocation to fail (the layer fails the
+    // ordinal-th occurrence of a named call, not every occurrence — so
+    // any buffer the constructor created would be occurrence one and
+    // die). This scenario used to drive a `CameraBuffer` arm: the
+    // constructor owned a sixty-four-byte per-frame buffer for the
+    // matrix, and this fault reached it. The matrix rides push
+    // constants now, recorded into the command stream per draw — so
+    // construction must SUCCEED. Non-vacuous because R2 above armed the
+    // identical directive and it bit: the directive works, and this
+    // constructor simply never makes the call.
     arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R4");
     match CameraRenderer::new(&device, TargetFormat::Rgba8Unorm) {
-        Err(error @ Render3dError::CameraBuffer(_)) => {
-            assert!(
-                error
-                    .to_string()
-                    .starts_with("allocating the camera's matrix buffer:"),
-                "R4: Display lost its context: {error}"
-            );
-        }
-        other => panic!(
-            "R4: a sixty-four-byte allocation failing must not be reported as a geometry \
-             upload, got {other:?}"
+        Ok(renderer) => drop(renderer),
+        Err(error) => panic!(
+            "R4: the camera constructor owns no buffer, so a buffer fault must not reach \
+             it — it failed with {error:?}"
         ),
     }
     drop(device);

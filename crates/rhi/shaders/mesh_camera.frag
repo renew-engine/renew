@@ -18,10 +18,11 @@
 //
 // **It is not fog and does not pretend to be.** There is no density, no
 // scattering, and no light. It is a readability aid with two constants.
-// They are constants rather than parameters because this crate has no
-// channel for per-draw scalars that is not already carrying the camera
-// matrix — the moment one exists, these are the first things that should
-// use it.
+// They stay compiled in deliberately, even now that a per-draw channel
+// exists: the push block is vertex-stage and this constant folds in the
+// fragment stage, and moving where the arithmetic folds changes its
+// floating-point result — the committed pictures pin the arithmetic as
+// it is, so the constants move only when something needs them to vary.
 //
 // Layout matches `mesh_camera.vert`: location 0 is the interpolated
 // colour, location 1 the interpolated distance.

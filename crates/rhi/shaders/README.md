@@ -256,3 +256,33 @@ covers the target with the classic oversized triangle from
 `gl_VertexIndex`, so a frame's every pixel answers with exactly the bytes
 that frame pushed — which is what makes the device test's oracle a
 readback comparison rather than a smoke call.
+
+## mesh_camera.vert, mesh_camera_textured.vert - recompiled 2026-08-11
+
+The camera pairs' vertex stages: the matrix leaves the per-instance
+stream (binding 1, locations 3..=6, deleted) and arrives as a
+sixty-four-byte `push_constant` block. A GLSL `mat4` inside a push block
+is column-major by default, so the byte order the pack type writes is
+unchanged. Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+> glslc -O mesh_camera.frag -o mesh_camera.frag.spv
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+1156 bytes and 1304 bytes for the two vertex stages. `mesh_camera.frag`
+was recompiled in the same run for a comment-only source edit and its
+blob came out **byte-identical** (compared with `cmp` against the
+committed bytes before the edit) — which is the expected result stated
+so nobody re-derives whether comments reach SPIR-V. The arithmetic in
+all three stages is untouched: the same `mat4 * vec4` multiply reading
+the same sixty-four bytes from a different channel, which is what the
+byte-compared renders downstream attest.

@@ -990,14 +990,15 @@ fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn 
 /// vertex streams bound in one draw, at two bindings with two input
 /// rates, across one location space.
 ///
-/// **This is the combination nothing in the tree consumes yet**, and it
-/// is exercised here rather than left to the first caller for two
-/// reasons. It is the arm of the retention enumeration that no other test
+/// **This is the combination nothing in the tree consumes**, and it is
+/// exercised here rather than left to the first caller for two reasons.
+/// It is the arm of the retention enumeration that no other test
 /// reaches, so without it a mesh drawn beside instance data would be
 /// retained by code proven only by reading. And it is the shape the
-/// camera will take at the renderer step — a per-instance transform
-/// riding the buffer that already exists — so getting the binding numbers
-/// wrong here is cheaper to find now than then.
+/// camera first took at the renderer step — a per-instance transform
+/// riding the buffer that already existed — before the camera moved to
+/// push constants; the next consumer expected to want both streams is
+/// per-chunk instancing, and the binding numbers stay proven for it.
 ///
 /// The oracle is the same flat-colour full-target quad as G6, drawn with
 /// a one-instance stream attached. Its pixels must be unchanged: the

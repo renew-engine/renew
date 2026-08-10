@@ -125,6 +125,13 @@ fn steady_state_frames_allocate_nothing() {
     // pipeline are built out here, where allocation is free; what the
     // window measures is the bind of two buffers and the indexed draw.
     let (mesh_pipeline, mesh) = mesh_fixture(&device).expect("mesh fixture");
+    // **The push-constant path inside the measured window, for the same
+    // reason.** This is the camera's every-frame shape — a mesh item
+    // carrying sixty-four bytes of push data — and the claim that the
+    // push channel allocates nothing must be gate-observed, not
+    // code-read. The pipeline and the matrix bytes are built out here;
+    // the window measures the record-time push alone.
+    let (camera_pipeline, matrix_bytes) = camera_fixture(&device).expect("camera fixture");
     let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
@@ -143,6 +150,12 @@ fn steady_state_frames_allocate_nothing() {
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup mesh frame");
+        let items = [Item::new(&camera_pipeline)
+            .mesh(&mesh)
+            .push_data(&matrix_bytes)];
+        target
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+            .expect("warmup push frame");
         target.read_back_into(&mut pixels);
     }
 
@@ -170,6 +183,16 @@ fn steady_state_frames_allocate_nothing() {
             target
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady mesh frame");
+            // The push frame: the camera's every-frame shape — an
+            // indexed draw whose sixty-four matrix bytes are recorded
+            // as push constants. Its own frame so a regression in the
+            // push branch names itself.
+            let items = [Item::new(&camera_pipeline)
+                .mesh(&mesh)
+                .push_data(&matrix_bytes)];
+            target
+                .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+                .expect("steady push frame");
             // The multi-pass, multi-buffer frame: two passes, three
             // items, two distinct buffers retained in one frame — the
             // walk's loops and the retention table's width, measured on
@@ -254,6 +277,33 @@ fn mesh_fixture(
         &[0, 1, 2, 0, 2, 3],
     ))?;
     Ok((pipeline, mesh))
+}
+
+/// The camera-shaped push-constant pipeline and an identity matrix's
+/// sixty-four bytes, built outside the measured window. Depth-free —
+/// what the window measures is the record-time push, and a depth
+/// attachment would measure something else beside it.
+fn camera_fixture(
+    device: &Device,
+) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), Box<dyn std::error::Error>> {
+    let pipeline = device.create_pipeline(
+        &PipelineDesc::mesh(
+            builtin::MESH_CAMERA,
+            TargetFormat::Rgba8Unorm,
+            builtin::MESH_LAYOUT,
+        )
+        .push_constant_size(64),
+    )?;
+    let mut bytes = [0u8; 64];
+    for (index, value) in [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    Ok((pipeline, bytes))
 }
 
 /// The instanced pipeline, its per-frame buffer, and one packed

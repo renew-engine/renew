@@ -141,8 +141,9 @@ pub mod builtin {
         include_bytes!("../shaders/mesh_camera_textured.frag.spv");
 
     /// The camera mesh pair with a texture: **world-space** positions,
-    /// colours and texture coordinates per vertex, a matrix per instance,
-    /// and a combined image sampler at set 0, binding 0.
+    /// colours and texture coordinates per vertex, the matrix as a
+    /// 64-byte push-constant block, and a combined image sampler at
+    /// set 0, binding 0.
     ///
     /// **A second pair rather than a flag on the first.** The two
     /// pipelines differ in what they bind, not only in what they compute:
@@ -150,9 +151,10 @@ pub mod builtin {
     /// uniform choosing between them would cost a fetch and a branch per
     /// fragment for a decision fixed when the pipeline was built.
     ///
-    /// The per-vertex layout is [`MESH_LAYOUT`]; the per-instance one is
-    /// [`MESH_CAMERA_INSTANCE_LAYOUT`]. Both are shared with
-    /// [`MESH_CAMERA`], which is what lets one scene feed either.
+    /// The per-vertex layout is [`MESH_LAYOUT`], shared with
+    /// [`MESH_CAMERA`], which is what lets one scene feed either; the
+    /// push block is [`MESH_CAMERA`]'s, sixty-four bytes declared the
+    /// same way.
     pub const MESH_CAMERA_TEXTURED: crate::MeshShaders<'static> = crate::MeshShaders {
         vertex: MESH_CAMERA_TEXTURED_VS_SPV,
         fragment: MESH_CAMERA_TEXTURED_FS_SPV,
@@ -227,7 +229,8 @@ pub mod builtin {
     pub static MESH_FS_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
 
     /// The camera-aware mesh vertex stage: world-space positions
-    /// multiplied by a matrix supplied as per-instance input.
+    /// multiplied by the matrix in its sixty-four-byte push-constant
+    /// block.
     pub static MESH_CAMERA_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_camera.vert.spv");
 
     /// The camera-aware mesh fragment stage: the vertex colour, faded
@@ -260,15 +263,17 @@ pub mod builtin {
 
     /// The mesh pair with a camera: **world-space** positions and
     /// colours per vertex, multiplied by a matrix supplied once per
-    /// instance.
+    /// draw as a push-constant block.
     ///
-    /// **The matrix arrives as per-instance vertex input — the only
-    /// channel that existed when this pair was written.** A vertex-stage
-    /// push-constant range exists now
-    /// ([`PipelineDesc::push_constant_size`], added for exactly this
-    /// kind of per-draw constant), and moving this pair onto it is the
-    /// recorded next step; until that lands, these shaders read binding
-    /// 1 and the layout slice below stays load-bearing.
+    /// **The matrix arrives as sixty-four bytes of push data.** It rode
+    /// the per-instance channel before the push range existed — a
+    /// per-draw constant on a per-instance road, which pinned the
+    /// instance count at one and held binding 1 plus four attribute
+    /// locations that real instancing wants. A pipeline built from this
+    /// pair declares [`PipelineDesc::push_constant_size`]`(64)` and
+    /// every item through it carries the matrix via `push_data` —
+    /// column-major, the order `renew_math::Mat4` stores and a GLSL
+    /// `mat4` in a push block reads, so the bytes cross unchanged.
     ///
     /// [`PipelineDesc::push_constant_size`]: crate::PipelineDesc::push_constant_size
     ///
@@ -278,24 +283,13 @@ pub mod builtin {
     /// would also have to clip polygons against the near plane. Here
     /// `gl_Position` carries a real `w`, and the hardware does both.
     ///
-    /// The per-vertex layout is [`MESH_LAYOUT`], unchanged; the
-    /// per-instance one is [`MESH_CAMERA_INSTANCE_LAYOUT`].
+    /// The per-vertex layout is [`MESH_LAYOUT`], unchanged. No
+    /// per-instance layout: the pair declares no instance stream, and
+    /// binding 1 is free for a consumer with real instances.
     pub const MESH_CAMERA: crate::MeshShaders<'static> = crate::MeshShaders {
         vertex: MESH_CAMERA_VS_SPV,
         fragment: MESH_CAMERA_FS_SPV,
     };
-
-    /// The per-instance layout [`MESH_CAMERA`] consumes: a 4x4 matrix as
-    /// four columns, packing to 64 bytes.
-    ///
-    /// Column-major, matching `renew_math::Mat4` and GLSL's own
-    /// `mat4(c0, c1, c2, c3)`, so the bytes cross unchanged.
-    pub const MESH_CAMERA_INSTANCE_LAYOUT: &[crate::VertexAttribute] = &[
-        crate::VertexAttribute::Vec4,
-        crate::VertexAttribute::Vec4,
-        crate::VertexAttribute::Vec4,
-        crate::VertexAttribute::Vec4,
-    ];
 }
 
 #[cfg(test)]

@@ -1,14 +1,22 @@
 # renew-render3d
 
-Indexed 3D geometry over the rendering crate: one mesh pipeline,
+Indexed 3D geometry over the rendering crate: mesh pipelines,
 depth-tested, indexed draws in submission order. Quads go in on the host, a
 mesh comes out, and a draw item goes into a frame the caller composes.
 
 - `Scene` — the pure half. Accumulates quads into packed vertex bytes
   and indices. No device, no adapter, no GPU call, so the packing and
   the numbering are testable on any machine.
-- `MeshRenderer` — the device half. Owns the pipeline, uploads a scene
-  into a `Mesh`, and hands back an `Item`.
+- `MeshRenderer` / `TexturedMeshRenderer` — the clip-space device half.
+  Each owns its pipeline, uploads a scene into a `Mesh`, and hands back
+  an `Item`; the textured one samples an atlas bound at creation.
+- `CameraRenderer` / `TexturedCameraRenderer` — the world-space device
+  half. Same shape, plus a `Camera`: sixty-four packed bytes of
+  view-projection matrix that ride each item as push data, so the GPU
+  performs the transform and the perspective divide.
+- `Camera` — the pack type. Four column-major `[f32; 4]` columns in,
+  sixty-four bytes out; whoever owns a camera owns the maths that built
+  it, and what crosses this boundary is bytes with a stated order.
 - `attachment` / `depth_attachment` / `pass` — the frame pieces. `pass`
   always attaches depth; the parts stay public for frames it does not
   fit.
@@ -34,8 +42,19 @@ target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
   that looks plausible, which is worse than one that refuses.
 - **An adapter with no depth format is refused by name**, before
   anything is created, carrying the format chain that was tried.
-- **Positions are clip space.** There is no camera; a caller drawing a
-  world transforms on its own side.
+- **What a position means is the renderer's promise.** `MeshRenderer`
+  and `TexturedMeshRenderer` take clip space and draw it straight;
+  `CameraRenderer` and `TexturedCameraRenderer` take world space and
+  multiply by the camera's matrix on the GPU. Two renderer families
+  rather than a flag, because the meaning of a scene's positions must
+  be decidable at the call site — the failure mode of guessing is a
+  plausible wrong picture, not an error.
+- **A camera costs nothing but its bytes.** The matrix is recorded as
+  push data per draw: no buffer, no retention slot, and several camera
+  items in one frame cost nothing extra. The camera pipelines fade
+  distant fragments toward a horizon colour — a readability floor, not
+  a look, and stated in their rustdoc because behaviour a caller cannot
+  predict from a type's name is behaviour the type must name itself.
 - **Target-agnostic.** This crate never renders, never presents and
   never touches a window. It describes draws; the caller owns the
   target.
@@ -62,13 +81,15 @@ it gets an ordinary refusal.
 
 ## Not in v0
 
-No camera or projection, no textures or atlas, no window or
-presentation, no image writing, and no meshing — a caller supplies quads
-already in clip space. Each is a later step. The vertex layout is a
-clip-space position and a colour, packed to 28 bytes with no padding:
-the rendering crate asserts at record time that a mesh's stride matches
-the pipeline's, and a `#[repr(C)]` struct over the maths crate's aligned
-vectors would not give 28.
+No window or presentation, no image writing, and no meshing — a voxel
+mesher belongs to the sample that knows its world. The camera is a
+matrix, not a viewpoint type: eye/target/projection maths belongs to the
+caller (an engine camera crate is the recorded next step), and this
+crate takes the sixty-four bytes that result. The vertex layout is a
+position, a colour and a texture coordinate, packed to 36 bytes with no
+padding: the rendering crate asserts at record time that a mesh's stride
+matches the pipeline's, and a `#[repr(C)]` struct over the maths crate's
+aligned vectors would not give 36.
 
 ## Testing note
 
