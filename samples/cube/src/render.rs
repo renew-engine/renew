@@ -318,7 +318,7 @@ pub(crate) fn draw_scene(
     let mesh = renderer
         .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let packed = RenderCamera::from_columns(camera.view_projection());
+    let packed = RenderCamera::from_columns(camera.columns());
 
     // The overlay, if there is one: geometry that is already clip space
     // and so needs the pipeline that does not transform. Built here

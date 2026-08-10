@@ -38,6 +38,8 @@ window = [
 
 [dependencies]
 renew-platform = { path = "../../crates/core/platform", default-features = false }
+renew-camera = { path = "../../crates/camera" }
+renew-math = { path = "../../crates/core/math" }
 renew-fixed = { path = "../../crates/fixed" }
 renew-sample-cube-world = { path = "world" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }

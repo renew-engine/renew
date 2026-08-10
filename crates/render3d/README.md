@@ -84,8 +84,8 @@ it gets an ordinary refusal.
 No window or presentation, no image writing, and no meshing — a voxel
 mesher belongs to the sample that knows its world. The camera is a
 matrix, not a viewpoint type: eye/target/projection maths belongs to the
-caller (an engine camera crate is the recorded next step), and this
-crate takes the sixty-four bytes that result. The vertex layout is a
+caller — the engine's camera crate, ordinarily — and this crate takes
+the sixty-four bytes that result. The vertex layout is a
 position, a colour and a texture coordinate, packed to 36 bytes with no
 padding: the rendering crate asserts at record time that a mesh's stride
 matches the pipeline's, and a `#[repr(C)]` struct over the maths crate's

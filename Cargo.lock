@@ -1611,6 +1611,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-camera"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-math",
+]
+
+[[package]]
 name = "renew-cli"
 version = "0.1.0"
 dependencies = [
@@ -1783,9 +1791,11 @@ name = "renew-sample-cube"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "renew-camera",
  "renew-event",
  "renew-fixed",
  "renew-frame",
+ "renew-math",
  "renew-platform",
  "renew-png",
  "renew-render3d",

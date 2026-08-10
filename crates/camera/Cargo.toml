@@ -1,0 +1,31 @@
+[package]
+name = "renew-camera"
+description = "Presentation-side camera: view and projection matrices under the engine's clip conventions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Presentation-side camera: view and projection matrices under the engine's clip conventions (y down, z reversed into [0, 1])."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# The maths crate and nothing else: a camera is algebra plus the
+# rendering conventions, and the conventions are this crate's own
+# contract rather than a dependency's.
+[dependencies]
+renew-math = { path = "../core/math" }
+
+# The projection's monotonicity and range claims are properties over
+# arbitrary points, which is the testing table's row for mathematics.
+# The same version every sibling pins.
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true

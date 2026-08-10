@@ -152,17 +152,14 @@ fn step_of(value: Fixed) -> i32 {
 
 /// Width over height, or 1.0 where that means nothing.
 ///
-/// A free function so the zero-height case is reachable without a
-/// window: a minimised window really does report a height of zero, and
-/// dividing by it would put an infinity into the projection and a blank
-/// frame on the screen — which looks exactly like a driver failure and is
-/// not one.
+/// The engine camera crate's helper, thinly wrapped for the rendering
+/// crate's `Extent`. This used to be a local implementation that
+/// guarded only a zero height; the engine's guards both axes, which
+/// closes the width-zero corner where the local one answered an aspect
+/// of exactly zero — and a zero aspect through a projection is the
+/// same blank-frame failure the zero-height guard exists to prevent.
 fn aspect_of(size: Extent) -> f32 {
-    if size.height == 0 {
-        return 1.0;
-    }
-    f32::from(u16::try_from(size.width).unwrap_or(u16::MAX))
-        / f32::from(u16::try_from(size.height).unwrap_or(u16::MAX))
+    renew_camera::aspect_of(size.width, size.height)
 }
 
 /// The game, running against a window.
@@ -211,6 +208,12 @@ struct CubeApp {
     /// Absent until the window is up, so device bring-up is not banked as
     /// a burst of catch-up steps the moment play starts.
     frame: Option<FrameLoop>,
+    /// The view at the previous completed tick, kept so a draw between
+    /// ticks can blend toward the current one instead of repeating it —
+    /// display-rate smoothness through the frame loop's interpolation
+    /// factor. Presentation state in floats: it is written from the
+    /// world and never read back into it, so no digest sees it.
+    previous_view: Option<renew_camera::View>,
     /// The window's size in physical pixels, kept because recovering a
     /// swapchain needs the current size and the event that reports it is
     /// not the frame that discovers the loss.
@@ -304,6 +307,7 @@ impl CubeApp {
             cursor_held: false,
             clock: Clock::start(),
             frame: None,
+            previous_view: None,
             size: Extent {
                 width: 1,
                 height: 1,
@@ -501,9 +505,23 @@ impl CubeApp {
         }))
     }
 
-    /// Draw one frame.
-    fn draw(&mut self) {
-        let camera = crate::camera::player_view(&self.world, self.aspect());
+    /// Draw one frame, blending the view `alpha` of the way from the
+    /// previous tick's toward the current one.
+    ///
+    /// The blend happens entirely on the float side — a lerp of eye and
+    /// target — and nothing flows back into the world, so every digest
+    /// and every replay comparison is untouched by how smoothly the
+    /// picture moves.
+    fn draw(&mut self, alpha: renew_math::Alpha) {
+        let current = crate::camera::player_view(&self.world, self.aspect());
+        let view = match self.previous_view {
+            Some(previous) => renew_camera::View::blend(previous, current.view, alpha),
+            None => current.view,
+        };
+        let camera = crate::camera::Camera {
+            view,
+            projection: current.projection,
+        };
         let edits = self.world.edits();
         let aimed = self.aim_cell();
         let stale = self
@@ -539,7 +557,7 @@ impl CubeApp {
             gpu.crosshair_aspect = wanted;
         }
 
-        let packed = RenderCamera::from_columns(camera.view_projection());
+        let packed = RenderCamera::from_columns(camera.columns());
         let color = [attachment(SKY)];
         let world = gpu.renderer.item(&gpu.mesh, &packed);
 
@@ -625,18 +643,31 @@ impl CubeApp {
     fn update_at(&mut self, now: Timestamp, control: &mut LoopControl) {
         // Counted rather than iterated so the borrow of `frame` ends
         // before `advance` takes the whole of `self`. Every step is the
-        // same call; only how many is in question.
-        let due = match self.frame.as_mut() {
-            Some(frame) => frame.begin_frame(now).steps().count(),
+        // same call; only how many is in question — plus how far into
+        // the next step this frame lands, which is what the draw blends
+        // by.
+        let (due, alpha) = match self.frame.as_mut() {
+            Some(frame) => {
+                let plan = frame.begin_frame(now);
+                (
+                    plan.steps().count(),
+                    renew_math::Alpha::new(plan.remainder().get(), Timestep::HZ_60.nanos()),
+                )
+            }
             // No window came up, so there is no clock anchor and nothing
             // to draw. One step a spin keeps the simulation moving for
             // whoever is reading the digest.
-            None => 1,
+            None => (1, renew_math::Alpha::ZERO),
         };
         for _ in 0..due {
+            // Snapshot before each step: after the loop this holds the
+            // view at the tick before the last, which is what a blend
+            // interpolates from. A frame with no step due keeps the
+            // snapshot it has, and only alpha moves.
+            self.previous_view = Some(crate::camera::player_eye_view(&self.world));
             self.advance();
         }
-        self.draw();
+        self.draw(alpha);
         if self.done() {
             control.exit();
         }
