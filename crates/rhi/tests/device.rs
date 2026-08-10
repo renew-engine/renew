@@ -680,6 +680,74 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
     assert_no_validation_errors(&device);
 }
 
+/// Additive blending is arithmetic, so the oracle is arithmetic: two
+/// full-target draws over a black clear must land exactly on the
+/// channel sums, and — because saturating addition is commutative —
+/// both draw orders must produce identical bytes. The n/255 values
+/// make the UNORM roundtrip exact, so this compares bytes, not
+/// tolerances; the alpha channel saturates from the opaque clear and
+/// pins the saturating half of the claim.
+#[test]
+fn additive_blending_sums_channels_in_either_order() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .blend(renew_rhi::Blend::Additive)
+                .push_constant_size(16),
+        )
+        .expect("additive push-constant pipeline");
+    let push = |channels: [u8; 4]| {
+        let mut bytes = [0u8; 16];
+        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+            slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
+        }
+        bytes
+    };
+    let first = push([32, 64, 8, 16]);
+    let second = push([16, 32, 96, 8]);
+    // Black clear + both draws: channel sums, alpha saturated by the
+    // opaque clear.
+    let expected = [48u8, 96, 104, 255];
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let mut render = |a: &[u8; 16], b: &[u8; 16]| {
+        let items = [
+            Item::new(&pipeline).push_data(a),
+            Item::new(&pipeline).push_data(b),
+        ];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("additive render");
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        pixels
+    };
+    let forward = render(&first, &second);
+    for (index, pixel) in forward.chunks_exact(4).enumerate() {
+        assert_eq!(
+            pixel, expected,
+            "pixel {index}: additive must land exactly on the channel sums"
+        );
+    }
+    let reversed = render(&second, &first);
+    assert_eq!(
+        forward, reversed,
+        "additive is commutative, so draw order must not change a byte"
+    );
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+}
+
 #[test]
 fn wrong_readback_length_is_a_retained_contract_check() {
     let Some(device) = required_device().expect("device bring-up") else {
