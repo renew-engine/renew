@@ -1,0 +1,31 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: a camera is a pure function from a viewpoint to a matrix —
+# it never reads a clock, never touches the filesystem, never spawns a
+# thread. Floats are its medium on purpose: this crate is
+# presentation-side, and the structure checker's float fence is what
+# keeps it out of every simulation crate's closure.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a camera is a pure function of its viewpoint; time belongs to the caller" },
+    { path = "std::time::SystemTime::now", reason = "a camera is a pure function of its viewpoint; time belongs to the caller" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::thread::spawn", reason = "this crate never spawns; parallelism belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

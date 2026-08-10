@@ -181,10 +181,11 @@ Every commit on `main` clears all of these, on Windows, Linux, and macOS:
 The list this section used to carry — rendering, an ECS, the asset pipeline, audio, input
 mapping, 2D samples — has shipped. What is actually next:
 
-- **The 3D renderer, finished.** Geometry and a depth-tested draw exist and are headless-provable.
-  Still to come: meshing a voxel world into a vertex buffer, a camera (the player's by default, a
-  free one behind a flag), a window for the 3D sample, and a texture atlas generated in code so
-  golden images stay byte-comparable.
+- **The 3D renderer, deepened.** The voxel sample meshes its world, plays in a window through a
+  perspective camera — now an engine crate of its own, with display-rate smoothing between
+  simulation ticks — and draws from a texture atlas generated in code so golden images stay
+  byte-comparable. Depth is reversed engine-wide, and per-draw constants ride push constants.
+  Still to come: particles, and instancing for chunked geometry.
 - **Modules climbing the maturity ladder.** Nothing is `stable` yet, and nothing will claim it
   before its API is under change control and its parsers have been fuzzed.
 - **An editor, eventually**, as a client of the same public APIs every other tool uses — never a
