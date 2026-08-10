@@ -78,8 +78,8 @@ pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pass::{Attachment, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
 pub use vk::pipeline::{
-    AddressMode, Blend, DepthState, Filter, FrameData, MeshShaders, PipelineDesc, RenderPipeline,
-    Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
+    AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,
+    PipelineDesc, RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
 };
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
@@ -262,13 +262,15 @@ pub mod builtin {
     /// colours per vertex, multiplied by a matrix supplied once per
     /// instance.
     ///
-    /// **The matrix arrives as per-instance vertex input, and that is
-    /// not a workaround.** This crate has no push-constant range
-    /// anywhere, and its one descriptor set layout binds a combined
-    /// image sampler to the fragment stage — so per-instance input at
-    /// binding 1 is the only path a matrix can take today, it is proven
-    /// by the sprite renderer, and it is what the change that introduced
-    /// per-vertex buffers deliberately left composable.
+    /// **The matrix arrives as per-instance vertex input — the only
+    /// channel that existed when this pair was written.** A vertex-stage
+    /// push-constant range exists now
+    /// ([`PipelineDesc::push_constant_size`], added for exactly this
+    /// kind of per-draw constant), and moving this pair onto it is the
+    /// recorded next step; until that lands, these shaders read binding
+    /// 1 and the layout slice below stays load-bearing.
+    ///
+    /// [`PipelineDesc::push_constant_size`]: crate::PipelineDesc::push_constant_size
     ///
     /// **Why this rather than transforming on the way in.** A caller
     /// that multiplied its own vertices would have to divide by `w`

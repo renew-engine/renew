@@ -20,6 +20,19 @@ fn clear(color: Color) -> [Attachment; 1] {
     )]
 }
 
+/// The push-constant test fixture: a full-target triangle whose color
+/// is the sixteen pushed bytes. A fixture rather than a builtin — no
+/// engine path consumes it, so exporting it would be dead public
+/// surface; the compile record lives in the shaders README beside the
+/// builtins'.
+static PUSH_COLOR_VS_SPV: &[u8] = include_bytes!("../shaders/push_color.vert.spv");
+static PUSH_COLOR_FS_SPV: &[u8] = include_bytes!("../shaders/push_color.frag.spv");
+
+/// The fixture's stage pair: three generated vertices, no buffers.
+fn push_color_shaders() -> Shaders<'static> {
+    Shaders::new(PUSH_COLOR_VS_SPV, PUSH_COLOR_FS_SPV, 3)
+}
+
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
 /// for the calling test to unwrap (test-only panics live in `#[test]`
 /// bodies, where the lint allowance applies). Under `RENEW_GOLDEN=1`
@@ -567,6 +580,44 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
+
+    // The push-constant half of the same contract: presence must match
+    // the declaration, and the length must be exact.
+    let push_pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .push_constant_size(16),
+        )
+        .expect("push-constant pipeline");
+    refused(
+        "a declared push-constant range never pushed",
+        "carries push data exactly when",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&push_pipeline)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "push data on a pipeline that declares no range",
+        "carries push data exactly when",
+        &|target| {
+            let color = clear(black);
+            let bytes = [0u8; 16];
+            let items = [Item::new(&pipeline).push_data(&bytes)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "push data shorter than the declared range",
+        "exactly the declared push-constant range",
+        &|target| {
+            let color = clear(black);
+            let bytes = [0u8; 12];
+            let items = [Item::new(&push_pipeline).push_data(&bytes)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
     std::panic::set_hook(hook);
 
     // The refusals fired before any GPU work: the same target still
@@ -576,6 +627,56 @@ fn malformed_frames_are_refused_by_name() {
     target
         .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
         .expect("the target survives every refusal");
+    assert_no_validation_errors(&device);
+}
+
+/// The pushed bytes are the draw's constants, and they update per
+/// record: two frames through one pipeline push two colors, and each
+/// frame's every pixel answers with the color pushed for it. One frame
+/// alone would pass with the constants baked at creation; the second
+/// is what proves the channel is per-draw.
+#[test]
+fn push_constants_reach_the_draw_and_update_per_frame() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .push_constant_size(16),
+        )
+        .expect("push-constant pipeline");
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+    // Channel values n/255, so the UNORM roundtrip is exact and the
+    // oracle compares bytes, not tolerances. Neither color is the
+    // clear, so a draw that silently read zeroed constants fails.
+    for expected in [[0u8, 255, 64, 255], [255u8, 32, 0, 255]] {
+        let mut pushed = [0u8; 16];
+        for (slot, &channel) in pushed.chunks_exact_mut(4).zip(&expected) {
+            slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
+        }
+        let items = [Item::new(&pipeline).push_data(&pushed)];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("push-constant render");
+        target.read_back_into(&mut pixels);
+        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+            assert_eq!(
+                pixel, expected,
+                "pixel {index}: every pixel carries the color this frame pushed"
+            );
+        }
+    }
+    drop(target);
+    drop(pipeline);
     assert_no_validation_errors(&device);
 }
 

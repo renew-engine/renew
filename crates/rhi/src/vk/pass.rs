@@ -160,6 +160,15 @@ pub struct Item<'a> {
     /// first-instance or vertex-offset field) without touching existing
     /// callers.
     pub frame_data: Option<FrameData<'a>>,
+    /// Bytes recorded as the pipeline's push-constant block before this
+    /// draw — the per-draw constant channel.
+    ///
+    /// Present exactly when the pipeline declares a range, and exactly
+    /// its declared length; both are refused by the frame contract
+    /// before any GPU call, the same way geometry and depth state are
+    /// matched. The bytes are copied into the command stream at record
+    /// time, so nothing here is retained past the `render` call.
+    pub push_data: Option<&'a [u8]>,
 }
 
 impl<'a> Item<'a> {
@@ -170,6 +179,7 @@ impl<'a> Item<'a> {
             pipeline,
             mesh: None,
             frame_data: None,
+            push_data: None,
         }
     }
 
@@ -184,6 +194,14 @@ impl<'a> Item<'a> {
     #[must_use]
     pub fn frame_data(mut self, data: FrameData<'a>) -> Self {
         self.frame_data = Some(data);
+        self
+    }
+
+    /// Push `bytes` as the pipeline's push-constant block for this
+    /// draw. Must be exactly the length the pipeline declared.
+    #[must_use]
+    pub fn push_data(mut self, bytes: &'a [u8]) -> Self {
+        self.push_data = Some(bytes);
         self
     }
 }
@@ -235,6 +253,9 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; 2] {
         pipeline: _,
         mesh,
         frame_data,
+        // Copied into the command stream by the record path's push
+        // call, so no allocation outlives `render` — nothing to retain.
+        push_data: _,
     } = item;
     match (*mesh, frame_data.as_ref()) {
         (None, None) => [None, None],
@@ -355,6 +376,29 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                      end of the mesh",
                     mesh.vertex_stride(),
                     item.pipeline.vertex_stride
+                );
+            }
+            // The same presence rule as geometry and depth, plus an
+            // exact length. A declared range never pushed reads
+            // undefined values; a push on a rangeless pipeline is
+            // invalid usage the driver may answer with anything; and a
+            // partial push leaves the block's tail undefined — every
+            // one of them a quiet wrong draw, so every one is refused
+            // by name.
+            let declared = item.pipeline.push_constant_size as usize;
+            assert!(
+                item.push_data.is_some() == (declared > 0),
+                "pass {index}: an item carries push data exactly when its pipeline declares a \
+                 push-constant range — a declared range never pushed reads undefined values, \
+                 and a push on a rangeless pipeline is invalid usage"
+            );
+            if let Some(bytes) = item.push_data {
+                assert!(
+                    bytes.len() == declared,
+                    "pass {index}: push data must be exactly the declared push-constant range \
+                     ({declared} bytes), got {} — a partial push leaves the block's tail \
+                     undefined, and a surplus one is invalid usage",
+                    bytes.len()
                 );
             }
         }

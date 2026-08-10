@@ -713,6 +713,13 @@ impl OffscreenTarget {
                         item.pipeline.pipeline,
                     );
                     item.pipeline.bind_descriptors(self.cmd);
+                    if let Some(bytes) = item.push_data {
+                        // The contract proved presence and length match
+                        // the pipeline's declared range; the bytes are
+                        // copied into the command stream here, so no
+                        // retention slot is spent.
+                        item.pipeline.push_frame_constants(self.cmd, bytes);
+                    }
                     if let Some(mesh) = item.mesh {
                         // A mesh has no slots — its bytes were written
                         // once at creation and never again — so both

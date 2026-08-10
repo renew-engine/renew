@@ -81,7 +81,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [967, 968, 969]
+lines = [1061, 1062, 1063]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
@@ -91,7 +91,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [1253]
+lines = [1260]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
 
 [[exempt]]
