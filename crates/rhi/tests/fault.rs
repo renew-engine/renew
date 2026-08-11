@@ -375,6 +375,20 @@ fn every_driver_failure_ladder_behaves() {
             )),
         },
     ));
+    verdicts.push(bringup_case(
+        "A5 sampled-set-layout/out-of-host-memory",
+        "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
+        |got| match got {
+            Err(DeviceError::OutOfHostMemory {
+                call: "vkCreateDescriptorSetLayout",
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "OutOfHostMemory(vkCreateDescriptorSetLayout)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
 
     // ---- B · offscreen bring-up unwinder ---------------------------
     // Each: the build fails at the named call, then a second build
@@ -632,17 +646,16 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
 
-    // ---- C6-C8 · descriptor ladder ---------------------------------
+    // ---- C7-C10 · descriptor ladder ---------------------------------
     // A textured pipeline is the only thing that allocates descriptors,
     // so these arm the fault and then build one. Each is a distinct
     // creation call inside `create_pipeline`, and each must leave the
     // device able to build the same pipeline on a second attempt.
+    // C6 (descriptor-set-layout creation) moved to the bring-up
+    // ladder as A5: the layout is the device spine's one shared
+    // object now, created with the device, so arming that call fails
+    // bring-up rather than pipeline creation.
     let descriptor_ladder: &[(&str, &str, &str)] = &[
-        (
-            "C6",
-            "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
-            "vkCreateDescriptorSetLayout",
-        ),
         (
             "C7",
             "vkCreateDescriptorPool=ERROR_OUT_OF_HOST_MEMORY",
@@ -1239,6 +1252,23 @@ fn every_driver_failure_ladder_behaves() {
             other => Err(wrong(
                 "",
                 "Creation(vkCreateDevice)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    // E12 fails after the device exists: the unwinder has the device
+    // itself to take back down beside the instance and messenger.
+    verdicts.push(bringup_case(
+        "E12 sampled-set-layout/initialization-failed",
+        "vkCreateDescriptorSetLayout=ERROR_INITIALIZATION_FAILED",
+        |got| match got {
+            Err(DeviceError::Creation {
+                call: "vkCreateDescriptorSetLayout",
+                ..
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "Creation(vkCreateDescriptorSetLayout)",
                 &other.map(|_| "a device"),
             )),
         },

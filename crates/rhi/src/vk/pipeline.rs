@@ -610,6 +610,15 @@ impl AddressMode {
     }
 }
 
+/// The sampler's owning half, split like the texture's and for the
+/// same reason: a future binding object holds the inner alive while
+/// callers pass borrows. The contract lives on [`Sampler`], where its
+/// reader is.
+pub(crate) struct SamplerInner {
+    pub(crate) shared: Rc<DeviceShared>,
+    pub(crate) sampler: vk::Sampler,
+}
+
 /// A sampler. Holds its device alive; destroyed on drop.
 ///
 /// # Contract
@@ -625,8 +634,7 @@ impl AddressMode {
 /// inside `RenderPipeline`'s own `Drop`, after that has waited for the
 /// device to go idle and destroyed the pool.
 pub struct Sampler {
-    pub(crate) shared: Rc<DeviceShared>,
-    pub(crate) sampler: vk::Sampler,
+    pub(crate) inner: Rc<SamplerInner>,
 }
 
 impl fmt::Debug for Sampler {
@@ -635,7 +643,7 @@ impl fmt::Debug for Sampler {
     }
 }
 
-impl Drop for Sampler {
+impl Drop for SamplerInner {
     fn drop(&mut self) {
         // SAFETY: category 2 (ash dispatch): device live via the spine
         // Rc; the handle was created with these callbacks; the owner of
@@ -659,28 +667,25 @@ impl Drop for Sampler {
 /// holding the moment sets are allocated per frame.
 #[derive(Clone, Copy)]
 struct Descriptors {
-    set_layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
 }
 
 impl Descriptors {
-    /// Destroy the pool and the layout. The set is freed with the pool
-    /// and must not be freed separately.
+    /// Destroy the pool; the set is freed with it and must not be
+    /// freed separately. The set layout is the device spine's one
+    /// shared object and is not this struct's to destroy.
     ///
     /// # Safety
     ///
     /// No submit referencing the set may still be running.
     unsafe fn destroy(self, shared: &DeviceShared) {
-        // SAFETY: forwarded to the caller; both handles were created by
+        // SAFETY: forwarded to the caller; the pool was created by
         // `create_descriptors` with these callbacks.
         unsafe {
             shared
                 .device
                 .destroy_descriptor_pool(self.pool, Some(&shared.alloc_cbs()));
-            shared
-                .device
-                .destroy_descriptor_set_layout(self.set_layout, Some(&shared.alloc_cbs()));
         }
     }
 }
@@ -826,50 +831,28 @@ fn create_descriptors(
         "texture and pipeline come from different devices"
     );
     debug_assert!(
-        core::ptr::eq(shared, Rc::as_ptr(&sampler.shared)),
+        core::ptr::eq(shared, Rc::as_ptr(&sampler.inner.shared)),
         "sampler and pipeline come from different devices"
     );
-    let bindings = [vk::DescriptorSetLayoutBinding::default()
-        .binding(0)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-    let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-    // SAFETY: category 2 (ash dispatch): device live via the spine; the
-    // binding array is a local outliving the call. (The same argument
-    // covers every dispatch call in this function.)
-    let set_layout = unsafe {
-        shared
-            .device
-            .create_descriptor_set_layout(&layout_info, Some(&shared.alloc_cbs()))
-    }
-    .map_err(|code| creation("vkCreateDescriptorSetLayout", code))?;
-
     let sizes = [vk::DescriptorPoolSize::default()
         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
         .descriptor_count(1)];
     let pool_info = vk::DescriptorPoolCreateInfo::default()
         .max_sets(1)
         .pool_sizes(&sizes);
-    // SAFETY: device live; the size array is a local.
-    let pool = match unsafe {
+    // SAFETY: category 2 (ash dispatch): device live via the spine; the
+    // size array is a local outliving the call. (The same argument
+    // covers every dispatch call in this function.)
+    let pool = unsafe {
         shared
             .device
             .create_descriptor_pool(&pool_info, Some(&shared.alloc_cbs()))
-    } {
-        Ok(pool) => pool,
-        Err(code) => {
-            // SAFETY: layout live, nothing retained it.
-            unsafe {
-                shared
-                    .device
-                    .destroy_descriptor_set_layout(set_layout, Some(&shared.alloc_cbs()));
-            }
-            return Err(creation("vkCreateDescriptorPool", code));
-        }
-    };
+    }
+    .map_err(|code| creation("vkCreateDescriptorPool", code))?;
 
-    let set_layouts = [set_layout];
+    // The spine's one shared layout: identity is what makes this set
+    // compatible with every pipeline that declares the slot.
+    let set_layouts = [shared.sampled_set_layout];
     let alloc_info = vk::DescriptorSetAllocateInfo::default()
         .descriptor_pool(pool)
         .set_layouts(&set_layouts);
@@ -885,7 +868,6 @@ fn create_descriptors(
     };
     let Some(set) = set else {
         let partial = Descriptors {
-            set_layout,
             pool,
             set: vk::DescriptorSet::null(),
         };
@@ -896,8 +878,8 @@ fn create_descriptors(
     };
 
     let image_info = [vk::DescriptorImageInfo::default()
-        .sampler(sampler.sampler)
-        .image_view(texture.view)
+        .sampler(sampler.inner.sampler)
+        .image_view(texture.inner.view)
         // The upload left the image in this layout and nothing changes
         // it afterwards, immutability being the texture contract.
         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
@@ -912,11 +894,7 @@ fn create_descriptors(
     // the call.
     unsafe { shared.device.update_descriptor_sets(&writes, &[]) };
 
-    Ok(Descriptors {
-        set_layout,
-        pool,
-        set,
-    })
+    Ok(Descriptors { pool, set })
 }
 
 fn creation(call: &'static str, code: vk::Result) -> PipelineError {
@@ -1052,8 +1030,10 @@ impl Device {
         }
         .map_err(|code| creation("vkCreateSampler", code))?;
         Ok(Sampler {
-            shared: Rc::clone(shared),
-            sampler,
+            inner: Rc::new(SamplerInner {
+                shared: Rc::clone(shared),
+                sampler,
+            }),
         })
     }
 
@@ -1153,7 +1133,7 @@ impl Device {
         // An untextured pipeline keeps the empty layout it has always
         // had; a textured one declares the single set the crate defines.
         let set_layouts: &[vk::DescriptorSetLayout] = match &descriptors {
-            Some(descriptors) => core::slice::from_ref(&descriptors.set_layout),
+            Some(_) => core::slice::from_ref(&shared.sampled_set_layout),
             None => &[],
         };
         // One vertex-stage range at offset zero, present exactly when

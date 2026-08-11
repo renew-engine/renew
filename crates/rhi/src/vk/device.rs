@@ -88,6 +88,13 @@ pub(crate) struct DeviceShared {
     /// target creation; queried once because format support is a static
     /// property of the physical device.
     pub(crate) depth_format: Option<vk::Format>,
+    /// The one descriptor-set layout every sampled binding shares: a
+    /// single combined image sampler at binding zero, fragment stage.
+    /// Owned here because layout identity is what makes any written
+    /// set compatible with any pipeline that declares the slot — one
+    /// object, created at bring-up, destroyed at teardown before the
+    /// device.
+    pub(crate) sampled_set_layout: vk::DescriptorSetLayout,
     /// `maxImageDimension2D`, read once at bring-up.
     ///
     /// Kept for the same reason `depth_format` is: it is a static
@@ -142,6 +149,8 @@ impl Drop for DeviceShared {
         // no resource object can outlive this struct (each holds an Rc
         // to it).
         unsafe {
+            self.device
+                .destroy_descriptor_set_layout(self.sampled_set_layout, Some(&self.alloc_cbs()));
             self.device.destroy_device(Some(&self.alloc_cbs()));
             if let Some((utils, messenger)) = self.debug.take() {
                 utils.destroy_debug_utils_messenger(messenger, Some(&self.alloc_cbs()));
@@ -395,6 +404,35 @@ impl Device {
         // declared in the create info above.
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
+        // The crate's one sampled-binding set layout, created with the
+        // device because it lives and dies with it.
+        let bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        // SAFETY: category 2: device live; the binding array is a local
+        // outliving the call.
+        let sampled_set_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &layout_info,
+                Some(&crate::vk::alloc::callbacks(&ledger)),
+            )
+        }
+        .map_err(|code| {
+            // SAFETY: device live, created just above with these same
+            // callbacks; nothing else references it yet.
+            unsafe { device.destroy_device(Some(&crate::vk::alloc::callbacks(&ledger))) };
+            teardown_early(&instance, debug.as_ref(), &ledger);
+            match code {
+                vk::Result::ERROR_OUT_OF_HOST_MEMORY => DeviceError::OutOfHostMemory {
+                    call: "vkCreateDescriptorSetLayout",
+                },
+                other => creation("vkCreateDescriptorSetLayout", other),
+            }
+        })?;
+
         renew_diag::info!(
             target: "renew-rhi",
             "device up: {} ({:?}), depth format {}",
@@ -414,6 +452,7 @@ impl Device {
                 entry,
                 adapter,
                 depth_format,
+                sampled_set_layout,
                 max_image_dimension_2d,
                 lost: PoisonFlag::default(),
                 validation: validation_counters,

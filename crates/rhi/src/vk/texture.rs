@@ -203,6 +203,19 @@ impl Drop for Partial<'_> {
     }
 }
 
+/// The texture's owning half, behind the handle the caller holds —
+/// the mesh split, applied here so a future binding object can keep
+/// the image alive with an `Rc` clone while callers pass plain
+/// borrows and drop whenever they like. The contract lives on
+/// [`Texture`], where its reader is.
+pub(crate) struct TextureInner {
+    pub(crate) shared: Rc<DeviceShared>,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    pub(crate) view: vk::ImageView,
+    extent: Extent,
+}
+
 /// An image the GPU can sample. Holds its device alive; destroyed on
 /// drop.
 ///
@@ -223,36 +236,32 @@ impl Drop for Partial<'_> {
 /// that argument rather than extending it, and needs a type that states
 /// its own rule about when a write is legal.
 pub struct Texture {
-    shared: Rc<DeviceShared>,
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    pub(crate) view: vk::ImageView,
-    extent: Extent,
+    pub(crate) inner: Rc<TextureInner>,
 }
 
 impl Texture {
     /// The texture's size in texels.
     #[must_use]
     pub fn extent(&self) -> Extent {
-        self.extent
+        self.inner.extent
     }
 
     /// The device spine this texture belongs to, for the cross-device
     /// contract check the pipeline makes before writing a descriptor.
     pub(crate) fn shared(&self) -> &Rc<DeviceShared> {
-        &self.shared
+        &self.inner.shared
     }
 }
 
 impl core::fmt::Debug for Texture {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Texture")
-            .field("extent", &self.extent)
+            .field("extent", &self.inner.extent)
             .finish_non_exhaustive()
     }
 }
 
-impl Drop for Texture {
+impl Drop for TextureInner {
     fn drop(&mut self) {
         // SAFETY: category 2 (ash dispatch): device live via the spine
         // `Rc`; all three handles were created here with these callbacks
@@ -639,11 +648,13 @@ fn upload(
     partial.memory = None;
     partial.view = None;
     Ok(Texture {
-        shared: Rc::clone(shared),
-        image,
-        memory,
-        view,
-        extent: desc.extent,
+        inner: Rc::new(TextureInner {
+            shared: Rc::clone(shared),
+            image,
+            memory,
+            view,
+            extent: desc.extent,
+        }),
     })
 }
 
