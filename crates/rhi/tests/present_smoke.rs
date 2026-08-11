@@ -549,7 +549,7 @@ fn render_image_fixture(
 /// The render image's sampling consumer: an atlas sampler over the
 /// image, bound once, drawn by a full-target quad in the target's own
 /// format. Extracted for the reason every fixture here is: it is
-/// fixture work, and  is at the length the lint refuses.
+/// fixture work, and `ready` is at the length the lint refuses.
 fn image_consumer_fixture(
     device: &Device,
     render_image: &renew_rhi::RenderImage,

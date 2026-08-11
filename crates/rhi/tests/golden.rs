@@ -659,15 +659,14 @@ fn a_rendered_image_samples_back_byte_exact() {
         Item::new(&pipeline).bindings(&[&image_binding]),
         Item::new(&pipeline).bindings(&[&image_binding]),
     ];
-    // The second targeting pass re-draws the same quad over a Load —
-    // the between-pass arm of a render image's walk, and a second
-    // mention the pass-level retention must recognise rather than
-    // double-count. The pixels are the proof it changed nothing.
+    // The second targeting pass draws NOTHING over a Load — so the
+    // sampled pixels below are the proof that Load actually preserved
+    // the first pass's contents, while the pass itself drives the
+    // between-pass walk arm and a second retention mention.
     let load_value = Attachment::new(LoadOp::Load, StoreOp::Store);
-    let again = [Item::new(&pipeline).bindings(&[&atlas_binding])];
     let passes = [
         Pass::render_to(&image, clear_value, &into_image),
-        Pass::render_to(&image, load_value, &again),
+        Pass::render_to(&image, load_value, &[]),
         Pass::new(&color, &onto_surface),
     ];
     let mut pixels = vec![0u8; target.byte_len()];
@@ -804,14 +803,13 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
     let casting = [Item::new(&caster).mesh(&mesh)];
     let reading = [Item::new(&reader).bindings(&[&depth_binding])];
-    // The second casting pass re-draws the same quad over a Load — the
-    // depth image's between-pass walk arm; GREATER_OR_EQUAL over equal
-    // depths changes nothing, which the pixels prove.
+    // The second casting pass draws NOTHING over a Load — the sampled
+    // halves below prove the depth Load preserved the quad's writes,
+    // while the pass drives the depth image's between-pass walk arm.
     let depth_again = Attachment::new(LoadOp::Load, StoreOp::Store);
-    let casting_again = [Item::new(&caster).mesh(&mesh)];
     let passes = [
         Pass::render_to(&image, depth_ops, &casting),
-        Pass::render_to(&image, depth_again, &casting_again),
+        Pass::render_to(&image, depth_again, &[]),
         Pass::new(&color, &reading),
     ];
     target

@@ -174,6 +174,19 @@ fn steady_state_frames_allocate_nothing() {
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup push frame");
+        let image_ops = Attachment::new(
+            LoadOp::Clear(ClearValue::Color(clear_color)),
+            StoreOp::Store,
+        );
+        let into_image = [Item::new(&pipeline).bindings(&[&binding])];
+        let from_image = [Item::new(&pipeline).bindings(&[&image_binding])];
+        let image_passes = [
+            Pass::render_to(&render_image, image_ops, &into_image),
+            Pass::new(&color, &from_image),
+        ];
+        target
+            .render(&RenderDesc::new(&image_passes))
+            .expect("warmup image frame");
         target.read_back_into(&mut pixels);
     }
 

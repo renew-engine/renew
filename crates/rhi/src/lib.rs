@@ -1,7 +1,7 @@
 //! The engine's only doorway to the GPU: device bring-up, render
 //! targets, and the v0 draw path — multi-pass frames composed by the
-//! caller, instanced draws, sampled textures, target-owned depth —
-//! over Vulkan.
+//! caller, instanced draws, sampled textures, target-owned depth, and
+//! render-to-texture through kinded render images — over Vulkan.
 //!
 //! # Contract
 //!

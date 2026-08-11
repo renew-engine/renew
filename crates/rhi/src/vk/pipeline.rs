@@ -1,15 +1,16 @@
-//! The v0 graphics pipeline: two SPIR-V stages, dynamic rendering into
-//! one color attachment, optionally sampled-binding slots filled per
-//! item, and optionally vertex input — per-vertex at binding 0,
-//! per-instance at binding 1.
+//! The v0 graphics pipeline: SPIR-V stages, dynamic rendering into one
+//! color attachment — or none, for the depth-only shape — optionally
+//! sampled-binding slots filled per item, and optionally vertex input:
+//! per-vertex at binding 0, per-instance at binding 1.
 //!
-//! **Two pipeline shapes, and which one a pipeline is decides where its
-//! vertex count comes from.** A generative pipeline's stages write their
+//! **Three pipeline shapes.** A generative pipeline's stages write their
 //! own vertex list, so the count belongs to the shader and travels with
 //! it in [`Shaders`]. A mesh pipeline reads a per-vertex stream, so the
 //! count belongs to the geometry and arrives at the draw — which is why
 //! its stages are a [`MeshShaders`] carrying no count at all rather than
-//! a `Shaders` carrying one that nothing reads.
+//! a `Shaders` carrying one that nothing reads. A depth-only pipeline is
+//! a mesh pipeline with no fragment stage and no color attachment,
+//! drawing geometry into a depth-kinded render image and nothing else.
 
 use std::fmt;
 use std::rc::Rc;
@@ -22,8 +23,10 @@ use crate::vk::buffer::Buffer;
 use crate::vk::device::{Device, DeviceShared};
 use crate::vk::pass::Bindings;
 
-/// The color format a pipeline renders into. Must match the target it
-/// is used with (checked as a contract in dev builds).
+/// What a pipeline renders into: a color format that must match its
+/// target's, or the color-free depth-only shape. Surface-pass matches
+/// are dev-build asserts beside each target; image-pass matches and
+/// depth-only placement are retained contract refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TargetFormat {
@@ -288,9 +291,11 @@ pub enum Blend {
 /// high and the stage indexes past the end of its own constant array.
 /// Bundled, the mismatch cannot be spelled.
 ///
-/// **A stage that *does* read a per-vertex buffer takes [`MeshShaders`]
-/// instead**, because its premise is the opposite one: the count belongs
-/// to the geometry, so there is none here to bundle.
+/// **A fragment-carrying pair that *does* read a per-vertex buffer
+/// takes [`MeshShaders`] instead**, because its premise is the opposite
+/// one: the count belongs to the geometry, so there is none here to
+/// bundle. (The depth-only shape reads a per-vertex stream too, and
+/// bundles nothing — one stage has no pair to carry.)
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Shaders<'a> {
@@ -438,7 +443,10 @@ impl<'a> PipelineDesc<'a> {
     /// rasterization without a fragment stage still tests and writes
     /// depth — the whole draw. Depth state must still be declared (a
     /// builder call), because a depth-only pipeline that neither tests
-    /// nor writes depth does nothing at all; creation asserts it.
+    /// nor writes depth does nothing at all; creation asserts that,
+    /// and that this shape carries no fragment bytes. (The reverse —
+    /// empty fragment bytes on a color pipeline — stays the
+    /// recoverable `InvalidSpirv` refusal it has always been.)
     ///
     /// The vertex stage may write outputs no stage consumes — reusing a
     /// full mesh pair's vertex stage is expected, not clever.

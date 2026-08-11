@@ -2,10 +2,10 @@
 
 The engine's only doorway to the GPU: device bring-up, render targets,
 and the v0 draw path, over Vulkan. A frame is described, not scripted:
-the caller composes a `RenderDesc` — a list of `Pass`es, each with one
-color attachment, an optional depth attachment, and `Item`s (a pipeline,
-optionally the geometry it walks, optionally this frame's bytes) drawn in
-order — on its own stack, and
+the caller composes a `RenderDesc` — a list of `Pass`es, each rendering
+into the target's surface or a render image, with `Item`s (a pipeline,
+optionally the geometry it walks, optionally this frame's bytes,
+optionally the bindings it samples) drawn in order — on its own stack, and
 hands it to a target's `render`. Correctness is provable headless — the
 offscreen target renders and reads back pixels without a window or a
 display server, and the golden-image tests attest the bytes.
@@ -30,13 +30,17 @@ display server, and the golden-image tests attest the bytes.
   into, sized and owned by the target. An `Item` may name geometry
   (`Item::mesh`), which makes its draw indexed, and may carry push data
   (`Item::push_data`) for a pipeline that declares a range. Malformed
-  frames — no passes, a first-pass `Load`, a clear value of the wrong
-  kind, a depth-testing pipeline in a depthless pass, two items naming
-  one per-frame buffer, an item whose geometry and whose pipeline's
-  per-vertex input disagree, a mesh whose stride the pipeline does not
-  pack to, push data missing or mis-sized against the declared range —
-  are refused by named assertions before any GPU call.
-- `RenderPipeline` — two SPIR-V stages, optional per-vertex and
+  frames — no passes, no surface pass, a first-use `Load` on any
+  attachment identity, a clear value of the wrong kind, a
+  depth-testing pipeline in a depthless pass, two items carrying
+  different data for one per-frame buffer, an item whose geometry and
+  whose pipeline's per-vertex input disagree, a mesh whose stride the
+  pipeline does not pack to, push data or bindings missing or
+  mis-counted against the declaration, a frame that reads a render
+  image it never wrote or discarded — are refused by named assertions
+  before any GPU call.
+- `RenderPipeline` — two SPIR-V stages (or one, for the depth-only
+  shape), optional per-vertex and
   per-instance input, an optional vertex-stage push-constant range (at
   most 128 bytes, the guaranteed device minimum; items then carry
   exactly that many bytes per draw), optional sampled-binding slots
@@ -44,11 +48,14 @@ display server, and the golden-image tests attest the bytes.
   which is how N textures share one pipeline), and optional
   `DepthState` (test/write, compare fixed
   `GREATER_OR_EQUAL` — depth is reversed: nearer is larger, the far
-  plane is zero, depth clears to zero). Two pipeline shapes: `PipelineDesc::new` takes
+  plane is zero, depth clears to zero). Three pipeline shapes: `PipelineDesc::new` takes
   `Shaders`, whose stages write their own vertex list and carry the
   count they generate; `PipelineDesc::mesh` takes `MeshShaders` and a
   per-vertex layout, and has no count at all because the geometry
-  supplies it. `builtin` carries the embedded shader bundles — a colored
+  supplies it; `PipelineDesc::depth_mesh` takes one vertex stage over a
+  per-vertex layout — no fragment stage, no color attachment,
+  `TargetFormat::DepthOnly` — for pipelines that draw only into
+  depth-kinded render images. `builtin` carries the embedded shader bundles — a colored
   triangle, textured full-target quads over one and two sampled slots,
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in

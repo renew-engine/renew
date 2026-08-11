@@ -134,7 +134,9 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// Attach the target's depth image to this pass with `depth`'s ops.
+    /// Attach the target's depth image to this pass with `depth`'s
+    /// ops. Surface passes only — an image pass carries its one
+    /// attachment in its target, and the contract refuses the mix.
     #[must_use]
     pub fn depth(mut self, depth: Attachment) -> Self {
         self.depth = Some(depth);
@@ -169,9 +171,11 @@ impl Attachment {
 pub enum LoadOp {
     /// The attachment starts as `ClearValue`.
     Clear(ClearValue),
-    /// The attachment keeps the previous pass's contents. Refused on a
-    /// frame's first pass — every frame's first use of each attachment
-    /// starts from undefined contents.
+    /// The attachment keeps the previous pass's contents. Refused on
+    /// each identity's first use in the frame — the surface, the
+    /// target's depth image, and every render image all start a frame
+    /// from undefined contents — and on a render image whose last
+    /// targeting pass discarded.
     Load,
 }
 
@@ -213,9 +217,10 @@ pub struct Item<'a> {
     /// without geometry reads an unbound binding and geometry handed to
     /// a generative pipeline is silently ignored.
     ///
-    /// **Unlike per-frame bytes, a mesh may be named by any number of
-    /// items** — there is no copy to race, so the one-buffer-one-item
-    /// rule below does not reach it.
+    /// **A mesh may be named by any number of items** — there is no
+    /// copy to race at all, unlike per-frame bytes, whose repeats must
+    /// be pointer-identical under the one-buffer-one-`FrameData` rule
+    /// below.
     pub mesh: Option<&'a Mesh>,
     /// `FrameData` contained, not forked; room to grow (a
     /// first-instance or vertex-offset field) without touching existing
@@ -240,8 +245,8 @@ pub struct Item<'a> {
     /// is what lets N textures share one pipeline.
     ///
     /// **Like a mesh, a binding may be named by any number of items** —
-    /// nothing copies into it, so the one-buffer-one-item rule does not
-    /// reach it; each distinct binding costs one retention slot.
+    /// nothing copies into it, so the buffer rule does not reach it;
+    /// each distinct binding costs one retention slot.
     pub bindings: Option<Bindings<'a>>,
 }
 
@@ -506,6 +511,10 @@ struct ImageEntry {
     kind: RenderImageKind,
     targeted: bool,
     sampled: bool,
+    /// Whether the image's LAST targeting pass discarded its contents
+    /// — what decides both whether a later `Load` reads anything and
+    /// whether a later sample does.
+    discarded: bool,
 }
 
 /// What one pass does to its target identities, as [`ImageUse`] pairs
@@ -566,6 +575,7 @@ impl FrameWalk {
             kind,
             targeted: false,
             sampled: false,
+            discarded: false,
         });
         occupied
     }
@@ -623,7 +633,7 @@ impl FrameWalk {
                 };
                 assert!(
                     !entry.sampled,
-                    "pass {index}: this frame already sampled this render image -- the \
+                    "pass {index}: this frame already sampled this render image — the \
                      per-image walk is one-way (target, then sample), so every pass that \
                      writes an image must precede the first pass that reads it"
                 );
@@ -631,10 +641,19 @@ impl FrameWalk {
                 assert!(
                     !first_use || !matches!(attachment.load, LoadOp::Load),
                     "pass {index}: LoadOp::Load on a render image's first use this frame \
-                     loads undefined contents -- render-image contents are frame-scoped and \
+                     loads undefined contents — render-image contents are frame-scoped and \
                      start undefined every frame"
                 );
+                // Loading what the last targeting pass threw away is the
+                // same undefined read one pass later.
+                assert!(
+                    first_use || !matches!(attachment.load, LoadOp::Load) || !entry.discarded,
+                    "pass {index}: LoadOp::Load on a render image whose last targeting \
+                     pass discarded its contents loads undefined pixels — store what a \
+                     later pass loads"
+                );
                 entry.targeted = true;
+                entry.discarded = matches!(attachment.store, StoreOp::Discard);
                 match kind {
                     RenderImageKind::Color => TargetUses {
                         color: Some(if first_use {
@@ -704,12 +723,18 @@ impl FrameWalk {
                 assert!(
                     entry.is_some(),
                     "pass {index}: an item samples a render image no pass in this frame \
-                     has rendered -- render-image contents are frame-scoped, so a frame \
+                     has rendered — render-image contents are frame-scoped, so a frame \
                      that reads one must write it first"
                 );
                 let Some(entry) = entry else {
                     unreachable!("asserted just above")
                 };
+                assert!(
+                    !entry.discarded,
+                    "pass {index}: an item samples a render image whose last targeting \
+                     pass discarded its contents — a targeting pass whose image is read \
+                     later must Store"
+                );
                 if entry.sampled {
                     continue;
                 }
@@ -766,6 +791,20 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
         // with the record paths.
         let _ = walk.advance_target(index, pass);
         for item in pass.items {
+            // A depth-only pipeline draws only into depth images —
+            // anywhere else its zero-attachment shape disagrees with
+            // the pass's rendering instance, which is invalid usage the
+            // driver may answer with anything. Retained, unlike the
+            // surface format match: the consequence is not a channel
+            // swap but an undefined draw.
+            let depth_image_pass = matches!(
+                &pass.target,
+                PassTarget::Image(image, _) if image.kind() == RenderImageKind::Depth
+            );
+            assert!(
+                depth_image_pass || item.pipeline.format != crate::TargetFormat::DepthOnly,
+                "pass {index}: a depth-only pipeline draws only into depth-kinded render                  images — it has no fragment stage and no color attachment for any other                  pass shape to bind"
+            );
             // Image passes carry their format in their kind, so the
             // match is contract-checked here; a surface pass's format
             // is the target's own, asserted where the target knows it.
@@ -850,7 +889,6 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
          contents, and a frame that never touches the surface defines nothing to present \
          or read back"
     );
-    check_store_before_sample(desc);
     check_retention_bound(desc);
 }
 
@@ -934,45 +972,6 @@ pub(crate) fn pass_has_depth(pass: &Pass<'_>) -> bool {
     }
 }
 
-/// Whether any of `pass`'s items sample the render image behind `key`.
-fn pass_samples(pass: &Pass<'_>, key: *const u8) -> bool {
-    pass.items.iter().any(|item| {
-        item.bindings.as_ref().is_some_and(|bindings| {
-            bindings.iter().any(|binding| {
-                binding
-                    .inner
-                    .sampled_render_image()
-                    .is_some_and(|inner| Rc::as_ptr(inner).cast::<u8>() == key)
-            })
-        })
-    })
-}
-
-/// A targeting pass whose image a later pass samples must store: a
-/// discarded attachment leaves the sampled contents undefined, which
-/// renders as plausible garbage rather than failing. A second scan
-/// rather than walk state, because the refusal needs to name the
-/// writing pass and the reading pass together.
-fn check_store_before_sample(desc: &RenderDesc<'_>) {
-    for (index, pass) in desc.passes.iter().enumerate() {
-        let PassTarget::Image(image, attachment) = &pass.target else {
-            continue;
-        };
-        if matches!(attachment.store, StoreOp::Store) {
-            continue;
-        }
-        let key = Rc::as_ptr(&image.inner).cast::<u8>();
-        for (later_index, later) in desc.passes.iter().enumerate().skip(index + 1) {
-            assert!(
-                !pass_samples(later, key),
-                "pass {index} discards its render image's contents, but pass \
-                 {later_index} samples them — a targeting pass whose image is sampled \
-                 later must Store"
-            );
-        }
-    }
-}
-
 /// The push-data rules again, for sampled slots: a declared slot never
 /// filled samples an unbound set, and bindings on a slotless pipeline
 /// bind sets its layout does not declare — invalid usage either way,
@@ -1034,7 +1033,7 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
             assert!(
                 *count < MAX_RETAINED_RESOURCES,
                 "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
-                 (per-frame buffers, meshes and bindings together)"
+                 (per-frame buffers, meshes, bindings and pass-target images together)"
             );
             seen[*count] = Some(key);
             *count += 1;
@@ -1098,11 +1097,12 @@ fn count_matters(records: &[Option<BufferRecord>; MAX_RETAINED_RESOURCES]) -> us
 
 /// How many distinct resources one frame may keep alive, per target slot
 /// — the hard bound that keeps retention tables fixed-width and the frame
-/// path allocation-free. Per-frame buffers, meshes and bindings share it,
-/// because they share one table. The seventeenth distinct resource is
-/// refused by name in [`check_frame_contract`]. Sixteen, doubled from
-/// eight when bindings joined the table: every draw's sampled slots now
-/// spend from the same budget its geometry does.
+/// path allocation-free. Per-frame buffers, meshes, bindings and
+/// pass-target render images share it, because they share one table. The
+/// seventeenth distinct resource is refused by name in
+/// [`check_frame_contract`]. Sixteen, doubled from eight when bindings
+/// joined the table: every draw's sampled slots now spend from the same
+/// budget its geometry does.
 pub(crate) const MAX_RETAINED_RESOURCES: usize = 16;
 
 impl LoadOp {

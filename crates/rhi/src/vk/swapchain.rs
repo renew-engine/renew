@@ -461,22 +461,33 @@ impl WindowTarget {
     ///
     /// The frame-shape contract is asserted before any fence is waited
     /// or written — among its refusals: a frame needs at least one
-    /// pass; a pass carries exactly one color attachment;
-    /// `LoadOp::Load` is refused on an attachment's first use in the
-    /// frame; clear values must match their attachment's kind and a
-    /// depth clear its documented range; an item's pipeline depth state
-    /// must match its pass; one buffer feeds at most one item per
-    /// frame; an item names geometry exactly when its pipeline declares
-    /// per-vertex input, and a mesh's vertex stride equals the stride
-    /// that pipeline's layout packs to; an item names bindings exactly
-    /// when its pipeline declares sampled slots, and exactly as many as
-    /// it declares; and a frame carries at most the retention table's
-    /// width of distinct resources — per-frame buffers, meshes and
-    /// bindings together, the repeatable classes counting once however
-    /// many items name them. Frame data longer than its buffer's
-    /// per-frame capacity also panics through a retained assertion: the
-    /// length bounds a copy into mapped device memory, which makes it a
-    /// memory-safety boundary rather than a contract nicety.
+    /// pass, and at least one surface pass; a surface pass carries
+    /// exactly one color attachment, an image pass none (its one
+    /// attachment rides its target); `LoadOp::Load` is refused on each
+    /// identity's first use in the frame, and on a render image whose
+    /// last targeting pass discarded; clear values must match their
+    /// attachment's kind and a depth clear its documented range; an
+    /// item's pipeline depth state must match its pass, its format an
+    /// image pass's kind, and a depth-only pipeline draws only into
+    /// depth images; one buffer carries one `FrameData` per frame
+    /// (pointer-identical data may repeat across items; differing data
+    /// is refused); an item names geometry exactly when its pipeline
+    /// declares per-vertex input, and a mesh's vertex stride equals the
+    /// stride that pipeline's layout packs to; an item names bindings
+    /// exactly when its pipeline declares sampled slots, and exactly as
+    /// many as it declares; the per-image walk is one-way — a frame
+    /// writes an image before reading it, never in the same pass, never
+    /// re-targeting after a read, storing whatever a later pass loads
+    /// or samples — over at most
+    /// [`MAX_FRAME_RENDER_IMAGES`](crate::MAX_FRAME_RENDER_IMAGES)
+    /// distinct images; and a frame carries at most the retention
+    /// table's width of distinct resources — per-frame buffers, meshes,
+    /// bindings and pass-target images together, the repeatable classes
+    /// counting once however many mentions. Frame data longer than its
+    /// buffer's per-frame capacity also panics through a retained
+    /// assertion: the length bounds a copy into mapped device memory,
+    /// which makes it a memory-safety boundary rather than a contract
+    /// nicety.
     ///
     /// # Errors
     ///
@@ -599,6 +610,10 @@ impl WindowTarget {
                 // path — where a skipped hold is memory freed under a
                 // live submit.
                 if let pass::PassTarget::Image(image, _) = &pass.target {
+                    debug_assert!(
+                        Rc::ptr_eq(&image.inner.shared, &self.shared),
+                        "render image and target come from different devices"
+                    );
                     let resource = Retained::Image(Rc::clone(&image.inner));
                     if !pass::already_retained(&resource, &self.retained[frame][..retained_count]) {
                         self.retained[frame][retained_count] = Some(resource);
