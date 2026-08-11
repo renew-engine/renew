@@ -16,10 +16,14 @@
 //! - **Q47.16 in an `i64`.** 16 fractional bits: a resolution of 2⁻¹⁶, and a
 //!   range of ±2⁴⁷. See [`Fixed`] for why those numbers and not others.
 //! - **No `f32` or `f64` in any signature this crate exposes.** Converting to
-//!   a float is a presentation concern and lives in the maths crate, which
-//!   depends on this one. A simulation cannot reach that crate, so it cannot
-//!   perform the conversion — enforced by the structure checker rather than by
-//!   anyone remembering.
+//!   a float is a presentation concern, and the conversion is written at the
+//!   boundary that needs it rather than offered here. It cannot be centralised
+//!   in the maths crate: that crate is core and this one is optional, so the
+//!   core-closure rule refuses the edge outright. Nor is centralising it worth
+//!   much — each boundary carries its own precision-loss exemption with its own
+//!   reason, and one shared helper would flatten those into a single reason
+//!   that fits none of them. What stops a simulation from converting is not
+//!   this contract but the float-arithmetic denial it already builds under.
 //! - **Every operation is deterministic and target-independent.** No operation
 //!   here consults a clock, an allocator, an environment variable, or anything
 //!   whose value could differ between two machines running the same build.
