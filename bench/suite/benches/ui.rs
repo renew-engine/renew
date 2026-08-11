@@ -32,10 +32,11 @@ const PER_ROW: u32 = (NODES - 1 - ROWS) / ROWS;
 /// The viewport every solve answers for.
 const VIEW: (i32, i32) = (1280, 720);
 
-/// A tree of exactly [`NODES`] nodes, styled so every solver feature
-/// pays its way: rows grow by weight, children mix fixed and content
-/// sizing, gaps and centring exercise arrangement. Built dirty; the
-/// caller decides when the first solve happens.
+/// A tree of exactly [`NODES`] nodes, styled so the solver's paths
+/// all run: rows grow by weight into the column's leftover height,
+/// leaves grow into their row's fixed width, sizes mix fixed and
+/// content, gaps and cross-axis centring exercise arrangement. Built
+/// dirty; the caller decides when the first solve happens.
 fn build_tree() -> Ui {
     let mut ui = Ui::new(UiLimits { nodes: NODES });
     let root = ui.root();
@@ -44,7 +45,6 @@ fn build_tree() -> Ui {
         Style {
             direction: Direction::Column,
             gap: Fixed::from_int(2),
-            justify: Align::Center,
             ..Style::default()
         },
     );
@@ -59,7 +59,10 @@ fn build_tree() -> Ui {
             Style {
                 direction: Direction::Row,
                 // Alternating weights so the largest-remainder split
-                // has remainders to hand out.
+                // has remainders to hand out, and a width wide enough
+                // past the leaves' content that their own growers get
+                // leftover to split too.
+                width: Size::Px(Fixed::from_int(1000)),
                 grow: 1 + row % 3,
                 gap: Fixed::from_int(1),
                 align_cross: Align::Center,
@@ -103,12 +106,16 @@ fn last_leaf(ui: &Ui) -> renew_ui::NodeId {
 fn ui_benches(c: &mut Criterion) {
     // Solving a freshly built tree: the cost of showing a document
     // for the first time. The build is setup, not measurement.
-    c.bench_function("ui_solve_cold_1k", |b| {
+    c.bench_function("ui_solve_cold_1024", |b| {
         b.iter_batched_ref(
             build_tree,
             |ui| {
                 solve(ui);
-                black_box(ui.rect(ui.root()));
+                // The root is pinned to the viewport whatever the tree
+                // does; a leaf's rectangle is an answer the solve had
+                // to compute.
+                let leaf = last_leaf(ui);
+                black_box(ui.rect(leaf));
             },
             criterion::BatchSize::LargeInput,
         );
@@ -117,7 +124,7 @@ fn ui_benches(c: &mut Criterion) {
     // One node's layout changes, the tree re-solves. Two widths
     // alternate so every iteration provably lays out rather than
     // early-outing on a clean flag.
-    c.bench_function("ui_re_solve_one_dirty_1k", |b| {
+    c.bench_function("ui_re_solve_one_dirty_1024", |b| {
         let mut ui = build_tree();
         solve(&mut ui);
         let leaf = last_leaf(&ui);
@@ -141,10 +148,10 @@ fn ui_benches(c: &mut Criterion) {
 
     // A colour-only flip: geometry is untouched, and today the tree
     // re-solves anyway — one dirty flag, no damage classes. This
-    // number exists to be compared against `re_solve_one_dirty_1k`
+    // number exists to be compared against `re_solve_one_dirty_1024`
     // now (they should match) and against itself when styling stops
     // dirtying layout (it should collapse).
-    c.bench_function("ui_state_flip_colour_1k", |b| {
+    c.bench_function("ui_state_flip_colour_1024", |b| {
         let mut ui = build_tree();
         solve(&mut ui);
         let leaf = last_leaf(&ui);
@@ -173,7 +180,7 @@ fn ui_benches(c: &mut Criterion) {
     // The snapshot copy: capturing a solved tree into the presenter's
     // pair. This is presentation's per-tick cost, paid whether or not
     // anything moved.
-    c.bench_function("ui_snapshot_advance_1k", |b| {
+    c.bench_function("ui_snapshot_advance_1024", |b| {
         let mut ui = build_tree();
         solve(&mut ui);
         let mut presenter = UiPresenter::new(NODES);

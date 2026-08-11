@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree — paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter — paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
