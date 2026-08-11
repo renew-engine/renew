@@ -27,7 +27,6 @@ use crate::config::Extent;
 use crate::error::TargetError;
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
 use crate::vk::offscreen::{BPP, color_range, creation, image_memory_type, pick_memory_type};
-use crate::vk::pipeline::TargetFormat;
 
 /// The pixels and dimensions of a sampled image.
 ///
@@ -354,7 +353,7 @@ fn upload(
 ) -> Result<Texture, TargetError> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(TargetFormat::Rgba8Unorm.to_vk())
+        .format(vk::Format::R8G8B8A8_UNORM)
         .extent(vk::Extent3D {
             width: desc.extent.width,
             height: desc.extent.height,
@@ -407,7 +406,7 @@ fn upload(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        .format(TargetFormat::Rgba8Unorm.to_vk())
+        .format(vk::Format::R8G8B8A8_UNORM)
         .subresource_range(color_range());
     // SAFETY: image live and bound.
     let view = unsafe {

@@ -533,14 +533,19 @@ fn malformed_frames_are_refused_by_name() {
         .create_buffer(64, BufferUsage::PerFrame)
         .expect("per-frame buffer");
     let bytes = [0u8; 24];
+    // The relaxed buffer rule, both sides: pointer-identical FrameData
+    // may repeat (the same draw from two items is one copy written
+    // twice), while DIFFERING data for one buffer is still the
+    // second-copy-wins race, refused by name.
     refused(
-        "two items naming one buffer",
-        "one buffer, one item",
+        "two items with different data for one buffer",
+        "one buffer, one FrameData",
         &|target| {
             let color = clear(black);
+            let other_bytes = [7u8; 24];
             let items = [
                 Item::new(&instanced).frame_data(FrameData::new(&buffer, &bytes, 1)),
-                Item::new(&instanced).frame_data(FrameData::new(&buffer, &bytes, 1)),
+                Item::new(&instanced).frame_data(FrameData::new(&buffer, &other_bytes, 1)),
             ];
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
@@ -715,6 +720,213 @@ fn malformed_frames_are_refused_by_name() {
             let _ = Item::new(&two_slot).bindings(&[&binding; 5]);
         },
     );
+    // The render-image identity rules, each refused by name. One
+    // color image and its binding serve every case; the sampled cases
+    // ride the one-slot pipeline.
+    let image = device
+        .create_render_image(&renew_rhi::RenderImageDesc::new(
+            renew_rhi::RenderImageKind::Color,
+            Extent {
+                width: 8,
+                height: 8,
+            },
+        ))
+        .expect("refusal fixture image");
+    let image_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
+        .expect("refusal fixture image binding");
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    refused(
+        "an image pass carrying surface slices",
+        "carries its one attachment in its target",
+        &|target| {
+            let color = clear(black);
+            let mut pass = Pass::render_to(&image, store, &[]);
+            pass.color = &color;
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[pass, Pass::new(&color, &surface)]));
+        },
+    );
+    refused(
+        "a frame with no surface pass",
+        "at least one surface pass",
+        &|target| {
+            let _ = target.render(&RenderDesc::new(&[Pass::render_to(&image, store, &[])]));
+        },
+    );
+    refused(
+        "a contents-preserving load on an image's first use",
+        "render-image contents are frame-scoped",
+        &|target| {
+            let color = clear(black);
+            let load = Attachment::new(LoadOp::Load, StoreOp::Store);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+    refused(
+        "sampling an image the frame never rendered",
+        "must write it first",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&image_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "a pass sampling its own target",
+        "feedback within one pass",
+        &|target| {
+            let color = clear(black);
+            let sampled_desc =
+                PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1);
+            let feedback = device
+                .create_pipeline(&sampled_desc)
+                .expect("feedback pipeline");
+            let items = [Item::new(&feedback).bindings(&[&image_binding])];
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, store, &items),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+    refused(
+        "re-targeting an image after sampling it",
+        "one-way",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&image_binding])];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, store, &[]),
+                Pass::new(&color, &items),
+                Pass::render_to(&image, store, &[]),
+            ]));
+        },
+    );
+    refused(
+        "discarding contents a later pass samples",
+        "must Store",
+        &|target| {
+            let color = clear(black);
+            let discard = Attachment::new(
+                LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+                StoreOp::Discard,
+            );
+            let items = [Item::new(&one_slot).bindings(&[&image_binding])];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, discard, &[]),
+                Pass::new(&color, &items),
+            ]));
+        },
+    );
+    refused(
+        "a depth clear on a color image",
+        "clears to its kind's value",
+        &|target| {
+            let color = clear(black);
+            let wrong = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Store);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, wrong, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+    // The depth-only placement rule, both wrong homes: a color image
+    // pass and a surface pass. Retained rather than the surface format
+    // match's dev-only assert, because the zero-attachment shape in a
+    // color pass is an undefined draw, not a channel swap.
+    let depth_only = device
+        .create_pipeline(
+            &PipelineDesc::depth_mesh(builtin::MESH_VS_SPV, builtin::MESH_LAYOUT)
+                .depth_state(DepthState::read_write()),
+        )
+        .expect("depth-only pipeline");
+    let quad_mesh = device
+        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
+        .expect("mesh");
+    refused(
+        "a depth-only pipeline drawn into a color image",
+        "draws only into depth-kinded",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&depth_only).mesh(&quad_mesh)];
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, store, &items),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+    refused(
+        "a depth-only pipeline drawn in a surface pass",
+        "draws only into depth-kinded",
+        &|target| {
+            let color = clear(black);
+            let fresh = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard);
+            let items = [Item::new(&depth_only).mesh(&quad_mesh)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items).depth(fresh)]));
+        },
+    );
+    // The store-tracking rules the walk owns: loading what the last
+    // targeting pass threw away, and the image ceiling.
+    refused(
+        "a load of discarded render-image contents",
+        "store what a later pass loads",
+        &|target| {
+            let color = clear(black);
+            let discard = Attachment::new(
+                LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+                StoreOp::Discard,
+            );
+            let load = Attachment::new(LoadOp::Load, StoreOp::Store);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&image, discard, &[]),
+                Pass::render_to(&image, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+    let many_images: Vec<renew_rhi::RenderImage> = (0..5)
+        .map(|_| {
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Color,
+                    Extent {
+                        width: 8,
+                        height: 8,
+                    },
+                ))
+                .expect("boundary image")
+        })
+        .collect();
+    refused(
+        "a fifth distinct render image",
+        "at most 4 distinct render images",
+        &|target| {
+            let color = clear(black);
+            let surface = [Item::new(&pipeline)];
+            let image_passes: Vec<Pass<'_>> = many_images
+                .iter()
+                .map(|image| Pass::render_to(image, store, &[]))
+                .chain(std::iter::once(Pass::new(&color, &surface)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&image_passes));
+        },
+    );
+    drop(many_images);
+    drop(quad_mesh);
+    drop(depth_only);
+    drop(image_binding);
+    drop(image);
     drop(two_slot);
     drop(one_slot);
     drop(binding);
@@ -729,6 +941,77 @@ fn malformed_frames_are_refused_by_name() {
     target
         .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
         .expect("the target survives every refusal");
+    assert_no_validation_errors(&device);
+}
+
+/// Four distinct render images in one frame — the documented ceiling —
+/// two of them sampled by the same surface pass: the multi-image walk,
+/// the pass-level retention of every image, and a batched sampling
+/// boundary, all under validation. The refusal battery proves the
+/// fifth is refused; this proves the fourth is not.
+#[test]
+fn four_render_images_fill_the_frame_ceiling() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let images: Vec<renew_rhi::RenderImage> = (0..4)
+        .map(|_| {
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Color,
+                    Extent {
+                        width: 8,
+                        height: 8,
+                    },
+                ))
+                .expect("frame image")
+        })
+        .collect();
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    let bindings: Vec<renew_rhi::Binding> = images
+        .iter()
+        .take(2)
+        .map(|image| {
+            device
+                .create_binding(&BindingDesc::new(BindingSource::Image(image), &sampler))
+                .expect("image binding")
+        })
+        .collect();
+    let reader = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("reader pipeline");
+    let ops = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.5, 0.5, 0.5, 1.0))),
+        StoreOp::Store,
+    );
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let surface_items = [
+        Item::new(&reader).bindings(&[&bindings[0]]),
+        Item::new(&reader).bindings(&[&bindings[1]]),
+    ];
+    let passes: Vec<Pass<'_>> = images
+        .iter()
+        .map(|image| Pass::render_to(image, ops, &[]))
+        .chain(std::iter::once(Pass::new(&color, &surface_items)))
+        .collect();
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("four-image frame");
+    drop(target);
+    drop(reader);
+    drop(bindings);
+    drop(images);
+    drop(sampler);
     assert_no_validation_errors(&device);
 }
 

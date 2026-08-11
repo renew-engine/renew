@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use renew_rhi::{
     AdapterKind, Attachment, BindingDesc, BindingSource, Blend, ClearValue, Color, DepthState,
     Device, DeviceDesc, DeviceError, Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
-    RenderDesc, SamplerDesc, StoreOp, TargetFormat, TextureDesc, Validation, builtin,
+    RenderDesc, RenderImageDesc, RenderImageKind, SamplerDesc, StoreOp, TargetFormat, TextureDesc,
+    Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -559,6 +560,291 @@ fn two_textures_share_one_pipeline() {
     drop(right);
     drop(left_texture);
     drop(right_texture);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
+/// The atlas trio the sampled tests start from: texture, sampler, and
+/// the binding over both.
+fn atlas_fixture(
+    device: &Device,
+    texels: u32,
+    atlas: &[u8],
+) -> Result<(renew_rhi::Texture, renew_rhi::Sampler, renew_rhi::Binding), String> {
+    let texture = device
+        .create_texture(&TextureDesc::new(
+            Extent {
+                width: texels,
+                height: texels,
+            },
+            atlas,
+        ))
+        .map_err(|error| format!("texture upload: {error}"))?;
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .map_err(|error| format!("sampler: {error}"))?;
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .map_err(|error| format!("atlas binding: {error}"))?;
+    Ok((texture, sampler, binding))
+}
+
+/// The color round-trip: pass one renders the atlas quad into a
+/// render image, pass two samples that image onto the surface — through
+/// ONE pipeline, whose two items name two different bindings. The
+/// surface must answer with exactly the bytes the direct sampled test
+/// proves, because at equal sizes the nearest-sampled copy is the
+/// identity: what this adds is the whole rendered-then-sampled path —
+/// attachment write, layout transition to shader-read, sampled read —
+/// under active validation, with a CPU oracle.
+#[test]
+fn a_rendered_image_samples_back_byte_exact() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 2;
+    #[rustfmt::skip]
+    const ATLAS: [u8; 16] = [
+        10, 20, 30, 255,    40, 50, 60, 255,
+        70, 80, 90, 255,    100, 110, 120, 255,
+    ];
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let (texture, sampler, atlas_binding) =
+        atlas_fixture(&device, TEXELS, &ATLAS).expect("atlas fixture");
+    let image = device
+        .create_render_image(&RenderImageDesc::new(
+            RenderImageKind::Color,
+            Extent {
+                width: SIZE,
+                height: SIZE,
+            },
+        ))
+        .expect("render image");
+    // The image's own Debug and accessors, asserted here for the same
+    // reason the binding's are: the device suite skips where the
+    // validation layer is absent.
+    assert_eq!(image.extent().width, SIZE);
+    assert_eq!(image.kind(), RenderImageKind::Color);
+    let shown = format!("{image:?}");
+    assert!(shown.starts_with("RenderImage"), "{shown}");
+    let image_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
+        .expect("image binding");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("sampled pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    let clear_value = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(1.0, 0.0, 1.0, 1.0))),
+        StoreOp::Store,
+    );
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let into_image = [Item::new(&pipeline).bindings(&[&atlas_binding])];
+    // Two sampling items: the second mention of an already-sampled
+    // image must recognise the transition already happened, not emit
+    // it twice — identical draws, so the pixels also prove it.
+    let onto_surface = [
+        Item::new(&pipeline).bindings(&[&image_binding]),
+        Item::new(&pipeline).bindings(&[&image_binding]),
+    ];
+    // The second targeting pass draws NOTHING over a Load — so the
+    // sampled pixels below are the proof that Load actually preserved
+    // the first pass's contents, while the pass itself drives the
+    // between-pass walk arm and a second retention mention.
+    let load_value = Attachment::new(LoadOp::Load, StoreOp::Store);
+    let passes = [
+        Pass::render_to(&image, clear_value, &into_image),
+        Pass::render_to(&image, load_value, &[]),
+        Pass::new(&color, &onto_surface),
+    ];
+    let mut pixels = vec![0u8; target.byte_len()];
+    // Twice, identically: the second frame re-walks the image from
+    // UNDEFINED — frame-scoped contents re-proven, not assumed.
+    for round in 0..2 {
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("round-trip render");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
+                let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+                let offset = ((y * SIZE + x) as usize) * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    expected,
+                    "round {round}, pixel ({x},{y}) should carry texel {texel} through the \
+                     image on adapter {:?}",
+                    device.adapter()
+                );
+            }
+        }
+    }
+
+    // Teardown first, oracle second, the whole cast.
+    drop(target);
+    drop(pipeline);
+    drop(image_binding);
+    drop(atlas_binding);
+    drop(image);
+    drop(texture);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
+/// A quad over the left half of clip space at `depth`, packed to the
+/// mesh layout's 36-byte records: positions pass straight through the
+/// mesh vertex stage; colour and uv ride along unread — the layout
+/// describes the record, not the use.
+fn left_half_quad(depth: f32) -> Vec<u8> {
+    let mut vertices = Vec::new();
+    for [x, y] in [
+        [-1.0f32, -1.0],
+        [0.0, -1.0],
+        [0.0, 1.0],
+        [-1.0, -1.0],
+        [0.0, 1.0],
+        [-1.0, 1.0],
+    ] {
+        for value in [x, y, depth] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for _ in 0..6 {
+            vertices.extend_from_slice(&0.0f32.to_ne_bytes());
+        }
+    }
+    vertices
+}
+
+/// The shadow shape: a depth-only pass — no fragment stage, no color
+/// attachment — writes a half-screen quad's depth into a depth-kinded
+/// render image, and a sampling pass reads it back onto the surface.
+/// Depth formats sample as (D, 0, 0, 1), so the surface's red channel
+/// is the depth buffer itself: the quad's clip-space z where it
+/// covered, the reversed-Z far clear where it did not — a CPU oracle
+/// over the whole rendered-depth path.
+#[test]
+fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
+    const SIZE: u32 = 8;
+    // Chosen so both depth formats round-trip to one byte without a
+    // tie: 0.25 is exact in f32 and in UNORM24 lands at 63.75 * (1/255)
+    // steps — 64 after conversion, unambiguously.
+    const QUAD_DEPTH: f32 = 0.25;
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let image = match device.create_render_image(&RenderImageDesc::new(
+        RenderImageKind::Depth,
+        Extent {
+            width: SIZE,
+            height: SIZE,
+        },
+    )) {
+        Ok(image) => image,
+        // An adapter whose depth format cannot be sampled refuses at
+        // creation by design; off the strict lane that is a skip, on it
+        // the refusal must fail loudly.
+        Err(error) => {
+            assert!(
+                !strict(),
+                "RENEW_GOLDEN=1 but the depth render image was refused: {error}"
+            );
+            eprintln!("SKIP: depth render image refused: {error}");
+            return;
+        }
+    };
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    let depth_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
+        .expect("depth binding");
+    // The caster: a mesh pipeline with no fragment stage, reusing the
+    // full mesh pair's vertex stage — its colour output simply has no
+    // consumer.
+    let caster = device
+        .create_pipeline(
+            &PipelineDesc::depth_mesh(builtin::MESH_VS_SPV, builtin::MESH_LAYOUT)
+                .depth_state(DepthState::read_write()),
+        )
+        .expect("depth-only pipeline");
+    let reader = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("reader pipeline");
+    let vertices = left_half_quad(QUAD_DEPTH);
+    let mesh = device
+        .create_mesh(&MeshDesc::new(&vertices, 36, &[0, 1, 2, 3, 4, 5]))
+        .expect("caster quad");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    // Reversed-Z: the clear is the far plane at 0.0, and the quad's
+    // GREATER_OR_EQUAL 0.25 wins where it covers.
+    let depth_ops = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Store);
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let casting = [Item::new(&caster).mesh(&mesh)];
+    let reading = [Item::new(&reader).bindings(&[&depth_binding])];
+    // The second casting pass draws NOTHING over a Load — the sampled
+    // halves below prove the depth Load preserved the quad's writes,
+    // while the pass drives the depth image's between-pass walk arm.
+    let depth_again = Attachment::new(LoadOp::Load, StoreOp::Store);
+    let passes = [
+        Pass::render_to(&image, depth_ops, &casting),
+        Pass::render_to(&image, depth_again, &[]),
+        Pass::new(&color, &reading),
+    ];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("shadow render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            // Depth samples as (D, 0, 0, 1); UNORM8 conversion of 0.25
+            // is 64, of the far clear 0.
+            let expected: [u8; 4] = if x < SIZE / 2 {
+                [64, 0, 0, 255]
+            } else {
+                [0, 0, 0, 255]
+            };
+            let offset = ((y * SIZE + x) as usize) * 4;
+            assert_eq!(
+                &pixels[offset..offset + 4],
+                &expected,
+                "pixel ({x},{y}) on adapter {:?} (format {:?})",
+                device.adapter(),
+                device.depth_format_name()
+            );
+        }
+    }
+
+    // Teardown first, oracle second, the whole cast.
+    drop(target);
+    drop(caster);
+    drop(reader);
+    drop(mesh);
+    drop(depth_binding);
+    drop(image);
     drop(sampler);
     assert_no_validation_errors(&device);
 }

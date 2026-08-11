@@ -12,6 +12,17 @@ use crate::config::Color;
 use crate::vk::binding::{Binding, MAX_SAMPLED_BINDINGS};
 use crate::vk::mesh::Mesh;
 use crate::vk::pipeline::{FrameData, RenderPipeline};
+use crate::vk::render_image::{RenderImage, RenderImageKind};
+use crate::vk::transition::ImageUse;
+
+use std::rc::Rc;
+
+/// How many distinct render images one frame may touch — as targets,
+/// as sampled sources, or both. A fixed ceiling so the contract's walk
+/// table and the record paths' barrier arrays are stack-sized and the
+/// frame path allocates nothing; the fifth distinct image is refused
+/// by name before any GPU call.
+pub const MAX_FRAME_RENDER_IMAGES: usize = 4;
 
 /// Everything one frame needs, for either target: the passes, in order.
 ///
@@ -49,32 +60,83 @@ impl fmt::Debug for RenderDesc<'_> {
     }
 }
 
+/// What a pass renders into: the target's own surface, or a render
+/// image whose kind decides the pass's shape.
+///
+/// An input enum, so `#[non_exhaustive]`: a later target class must
+/// not break downstream matchers.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum PassTarget<'a> {
+    /// The target's own surface — what every pass named implicitly
+    /// before targets had identity, and the default [`Pass::new`]
+    /// still writes.
+    Surface,
+    /// A render image, with the ops for its one attachment.
+    ///
+    /// The ops ride the variant rather than the pass's slices because
+    /// an image pass has exactly one attachment and its kind is the
+    /// image's — a color list or a depth option would be two more ways
+    /// to state a shape the image already states.
+    Image(&'a RenderImage, Attachment),
+}
+
 /// One pass: what it renders into, and the draws it records.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct Pass<'a> {
-    /// v0: exactly one, naming the target's own surface implicitly; a
-    /// retained assert refuses zero or more-than-one until a later
-    /// change adds image identity.
+    /// Surface passes: exactly one, naming the target's own surface.
+    /// Image passes: empty — the image's ops ride [`Pass::target`].
+    /// Both shapes are refused by name when violated.
     pub color: &'a [Attachment],
-    /// The target's own depth image, when Some.
+    /// The target's own depth image, when Some. Surface passes only:
+    /// an image pass carries its one attachment in its target, and a
+    /// depth-kinded image *is* the depth attachment.
     pub depth: Option<Attachment>,
+    /// What this pass renders into.
+    pub target: PassTarget<'a>,
     /// Draws, executed in slice order.
     pub items: &'a [Item<'a>],
 }
 
 impl<'a> Pass<'a> {
-    /// A pass over `color`, drawing `items` in order, with no depth.
+    /// A surface pass over `color`, drawing `items` in order, with no
+    /// depth.
     #[must_use]
     pub fn new(color: &'a [Attachment], items: &'a [Item<'a>]) -> Self {
         Self {
             color,
             depth: None,
+            target: PassTarget::Surface,
             items,
         }
     }
 
-    /// Attach the target's depth image to this pass with `depth`'s ops.
+    /// A pass rendering into `image` with `attachment`'s ops, drawing
+    /// `items` in order.
+    ///
+    /// The image's kind decides the pass shape — a color image is the
+    /// pass's one color attachment, a depth image its one depth
+    /// attachment with no color at all — so a kind/shape mismatch is
+    /// unrepresentable rather than refused. Render area, viewport and
+    /// scissor come from the image's extent.
+    #[must_use]
+    pub fn render_to(
+        image: &'a RenderImage,
+        attachment: Attachment,
+        items: &'a [Item<'a>],
+    ) -> Self {
+        Self {
+            color: &[],
+            depth: None,
+            target: PassTarget::Image(image, attachment),
+            items,
+        }
+    }
+
+    /// Attach the target's depth image to this pass with `depth`'s
+    /// ops. Surface passes only — an image pass carries its one
+    /// attachment in its target, and the contract refuses the mix.
     #[must_use]
     pub fn depth(mut self, depth: Attachment) -> Self {
         self.depth = Some(depth);
@@ -109,9 +171,11 @@ impl Attachment {
 pub enum LoadOp {
     /// The attachment starts as `ClearValue`.
     Clear(ClearValue),
-    /// The attachment keeps the previous pass's contents. Refused on a
-    /// frame's first pass — every frame's first use of each attachment
-    /// starts from undefined contents.
+    /// The attachment keeps the previous pass's contents. Refused on
+    /// each identity's first use in the frame — the surface, the
+    /// target's depth image, and every render image all start a frame
+    /// from undefined contents — and on a render image whose last
+    /// targeting pass discarded.
     Load,
 }
 
@@ -153,9 +217,10 @@ pub struct Item<'a> {
     /// without geometry reads an unbound binding and geometry handed to
     /// a generative pipeline is silently ignored.
     ///
-    /// **Unlike per-frame bytes, a mesh may be named by any number of
-    /// items** — there is no copy to race, so the one-buffer-one-item
-    /// rule below does not reach it.
+    /// **A mesh may be named by any number of items** — there is no
+    /// copy to race at all, unlike per-frame bytes, whose repeats must
+    /// be pointer-identical under the one-buffer-one-`FrameData` rule
+    /// below.
     pub mesh: Option<&'a Mesh>,
     /// `FrameData` contained, not forked; room to grow (a
     /// first-instance or vertex-offset field) without touching existing
@@ -180,8 +245,8 @@ pub struct Item<'a> {
     /// is what lets N textures share one pipeline.
     ///
     /// **Like a mesh, a binding may be named by any number of items** —
-    /// nothing copies into it, so the one-buffer-one-item rule does not
-    /// reach it; each distinct binding costs one retention slot.
+    /// nothing copies into it, so the buffer rule does not reach it;
+    /// each distinct binding costs one retention slot.
     pub bindings: Option<Bindings<'a>>,
 }
 
@@ -336,24 +401,35 @@ pub(crate) enum Retained {
     /// mesh is — nothing copies into a binding, so items may share one
     /// freely.
     Binding(std::rc::Rc<crate::vk::binding::BindingInner>),
+    /// A render image some pass targets. Retained by the pass walk
+    /// rather than by any item — the recorded attachment references it
+    /// whether or not anything samples it. Read only to recognise an
+    /// image already retained this frame; a sampled-only image rides
+    /// its binding's hold instead.
+    Image(std::rc::Rc<crate::vk::render_image::RenderImageInner>),
 }
 
-/// Whether `resource` is already held in `held` — true only for the
-/// repeatable classes (meshes and bindings), which several items may
-/// name while spending one slot.
+/// Whether `resource` is already held in `held` — true for every
+/// class, so several mentions of one resource spend one slot.
 ///
 /// **One definition, consumed by both targets' fill loops**, so the
-/// recognition rule cannot drift between them. A per-frame buffer never
-/// matches: the contract's one-buffer-one-item rule means a duplicate
-/// cannot reach retention.
+/// recognition rule cannot drift between them. Buffers joined the
+/// recognised classes when the retention rule relaxed to
+/// one-buffer-one-`FrameData`: identical frame data may now repeat
+/// across items, so a repeated buffer can reach retention.
 pub(crate) fn already_retained(resource: &Retained, held: &[Option<Retained>]) -> bool {
     match resource {
-        Retained::Frame(_) => false,
+        Retained::Frame(buffer) => held.iter().any(|slot| {
+            matches!(slot, Some(Retained::Frame(seen)) if std::rc::Rc::ptr_eq(seen, buffer))
+        }),
         Retained::Mesh(mesh) => held.iter().any(|slot| {
             matches!(slot, Some(Retained::Mesh(seen)) if std::rc::Rc::ptr_eq(seen, mesh))
         }),
         Retained::Binding(binding) => held.iter().any(|slot| {
             matches!(slot, Some(Retained::Binding(seen)) if std::rc::Rc::ptr_eq(seen, binding))
+        }),
+        Retained::Image(image) => held.iter().any(|slot| {
+            matches!(slot, Some(Retained::Image(seen)) if std::rc::Rc::ptr_eq(seen, image))
         }),
     }
 }
@@ -412,6 +488,287 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOUR
 /// the fill loops stay allocation-free.
 pub(crate) const MAX_ITEM_RESOURCES: usize = 2 + MAX_SAMPLED_BINDINGS;
 
+/// The frame's per-identity image walk: which attachment identities
+/// this frame has used, and how -- ONE definition read by the contract
+/// and by both record paths.
+///
+/// **The rules and the barrier pairs live in the same state machine,
+/// and that is the point.** The contract drives a walk over the whole
+/// frame before any GPU call, so every refusal below fires there, by
+/// name; each record path then drives a fresh walk over the same
+/// frame and reads the [`ImageUse`] pairs the contract already proved
+/// legal, feeding them to `transition::pass_boundary`. Two targets
+/// selecting masks independently is how barrier drift happens; two
+/// consumers of one walk cannot drift.
+pub(crate) struct FrameWalk {
+    surface_color_used: bool,
+    target_depth_used: bool,
+    images: [Option<ImageEntry>; MAX_FRAME_RENDER_IMAGES],
+}
+
+struct ImageEntry {
+    key: *const u8,
+    kind: RenderImageKind,
+    targeted: bool,
+    sampled: bool,
+    /// Whether the image's LAST targeting pass discarded its contents
+    /// — what decides both whether a later `Load` reads anything and
+    /// whether a later sample does.
+    discarded: bool,
+}
+
+/// What one pass does to its target identities, as [`ImageUse`] pairs
+/// ready for `transition::pass_boundary`. `color` is `None` exactly
+/// for depth-image passes, which have no color attachment at all.
+pub(crate) struct TargetUses {
+    pub(crate) color: Option<(ImageUse, ImageUse)>,
+    pub(crate) depth: Option<(ImageUse, ImageUse)>,
+}
+
+/// The most barriers one pass boundary can need: its color and depth
+/// attachments plus every image crossing to sampled at this boundary.
+/// Sizes both record paths' barrier arrays, so the frame path
+/// allocates nothing.
+pub(crate) const MAX_PASS_BARRIERS: usize = 2 + MAX_FRAME_RENDER_IMAGES;
+
+/// One sampling transition a pass forces: the image, its barrier
+/// subresource, and the use pair. Emitted once per image, at the first
+/// sampling pass's boundary.
+pub(crate) struct SampleUse {
+    pub(crate) image: ash::vk::Image,
+    pub(crate) range: ash::vk::ImageSubresourceRange,
+    pub(crate) uses: (ImageUse, ImageUse),
+}
+
+impl FrameWalk {
+    pub(crate) fn new() -> Self {
+        Self {
+            surface_color_used: false,
+            target_depth_used: false,
+            images: [const { None }; MAX_FRAME_RENDER_IMAGES],
+        }
+    }
+
+    /// The occupied slot for `key`, minting one on first mention.
+    ///
+    /// # Panics
+    ///
+    /// A fifth distinct image is refused by name.
+    fn entry_index(&mut self, key: *const u8, kind: RenderImageKind) -> usize {
+        let known = self
+            .images
+            .iter()
+            .position(|slot| matches!(slot, Some(entry) if entry.key == key));
+        if let Some(index) = known {
+            return index;
+        }
+        // Slots are minted densely, so the occupied count IS the first
+        // free index — and the ceiling refusal in one comparison.
+        let occupied = self.images.iter().flatten().count();
+        assert!(
+            occupied < MAX_FRAME_RENDER_IMAGES,
+            "a frame touches at most {MAX_FRAME_RENDER_IMAGES} distinct render images (as \
+             targets and sampled sources together)"
+        );
+        self.images[occupied] = Some(ImageEntry {
+            key,
+            kind,
+            targeted: false,
+            sampled: false,
+            discarded: false,
+        });
+        occupied
+    }
+
+    /// Advance the walk over `pass`'s target, returning the use pairs
+    /// its attachments transition through.
+    ///
+    /// # Panics
+    ///
+    /// The identity rules, refused by name: a contents-preserving load
+    /// on any identity's first use of the frame; re-targeting a render
+    /// image after a pass sampled it; a fifth distinct image.
+    pub(crate) fn advance_target(&mut self, index: usize, pass: &Pass<'_>) -> TargetUses {
+        match &pass.target {
+            PassTarget::Surface => {
+                let color = &pass.color[0];
+                assert!(
+                    self.surface_color_used || !matches!(color.load, LoadOp::Load),
+                    "pass {index}: LoadOp::Load on the frame's first surface use loads \
+                     undefined contents -- every frame's first use of each attachment starts \
+                     undefined"
+                );
+                let color_pair = if self.surface_color_used {
+                    (ImageUse::ColorAttachment, ImageUse::ColorAttachment)
+                } else {
+                    (ImageUse::ColorAttachmentFirstUse, ImageUse::ColorAttachment)
+                };
+                self.surface_color_used = true;
+                let depth_pair = pass.depth.as_ref().map(|depth| {
+                    assert!(
+                        self.target_depth_used || !matches!(depth.load, LoadOp::Load),
+                        "pass {index}: LoadOp::Load on the frame's first depth use loads \
+                         undefined contents -- the depth image transitions from UNDEFINED at \
+                         its first carrying pass"
+                    );
+                    let pair = if self.target_depth_used {
+                        (ImageUse::DepthAttachment, ImageUse::DepthAttachment)
+                    } else {
+                        (ImageUse::DepthAttachmentFirstUse, ImageUse::DepthAttachment)
+                    };
+                    self.target_depth_used = true;
+                    pair
+                });
+                TargetUses {
+                    color: Some(color_pair),
+                    depth: depth_pair,
+                }
+            }
+            PassTarget::Image(image, attachment) => {
+                let key = Rc::as_ptr(&image.inner).cast::<u8>();
+                let kind = image.inner.kind;
+                let slot = self.entry_index(key, kind);
+                let Some(entry) = self.images[slot].as_mut() else {
+                    unreachable!("entry_index returns an occupied slot")
+                };
+                assert!(
+                    !entry.sampled,
+                    "pass {index}: this frame already sampled this render image — the \
+                     per-image walk is one-way (target, then sample), so every pass that \
+                     writes an image must precede the first pass that reads it"
+                );
+                let first_use = !entry.targeted;
+                assert!(
+                    !first_use || !matches!(attachment.load, LoadOp::Load),
+                    "pass {index}: LoadOp::Load on a render image's first use this frame \
+                     loads undefined contents — render-image contents are frame-scoped and \
+                     start undefined every frame"
+                );
+                // Loading what the last targeting pass threw away is the
+                // same undefined read one pass later.
+                assert!(
+                    first_use || !matches!(attachment.load, LoadOp::Load) || !entry.discarded,
+                    "pass {index}: LoadOp::Load on a render image whose last targeting \
+                     pass discarded its contents loads undefined pixels — store what a \
+                     later pass loads"
+                );
+                entry.targeted = true;
+                entry.discarded = matches!(attachment.store, StoreOp::Discard);
+                match kind {
+                    RenderImageKind::Color => TargetUses {
+                        color: Some(if first_use {
+                            (ImageUse::RenderColorFirstUse, ImageUse::ColorAttachment)
+                        } else {
+                            (ImageUse::ColorAttachment, ImageUse::ColorAttachment)
+                        }),
+                        depth: None,
+                    },
+                    RenderImageKind::Depth => TargetUses {
+                        color: None,
+                        depth: Some(if first_use {
+                            (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment)
+                        } else {
+                            (ImageUse::DepthAttachment, ImageUse::DepthAttachment)
+                        }),
+                    },
+                    // No rest arm: `#[non_exhaustive]` does not bind
+                    // inside the defining crate, so a new kind fails to
+                    // compile HERE -- the one place that must learn its
+                    // barriers -- rather than panicking at runtime.
+                }
+            }
+        }
+    }
+
+    /// Advance the walk over `pass`'s sampled render images, returning
+    /// the transitions the first sampling of each forces, in first-use
+    /// order.
+    ///
+    /// # Panics
+    ///
+    /// Sampling an image no pass in this frame has rendered, and
+    /// sampling the image the pass itself renders into -- both refused
+    /// by name.
+    pub(crate) fn advance_sampling(
+        &mut self,
+        index: usize,
+        pass: &Pass<'_>,
+    ) -> ([Option<SampleUse>; MAX_FRAME_RENDER_IMAGES], usize) {
+        let own_target = match &pass.target {
+            PassTarget::Image(image, _) => Some(Rc::as_ptr(&image.inner).cast::<u8>()),
+            PassTarget::Surface => None,
+        };
+        let mut out = [const { None }; MAX_FRAME_RENDER_IMAGES];
+        let mut count = 0usize;
+        for item in pass.items {
+            let Some(bindings) = &item.bindings else {
+                continue;
+            };
+            for binding in bindings.iter() {
+                let Some(inner) = binding.inner.sampled_render_image() else {
+                    continue;
+                };
+                let key = Rc::as_ptr(inner).cast::<u8>();
+                assert!(
+                    own_target != Some(key),
+                    "pass {index}: an item samples the render image this pass renders \
+                     into -- feedback within one pass is undefined; split it into a \
+                     writing pass and a reading pass"
+                );
+                let entry = self
+                    .images
+                    .iter_mut()
+                    .flatten()
+                    .find(|entry| entry.key == key && entry.targeted);
+                assert!(
+                    entry.is_some(),
+                    "pass {index}: an item samples a render image no pass in this frame \
+                     has rendered — render-image contents are frame-scoped, so a frame \
+                     that reads one must write it first"
+                );
+                let Some(entry) = entry else {
+                    unreachable!("asserted just above")
+                };
+                assert!(
+                    !entry.discarded,
+                    "pass {index}: an item samples a render image whose last targeting \
+                     pass discarded its contents — a targeting pass whose image is read \
+                     later must Store"
+                );
+                if entry.sampled {
+                    continue;
+                }
+                entry.sampled = true;
+                out[count] = Some(SampleUse {
+                    image: inner.image,
+                    range: match entry.kind {
+                        RenderImageKind::Depth => crate::vk::depth::barrier_range(inner.format),
+                        _ => ash::vk::ImageSubresourceRange::default()
+                            .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(1)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    },
+                    uses: match entry.kind {
+                        RenderImageKind::Depth => {
+                            (ImageUse::DepthAttachment, ImageUse::SampledInPass)
+                        }
+                        _ => (ImageUse::ColorAttachment, ImageUse::SampledInPass),
+                    },
+                });
+                count += 1;
+            }
+        }
+        (out, count)
+    }
+
+    /// Whether any pass so far targeted the surface.
+    pub(crate) fn surface_used(&self) -> bool {
+        self.surface_color_used
+    }
+}
+
 /// The frame-shape contract, asserted identically by both targets
 /// before any GPU call: the refusals that make a malformed frame a
 /// named panic instead of a validation stream or a quiet wrong image.
@@ -426,68 +783,48 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
         !desc.passes.is_empty(),
         "a frame needs at least one pass: an empty frame records nothing, and on the window          path would present contents nothing ever defined"
     );
-    let mut depth_used = false;
+    let mut walk = FrameWalk::new();
     for (index, pass) in desc.passes.iter().enumerate() {
-        assert!(
-            pass.color.len() == 1,
-            "pass {index}: v0 passes carry exactly one color attachment (the target's own \
-             surface), got {}",
-            pass.color.len()
-        );
-        let color = &pass.color[0];
-        if index == 0 {
-            assert!(
-                !matches!(color.load, LoadOp::Load),
-                "pass 0: LoadOp::Load on a frame's first pass loads undefined contents — \
-                 every frame's first use of the attachment starts undefined"
+        check_pass_shape(index, pass);
+        // The identity rules: first-use loads, the one-way per-image
+        // walk, the distinct-image ceiling. One state machine, shared
+        // with the record paths.
+        let _ = walk.advance_target(index, pass);
+        for item in pass.items {
+            // A depth-only pipeline draws only into depth images —
+            // anywhere else its zero-attachment shape disagrees with
+            // the pass's rendering instance, which is invalid usage the
+            // driver may answer with anything. Retained, unlike the
+            // surface format match: the consequence is not a channel
+            // swap but an undefined draw.
+            let depth_image_pass = matches!(
+                &pass.target,
+                PassTarget::Image(image, _) if image.kind() == RenderImageKind::Depth
             );
-        }
-        if let Some(depth) = &pass.depth {
-            // The color first-use is always pass 0 (every pass carries
-            // color); the depth first-use is the frame's first
-            // depth-CARRYING pass, whatever its index — that is where
-            // the walk transitions the image from UNDEFINED, so that is
-            // where a Load reads garbage.
-            if !depth_used {
+            assert!(
+                depth_image_pass || item.pipeline.format != crate::TargetFormat::DepthOnly,
+                "pass {index}: a depth-only pipeline draws only into depth-kinded render                  images — it has no fragment stage and no color attachment for any other                  pass shape to bind"
+            );
+            // Image passes carry their format in their kind, so the
+            // match is contract-checked here; a surface pass's format
+            // is the target's own, asserted where the target knows it.
+            if let PassTarget::Image(image, _) = &pass.target {
+                let expected = match image.kind() {
+                    RenderImageKind::Depth => crate::TargetFormat::DepthOnly,
+                    _ => crate::TargetFormat::Rgba8Unorm,
+                };
                 assert!(
-                    !matches!(depth.load, LoadOp::Load),
-                    "pass {index}: LoadOp::Load on the frame's first depth use loads \
-                     undefined contents — the depth image transitions from UNDEFINED at \
-                     its first carrying pass"
+                    item.pipeline.format == expected,
+                    "pass {index}: an item's pipeline format must match the image it \
+                     renders into — a color image draws {:?} pipelines, a depth image \
+                     {:?} ones; got {:?}",
+                    crate::TargetFormat::Rgba8Unorm,
+                    crate::TargetFormat::DepthOnly,
+                    item.pipeline.format
                 );
             }
-            depth_used = true;
-        }
-        if let LoadOp::Clear(value) = color.load {
             assert!(
-                matches!(value, ClearValue::Color(_)),
-                "pass {index}: a color attachment clears to ClearValue::Color, not \
-                 ClearValue::Depth"
-            );
-        }
-        if let Some(depth) = &pass.depth
-            && let LoadOp::Clear(value) = depth.load
-        {
-            // Kind and range in one refusal, so no arm is unreachable:
-            // a depth clear is valid exactly when it is a Depth value
-            // that is finite and in the documented range — anything
-            // else is invalid usage the driver may answer with
-            // anything.
-            let valid = match value {
-                ClearValue::Depth(depth_value) => {
-                    depth_value.is_finite() && (0.0..=1.0).contains(&depth_value)
-                }
-                _ => false,
-            };
-            assert!(
-                valid,
-                "pass {index}: a depth attachment clears to ClearValue::Depth, finite and \
-                 in [0, 1] — got {value:?}"
-            );
-        }
-        for item in pass.items {
-            assert!(
-                item.pipeline.depth == pass.depth.is_some(),
+                item.pipeline.depth == pass_has_depth(pass),
                 "pass {index}: an item's pipeline depth state must match the pass — a \
                  depth-testing pipeline in a depthless pass (or the reverse) draws \
                  differently than written"
@@ -544,8 +881,95 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
             }
             check_binding_contract(index, item);
         }
+        let _ = walk.advance_sampling(index, pass);
     }
+    assert!(
+        walk.surface_used(),
+        "a frame needs at least one surface pass: image passes render intermediate \
+         contents, and a frame that never touches the surface defines nothing to present \
+         or read back"
+    );
     check_retention_bound(desc);
+}
+
+/// The pass's shape follows its target: a surface pass names the
+/// target's own surface as its one color attachment; an image pass
+/// carries its one attachment in the target itself, so its slices stay
+/// empty. Clear values must match the attachment's kind either way. A
+/// sibling of [`check_retention_bound`] for the same reason: one rule
+/// family, its own function.
+fn check_pass_shape(index: usize, pass: &Pass<'_>) {
+    match &pass.target {
+        PassTarget::Surface => {
+            assert!(
+                pass.color.len() == 1,
+                "pass {index}: a surface pass carries exactly one color attachment \
+                 (the target's own surface), got {}",
+                pass.color.len()
+            );
+            let color = &pass.color[0];
+            if let LoadOp::Clear(value) = color.load {
+                assert!(
+                    matches!(value, ClearValue::Color(_)),
+                    "pass {index}: a color attachment clears to ClearValue::Color, not \
+                     ClearValue::Depth"
+                );
+            }
+            if let Some(depth) = &pass.depth
+                && let LoadOp::Clear(value) = depth.load
+            {
+                // Kind and range in one refusal, so no arm is
+                // unreachable: a depth clear is valid exactly when it
+                // is a Depth value that is finite and in the documented
+                // range — anything else is invalid usage the driver may
+                // answer with anything.
+                let valid = match value {
+                    ClearValue::Depth(depth_value) => {
+                        depth_value.is_finite() && (0.0..=1.0).contains(&depth_value)
+                    }
+                    _ => false,
+                };
+                assert!(
+                    valid,
+                    "pass {index}: a depth attachment clears to ClearValue::Depth, \
+                     finite and in [0, 1] — got {value:?}"
+                );
+            }
+        }
+        PassTarget::Image(image, attachment) => {
+            assert!(
+                pass.color.is_empty() && pass.depth.is_none(),
+                "pass {index}: an image pass carries its one attachment in its \
+                 target — surface color slices and the target-depth option name \
+                 images this pass does not render into"
+            );
+            if let LoadOp::Clear(value) = attachment.load {
+                let valid = match (image.kind(), value) {
+                    (RenderImageKind::Color, ClearValue::Color(_)) => true,
+                    (RenderImageKind::Depth, ClearValue::Depth(depth_value)) => {
+                        depth_value.is_finite() && (0.0..=1.0).contains(&depth_value)
+                    }
+                    _ => false,
+                };
+                assert!(
+                    valid,
+                    "pass {index}: an image attachment clears to its kind's value — \
+                     Color to ClearValue::Color, Depth to a finite ClearValue::Depth \
+                     in [0, 1] — got {value:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Whether a pass carries a depth attachment — the target's own depth
+/// image on a surface pass, or the image itself when it is
+/// depth-kinded.
+pub(crate) fn pass_has_depth(pass: &Pass<'_>) -> bool {
+    match &pass.target {
+        PassTarget::Surface => pass.depth.is_some(),
+        PassTarget::Image(image, _) => image.kind() == RenderImageKind::Depth,
+    }
 }
 
 /// The push-data rules again, for sampled slots: a declared slot never
@@ -582,16 +1006,23 @@ fn check_binding_contract(index: usize, item: &Item<'_>) {
 fn check_retention_bound(desc: &RenderDesc<'_>) {
     // Two rules, deliberately different:
     //
-    // - **One buffer, one item, per frame.** Two items naming one
-    //   per-frame buffer would have the second copy silently win before
-    //   either draws. Unchanged, in wording and in force.
-    // - **A mesh or a binding may repeat.** Nothing copies into either,
-    //   so there is no race for the rule above to prevent, and drawing
-    //   one voxel mesh — or one atlas binding — from several items is an
-    //   ordinary thing to want. Each distinct one costs one retention
-    //   slot however many items name it.
+    // - **One buffer, one `FrameData`, per frame.** Two items carrying
+    //   DIFFERENT data for one per-frame buffer would have the second
+    //   copy silently win before either draws — refused. Two items
+    //   carrying the POINTER-IDENTICAL data (same bytes, same count)
+    //   are one copy written twice: drawing the same instanced world
+    //   from two passes is an ordinary thing to want, and it costs one
+    //   retention slot.
+    // - **A mesh, a binding, or a pass-target image may repeat.**
+    //   Nothing copies into them, so there is no race at all; each
+    //   distinct one costs one retention slot however many mentions.
     let mut seen: [Option<*const u8>; MAX_RETAINED_RESOURCES] = [None; MAX_RETAINED_RESOURCES];
     let mut count = 0usize;
+    // Per-buffer FrameData signatures: (bytes pointer, length, count).
+    // Pointer identity, not content equality — the rule is about which
+    // copy wins, and two copies of one allocation cannot disagree.
+    let mut buffer_data: [Option<BufferRecord>; MAX_RETAINED_RESOURCES] =
+        [None; MAX_RETAINED_RESOURCES];
     // The repeatable classes share one recognise-or-count arm; the
     // pointer key spaces cannot collide across classes, because each is
     // the address of a distinct live allocation.
@@ -602,13 +1033,20 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
             assert!(
                 *count < MAX_RETAINED_RESOURCES,
                 "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
-                 (per-frame buffers, meshes and bindings together)"
+                 (per-frame buffers, meshes, bindings and pass-target images together)"
             );
             seen[*count] = Some(key);
             *count += 1;
         }
     };
     for pass in desc.passes {
+        // A pass-target image is retained by the pass walk, exactly
+        // once however many passes target it — the mesh rule, one
+        // resource class over.
+        if let PassTarget::Image(image, _) = &pass.target {
+            let key = std::rc::Rc::as_ptr(&image.inner).cast::<u8>();
+            count_repeatable(&mut seen, &mut count, key);
+        }
         for item in pass.items {
             if let Some(mesh) = item.mesh {
                 let key = std::rc::Rc::as_ptr(&mesh.inner).cast::<u8>();
@@ -624,29 +1062,47 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
                 continue;
             };
             let key = std::rc::Rc::as_ptr(&data.buffer.inner).cast::<u8>();
-            assert!(
-                !seen[..count].contains(&Some(key)),
-                "one buffer, one item, per frame: two items name the same buffer, and the \
-                 second copy would silently win before either draws"
-            );
-            assert!(
-                count < MAX_RETAINED_RESOURCES,
-                "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
-                 (per-frame buffers, meshes and bindings together)"
-            );
-            seen[count] = Some(key);
-            count += 1;
+            let signature = (data.bytes.as_ptr(), data.bytes.len(), data.instances);
+            let prior = buffer_data[..count_matters(&buffer_data)]
+                .iter()
+                .flatten()
+                .find(|(prior_key, _)| *prior_key == key);
+            if let Some((_, prior_signature)) = prior {
+                assert!(
+                    *prior_signature == signature,
+                    "one buffer, one FrameData, per frame: two items carry different data \
+                     for the same buffer, and the second copy would silently win before \
+                     either draws (pointer-identical data may repeat)"
+                );
+            } else {
+                count_repeatable(&mut seen, &mut count, key);
+                let Some(slot) = buffer_data.iter_mut().find(|slot| slot.is_none()) else {
+                    unreachable!("the ceiling assert above bounds distinct buffers")
+                };
+                *slot = Some((key, signature));
+            }
         }
     }
 }
 
+/// One buffer's recorded claim: its key, then its `FrameData`
+/// signature — bytes pointer, length, instance count.
+type BufferRecord = (*const u8, (*const u8, usize, u32));
+
+/// How many leading buffer records are occupied — a helper the borrow
+/// checker demands, not a second counter.
+fn count_matters(records: &[Option<BufferRecord>; MAX_RETAINED_RESOURCES]) -> usize {
+    records.iter().take_while(|slot| slot.is_some()).count()
+}
+
 /// How many distinct resources one frame may keep alive, per target slot
 /// — the hard bound that keeps retention tables fixed-width and the frame
-/// path allocation-free. Per-frame buffers, meshes and bindings share it,
-/// because they share one table. The seventeenth distinct resource is
-/// refused by name in [`check_frame_contract`]. Sixteen, doubled from
-/// eight when bindings joined the table: every draw's sampled slots now
-/// spend from the same budget its geometry does.
+/// path allocation-free. Per-frame buffers, meshes, bindings and
+/// pass-target render images share it, because they share one table. The
+/// seventeenth distinct resource is refused by name in
+/// [`check_frame_contract`]. Sixteen, doubled from eight when bindings
+/// joined the table: every draw's sampled slots now spend from the same
+/// budget its geometry does.
 pub(crate) const MAX_RETAINED_RESOURCES: usize = 16;
 
 impl LoadOp {

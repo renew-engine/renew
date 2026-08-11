@@ -40,6 +40,22 @@ struct SmokeApp {
     /// The one binding the textured pipeline's item names — built with
     /// its pipeline, held for the run.
     binding: Option<renew_rhi::Binding>,
+    /// A render image written by every frame's leading pass, sampled
+    /// by a surface item — the render-then-read shape, its first-use
+    /// barrier waiting on the previous frame's work against the ONE
+    /// physical image, across frames in flight where only the
+    /// validation layer can judge it.
+    render_image: Option<renew_rhi::RenderImage>,
+    /// The binding the sampling item reads the render image through.
+    image_binding: Option<renew_rhi::Binding>,
+    /// The pipeline the sampling item draws with, in the target's own
+    /// format.
+    sampled_pipeline: Option<renew_rhi::RenderPipeline>,
+    /// A depth-kinded render image cleared by its own empty pass each
+    /// frame — the depth-image target arms on the window path; `None`
+    /// where the adapter has no depth format, mirroring the depth
+    /// pipeline's own optionality.
+    render_depth_image: Option<renew_rhi::RenderImage>,
     /// A depth-testing triangle for the frame's depth passes, `None`
     /// when the adapter offers no depth format — a reported skip of the
     /// depth passes off the strict lane, a failure on it (the exercise
@@ -72,6 +88,10 @@ impl SmokeApp {
             target: None,
             pipeline: None,
             binding: None,
+            render_image: None,
+            image_binding: None,
+            sampled_pipeline: None,
+            render_depth_image: None,
             depth_pipeline: None,
             push_pipeline: None,
             mesh_pipeline: None,
@@ -213,10 +233,29 @@ impl WindowApp for SmokeApp {
                 return;
             }
         };
+        let (render_image, render_depth_image) = match render_image_fixture(&device) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.failure = Some(error);
+                return;
+            }
+        };
+        let (image_binding, sampled_pipeline) =
+            match image_consumer_fixture(&device, &render_image, target.format()) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    self.failure = Some(error);
+                    return;
+                }
+            };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
         self.binding = Some(binding);
+        self.render_image = Some(render_image);
+        self.image_binding = Some(image_binding);
+        self.sampled_pipeline = Some(sampled_pipeline);
+        self.render_depth_image = render_depth_image;
         self.depth_pipeline = depth_pipeline;
         self.push_pipeline = Some(push_pipeline);
         self.mesh_pipeline = Some(mesh_pipeline);
@@ -309,20 +348,36 @@ impl WindowApp for SmokeApp {
                     .pipeline
                     .as_ref()
                     .zip(self.push_pipeline.as_ref())
-                    .zip(self.binding.as_ref());
+                    .zip(self.binding.as_ref())
+                    .zip(
+                        self.sampled_pipeline
+                            .as_ref()
+                            .zip(self.image_binding.as_ref()),
+                    );
                 let items: &[Item<'_>] = match (drawn, geometry) {
-                    (Some(((pipeline, push_pipeline), binding)), Some((mesh_pipeline, mesh))) => {
+                    (
+                        Some((((pipeline, push_pipeline), binding), (sampled, image_binding))),
+                        Some((mesh_pipeline, mesh)),
+                    ) => {
                         items_with_mesh = [
                             Item::new(push_pipeline).push_data(&pushed),
                             Item::new(pipeline).bindings(&[binding]),
+                            // The read half of the render image's frame:
+                            // the sampling transition crosses at this
+                            // pass's boundary, under the same oracle.
+                            Item::new(sampled).bindings(&[image_binding]),
                             Item::new(mesh_pipeline).mesh(mesh),
                         ];
                         &items_with_mesh
                     }
-                    (Some(((pipeline, push_pipeline), binding)), None) => {
+                    (
+                        Some((((pipeline, push_pipeline), binding), (sampled, image_binding))),
+                        None,
+                    ) => {
                         items_storage = [
                             Item::new(push_pipeline).push_data(&pushed),
                             Item::new(pipeline).bindings(&[binding]),
+                            Item::new(sampled).bindings(&[image_binding]),
                         ];
                         &items_storage
                     }
@@ -336,6 +391,39 @@ impl WindowApp for SmokeApp {
                 // barrier, all on the window path under Required
                 // validation.
                 let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
+                // The leading image pass: cleared, stored, drawn by
+                // nothing, sampled by nothing. What it exercises is
+                // the asynchronous path's pass-target retention and
+                // the render image's first-use barrier — the
+                // write-after-write hazard against the previous
+                // frame's pass over the same physical image, which
+                // only this suite's validation can judge.
+                let image_pass_storage;
+                let image_pass: &[Pass<'_>] = match self.render_image.as_ref() {
+                    Some(image) => {
+                        let ops = Attachment::new(
+                            LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+                            StoreOp::Store,
+                        );
+                        image_pass_storage = [Pass::render_to(image, ops, &[])];
+                        &image_pass_storage
+                    }
+                    None => &[],
+                };
+                // The depth image's pass: cleared, stored, drawn by
+                // nothing, sampled by nothing — the depth-kinded target
+                // arms of the window path's walk, under the same
+                // oracle. Its ops clear to the reversed-Z far plane.
+                let depth_image_storage;
+                let depth_image_pass: &[Pass<'_>] = match self.render_depth_image.as_ref() {
+                    Some(image) => {
+                        let ops =
+                            Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Store);
+                        depth_image_storage = [Pass::render_to(image, ops, &[])];
+                        &depth_image_storage
+                    }
+                    None => &[],
+                };
                 let depth_items_storage;
                 let passes_three;
                 let passes_one;
@@ -353,13 +441,27 @@ impl WindowApp for SmokeApp {
                     let fresh =
                         Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Discard);
                     passes_three = [
+                        image_pass
+                            .first()
+                            .copied()
+                            .unwrap_or(Pass::new(&color, items)),
+                        depth_image_pass
+                            .first()
+                            .copied()
+                            .unwrap_or(Pass::new(&color, items)),
                         Pass::new(&color, items),
                         Pass::new(&load, &depth_items_storage).depth(fresh),
                         Pass::new(&load, &depth_items_storage).depth(fresh),
                     ];
                     &passes_three
                 } else {
-                    passes_one = [Pass::new(&color, items)];
+                    passes_one = [
+                        image_pass
+                            .first()
+                            .copied()
+                            .unwrap_or(Pass::new(&color, items)),
+                        Pass::new(&color, items),
+                    ];
                     &passes_one
                 };
                 // The ring must actually cycle. A ring stuck on slot
@@ -410,6 +512,62 @@ impl WindowApp for SmokeApp {
             control.request_redraw();
         }
     }
+}
+
+/// The frame's render images: the color one every run writes and
+/// samples, and the depth one whose empty pass exists wherever the
+/// adapter has a depth format — mirroring the depth pipeline's own
+/// optionality.
+fn render_image_fixture(
+    device: &Device,
+) -> Result<(renew_rhi::RenderImage, Option<renew_rhi::RenderImage>), String> {
+    let size = Extent {
+        width: 16,
+        height: 16,
+    };
+    let color = device
+        .create_render_image(&renew_rhi::RenderImageDesc::new(
+            renew_rhi::RenderImageKind::Color,
+            size,
+        ))
+        .map_err(|error| format!("render image failed: {error}"))?;
+    let depth = if device.depth_format_name().is_some() {
+        Some(
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Depth,
+                    size,
+                ))
+                .map_err(|error| format!("depth render image failed: {error}"))?,
+        )
+    } else {
+        None
+    };
+    Ok((color, depth))
+}
+
+/// The render image's sampling consumer: an atlas sampler over the
+/// image, bound once, drawn by a full-target quad in the target's own
+/// format. Extracted for the reason every fixture here is: it is
+/// fixture work, and `ready` is at the length the lint refuses.
+fn image_consumer_fixture(
+    device: &Device,
+    render_image: &renew_rhi::RenderImage,
+    format: renew_rhi::TargetFormat,
+) -> Result<(renew_rhi::Binding, renew_rhi::RenderPipeline), String> {
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .map_err(|error| format!("image sampler failed: {error}"))?;
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Image(render_image),
+            &sampler,
+        ))
+        .map_err(|error| format!("image binding failed: {error}"))?;
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(builtin::TEXTURED, format).sampled_bindings(1))
+        .map_err(|error| format!("sampled pipeline failed: {error}"))?;
+    Ok((binding, pipeline))
 }
 
 /// The textured pipeline, so that the window record path actually

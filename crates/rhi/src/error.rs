@@ -82,10 +82,11 @@ pub enum TargetError {
     OutOfDeviceMemory {
         call: &'static str,
     },
-    /// A pass asked for depth on an adapter that offers no format in
-    /// the chain — the environment declined, not the caller, so this is
-    /// a result rather than an assertion. Depth-free rendering on the
-    /// same target keeps working.
+    /// A pass, or a depth render image's creation, asked for depth on
+    /// an adapter that offers no format in the chain — the environment
+    /// declined, not the caller, so this is a result rather than an
+    /// assertion. Depth-free rendering on the same target keeps
+    /// working.
     DepthUnsupported {
         /// The refused format chain, for the diagnostic.
         chain: &'static str,

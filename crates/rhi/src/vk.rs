@@ -21,6 +21,7 @@ pub mod mesh;
 pub mod offscreen;
 pub mod pass;
 pub mod pipeline;
+pub mod render_image;
 #[cfg(feature = "present")]
 pub mod swapchain;
 pub mod texture;
