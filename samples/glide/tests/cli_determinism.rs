@@ -165,3 +165,57 @@ fn the_json_face_carries_the_same_digests_as_the_line() {
         "hashes must be quoted strings: {object}"
     );
 }
+
+/// The menu trace: the same session twice is the same digest — the
+/// tree's decisions replay bit for bit through the recorded pointer
+/// events and the one quantization seam.
+#[test]
+fn the_menu_session_reproduces() {
+    let first = digest_line(&["--input-trace", "menu", "--frames", "600"]);
+    let second = digest_line(&["--input-trace", "menu", "--frames", "600"]);
+    assert_eq!(first, second);
+    let soar = digest_line(&["--input-trace", "soar", "--frames", "600"]);
+    assert_ne!(
+        first, soar,
+        "a paused-and-restarted run is not an ordinary one"
+    );
+}
+
+/// Recording the menu session and replaying the recording answer the
+/// same digest: pointer events and pauses survive the trace format.
+#[test]
+fn the_menu_session_survives_a_record_replay_round_trip() {
+    let dir = std::env::temp_dir().join("renew-glide-menu-roundtrip");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("menu-rt.trace");
+    let path_text = path.to_str().expect("utf-8 temp path");
+    let recorded = digest_line(&[
+        "--input-trace",
+        "menu",
+        "--frames",
+        "600",
+        "--record-trace",
+        path_text,
+    ]);
+    let replayed = digest_line(&["--replay-trace", path_text]);
+    // The whole tail after the source field, not just the hash:
+    // comparing only the endpoint would let a schedule or length
+    // divergence hide behind an agreeing state hash.
+    let tail = |line: &str| {
+        line.split(" frames=")
+            .nth(1)
+            .expect("a frames field")
+            .to_string()
+    };
+    assert_eq!(tail(&recorded), tail(&replayed));
+    // And the recording IS the committed file, byte for byte: the
+    // hand-authored trace is already in canonical form, so it enjoys
+    // the same own-golden property the recorded traces do.
+    let rerecorded = std::fs::read_to_string(&path).expect("the recording exists");
+    assert_eq!(
+        rerecorded,
+        include_str!("../traces/menu.trace"),
+        "re-recording the menu trace must reproduce its committed bytes"
+    );
+    let _ = std::fs::remove_file(&path);
+}

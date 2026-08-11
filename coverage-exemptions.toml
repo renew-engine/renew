@@ -133,3 +133,8 @@ reason = "Delivering raw device motion. No lane has a mouse - the windowed runs 
 file = "crates/ui/src/bin/ui_digest.rs"
 lines = [33, 34, 41, 42]
 reason = "The scenario binary's two refusal arms: the argument guard (a drifted pinned-run row must fail loudly rather than run a different scenario under the same name) and the impossible-construction arm (reachable only if a four-insert scenario overflows a sixteen-node limit; a vacuous zero digest must never reach the comparison). Each is two lines - a message and a nonzero exit - and an exiting process does not reliably flush its coverage counters, so exercising them under the instrumented lane would hinge on an exit-path implementation detail rather than prove anything. The happy path is executed by the lane's own run of the binary."
+
+[[exempt]]
+file = "samples/glide/src/windowed.rs"
+lines = [392, 393, 394, 395, 396, 397, 398]
+reason = "The menu-open half of the draw: the presenter's snapshots advanced and emitted, and a label placed per button. The lane's windowed run is keyboardless under a virtual display, so nothing there ever opens the menu, and no test reaches draw at all - drawing needs the bring-up's live target. Everything the block decides is covered without it: the advance/emit pair by the presentation crate's own tests, the placement arithmetic by a unit test on label_origin (the block's only computation), and the routing, pausing, restarting and rescaling behind it by constructed-event tests on the seam. Deliberately narrow: the is_open check the frame evaluates every draw is measured and not exempt."

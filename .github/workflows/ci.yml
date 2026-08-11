@@ -284,24 +284,26 @@ jobs:
           cargo build $sel
           cargo test $sel
       # The widget tree: structure, layout, and interaction over the
-      # fixed-point and digest crates. Its one consumer is the UI
-      # presenter; the first embedding game grows this list when its
-      # menu lands.
+      # fixed-point and digest crates. Its consumers are the UI
+      # presenter and the windowed game whose pause menu embeds it —
+      # the growth this comment once promised.
       - name: Build and test without the widget tree
         run: |
-          sel="--workspace --exclude renew-ui --exclude renew-ui-render"
+          sel="--workspace --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui $sel
           cargo build $sel
           cargo test $sel
       # The UI presenter: snapshots over the widget tree, emitted
-      # through the 2D renderer; no consumers yet — the first embedding
-      # game grows this list when its menu lands.
+      # through the 2D renderer. Its one consumer is the windowed game
+      # whose pause menu it draws.
       - name: Build and test without the UI presenter
         run: |
-          sel="--workspace --exclude renew-ui-render"
+          sel="--workspace --exclude renew-ui-render --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui-render $sel
           cargo build $sel
           cargo test $sel
+          RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui-render -p renew-sample-glide
+          cargo build -p renew-sample-glide
       # The 2D renderer: policy over the rendering crate, no consumers
       # yet -- the windowed game grows this list when it draws sprites.
       - name: Build and test without the 2D renderer
@@ -355,7 +357,7 @@ jobs:
       # each went red here until the cell named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world"
+          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel
@@ -886,12 +888,15 @@ jobs:
             --headless --input-trace walk
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-input-echo --bin input_echo -- \
             --frames 30
-          # The game's two committed traces: one that plays, one that
-          # falls. Both are pure headless runs, so they execute anywhere.
+          # The game's three committed traces: one that plays, one that
+          # falls, one that pauses and restarts through the menu. All
+          # are pure headless runs, so they execute anywhere.
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace soar --frames 600
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace sink --frames 600
+          cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
+            --input-trace menu --frames 600
           # The game's windowed feature, in two instrumented pieces: the
           # feature-gated unit tests (display-less-safe -- they open no
           # window), and the windowed arm live under the virtual display.

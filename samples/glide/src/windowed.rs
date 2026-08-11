@@ -162,6 +162,34 @@ fn relabel_into<const N: usize>(
     true
 }
 
+// Sprites reserved for HUD and label text beyond the menu's own
+// quads: enough for the score line and both button labels.
+const UI_TEXT_SPRITES: u32 = 64;
+// Opaque white ink for the HUD score.
+const HUD_INK: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+// Slightly warm ink for button labels.
+const LABEL_INK: [f32; 4] = [0.92, 0.94, 1.0, 1.0];
+
+/// Canvas pixels from the solver's fixed-point, for label placement.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "label coordinates are tens of pixels, exact in an f32"
+)]
+fn fixed_px(value: renew_ui::Fixed) -> f32 {
+    value.to_bits() as f32 / 65536.0
+}
+
+/// Where a label starts inside its button: centred both ways by the
+/// same integer advances the tree measured the button with.
+fn label_origin(rect: &renew_ui::Rect, label: &str) -> (f32, f32) {
+    let text_width = renew_ui::text::measure(label);
+    let line = renew_ui::Fixed::from_int(i32::try_from(renew_ui::text::LINE_HEIGHT).unwrap_or(16));
+    let two = renew_ui::Fixed::from_int(2);
+    let x = rect.x + (rect.width - text_width) / two;
+    let y = rect.y + (rect.height - line) / two;
+    (fixed_px(x), fixed_px(y))
+}
+
 /// The game as the window seam sees it.
 pub struct GlideApp {
     clock: Clock,
@@ -177,7 +205,18 @@ pub struct GlideApp {
     /// extend this or lose its edges.
     pending_flaps: u8,
     stats: FrameStats,
+    /// The pause menu: a real widget tree, folded into the session
+    /// digest. Pausing gates the world's steps; the menu decides.
+    menu: crate::menu::Menu,
+    /// The menu's snapshot pair, advanced per redraw while the menu
+    /// is open.
+    presenter: renew_ui_render::UiPresenter,
+    /// The UI's own sprite renderer over the UI atlas — the second
+    /// texture in the frame, drawn as its own item in the same pass.
+    ui_sprites: Option<renew_render2d::SpriteRenderer>,
     scene_scratch: Vec<SceneSprite>,
+    /// The HUD's score line, formatted in place each frame.
+    hud_score: String,
     title: Title,
     /// The score last written into the title, so relabeling happens on
     /// change only. Death changes the suffix, tracked beside it.
@@ -220,7 +259,11 @@ impl GlideApp {
             #[cfg(feature = "audio")]
             muted: None,
             stats: FrameStats::new(),
+            menu: crate::menu::Menu::new(),
+            presenter: renew_ui_render::UiPresenter::new(8),
+            ui_sprites: None,
             scene_scratch: Vec::new(),
+            hud_score: String::with_capacity(24),
             title: Title::new(),
             titled: None,
             frame: None,
@@ -280,9 +323,30 @@ impl GlideApp {
             capacity,
         )
         .map_err(|error| SampleError::failed("building the sprite renderer", &error))?;
+        // The UI's own renderer: a second texture in the frame,
+        // carried as its own whole pipeline and its own item — the
+        // tolerated shape until the frame model revisits descriptors.
+        let ui_capacity =
+            core::num::NonZeroU32::new(self.presenter.max_quads().saturating_add(UI_TEXT_SPRITES))
+                .ok_or_else(|| SampleError::Failed("zero UI sprite capacity".to_string()))?;
+        let ui_sprites = SpriteRenderer::new(
+            &device,
+            &AtlasDesc::new(
+                renew_rhi::Extent {
+                    width: renew_ui_render::atlas::WIDTH,
+                    height: renew_ui_render::atlas::HEIGHT,
+                },
+                &renew_ui_render::atlas::pixels(),
+            ),
+            canvas,
+            target.format(),
+            ui_capacity,
+        )
+        .map_err(|error| SampleError::failed("building the UI sprite renderer", &error))?;
         self.device = Some(device);
         self.target = Some(target);
         self.renderer = Some(renderer);
+        self.ui_sprites = Some(ui_sprites);
         #[cfg(feature = "audio")]
         {
             // A machine with no sound card is a machine that plays in
@@ -298,7 +362,9 @@ impl GlideApp {
 
     /// Draw the world as it stands.
     fn draw(&mut self) {
-        let (Some(target), Some(renderer)) = (&mut self.target, &mut self.renderer) else {
+        let (Some(target), Some(renderer), Some(ui_sprites)) =
+            (&mut self.target, &mut self.renderer, &mut self.ui_sprites)
+        else {
             return;
         };
         scene(&self.world, &mut self.scene_scratch);
@@ -311,13 +377,50 @@ impl GlideApp {
             renderer
                 .push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
         }
+        // The UI over the world: the score always, the menu when
+        // open — panels from the presenter's snapshots, labels
+        // centred in the buttons' solved rectangles by the same
+        // integer advances the tree measured them with.
+        ui_sprites.begin();
+        self.hud_score.clear();
+        let _ = core::fmt::Write::write_fmt(
+            &mut self.hud_score,
+            format_args!("Score {}", self.world.score()),
+        );
+        renew_ui_render::emit_text(ui_sprites, 6.0, 4.0, &self.hud_score, HUD_INK);
+        if self.menu.is_open() {
+            self.presenter.advance(self.menu.ui());
+            self.presenter.emit(renew_math::Alpha::ZERO, ui_sprites);
+            for (node, label) in self.menu.labels() {
+                if let Some(rect) = self.menu.ui().rect(node) {
+                    let (x, y) = label_origin(&rect, label);
+                    renew_ui_render::emit_text(ui_sprites, x, y, label, LABEL_INK);
+                }
+            }
+        }
         // The frame, composed on this stack; the borrows end at the
-        // render call.
+        // render call. Two items: the world's atlas, then the UI's.
         let color = [renew_render2d::attachment(SKY)];
-        let items = [renderer.item()];
+        let items = [renderer.item(), ui_sprites.item()];
         let passes = [Pass::new(&color, &items)];
         let outcome = target.render(&RenderDesc::new(&passes));
         self.record_draw(outcome);
+    }
+
+    /// A window event with any pointer position rescaled from
+    /// physical surface pixels into the 320x240 canvas the menu
+    /// solved in. Everything else passes through untouched.
+    fn to_canvas(&self, event: WindowEvent) -> WindowEvent {
+        if let WindowEvent::PointerMoved { x, y } = event {
+            let sx = f64::from(VIEW_WIDTH) / f64::from(self.size.width.max(1));
+            let sy = f64::from(VIEW_HEIGHT) / f64::from(self.size.height.max(1));
+            WindowEvent::PointerMoved {
+                x: x * sx,
+                y: y * sy,
+            }
+        } else {
+            event
+        }
     }
 
     /// What a draw outcome means for the run — split from [`Self::draw`]
@@ -392,14 +495,31 @@ impl GlideApp {
             // Capture the edge before it retires, count it, spend one
             // per step: a press on a zero-step frame survives to the
             // next frame's first step, and two presses with two due
-            // steps deliver two flaps.
-            self.pending_flaps = self
-                .pending_flaps
-                .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
+            // steps deliver two flaps. An edge banks only while the
+            // menu is closed: a press racing the pause is abandoned,
+            // exactly as the scripted loop abandons it when the paused
+            // step never runs and the frame's advance retires it.
+            if !self.menu.is_open() {
+                self.pending_flaps = self
+                    .pending_flaps
+                    .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
+            }
+            for action in self.menu.drain() {
+                if action == crate::menu::MenuAction::Restart {
+                    self.world = World::new(self.seed);
+                    self.pending_flaps = 0;
+                }
+            }
+            let paused = self.menu.is_open();
             for _step in plan.steps() {
                 // Readings around the tick: the world exposes no
                 // events, so the difference across a step is what
                 // happened in it.
+                // An open menu pauses the world: frames keep coming,
+                // steps do not, and the pause bit is digested.
+                if paused {
+                    continue;
+                }
                 let flap_passed = self.pending_flaps > 0;
                 let before_alive = self.world.alive();
                 let before_score = self.world.score();
@@ -487,11 +607,13 @@ impl GlideApp {
                 eprintln!("sound: the device stopped mid-run; the rest was silent");
             }
         }
+        let session_hash = self.menu.absorb(self.world.digest()).finish();
         Ok(Report {
             seed: self.seed,
             source: "window".to_string(),
             stats: self.stats,
             world: self.world,
+            session_hash,
         })
     }
 }
@@ -517,7 +639,32 @@ impl WindowApp for GlideApp {
             WindowEvent::Resized { width, height } => self.resize(Extent { width, height }),
             WindowEvent::CloseRequested => self.close_requested = true,
             WindowEvent::Focused(false) => self.input.release_all(),
-            other => self.input.handle(other),
+            other => {
+                // Pointer coordinates arrive in physical window
+                // pixels; the menu solved in canvas pixels, and the
+                // sprite renderer stretches that canvas over the whole
+                // surface — so the driver maps positions into canvas
+                // space BEFORE the tree hears them, or the menu would
+                // draw in one place and hit-test in another. The
+                // mapping is part of the input seam: scripted traces
+                // speak canvas coordinates directly, and this is the
+                // one place a window's pixels become those.
+                let other = self.to_canvas(other);
+                // The menu hears everything; gameplay hears an event
+                // only when the menu was closed as it arrived, so the
+                // click that presses Resume never also flaps. Opening
+                // releases gameplay input: a key held into the pause
+                // must not wedge the map with a press whose release
+                // the menu will swallow.
+                let was_open = self.menu.is_open();
+                self.menu.handle(&other);
+                if !was_open && self.menu.is_open() {
+                    self.input.release_all();
+                }
+                if !was_open {
+                    self.input.handle(other);
+                }
+            }
         }
     }
 
@@ -572,6 +719,133 @@ mod tests {
             pressed: false,
             repeat: false,
         });
+    }
+
+    fn escape(app: &mut GlideApp) {
+        app.event(WindowEvent::Key {
+            code: renew_event::KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+        });
+    }
+
+    /// A click in physical window pixels, routed through the seam:
+    /// the driver rescales it into canvas space before the menu
+    /// hears it.
+    fn click_physical(app: &mut GlideApp, x: f64, y: f64) {
+        app.event(WindowEvent::PointerMoved { x, y });
+        app.event(WindowEvent::PointerButton {
+            button: renew_event::PointerButton::Left,
+            pressed: true,
+        });
+        app.event(WindowEvent::PointerButton {
+            button: renew_event::PointerButton::Left,
+            pressed: false,
+        });
+    }
+
+    /// A button's centre in canvas pixels, from the same solved
+    /// rectangle the menu hit-tests with.
+    fn centre_of(app: &GlideApp, index: usize) -> (f64, f64) {
+        let (node, _) = app.menu.labels()[index];
+        let rect = app.menu.ui().rect(node).expect("solved");
+        let two = renew_ui::Fixed::from_int(2);
+        let x = rect.x + rect.width / two;
+        let y = rect.y + rect.height / two;
+        let px = |value: renew_ui::Fixed| f64::from(i32::try_from(value.trunc_int()).unwrap_or(0));
+        (px(x), px(y))
+    }
+
+    #[test]
+    fn opening_the_menu_pauses_the_world_and_releases_input() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // A key held into the pause: opening releases it, and the
+        // release the menu later swallows can no longer wedge the map.
+        press(&mut app);
+        escape(&mut app);
+        assert!(app.menu.is_open());
+        app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 0, "an open menu holds the world still");
+        release(&mut app);
+        escape(&mut app);
+        assert!(!app.menu.is_open());
+        press(&mut app);
+        app.update_at(Timestamp::from_nanos(4 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 1, "resuming lets the world step again");
+        assert_eq!(app.pending_flaps, 0, "the fresh press was a clean edge");
+    }
+
+    #[test]
+    fn a_restart_click_lands_through_the_physical_to_canvas_seam() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(5 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 5, "the run has an age to lose");
+        escape(&mut app);
+        // The window is twice the canvas in each direction: the click
+        // arrives in physical pixels and must still land, because the
+        // driver rescales positions before the tree hears them.
+        app.size = Extent {
+            width: 2 * VIEW_WIDTH,
+            height: 2 * VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 1);
+        click_physical(&mut app, 2.0 * x, 2.0 * y);
+        app.update_at(Timestamp::from_nanos(6 * STEP), &mut control);
+        assert!(!app.menu.is_open(), "an activated button closes the menu");
+        assert_eq!(
+            app.world.tick(),
+            1,
+            "the restart made the world new; one step has run since"
+        );
+        assert_eq!(app.pending_flaps, 0, "a restart abandons pending flaps");
+    }
+
+    #[test]
+    fn a_resume_click_plays_on_from_where_it_paused() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(5 * STEP), &mut control);
+        escape(&mut app);
+        // A window exactly the canvas size: the rescale is identity.
+        app.size = Extent {
+            width: VIEW_WIDTH,
+            height: VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 0);
+        click_physical(&mut app, x, y);
+        app.update_at(Timestamp::from_nanos(6 * STEP), &mut control);
+        assert!(!app.menu.is_open());
+        assert_eq!(
+            app.world.tick(),
+            6,
+            "resume keeps the world; a restart would have reset it"
+        );
+    }
+
+    /// The placement arithmetic behind the exempt draw block: every
+    /// label starts strictly inside its own button.
+    #[test]
+    fn labels_centre_inside_their_buttons() {
+        let app = app();
+        for (node, label) in app.menu.labels() {
+            let rect = app.menu.ui().rect(node).expect("solved");
+            let (x, y) = label_origin(&rect, label);
+            assert!(
+                fixed_px(rect.x) < x,
+                "{label} starts right of its left edge"
+            );
+            assert!(
+                x < fixed_px(rect.x + rect.width),
+                "{label} starts left of its right edge"
+            );
+            assert!(fixed_px(rect.y) < y, "{label} starts below its top edge");
+            assert!(
+                y < fixed_px(rect.y + rect.height),
+                "{label} starts above its bottom edge"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,9 @@
 //! what lets the cross-process determinism gate compare runs by their
 //! one output line; a windowed run rides the real clock and marks its
 //! digest line `source=window` so nothing ever compares the two.
+//! `ticks=` counts planned sessions; while the pause menu holds the
+//! world still, the world's own tick count lags behind it, and the
+//! two agree only in a run that never pauses.
 //!
 //! # Indexing
 //!
@@ -17,6 +20,7 @@
 
 mod cli;
 mod error;
+pub mod menu;
 pub mod scene;
 // The sound derivation is pure and testable with no device, no
 // window, and no audio crate in the graph, so it compiles always;

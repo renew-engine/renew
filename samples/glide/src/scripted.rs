@@ -50,9 +50,14 @@ pub fn close_recording(
     report: &Report,
     recorder: Recorder,
 ) -> Result<renew_trace::Trace, SampleError> {
+    // The header's length is the SESSION's, not the world's: with a
+    // pause menu the world can stand still while frames keep coming,
+    // and a recorded event's tick is a session tick. In a run that
+    // never pauses the two counts are equal, which is why this line
+    // could say world.tick() for as long as it did.
     let header = renew_trace::TraceHeader::new(
         "glide",
-        report.world.tick(),
+        report.stats.ticks(),
         FRAME_INTERVAL_NS,
         StepBudget::DEFAULT.get().get(),
     )
@@ -128,8 +133,13 @@ fn replay_to(recorded: &renew_trace::Trace, frames: Option<u64>) -> Result<Repor
     ))
 }
 
-/// The loop itself. Events for tick `k` are delivered before step `k` —
-/// the loader's own indexing, no shift anywhere.
+/// The loop itself. Events for session tick `k` are delivered before
+/// frame `k` — the loader's own indexing, no shift anywhere. The
+/// session tick is the frame counter, not the world's: while the
+/// pause menu is open the world stands still and the session keeps
+/// counting, so events keep arriving. In a run that never pauses the
+/// two counters are equal, which is why every trace recorded before
+/// the menu existed replays unchanged.
 fn drive(
     seed: u64,
     frames: u64,
@@ -138,6 +148,7 @@ fn drive(
     mut recorder: Option<&mut Recorder>,
 ) -> Report {
     let mut world = World::new(seed);
+    let mut menu = crate::menu::Menu::new();
     let mut input = input_map();
     let mut frame = FrameLoop::new(
         Timestep::HZ_60,
@@ -147,12 +158,31 @@ fn drive(
     let mut stats = FrameStats::new();
 
     for index in 1..=frames {
+        let session_tick = index - 1;
         for (at, event) in events {
-            if *at == world.tick() {
+            if *at == session_tick {
                 if let Some(recorder) = recorder.as_deref_mut() {
-                    recorder.event(world.tick(), *event);
+                    recorder.event(session_tick, *event);
                 }
-                input.handle(*event);
+                // The menu hears everything; gameplay hears an event
+                // only when the menu was closed as it arrived, so the
+                // click that presses Resume never also flaps.
+                let was_open = menu.is_open();
+                menu.handle(event);
+                if !was_open && menu.is_open() {
+                    // Opening releases gameplay input: a key held into
+                    // the pause must not wedge the map with a press
+                    // whose release the menu will swallow.
+                    input.release_all();
+                }
+                if !was_open {
+                    input.handle(*event);
+                }
+            }
+        }
+        for action in menu.drain() {
+            if action == crate::menu::MenuAction::Restart {
+                world = World::new(seed);
             }
         }
         let now = Timestamp::from_nanos(FRAME_INTERVAL_NS.saturating_mul(index));
@@ -167,23 +197,46 @@ fn drive(
         );
         let flap = input.state(Action::Flap).just_pressed;
         for _step in plan.steps() {
-            world.step(flap);
+            // An open menu pauses the world: the session advances,
+            // the world does not, and the pause bit is digested.
+            if !menu.is_open() {
+                world.step(flap);
+            }
         }
         input.advance();
         stats.absorb(&plan);
     }
 
+    let session_hash = menu.absorb(world.digest()).finish();
     Report {
         seed,
         source,
         stats,
         world,
+        session_hash,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The menu trace's structure, pinned: the pause really pauses
+    /// and the restart really restarts, visible in the world's own
+    /// tick count. At session 240 the world has stepped 228 times —
+    /// 240 minus the twelve frames the first pause held it (opened by
+    /// the escape at session 120, closed by the Resume release at
+    /// 132). At session 320 it has stepped 8 — a NEW world, made by
+    /// the Restart click at session 312, stepped once per session
+    /// since. Wrong routing (a click that also flaps), a pause that
+    /// leaks steps, or a restart that keeps the old world each move
+    /// one of these two integers.
+    #[test]
+    fn the_menu_trace_pauses_and_restarts_the_world() {
+        let mid = world_at("menu", 240).expect("trace runs").tick();
+        let after = world_at("menu", 320).expect("trace runs").tick();
+        assert_eq!((mid, after), (228, 8));
+    }
 
     #[test]
     fn both_bindings_resolve_to_the_one_action() {

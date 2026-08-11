@@ -219,6 +219,20 @@ pub struct Report {
     pub source: String,
     pub stats: FrameStats,
     pub world: World,
+    /// The session digest: the world's own fold, then the menu's —
+    /// the pause bit and every decision the tree made. A menu that
+    /// can restart the run is gameplay, so the reported hash covers
+    /// it; the world's own digest stays what it always was.
+    ///
+    /// **What the fold leaves out, named so the exclusion cannot go
+    /// quietly vacuous:** the input map's latch state and the
+    /// windowed driver's pending-flap counter. Both change future
+    /// behaviour mid-run, and both are excluded soundly only because
+    /// this fold is terminal — it happens once, when the run is over
+    /// and no future remains. A mid-run session checkpoint would
+    /// have to absorb them or inherit the gap; this sentence is where
+    /// that obligation is written.
+    pub session_hash: u64,
 }
 
 impl Report {
@@ -251,7 +265,7 @@ impl Report {
             self.world.score(),
             self.world.alive(),
             self.stats.schedule_hash(),
-            self.world.digest().finish(),
+            self.session_hash,
         )
     }
 
@@ -270,7 +284,7 @@ impl Report {
             self.world.score(),
             u8::from(self.world.alive()),
             self.stats.schedule_hash(),
-            self.world.digest().finish(),
+            self.session_hash,
         )
     }
 }
