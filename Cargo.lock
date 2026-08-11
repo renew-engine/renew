@@ -1609,6 +1609,8 @@ dependencies = [
  "renew-particles",
  "renew-platform",
  "renew-rng",
+ "renew-ui",
+ "renew-ui-render",
 ]
 
 [[package]]
