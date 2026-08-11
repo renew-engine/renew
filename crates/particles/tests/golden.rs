@@ -38,6 +38,10 @@ fn device_or_skip() -> Result<Option<Device>, DeviceError> {
 /// of the picture answers with exactly the instance's colour, the
 /// corner stays the clear, and the same frame twice is the same bytes.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one oracle narrative: the pool, the draw, the readback, the refusals read top to bottom"
+)]
 fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::Error>> {
     const SIZE: u32 = 64;
     let Some(device) = device_or_skip()? else {
@@ -146,5 +150,18 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);
     assert_eq!(pixels, second, "the same frame rendered twice diverged");
+
+    // The Debug form reports the type, not handles — pinned here where
+    // a renderer exists to format.
+    let shown = format!("{renderer:?}");
+    assert!(shown.contains("ParticleRenderer"), "{shown}");
+
+    // A scratch buffer too short for the live count is refused by
+    // name, never truncated into a quiet wrong draw.
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let short = [0u8; 8];
+        let _ = renderer.item(&short, live, &camera);
+    }));
+    assert!(refused.is_err(), "a short scratch buffer must refuse");
     Ok(())
 }

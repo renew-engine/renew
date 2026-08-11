@@ -268,6 +268,43 @@ mod tests {
         }
     }
 
+    /// Every error variant says something a reader can act on, and
+    /// hands back what it wraps — deviceless, like the sibling
+    /// renderer's own error tests, because the mappings are reachable
+    /// on every machine even where the calls beneath them are not.
+    #[test]
+    fn every_error_variant_displays_and_chains() {
+        use std::error::Error as _;
+        let pipeline = ParticleRenderError::Pipeline(PipelineError::InvalidSpirv {
+            stage: "vertex",
+            reason: "bad magic",
+        });
+        let texture = ParticleRenderError::Texture(TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory(atlas)",
+        });
+        let buffer = ParticleRenderError::Buffer(TargetError::OutOfDeviceMemory {
+            call: "vkAllocateMemory(instances)",
+        });
+        for (error, needle) in [
+            (&pipeline, "particle pipeline"),
+            (&texture, "particle atlas"),
+            (&buffer, "instance buffer"),
+        ] {
+            let shown = error.to_string();
+            assert!(shown.contains(needle), "`{shown}` missing `{needle}`");
+            assert!(
+                error.source().is_some(),
+                "{needle}: the wrapping variant must hand back its cause"
+            );
+        }
+        assert!(
+            pipeline
+                .source()
+                .is_some_and(|cause| cause.to_string().contains("bad magic")),
+            "the pipeline refusal must keep the rendering crate's words"
+        );
+    }
+
     /// The blend mapping, both arms: the crate-local pair names the
     /// rendering crate's modes it means.
     #[test]
