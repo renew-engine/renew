@@ -13,7 +13,7 @@
 //! - **All allocations happen at creation.** `begin`/`push`/`item`
 //!   allocate nothing; the crate's gate measures it.
 //! - **Target-agnostic.** [`SpriteRenderer::item`] returns the
-//!   rendering crate's own draw item and [`attachment`] the matching
+//!   rendering crate's own draw item and its `color_attachment` the matching
 //!   color attachment; the caller composes the frame on its own stack
 //!   and hands it to whichever target it holds. This crate never
 //!   renders, never presents, and never touches a window.
@@ -31,4 +31,4 @@ mod fill;
 mod gpu;
 
 pub use fill::{Canvas, Region, Sprite};
-pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer, attachment};
+pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer};

@@ -161,7 +161,7 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
         };
         renderer.push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
     }
-    let color = [renew_render2d::attachment(SKY)];
+    let color = [renew_rhi::color_attachment(SKY)];
     let items = [renderer.item()];
     let passes = [Pass::new(&color, &items)];
     let frame = RenderDesc::new(&passes);

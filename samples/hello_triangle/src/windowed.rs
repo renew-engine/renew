@@ -29,8 +29,9 @@ use renew_rhi::{
 use crate::cli::{Options, Report};
 use crate::error::{SampleError, device_error, pipeline_error, render_error, target_error};
 use crate::readout::{self, Readout};
-use crate::render::{Surface, clear_attachment, clear_color};
+use crate::render::{Surface, clear_color};
 use crate::world::World;
+use renew_rhi::color_attachment;
 
 /// What the window is called before any measurement exists, and the text
 /// every frame-time reading is appended to.
@@ -192,7 +193,7 @@ impl TriangleApp {
         let clear = clear_color(&self.world, self.alpha);
         // The frame, composed on this stack; the borrows end at the
         // render call.
-        let color = [clear_attachment(clear)];
+        let color = [color_attachment(clear)];
         let items = [Item::new(pipeline)];
         let passes = [Pass::new(&color, &items)];
         let outcome = surface.render(&RenderDesc::new(&passes));

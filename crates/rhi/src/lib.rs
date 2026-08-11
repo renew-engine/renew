@@ -78,8 +78,8 @@ pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pass::{
-    Attachment, Bindings, ClearValue, Item, LoadOp, MAX_FRAME_RENDER_IMAGES, Pass, PassTarget,
-    RenderDesc, StoreOp,
+    Attachment, Bindings, ClearValue, Item, ItemList, LoadOp, MAX_FRAME_RENDER_IMAGES, Pass,
+    PassTarget, RenderDesc, StoreOp, color_attachment,
 };
 pub use vk::pipeline::{
     AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,

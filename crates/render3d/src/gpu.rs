@@ -14,7 +14,7 @@
 //! window.
 
 use renew_rhi::{
-    Attachment, ClearValue, Color, Device, Item, LoadOp, Mesh, MeshDesc, Pass, PipelineDesc,
+    Attachment, ClearValue, Device, Item, LoadOp, Mesh, MeshDesc, Pass, PipelineDesc,
     PipelineError, RenderPipeline, StoreOp, TargetError, TargetFormat, VertexAttribute, builtin,
 };
 
@@ -700,13 +700,6 @@ impl core::fmt::Debug for ShadowedCameraRenderer {
     }
 }
 
-/// The colour attachment a 3D frame renders into: cleared to `clear`,
-/// stored.
-#[must_use]
-pub fn attachment(clear: Color) -> Attachment {
-    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
-}
-
 /// The depth attachment a 3D frame needs: cleared to the far plane,
 /// discarded at the end.
 ///
@@ -730,7 +723,8 @@ pub fn depth_attachment() -> Attachment {
 /// optional for 3D geometry, and this is the shape that cannot omit it.
 /// The parts stay public for the frames this does not fit — a caller
 /// composing 3D geometry beside a 2D overlay builds its own pass from
-/// [`attachment`], [`depth_attachment`] and [`MeshRenderer::item`].
+/// the rendering crate's `color_attachment`, [`depth_attachment`] and
+/// [`MeshRenderer::item`].
 ///
 /// # One pass per frame
 ///

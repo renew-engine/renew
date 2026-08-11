@@ -27,7 +27,8 @@ else, which the build matrix proves by building and testing without it.
   alive and drawing — including the caller-side frame composition,
   which is stack arrays and allocates nothing either.
 - **This crate never renders.** `item` returns the rendering crate's
-  own draw item and `attachment` the matching color attachment; the
+  own draw item and the rendering crate's `color_attachment` the
+  matching color attachment; the
   caller composes the pass and the frame itself (the borrows end at
   the render call), and targets belong to the caller. It never touches
   a window, a clock, or the filesystem — the lint file makes the ways
@@ -48,10 +49,10 @@ else, which the build matrix proves by building and testing without it.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
   (premultiplied blending, nearest/clamped sampling) and the per-frame
   buffer; `begin`/`push` fill; `item` is the frame's draw, for a pass
-  the caller composes with `attachment(clear)`:
+  the caller composes with `renew_rhi::color_attachment(clear)`:
 
   ```rust
-  let color = [renew_render2d::attachment(SKY)];
+  let color = [renew_rhi::color_attachment(SKY)];
   let items = [renderer.item()];
   let passes = [Pass::new(&color, &items)];
   target.render(&RenderDesc::new(&passes))?;

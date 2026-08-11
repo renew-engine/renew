@@ -8,9 +8,9 @@
 
 use renew_rhi::{
     AddressMode, Attachment, Binding, BindingDesc, BindingSource, BufferUsage, ClearValue, Color,
-    DepthState, Device, DeviceDesc, DeviceError, Extent, Filter, FrameData, Item, LoadOp, MeshDesc,
-    Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders, StoreOp,
-    TargetFormat, Texture, Validation, builtin,
+    DepthState, Device, DeviceDesc, DeviceError, Extent, Filter, FrameData, Item, ItemList, LoadOp,
+    MeshDesc, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders,
+    StoreOp, TargetFormat, Texture, Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -338,6 +338,97 @@ fn cross_device_pipeline_is_a_dev_build_contract_violation() {
         outcome.is_err(),
         "mixing objects across devices must trip the dev-build contract check"
     );
+}
+
+/// **The draw list hands over what was pushed, in order.** The order
+/// is the whole claim: a list that reordered draws would compose a
+/// frame that renders differently than written, and every consumer
+/// with an optional middle draw depends on it. It lives here rather
+/// than beside the type because an `Item` names a real pipeline, and a
+/// pipeline needs a device.
+#[test]
+fn the_item_list_composes_a_frames_draws_in_order() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .push_constant_size(16),
+        )
+        .expect("push-constant pipeline");
+    // Four distinguishable items over one pipeline: an `Item` carries
+    // no identity of its own, so the push block is the label.
+    let labels: [[u8; 16]; 4] = [[1; 16], [2; 16], [3; 16], [4; 16]];
+    let mut list = ItemList::<4>::new(Item::new(&pipeline).push_data(&labels[0]));
+    assert_eq!(list.as_slice().len(), 1, "a seeded list holds its seed");
+    list.push(Item::new(&pipeline).push_data(&labels[1]));
+    // The optional shape, both ways: absent adds nothing, present
+    // appends exactly where a push would have.
+    list.push_some(None);
+    assert_eq!(list.as_slice().len(), 2, "an absent item is not a draw");
+    list.push_some(Some(Item::new(&pipeline).push_data(&labels[2])));
+    list.push(Item::new(&pipeline).push_data(&labels[3]));
+    let slice = list.as_slice();
+    assert_eq!(slice.len(), 4);
+    for (index, item) in slice.iter().enumerate() {
+        assert_eq!(
+            item.push_data,
+            Some(&labels[index][..]),
+            "item {index} is not the one pushed there"
+        );
+    }
+
+    // The Debug form reports the shape, not the draws.
+    let shown = format!("{list:?}");
+    assert!(shown.contains("ItemList"), "{shown}");
+    assert!(shown.contains("items: 4"), "{shown}");
+    assert!(shown.contains("capacity: 4"), "{shown}");
+
+    // Past its capacity it refuses by name rather than dropping a draw,
+    // and a list of zero cannot hold the seed it is given.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let over = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut two = ItemList::<2>::new(Item::new(&pipeline).push_data(&labels[0]));
+        two.push(Item::new(&pipeline).push_data(&labels[1]));
+        two.push(Item::new(&pipeline).push_data(&labels[2]));
+    }));
+    let empty = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = ItemList::<0>::new(Item::new(&pipeline).push_data(&labels[0]));
+    }));
+    std::panic::set_hook(hook);
+    // By name, not merely "something panicked": without the assert the
+    // very next line indexes out of bounds and this test would pass on
+    // the wrong panic entirely.
+    let message = over
+        .expect_err("a third item in a list of two must refuse")
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        message.contains("item list of capacity 2 is full"),
+        "refused, but not by name: {message:?}"
+    );
+    assert!(empty.is_err(), "a list of zero cannot hold its seed");
+
+    // And the list composes a frame that actually renders, which is
+    // the point of the type: three draws, in order, through one target.
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let mut frame = ItemList::<3>::new(Item::new(&pipeline).push_data(&labels[0]));
+    frame.push_some(Some(Item::new(&pipeline).push_data(&labels[1])));
+    frame.push(Item::new(&pipeline).push_data(&labels[2]));
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, frame.as_slice())]))
+        .expect("a frame composed by the list renders");
+    drop(target);
+    assert_no_validation_errors(&device);
 }
 
 /// Every frame-shape refusal, driven. The contract asserts fire before

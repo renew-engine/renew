@@ -30,7 +30,9 @@ mesh comes out, and a draw item goes into a frame the caller composes.
   nearest the light, and a fragment is lit exactly when its own light
   depth reaches it within a constant bias — constant because the
   light is orthographic, which makes light depth linear.
-- `attachment` / `depth_attachment` / `pass` — the frame pieces. `pass`
+- `depth_attachment` / `pass` — the frame pieces this crate owns (the
+  colour attachment is the rendering crate's shared `color_attachment`).
+  `pass`
   always attaches depth; the parts stay public for frames it does not
   fit.
 
@@ -40,7 +42,7 @@ let mut scene = Scene::new();
 scene.quad(corners, [0.0, 1.0, 0.0, 1.0]);
 let mesh = renderer.upload(&device, &scene)?;
 
-let color = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+let color = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
 let items = [renderer.item(&mesh)];
 target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
 ```

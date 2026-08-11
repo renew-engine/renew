@@ -18,7 +18,7 @@
 //!   pair takes geometry already projected, the camera pair takes a
 //!   matrix per draw and projects on the GPU.
 //! - **Target-agnostic.** [`MeshRenderer::item`] returns the rendering
-//!   crate's own draw item and [`attachment`] the matching colour
+//!   crate's own draw item and its `color_attachment` the matching colour
 //!   attachment; the caller composes the frame on its own stack and
 //!   hands it to whichever target it holds. This crate never renders,
 //!   never presents, and never touches a window.
@@ -44,6 +44,6 @@ mod scene;
 
 pub use gpu::{
     Camera, CameraRenderer, MeshRenderer, Render3dError, ShadowMatrices, ShadowedCameraRenderer,
-    TexturedCameraRenderer, TexturedMeshRenderer, attachment, depth_attachment, pass,
+    TexturedCameraRenderer, TexturedMeshRenderer, depth_attachment, pass,
 };
 pub use scene::Scene;

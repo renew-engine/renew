@@ -12,9 +12,12 @@
 
 use renew_render3d::{
     Camera as RenderCamera, MeshRenderer, Scene, ShadowMatrices, ShadowedCameraRenderer,
-    TexturedMeshRenderer, attachment, pass,
+    TexturedMeshRenderer, pass,
 };
-use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
+use renew_rhi::{
+    Color, Device, DeviceDesc, Extent, ItemList, RenderDesc, TargetFormat, Validation,
+    color_attachment,
+};
 use renew_sample_cube_world::grid::{Cell, Grid};
 
 use crate::mesh::{aimed_colour, colour, corner_shades, faces};
@@ -179,7 +182,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
         }
     };
 
-    let color = [attachment(BACKDROP)];
+    let color = [color_attachment(BACKDROP)];
     let passes = [pass(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
@@ -408,26 +411,27 @@ pub(crate) fn draw_scene(
         _ => None,
     };
 
-    let color = [attachment(BACKDROP)];
+    let color = [color_attachment(BACKDROP)];
     // The world first, whatever is over it second. Both are in one pass:
     // the overlay sits at the near plane, so the depth test cannot put
     // the world in front of it, and the order settles it regardless.
     // Dust after the world and before the overlay: it tests the world's
     // depth without writing its own, and the crosshair stays on top of
     // everything because a sight that hides behind smoke is not a sight.
-    let world_item = renderer.item(&mesh, &packed);
-    let mut items = Vec::with_capacity(3);
-    items.push(world_item);
-    if let Some((sprinkler, instances, live, push)) = dust_parts.as_ref() {
-        items.push(sprinkler.item(instances, *live, push));
-    }
-    if let Some((plain, mesh)) = over.as_ref() {
-        items.push(plain.item(mesh));
-    }
+    let mut items = ItemList::<3>::new(renderer.item(&mesh, &packed));
+    items.push_some(
+        dust_parts
+            .as_ref()
+            .map(|(sprinkler, instances, live, push)| sprinkler.item(instances, *live, push)),
+    );
+    items.push_some(over.as_ref().map(|(plain, mesh)| plain.item(mesh)));
     // The caster pass leads: the world's depth as the sun sees it,
     // into the map the world item samples.
     let casting = [renderer.caster_item(&caster_mesh, &light_packed)];
-    let passes = [renderer.shadow_pass(&casting), pass(&color, &items)];
+    let passes = [
+        renderer.shadow_pass(&casting),
+        pass(&color, items.as_slice()),
+    ];
     target
         .render(&RenderDesc::new(&passes))
         .map_err(|error| RenderError::Refused(error.to_string()))?;

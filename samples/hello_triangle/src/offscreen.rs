@@ -17,8 +17,9 @@ use renew_rhi::{
 
 use crate::cli::{Options, Report};
 use crate::error::{SampleError, device_error, pipeline_error, render_error, target_error};
-use crate::render::{Surface, clear_attachment, clear_color};
+use crate::render::{Surface, clear_color};
 use crate::world::World;
+use renew_rhi::color_attachment;
 
 /// The headless image size. Small on purpose: the oracle compares every
 /// pixel of it, and 64×64 is enough to prove the loop reached the
@@ -150,7 +151,7 @@ impl HeadlessRun {
         // The frame, composed on this stack: one pass, cleared to the
         // world's colour, drawing the triangle when a pipeline exists.
         // The borrows end at the render call.
-        let color = [clear_attachment(clear)];
+        let color = [color_attachment(clear)];
         let items_storage;
         let items: &[Item<'_>] = match self.pipeline.as_ref() {
             Some(pipeline) => {
@@ -184,7 +185,7 @@ impl HeadlessRun {
     /// [`SampleError::Failed`] if the renderer could not draw.
     pub fn redraw(&mut self) -> Result<(), SampleError> {
         let clear = clear_color(&self.world, Alpha::ZERO);
-        let color = [clear_attachment(clear)];
+        let color = [color_attachment(clear)];
         let items_storage;
         let items: &[Item<'_>] = match self.pipeline.as_ref() {
             Some(pipeline) => {
