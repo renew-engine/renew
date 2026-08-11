@@ -1866,6 +1866,59 @@ fn ui_compile_json_carries_the_diagnostic_fields() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An unwritable output is the same plain failure: the compile
+/// succeeded, the write did not, and the message names the path.
+#[test]
+fn ui_compile_reports_an_unwritable_output() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-unwritable")?;
+    let source = directory.join("menu.ui");
+    let blob = directory.join("no-such-directory").join("menu.uib");
+    fs::write(&source, COMPILABLE.0)?;
+
+    let output = run(&[
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let printed = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        printed.contains("cannot write"),
+        "the failure names the write: {printed:?}"
+    );
+    Ok(())
+}
+
+/// Without --json the diagnostic is one human line on stderr, led by
+/// the file the way compilers lead.
+#[test]
+fn ui_compile_prints_a_human_diagnostic() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-human")?;
+    let source = directory.join("bad.ui");
+    let blob = directory.join("bad.uib");
+    fs::write(
+        &source, "panel
+",
+    )?;
+
+    let output = run(&[
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let printed = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        printed.contains("1:6:") && printed.contains("row, column, or node"),
+        "the human line carries the place and the expectation: {printed:?}"
+    );
+    Ok(())
+}
+
 /// An unreadable input is a plain failure with an empty errors array:
 /// there is no line to point at in a file that never opened.
 #[test]

@@ -176,16 +176,11 @@ fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
     if style.grow != 0 {
         let _ = write!(out, " grow={}", style.grow);
     }
-    let align_name = |align: Align| match align {
-        Align::Start => "start",
-        Align::Center => "center",
-        Align::End => "end",
-    };
     if style.justify != Align::Start {
-        let _ = write!(out, " justify={}", align_name(style.justify));
+        let _ = write!(out, " justify={}", align_word(style.justify));
     }
     if style.align_cross != Align::Start {
-        let _ = write!(out, " align={}", align_name(style.align_cross));
+        let _ = write!(out, " align={}", align_word(style.align_cross));
     }
     if style.background != [0, 0, 0, 0] {
         let [r, g, b, a] = style.background;
@@ -203,6 +198,17 @@ fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
             emit_node(ui, child, depth + 1, out);
         }
         let _ = writeln!(out, "{pad}}}");
+    }
+}
+
+/// An alignment's word in the grammar — total, though emit only asks
+/// for the two non-default arms, because a half-function invites the
+/// half that is missing.
+fn align_word(align: Align) -> &'static str {
+    match align {
+        Align::Start => "start",
+        Align::Center => "center",
+        Align::End => "end",
     }
 }
 
@@ -491,6 +497,19 @@ fn parse_color(scanner: &mut Scanner<'_>) -> Result<[u8; 4], Diagnostic> {
 mod tests {
     use super::*;
     use renew_ui::Document;
+
+    /// The two arms nothing above can reach, held directly: the
+    /// walker answers None at the end without moving, and the default
+    /// alignment has a word even though emit never prints it.
+    #[test]
+    fn the_edges_of_the_toolkit_answer() {
+        let mut empty = Scanner::new("");
+        assert_eq!(empty.bump(), None);
+        assert_eq!((empty.line, empty.column), (1, 1), "the end moves nothing");
+        assert_eq!(align_word(Align::Start), "start");
+        assert_eq!(align_word(Align::Center), "center");
+        assert_eq!(align_word(Align::End), "end");
+    }
 
     /// The fixture: the shape of a real pause menu, written by hand.
     const MENU: &str = "\

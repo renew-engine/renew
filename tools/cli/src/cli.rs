@@ -1077,6 +1077,42 @@ mod tests {
         }
     }
 
+    /// `--out` on a subcommand that carries no flags of its own is
+    /// the flag's own rejection; on one with required flags of its
+    /// own, the earlier missing-flag rules answer first, as they do
+    /// for the pack flags.
+    #[test]
+    fn the_out_flag_on_a_flagless_subcommand_is_rejected() {
+        for command in [Command::Check, Command::Modules, Command::Lint] {
+            let name = command.name();
+            assert_eq!(
+                parse(&arguments(&[name, "--out", "menu.uib"])),
+                Err(ParseError::UnexpectedArgument("--out".to_string())),
+                "`{name} --out` must be rejected"
+            );
+        }
+    }
+
+    /// ui-compile without either of its two paths names the one that
+    /// is missing — input first, matching the rule order.
+    #[test]
+    fn ui_compile_without_its_paths_is_rejected() {
+        assert_eq!(
+            parse(&arguments(&["ui-compile", "--out", "menu.uib"])),
+            Err(ParseError::MissingOption {
+                command: "ui-compile",
+                option: "--from",
+            })
+        );
+        assert_eq!(
+            parse(&arguments(&["ui-compile", "--from", "menu.ui"])),
+            Err(ParseError::MissingOption {
+                command: "ui-compile",
+                option: "--out",
+            })
+        );
+    }
+
     #[test]
     fn a_trace_subcommand_without_its_flag_is_rejected() {
         for command in [Command::Record, Command::Replay] {
