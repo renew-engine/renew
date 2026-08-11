@@ -12,10 +12,11 @@
 
 use renew_render3d::{
     Camera as RenderCamera, MeshRenderer, Scene, ShadowMatrices, ShadowedCameraRenderer,
-    TexturedMeshRenderer, attachment, pass,
+    TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, Extent, ItemList, RenderDesc, TargetFormat, Validation,
+    color_attachment,
 };
 use renew_sample_cube_world::grid::{Cell, Grid};
 
@@ -181,7 +182,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
         }
     };
 
-    let color = [attachment(BACKDROP)];
+    let color = [color_attachment(BACKDROP)];
     let passes = [pass(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
@@ -410,7 +411,7 @@ pub(crate) fn draw_scene(
         _ => None,
     };
 
-    let color = [attachment(BACKDROP)];
+    let color = [color_attachment(BACKDROP)];
     // The world first, whatever is over it second. Both are in one pass:
     // the overlay sits at the near plane, so the depth test cannot put
     // the world in front of it, and the order settles it regardless.

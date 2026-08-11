@@ -13,7 +13,7 @@
 //! would pass vacuously the moment the fill path allocated.
 
 use renew_memory::{CountingAllocator, counters};
-use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer, attachment};
+use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat, Validation,
 };
@@ -153,7 +153,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
             renderer.sprites() > 0,
             "the measured frame must be non-empty"
         );
-        let color = [attachment(clear)];
+        let color = [renew_rhi::color_attachment(clear)];
         let items = [renderer.item()];
         let passes = [Pass::new(&color, &items)];
         target

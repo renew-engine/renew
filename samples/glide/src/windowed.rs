@@ -400,7 +400,7 @@ impl GlideApp {
         }
         // The frame, composed on this stack; the borrows end at the
         // render call. Two items: the world's atlas, then the UI's.
-        let color = [renew_render2d::attachment(SKY)];
+        let color = [renew_rhi::color_attachment(SKY)];
         let items = [renderer.item(), ui_sprites.item()];
         let passes = [Pass::new(&color, &items)];
         let outcome = target.render(&RenderDesc::new(&passes));

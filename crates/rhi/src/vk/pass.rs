@@ -314,15 +314,21 @@ impl<'a> Item<'a> {
 /// takes any slice, and nothing here bounds how many items a frame may
 /// carry.
 ///
+/// Sketched rather than compiled — every item needs a live pipeline,
+/// which needs a device; the device suite drives the real thing.
+///
 /// ```ignore
-/// let mut items = ItemList::<3>::new(world.item(&mesh, &camera));
+/// let mut items = ItemList::<3>::new(world.item(&mesh, &matrices));
 /// if live > 0 {
-///     items.push(dust.item(&packed, live, &push));
+///     items.push(dust.item(&instances, live, &push));
 /// }
 /// items.push(overlay.item(&crosshair));
 /// let passes = [Pass::new(&color, items.as_slice())];
 /// ```
-#[derive(Clone, Copy)]
+/// **Deliberately not `Copy`.** This is an accumulator driven by
+/// `&mut self`: a copy taken mid-build would swallow every later push
+/// with no diagnostic, which is the failure mode `Range` refuses `Copy`
+/// to avoid. Nothing in the tree wants one.
 pub struct ItemList<'a, const N: usize> {
     /// Seeded with the first item and overwritten by pushes: `Item` is
     /// `Copy` and has no meaningful empty value, so a filled array with
@@ -368,7 +374,7 @@ impl<'a, const N: usize> ItemList<'a, N> {
     pub fn push(&mut self, item: Item<'a>) {
         assert!(
             self.count < N,
-            "an ItemList<{N}> holds {N} items; the {}th was pushed",
+            "an item list of capacity {N} is full; item {} was pushed",
             self.count + 1
         );
         self.items[self.count] = item;
@@ -392,21 +398,6 @@ impl<'a, const N: usize> ItemList<'a, N> {
     pub fn as_slice(&self) -> &[Item<'a>] {
         &self.items[..self.count]
     }
-
-    /// How many items are in the list.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Never true: the list is seeded with an item and nothing removes
-    /// one. Present because the lint that pairs it with [`Self::len`]
-    /// is right in general, and answering it honestly is cheaper than
-    /// an exemption.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        false
-    }
 }
 
 impl<const N: usize> fmt::Debug for ItemList<'_, N> {
@@ -423,14 +414,16 @@ impl<const N: usize> fmt::Debug for ItemList<'_, N> {
 /// The colour attachment a frame renders into: cleared to `clear`,
 /// stored.
 ///
-/// **One definition, because three crates had written it identically.**
-/// The 2D renderer, the 3D renderer and the triangle sample each
-/// carried the same two-line function; a caller composing a frame from
-/// more than one of them imported whichever it happened to name first.
-/// The depth attachment deliberately does NOT join it: that one
-/// encodes the reversed-Z convention and refuses to take the clear
-/// value as a parameter, which is a renderer's policy rather than the
-/// frame vocabulary's.
+/// **One definition and one name, because three crates had written it
+/// identically.** The 2D renderer, the 3D renderer and the triangle
+/// sample each carried the same two-line function, so a caller
+/// composing a frame from more than one of them imported whichever it
+/// happened to name first. Forwarding wrappers would have left that
+/// ambiguity in place, so the wrappers are gone: this is the name
+/// every consumer uses. The depth attachment deliberately does NOT
+/// join it — that one encodes the reversed-Z convention and refuses to
+/// take the clear value as a parameter, which is a renderer's policy
+/// rather than the frame vocabulary's.
 #[must_use]
 pub fn color_attachment(clear: Color) -> Attachment {
     Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)

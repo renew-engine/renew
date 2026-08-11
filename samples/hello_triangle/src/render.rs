@@ -1,7 +1,7 @@
 //! Where a frame goes, and the colour it goes there with.
 
 use renew_math::Alpha;
-use renew_rhi::{Attachment, Color, OffscreenTarget, RenderDesc, TargetError, TargetFormat};
+use renew_rhi::{Color, OffscreenTarget, RenderDesc, TargetError, TargetFormat};
 #[cfg(feature = "window")]
 use renew_rhi::{PresentOutcome, WindowTarget};
 
@@ -67,15 +67,6 @@ impl Surface {
                 .map(|outcome| outcome == PresentOutcome::Presented),
         }
     }
-}
-
-/// The one color attachment every frame here renders into: cleared to
-/// `clear`, stored. The frame itself is composed at each call site —
-/// the borrows in a composed frame end at the render call, so nothing
-/// stores it.
-#[must_use]
-pub fn clear_attachment(clear: Color) -> Attachment {
-    renew_rhi::color_attachment(clear)
 }
 
 /// The clear colour for a frame standing `alpha` of the way past the

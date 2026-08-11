@@ -361,13 +361,12 @@ fn the_item_list_composes_a_frames_draws_in_order() {
     // no identity of its own, so the push block is the label.
     let labels: [[u8; 16]; 4] = [[1; 16], [2; 16], [3; 16], [4; 16]];
     let mut list = ItemList::<4>::new(Item::new(&pipeline).push_data(&labels[0]));
-    assert_eq!(list.len(), 1, "a seeded list holds its seed");
-    assert!(!list.is_empty());
+    assert_eq!(list.as_slice().len(), 1, "a seeded list holds its seed");
     list.push(Item::new(&pipeline).push_data(&labels[1]));
     // The optional shape, both ways: absent adds nothing, present
     // appends exactly where a push would have.
     list.push_some(None);
-    assert_eq!(list.len(), 2, "an absent item is not a draw");
+    assert_eq!(list.as_slice().len(), 2, "an absent item is not a draw");
     list.push_some(Some(Item::new(&pipeline).push_data(&labels[2])));
     list.push(Item::new(&pipeline).push_data(&labels[3]));
     let slice = list.as_slice();
@@ -399,7 +398,18 @@ fn the_item_list_composes_a_frames_draws_in_order() {
         let _ = ItemList::<0>::new(Item::new(&pipeline).push_data(&labels[0]));
     }));
     std::panic::set_hook(hook);
-    assert!(over.is_err(), "a third item in a list of two must refuse");
+    // By name, not merely "something panicked": without the assert the
+    // very next line indexes out of bounds and this test would pass on
+    // the wrong panic entirely.
+    let message = over
+        .expect_err("a third item in a list of two must refuse")
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        message.contains("item list of capacity 2 is full"),
+        "refused, but not by name: {message:?}"
+    );
     assert!(empty.is_err(), "a list of zero cannot hold its seed");
 
     // And the list composes a frame that actually renders, which is

@@ -53,11 +53,11 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, attachment, pass,
+    Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, pass,
 };
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, ItemList, Mesh, PresentOutcome, RenderDesc,
-    Validation, WindowTarget,
+    Validation, WindowTarget, color_attachment,
 };
 use renew_sample_cube_world::{Cell, Cube, Intent, Tuning};
 
@@ -645,7 +645,7 @@ impl CubeApp {
         }
 
         let packed = ShadowMatrices::from_columns(camera.columns(), gpu.light_columns);
-        let color = [attachment(SKY)];
+        let color = [color_attachment(SKY)];
         // The frame's particles, packed into the scratch sized at
         // bring-up — a burst costs the steady-state loop no allocation.
         // The billboard basis comes from the same blended view the world

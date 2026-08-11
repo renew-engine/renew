@@ -23,7 +23,8 @@ display server, and the golden-image tests attest the bytes.
   `Presented` or `NeedsResize` (resizes and minimized windows are
   protocol outcomes, never errors). Two frames in flight, FIFO
   presentation.
-- `RenderDesc` / `Pass` / `Attachment` / `Item` — the frame vocabulary.
+- `RenderDesc` / `Pass` / `Attachment` / `Item` / `ItemList` /
+  `color_attachment` — the frame vocabulary.
   Attachments carry their load and store ops (`LoadOp::Clear` holds its
   `ClearValue`, so a clear value without a clearing load is
   unrepresentable); depth is a per-target internal image a pass opts

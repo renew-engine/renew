@@ -4,9 +4,9 @@
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use renew_rhi::{
-    Attachment, Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Color, Device,
-    Extent, FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders,
-    TargetError, TargetFormat, TextureDesc, VertexAttribute,
+    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, FrameData,
+    Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders, TargetError,
+    TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -224,19 +224,20 @@ impl SpriteRenderer {
     /// This frame's draw: every pushed sprite, in push order, as one
     /// item for a pass the caller composes.
     ///
-    /// The caller builds the frame on its own stack — see
-    /// [`attachment`] for the matching color attachment — and the
-    /// borrows end at the `render` call:
+    /// The caller builds the frame on its own stack — the matching
+    /// colour attachment is the rendering crate's `color_attachment`,
+    /// which every consumer shares — and the borrows end at the
+    /// `render` call:
     ///
     /// ```no_run
     /// use renew_render2d::SpriteRenderer;
-    /// use renew_rhi::{Color, OffscreenTarget, Pass, RenderDesc, TargetError};
+    /// use renew_rhi::{Color, OffscreenTarget, Pass, RenderDesc, TargetError, color_attachment};
     /// fn frame(
     ///     renderer: &SpriteRenderer,
     ///     target: &mut OffscreenTarget,
     ///     sky: Color,
     /// ) -> Result<(), TargetError> {
-    ///     let color = [renew_render2d::attachment(sky)];
+    ///     let color = [color_attachment(sky)];
     ///     let items = [renderer.item()];
     ///     let passes = [Pass::new(&color, &items)];
     ///     target.render(&RenderDesc::new(&passes))
@@ -256,17 +257,6 @@ impl SpriteRenderer {
             ))
             .bindings(&[&self.binding])
     }
-}
-
-/// The color attachment a sprite frame renders into: cleared to
-/// `clear`, stored. The free half of the frame [`SpriteRenderer::item`]
-/// is the draw half of.
-///
-/// The definition lives in the rendering crate, which owns the frame
-/// vocabulary; this is the name a 2D consumer already imports.
-#[must_use]
-pub fn attachment(clear: Color) -> Attachment {
-    renew_rhi::color_attachment(clear)
 }
 
 impl core::fmt::Debug for SpriteRenderer {

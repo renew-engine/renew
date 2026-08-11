@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer, attachment};
+use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
     AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
     Validation,
@@ -205,7 +205,7 @@ fn opaque_sprites_match_the_computed_image_exactly() {
     renderer.push(&Sprite::new(RED, 8.0, 8.0).size(16.0, 16.0));
     renderer.push(&Sprite::new(GREEN, 32.0, 8.0).size(16.0, 16.0));
     renderer.push(&Sprite::new(BLUE, 16.0, 16.0).size(16.0, 16.0));
-    let color = [attachment(CLEAR)];
+    let color = [renew_rhi::color_attachment(CLEAR)];
     let items = [renderer.item()];
     let passes = [Pass::new(&color, &items)];
     target
@@ -289,7 +289,7 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
             .size(16.0, 16.0)
             .tint([0.5, 0.5, 0.5, 0.5]),
     );
-    let color = [attachment(CLEAR)];
+    let color = [renew_rhi::color_attachment(CLEAR)];
     let items = [renderer.item()];
     let passes = [Pass::new(&color, &items)];
     target

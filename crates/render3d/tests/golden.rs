@@ -16,7 +16,7 @@
 
 use renew_render3d::{
     Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, ShadowMatrices,
-    ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, attachment, pass,
+    ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -168,7 +168,7 @@ fn a_quad_covers_the_target_in_its_own_colour() -> Result<(), Box<dyn std::error
 
     // Magenta appears nowhere in the geometry, so a quad that failed to
     // cover shows as unwritten rather than as a plausible colour.
-    let color = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let color = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
     let items = [renderer.item(&mesh)];
     let passes = [pass(&color, &items)];
     target.render(&RenderDesc::new(&passes))?;
@@ -225,7 +225,7 @@ fn the_nearer_quad_wins_in_either_push_order() -> Result<(), Box<dyn std::error:
         full_quad(&mut scene, first.0, first.1);
         full_quad(&mut scene, second.0, second.1);
         let mesh = renderer.upload(&device, &scene)?;
-        let color = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+        let color = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
         let items = [renderer.item(&mesh)];
         target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
         let mut pixels = vec![0u8; target.byte_len()];
@@ -278,7 +278,7 @@ fn at_equal_depth_the_later_push_wins() -> Result<(), Box<dyn std::error::Error>
         full_quad(&mut scene, 0.5, first);
         full_quad(&mut scene, 0.5, second);
         let mesh = renderer.upload(&device, &scene)?;
-        let color = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+        let color = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
         let items = [renderer.item(&mesh)];
         target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
         let mut pixels = vec![0u8; target.byte_len()];
@@ -314,7 +314,7 @@ fn one_mesh_may_be_drawn_by_several_items() -> Result<(), Box<dyn std::error::Er
     full_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
     let mesh = renderer.upload(&device, &scene)?;
 
-    let color = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let color = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
     let items = [renderer.item(&mesh), renderer.item(&mesh)];
     target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
     let mut pixels = vec![0u8; target.byte_len()];
@@ -388,7 +388,7 @@ fn an_identity_camera_covers_what_the_mesh_path_covers() -> Result<(), Box<dyn s
         height: SIZE,
     };
     let clear_colour = [255, 0, 255, 255];
-    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
     let mut scene = Scene::new();
     half_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
 
@@ -466,7 +466,7 @@ fn a_translation_moves_the_picture_rather_than_bending_it() -> Result<(), Box<dy
     columns[3][0] = 0.5;
     let camera = Camera::from_columns(columns);
 
-    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
     let items = [through.item(&mesh, &camera)];
     target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
     let mut pixels = vec![0u8; target.byte_len()];
@@ -508,7 +508,7 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
         height: SIZE,
     };
     let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
-    let clear = [attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
 
     // Columns of a matrix whose last row is (0, 0, 1, 0): w becomes z.
     let mut columns = IDENTITY;
@@ -610,7 +610,7 @@ fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::e
         width: 2,
         height: 2,
     };
-    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
     let mut scene = Scene::new();
     full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
     let camera = Camera::from_columns(IDENTITY);
@@ -668,7 +668,7 @@ fn the_vertex_colour_tints_the_texture() -> Result<(), Box<dyn std::error::Error
         width: 2,
         height: 2,
     };
-    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
     let camera = Camera::from_columns(IDENTITY);
     let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
 
@@ -787,7 +787,7 @@ fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error:
     full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
     let mesh = renderer.upload(&device, &scene)?;
 
-    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
     let items = [renderer.item(&mesh)];
     target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
     let mut pixels = vec![0u8; target.byte_len()];
@@ -828,7 +828,7 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         height: 2,
     };
     let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
-    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
 
     // The floor spans the whole target at depth 0.3; the blocker is a
     // nearer patch over clip x in [-0.25, 0.25] AND clip y in [-1, 0].

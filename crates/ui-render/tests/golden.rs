@@ -13,7 +13,7 @@
 //! the 2D renderer's own Testing notes record.
 
 use renew_math::Alpha;
-use renew_render2d::{AtlasDesc, Canvas, SpriteRenderer, attachment};
+use renew_render2d::{AtlasDesc, Canvas, SpriteRenderer};
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat, Validation,
 };
@@ -134,7 +134,7 @@ fn a_presented_tree_lands_in_computed_pixels() {
     sprites.begin();
     presenter.emit(Alpha::ZERO, &mut sprites);
     assert_eq!(sprites.sprites(), 2, "two panels, no transparent root");
-    let color = [attachment(CLEAR)];
+    let color = [renew_rhi::color_attachment(CLEAR)];
     let items = [sprites.item()];
     let passes = [Pass::new(&color, &items)];
     target.render(&RenderDesc::new(&passes)).expect("render");
@@ -232,7 +232,7 @@ fn text_lands_inside_its_measured_box() {
     let width = u32::try_from(width).expect("a two-glyph label fits any canvas");
     sprites.begin();
     renew_ui_render::emit_text(&mut sprites, 4.0, 4.0, text, [1.0, 1.0, 1.0, 1.0]);
-    let color = [attachment(CLEAR)];
+    let color = [renew_rhi::color_attachment(CLEAR)];
     let items = [sprites.item()];
     let passes = [Pass::new(&color, &items)];
     target.render(&RenderDesc::new(&passes)).expect("render");
