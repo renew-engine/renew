@@ -1,8 +1,8 @@
 # renew-fuzz
 
-Fuzz harnesses for the four parsers that read data the engine did not
-write: the asset pack reader, the input-trace codec, the WAV reader, and
-the UI document reader. The document target goes one step past the
+Fuzz harnesses for the five parsers that read data the engine did not
+write: the asset pack reader, the input-trace codec, the WAV reader, the
+UI document reader, and the UI text grammar. The document target goes one step past the
 others: bytes that read as a document are also instantiated as a tree,
 because validation claims instantiation never needs to re-check — an
 input that breaks that claim is a finding.

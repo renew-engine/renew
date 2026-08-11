@@ -1,0 +1,18 @@
+row {
+ row {
+    node w=9999
+} 
+  node w=999 row {
+    node w=9
+} 
+  node w=999998 row {
+    node w=9999
+} 
+  node w=99999 row {
+    node{
+ row {
+    node w=4999 node   node w=99999 row {
+    node w=9999
+} 
+  no998 roww=9de w=9999
+}

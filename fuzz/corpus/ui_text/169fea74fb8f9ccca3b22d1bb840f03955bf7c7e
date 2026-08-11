@@ -1,0 +1,7 @@
+column   {
+    row margin=2{        node w=64 h=16
+        node
+  node w=64 h=16
+        node
+ }
+}
