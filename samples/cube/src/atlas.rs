@@ -161,6 +161,44 @@ fn shade(column: u32, (x, y): (u32, u32)) -> u8 {
     u8::try_from(level.clamp(0, 255)).unwrap_or(0)
 }
 
+/// The particle tile: one soft square, premultiplied, generated the
+/// same way the block tiles are and for the same reason — a file would
+/// be a dependency with a licence, and a function has a test.
+///
+/// White at full alpha in the middle, fading premultiplied toward the
+/// edge, so an instance colour multiplies through cleanly under either
+/// blend mode. Eight texels square: particles draw small, and a soft
+/// edge at that size needs gradient, not resolution.
+#[must_use]
+pub fn particle_pixels() -> (u32, Vec<u8>) {
+    const SIDE: u32 = 8;
+    // Distances squared in doubled-texel units, so the centre sits on
+    // an integer and every value below is a small exact integer. Signed
+    // constants written as the literals they are, because 8 fits in an
+    // i32 without a cast to argue about.
+    const SIDE_I: i32 = 8;
+    const CENTRE: i32 = SIDE_I - 1; // doubled: texel centre x2 - 1
+    const FULL: i32 = (SIDE_I - 2) * (SIDE_I - 2); // full ink inside
+    const EDGE: i32 = 2 * (SIDE_I - 1) * (SIDE_I - 1); // zero by here
+    let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let dx = 2 * i32::try_from(x).unwrap_or(0) - CENTRE;
+            let dy = 2 * i32::try_from(y).unwrap_or(0) - CENTRE;
+            let distance_squared = dx * dx + dy * dy;
+            let ink_256 = if distance_squared <= FULL {
+                255
+            } else {
+                (255 * (EDGE - distance_squared).max(0)) / (EDGE - FULL)
+            };
+            let ink = u8::try_from(ink_256.clamp(0, 255)).unwrap_or(255);
+            // Premultiplied: colour channels carry the alpha already.
+            pixels.extend_from_slice(&[ink, ink, ink, ink]);
+        }
+    }
+    (SIDE, pixels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +317,40 @@ mod tests {
             bottom_left[1] > top_left[1],
             "the corner order runs bottom to top"
         );
+    }
+
+    /// The particle tile: premultiplied everywhere, opaque in the
+    /// middle, transparent at the corners, symmetric under the flips a
+    /// square billboard undergoes — the properties the blend modes and
+    /// the instance colour rely on.
+    #[test]
+    fn the_particle_tile_is_a_premultiplied_soft_square() {
+        let (side, pixels) = particle_pixels();
+        assert_eq!(pixels.len(), (side * side * 4) as usize);
+        for texel in pixels.chunks_exact(4) {
+            assert!(
+                texel.iter().all(|&channel| channel == texel[0]),
+                "premultiplied white: every channel carries the same ink: {texel:?}"
+            );
+        }
+        let at = |x: u32, y: u32| pixels[((y * side + x) * 4) as usize];
+        assert_eq!(at(3, 3), 255, "the middle is full ink");
+        assert_eq!(
+            at(4, 4),
+            255,
+            "the centre has no single texel, so its four share"
+        );
+        assert_eq!(
+            at(0, 0),
+            0,
+            "the corners are empty, or the quad has corners"
+        );
+        assert_eq!(at(7, 7), 0, "and every corner, not just one");
+        for y in 0..side {
+            for x in 0..side {
+                assert_eq!(at(x, y), at(side - 1 - x, y), "mirror in x at ({x}, {y})");
+                assert_eq!(at(x, y), at(x, side - 1 - y), "mirror in y at ({x}, {y})");
+            }
+        }
     }
 }

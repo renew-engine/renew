@@ -127,7 +127,7 @@ impl Quad {
     clippy::cast_precision_loss,
     reason = "a coordinate past 2^24 needs a grid too large to allocate"
 )]
-fn world_units(coordinate: i32) -> f32 {
+pub(crate) fn world_units(coordinate: i32) -> f32 {
     coordinate as f32
 }
 

@@ -229,7 +229,6 @@ most of the time in an open room, and exactly when you are trying to line
 a shot up. The crosshair is where the aim ray goes whether or not it hits
 anything.
 
-
 ```
 renew --features window run cube -- --window
 cargo run -p renew-sample-cube --features window --bin cube -- --window
@@ -309,6 +308,35 @@ and the picture would roll on its own axis for no input.
 **The geometry is uploaded once and redrawn from every angle.** Turning
 does not rebuild it -- that is what putting the camera matrix on the GPU
 bought. Only breaking or placing a block does.
+
+### Dust when a block breaks
+
+![From the player's eyes, thirty ticks into the build script: a freshly dug hole in the arena floor with a puff of stone-grey dust rising out of it, the placed reddish-brown block at the lower right](digging.png)
+
+The still is from the build script three ticks after its second dig, so
+the burst is young enough to still be climbing out of the hole:
+
+```
+renew --features render run cube -- --script build --ticks 30 --view player --render digging.png
+```
+
+Breaking a block throws a one-shot burst of dust, coloured from the
+stone palette and blended as media rather than light: overlapping quads
+converge to the stone's own colour instead of summing toward a white
+orb. The dust falls gently, deliberately: a plume has to climb out of a
+one-unit hole before its lifetime ends, and an early, earth-weighted
+tuning never cleared the rim — every burst died inside the hole its
+block left, where nobody ever sees it.
+
+The world never learns any of this happened. The driver watches the
+aimed cell before each step and the broken-block count after it; when
+the count rises, the pool bursts at the watched cell. The pool reads
+the world and never writes it, so the digest of a watched run is
+bit-identical to an unwatched one — a test holds the two side by side.
+The still's dust comes from the very run its report counts: one world,
+watched from outside. The window runs the same watch on its own play,
+so a windowed dig bursts the same way — a test breaks a block through
+the keys and finds the dust alive.
 
 ## Seeing it from inside
 

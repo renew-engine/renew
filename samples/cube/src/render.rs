@@ -272,8 +272,9 @@ pub(crate) fn draw_through(
     camera: &crate::camera::Camera,
     aimed: Option<Cell>,
     overlay: Option<&Scene>,
+    dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
-    draw_scene(&build_world_space(grid, aimed), camera, overlay)
+    draw_scene(&build_world_space(grid, aimed), camera, overlay, dust)
 }
 
 /// Draw an already-built scene through `camera`.
@@ -285,6 +286,7 @@ pub(crate) fn draw_scene(
     scene: &Scene,
     camera: &crate::camera::Camera,
     overlay: Option<&Scene>,
+    dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
     if scene.is_empty() {
         return Err(RenderError::Empty);
@@ -340,13 +342,53 @@ pub(crate) fn draw_scene(
         _ => None,
     };
 
+    // The dust, when a pool rides along and holds anything: its own
+    // renderer per call like the textured one above, blended as media
+    // because dust occludes rather than glows, its instances packed
+    // into a scratch sized by the pool. Built before the item list
+    // because the items borrow it.
+    let dust_parts = match dust {
+        Some(pool) if pool.live() > 0 => {
+            let (side, tile) = crate::atlas::particle_pixels();
+            let sprinkler = renew_particles::ParticleRenderer::new(
+                &device,
+                TargetFormat::Rgba8Unorm,
+                Extent {
+                    width: side,
+                    height: side,
+                },
+                &tile,
+                renew_particles::ParticleBlend::Alpha,
+                pool.capacity(),
+            )
+            .map_err(|error| RenderError::Refused(error.to_string()))?;
+            let mut instances =
+                vec![0u8; pool.capacity() as usize * renew_particles::INSTANCE_STRIDE];
+            let live = pool.write_instances(&mut instances);
+            let (right, up, _) = camera.view.axes();
+            let push = renew_particles::CameraPush::from_parts(
+                camera.columns(),
+                [right.x, right.y, right.z],
+                [up.x, up.y, up.z],
+            );
+            Some((sprinkler, instances, live, push))
+        }
+        _ => None,
+    };
+
     let color = [attachment(BACKDROP)];
     // The world first, whatever is over it second. Both are in one pass:
     // the overlay sits at the near plane, so the depth test cannot put
     // the world in front of it, and the order settles it regardless.
+    // Dust after the world and before the overlay: it tests the world's
+    // depth without writing its own, and the crosshair stays on top of
+    // everything because a sight that hides behind smoke is not a sight.
     let world_item = renderer.item(&mesh, &packed);
-    let mut items = Vec::with_capacity(2);
+    let mut items = Vec::with_capacity(3);
     items.push(world_item);
+    if let Some((sprinkler, instances, live, push)) = dust_parts.as_ref() {
+        items.push(sprinkler.item(instances, *live, push));
+    }
     if let Some((plain, mesh)) = over.as_ref() {
         items.push(plain.item(mesh));
     }
@@ -371,8 +413,9 @@ pub fn to_png_through(
     path: &std::path::Path,
     aimed: Option<Cell>,
     overlay: Option<&Scene>,
+    dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<(), RenderError> {
-    let pixels = draw_through(grid, camera, aimed, overlay)?;
+    let pixels = draw_through(grid, camera, aimed, overlay, dust)?;
     let png = renew_png::encode(SIZE, SIZE, &pixels)
         .map_err(|error| RenderError::Output(error.to_string()))?;
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
@@ -441,7 +484,7 @@ pub(crate) mod tests {
         // Bound first so `matches!` fits on one line: spread across
         // several, its non-matching arm is a region no passing run
         // executes, and the gate is right to say so.
-        let through = draw_through(&empty, &camera, None, None);
+        let through = draw_through(&empty, &camera, None, None, None);
         assert!(
             matches!(through, Err(RenderError::Empty)),
             "an empty world through a camera must be refused, not drawn"
@@ -578,9 +621,10 @@ pub(crate) mod tests {
         //
         // `if let` rather than an early return, so the skip costs no line
         // that a lane which draws can never execute.
-        if let Some(plain) =
-            pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
-        {
+        if let Some(plain) = pixels_or_skip(
+            draw_through(&grid, &camera, None, None, None),
+            golden_strict(),
+        ) {
             assert_the_highlight_reaches_the_pixels(&grid, &camera, &plain);
         }
     }
@@ -594,11 +638,76 @@ pub(crate) mod tests {
     fn an_overlay_is_drawn_over_the_world() {
         let grid = crate::arena();
         let camera = crate::camera::free_view([-8.0, 6.0, -10.0], [4.0, 1.5, 0.0], 1.0);
-        if let Some(plain) =
-            pixels_or_skip(draw_through(&grid, &camera, None, None), golden_strict())
-        {
+        if let Some(plain) = pixels_or_skip(
+            draw_through(&grid, &camera, None, None, None),
+            golden_strict(),
+        ) {
             assert_the_overlay_reaches_the_middle(&grid, &camera, &plain);
         }
+    }
+
+    /// **The dust reaches the still, deterministically, and only while
+    /// it lives.** A young burst changes pixels; the same pool drawn
+    /// twice is byte-identical, which is what lets a committed render
+    /// stand as evidence; a pool whose particles have all died leaves
+    /// the picture exactly alone, so the quiet path and the dead path
+    /// are the same picture.
+    #[test]
+    fn dust_reaches_the_picture_only_while_it_lives() {
+        let grid = crate::arena();
+        let camera = crate::camera::free_view([-8.0, 6.0, -10.0], [4.0, 1.5, 0.0], 1.0);
+        if let Some(plain) = pixels_or_skip(
+            draw_through(&grid, &camera, None, None, None),
+            golden_strict(),
+        ) {
+            assert_dust_reaches_only_while_alive(&grid, &camera, &plain);
+        }
+    }
+
+    /// A living burst changes pixels, the same pool twice is
+    /// byte-identical, and a dead pool changes nothing.
+    fn assert_dust_reaches_only_while_alive(
+        grid: &Grid,
+        camera: &crate::camera::Camera,
+        plain: &[u8],
+    ) {
+        // A burst in the open air between the eye and the mound, three
+        // steps old: young enough that all of it lives, and in front
+        // of everything solid so the depth test cannot silently
+        // discard the evidence.
+        let mut young = crate::burst::pool();
+        young.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
+        for _ in 0..3 {
+            young.step(crate::burst::DT);
+        }
+        let dusty = draw_through(grid, camera, None, None, Some(&young))
+            .expect("the dusty draw should succeed");
+        assert!(
+            differing_bytes(plain, &dusty) > 0,
+            "a living burst changed no pixel, so it never reached the pass"
+        );
+        let again = draw_through(grid, camera, None, None, Some(&young))
+            .expect("the second dusty draw should succeed");
+        assert_eq!(
+            differing_bytes(&dusty, &again),
+            0,
+            "the same dust must draw the same picture"
+        );
+
+        // The same burst stepped past every possible lifetime.
+        let mut dead = crate::burst::pool();
+        dead.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
+        for _ in 0..60 {
+            dead.step(crate::burst::DT);
+        }
+        assert_eq!(dead.live(), 0, "a second is longer than any dust lifetime");
+        let after = draw_through(grid, camera, None, None, Some(&dead))
+            .expect("the dead-pool draw should succeed");
+        assert_eq!(
+            differing_bytes(plain, &after),
+            0,
+            "dead dust must leave the picture exactly alone"
+        );
     }
 
     /// An overlay marks the middle of the picture; an empty one marks
@@ -609,7 +718,7 @@ pub(crate) mod tests {
         plain: &[u8],
     ) {
         let overlay = crate::crosshair::scene(1.0);
-        let marked = draw_through(grid, camera, None, Some(&overlay))
+        let marked = draw_through(grid, camera, None, Some(&overlay), None)
             .expect("the overlay draw should succeed");
         assert!(
             differing_bytes(plain, &marked) > 0,
@@ -629,7 +738,7 @@ pub(crate) mod tests {
         // picture. The guard that decides this is otherwise a branch
         // nothing takes, since the one real overlay is never empty.
         let nothing = Scene::new();
-        let unmarked = draw_through(grid, camera, None, Some(&nothing))
+        let unmarked = draw_through(grid, camera, None, Some(&nothing), None)
             .expect("an empty overlay should draw the world and nothing else");
         assert_eq!(
             differing_bytes(plain, &unmarked),
@@ -649,7 +758,7 @@ pub(crate) mod tests {
         // face with air above it and nothing between it and the eye.
         let visible = Cell::new(4, 2, 0);
         let aimed =
-            draw_through(grid, camera, Some(visible), None).expect("the draw should succeed");
+            draw_through(grid, camera, Some(visible), None, None).expect("the draw should succeed");
         assert!(
             differing_bytes(plain, &aimed) > 0,
             "lighting a visible block changed no pixel, so the aim never reached the scene"
@@ -659,8 +768,8 @@ pub(crate) mod tests {
         // lighting it must change nothing. Without this the assertion
         // above would pass on a scene that lit everything.
         let enclosed = Cell::new(4, 1, 0);
-        let hidden =
-            draw_through(grid, camera, Some(enclosed), None).expect("the draw should succeed");
+        let hidden = draw_through(grid, camera, Some(enclosed), None, None)
+            .expect("the draw should succeed");
         assert_eq!(
             differing_bytes(plain, &hidden),
             0,

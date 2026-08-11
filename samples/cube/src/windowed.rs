@@ -241,6 +241,12 @@ struct CubeApp {
     /// simulation and still answers with a digest, which is the half a
     /// test can check.
     gpu: Option<Gpu>,
+    /// The block-break dust. It watches the world and never touches it,
+    /// so it lives beside the simulation rather than inside it — the
+    /// digest never learns particles exist. It steps even when no GPU
+    /// came up, because what it does is a function of the world's
+    /// breaks, not of whether anyone is looking.
+    dust: renew_particles::ParticleSystem,
 }
 
 /// Everything drawing needs, brought up once.
@@ -279,6 +285,13 @@ struct Gpu {
     /// The aspect the crosshair was built for, so a resized window gets
     /// square arms again rather than keeping the old window's stretch.
     crosshair_aspect: f32,
+    /// The dust pipeline, blended as media because dust occludes
+    /// rather than glows. Built at bring-up for the crosshair's
+    /// reason: that is where a device failure is already reported.
+    sprinkler: renew_particles::ParticleRenderer,
+    /// Instance scratch, sized once for the pool's whole capacity, so
+    /// packing a frame's particles allocates nothing.
+    instances: Vec<u8>,
 }
 
 impl CubeApp {
@@ -287,8 +300,11 @@ impl CubeApp {
         let script = (options.script != Script::Stand).then_some(options.script);
         // A script that digs needs something under the aim, so a
         // scripted run starts looking down and forward — the same
-        // arrangement the headless run makes for the same reason. A
-        // played run starts looking level, because a player would.
+        // arrangement the headless run makes for the same reason,
+        // though from whole-degree angles rather than its exact look
+        // vector, so the two runs aim at nearby rather than identical
+        // cells. A played run starts looking level, because a player
+        // would.
         let (yaw, pitch_degrees) = if script.is_some() {
             (Angle::from_degrees(45), -40)
         } else {
@@ -303,6 +319,7 @@ impl CubeApp {
             limit: options.window_ticks,
             script,
             closing: false,
+            dust: crate::burst::pool(),
             turn_owed: (0, 0),
             cursor_held: false,
             clock: Clock::start(),
@@ -428,7 +445,13 @@ impl CubeApp {
                 place: self.held.place,
             }
         };
+        // The aim before the step and the edit count after are enough to
+        // know a block broke and where — so the dust needs nothing from
+        // the world that the world does not already say.
+        let watched = crate::burst::watch(&self.world);
         self.world.step(intent);
+        crate::burst::settle(&mut self.dust, &self.world, watched);
+        self.dust.step(crate::burst::DT);
         // Digging and placing are edges, not states: holding the key
         // should break one block, not one per tick.
         self.held.dig = false;
@@ -492,6 +515,20 @@ impl CubeApp {
         let crosshair = overlay
             .upload(&device, &crate::crosshair::scene(crosshair_aspect))
             .map_err(|error| format!("uploading the crosshair: {error}"))?;
+        let (tile_side, tile_pixels) = crate::atlas::particle_pixels();
+        let sprinkler = renew_particles::ParticleRenderer::new(
+            &device,
+            target.format(),
+            Extent {
+                width: tile_side,
+                height: tile_side,
+            },
+            &tile_pixels,
+            renew_particles::ParticleBlend::Alpha,
+            self.dust.capacity(),
+        )
+        .map_err(|error| format!("building the dust pipeline: {error}"))?;
+        let instances = vec![0u8; self.dust.capacity() as usize * renew_particles::INSTANCE_STRIDE];
         Ok(Some(Gpu {
             device,
             target,
@@ -502,6 +539,8 @@ impl CubeApp {
             overlay,
             crosshair,
             crosshair_aspect,
+            sprinkler,
+            instances,
         }))
     }
 
@@ -559,6 +598,17 @@ impl CubeApp {
 
         let packed = RenderCamera::from_columns(camera.columns());
         let color = [attachment(SKY)];
+        // The frame's particles, packed into the scratch sized at
+        // bring-up — a burst costs the steady-state loop no allocation.
+        // The billboard basis comes from the same blended view the world
+        // is drawn through, so the dust never lags the camera.
+        let live = self.dust.write_instances(&mut gpu.instances);
+        let (right, up, _) = camera.view.axes();
+        let push = renew_particles::CameraPush::from_parts(
+            camera.columns(),
+            [right.x, right.y, right.z],
+            [up.x, up.y, up.z],
+        );
         let world = gpu.renderer.item(&gpu.mesh, &packed);
 
         // **The outcome is the recovery signal, not noise.** `render`
@@ -573,14 +623,30 @@ impl CubeApp {
         // never: a two-element `Vec` would be an allocation and a free
         // every frame, to hold a count known at compile time.
         //
-        // The world first, the crosshair over it. The overlay sits at
-        // the near plane, so the depth test cannot put a block in front
-        // of it; the order settles it anyway. A crosshair that failed to
+        // The world first, dust over it, the crosshair over everything:
+        // the dust tests the world's depth without writing its own, and
+        // a sight that hides behind smoke is not a sight. The overlay
+        // sits at the near plane, so the depth test cannot put a block
+        // in front of it; the order settles it anyway.
+        //
+        // Two branches so each holds a fixed-size array: a frame with no
+        // dust — most of them — should not pay for an empty draw, and
+        // neither branch reaches the heap. A crosshair that failed to
         // upload is simply absent — a frame of the world is worth more
         // than no frame at all.
-        let items = [world, gpu.overlay.item(&gpu.crosshair)];
-        let passes = [pass(&color, &items)];
-        let outcome = gpu.target.render(&RenderDesc::new(&passes));
+        let outcome = if live > 0 {
+            let items = [
+                world,
+                gpu.sprinkler.item(&gpu.instances, live, &push),
+                gpu.overlay.item(&gpu.crosshair),
+            ];
+            let passes = [pass(&color, &items)];
+            gpu.target.render(&RenderDesc::new(&passes))
+        } else {
+            let items = [world, gpu.overlay.item(&gpu.crosshair)];
+            let passes = [pass(&color, &items)];
+            gpu.target.render(&RenderDesc::new(&passes))
+        };
         self.record_present(&outcome);
     }
 
@@ -1443,7 +1509,9 @@ mod tests {
             "the mound stands above the floor, and the floor cannot be dug: {mound:?}"
         );
 
-        // Break it, and put one back.
+        // Break it, and put one back. The refused shell dig above must
+        // not have burst — dust marks breaks, not attempts.
+        assert_eq!(app.dust.live(), 0, "no break yet, so no dust yet");
         let (broken_before, placed_before) = app.world.edits();
         key(&mut app, KeyCode::Enter, true);
         key(&mut app, KeyCode::Enter, false);
@@ -1452,6 +1520,11 @@ mod tests {
             app.world.edits(),
             (broken_before + 1, placed_before),
             "enter should break exactly the block aimed at, and place nothing"
+        );
+        assert_eq!(
+            app.dust.live(),
+            crate::burst::BURST,
+            "a windowed dig must burst the same way the headless one does"
         );
 
         key(&mut app, KeyCode::Tab, true);

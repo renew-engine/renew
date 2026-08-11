@@ -76,7 +76,7 @@ impl View {
     /// fragments is not.
     #[must_use]
     pub fn matrix(&self) -> Mat4 {
-        let (right, up, forward) = self.basis();
+        let (right, up, forward) = self.axes();
         Mat4::from_cols(
             Vec4::new(right.x, up.x, forward.x, 0.0),
             Vec4::new(right.y, up.y, forward.y, 0.0),
@@ -119,7 +119,12 @@ impl View {
     /// `right × up = forward`, so right is up crossed *into* forward —
     /// the other order mirrors the picture, which reads as an ordinary
     /// photograph taken from an odd angle.
-    fn basis(&self) -> (Vec3, Vec3, Vec3) {
+    ///
+    /// Public because a billboard needs exactly these two spanning
+    /// vectors to face the eye, and recomputing them at a call site
+    /// would be a second copy of the one basis this crate owns.
+    #[must_use]
+    pub fn axes(&self) -> (Vec3, Vec3, Vec3) {
         // Plain single-division normalization, guarded — NOT
         // `try_normalize`, whose two-step rescale is more robust and
         // bit-different. This crate replaced arithmetic that consumers'
