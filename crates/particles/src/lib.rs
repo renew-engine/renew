@@ -567,10 +567,20 @@ mod tests {
         desc.velocity.speed = (1.0, 1.0);
         desc.gravity = [0.0, 0.0, 0.0];
         desc.drag_per_step = 1.0;
+        // Long-lived on purpose: the first version of this test stepped
+        // a full second against half-second lifetimes, every particle
+        // died, and the assertion loop below passed by never running —
+        // the coverage gate is what caught it.
+        desc.lifetime = (10.0, 10.0);
         let mut system =
             ParticleSystem::new(&desc, Seed::from_u64(29), StreamId::from_name("fallback"));
         system.burst([0.0, 0.0, 0.0], 4);
         system.step(1.0);
+        assert_eq!(
+            system.live(),
+            4,
+            "the assertion loop below must have subjects"
+        );
         let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
         system.write_instances(&mut bytes);
         for index in 0..system.live() as usize {
