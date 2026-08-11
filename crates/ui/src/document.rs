@@ -822,9 +822,10 @@ fn encode_style(record: &mut [u8], style: &Style) {
 ///
 /// # Panics
 ///
-/// When the tree exceeds [`MAX_NODES`] — a document the reader would
-/// refuse must not be minted silently, and the writer is the place
-/// that says so.
+/// When the tree exceeds [`MAX_NODES`], or its tables reference more
+/// than [`MAX_PATCHES`] distinct patches — a document the reader
+/// would refuse must not be minted silently, and the writer is the
+/// place that says so.
 #[must_use]
 pub fn capture(ui: &Ui) -> Vec<u8> {
     assert!(
@@ -867,8 +868,7 @@ pub fn capture(ui: &Ui) -> Vec<u8> {
     }
     assert!(
         used.len() <= MAX_PATCHES as usize,
-        "a {}-patch pool exceeds the document ceiling of {MAX_PATCHES}",
-        used.len()
+        "the referenced pool exceeds the ceiling"
     );
 
     let mut out = Vec::new();
@@ -1269,6 +1269,14 @@ mod tests {
             capture(&document.tree()),
             bytes,
             "the dressed round trip is the identity"
+        );
+        assert!(
+            document.patch(document.patch_count()).is_none(),
+            "the pool declines past its end"
+        );
+        assert!(
+            document.state_table(document.len()).is_none(),
+            "the tables decline past the records"
         );
     }
 

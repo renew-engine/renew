@@ -1036,6 +1036,30 @@ column gap=2 {
         assert!(refused.message.contains("attributes only"));
     }
 
+    /// The pool budget is a diagnostic, not a panic: a document that
+    /// resolves more distinct state styles than the blob may pool is
+    /// refused with the whole-document message.
+    #[test]
+    fn the_pool_budget_is_a_diagnostic() {
+        use core::fmt::Write as _;
+        let mut source = String::from("row {\n");
+        for nth in 0..2049u32 {
+            let hover = 0x0010_0000 + nth;
+            let pressed = 0x0080_0000 + nth;
+            let _ = writeln!(
+                source,
+                "    node {{ hover {{ bg=#{hover:06x} }} pressed {{ bg=#{pressed:06x} }} }}"
+            );
+        }
+        source.push('}');
+        let refused = compile(&source).expect_err("past the pool budget");
+        assert!(
+            refused.message.contains("distinct state styles"),
+            "{:?}",
+            refused.message
+        );
+    }
+
     /// Each refusal points at its place and says what was expected.
     #[test]
     fn refusals_name_their_place_and_expectation() {
