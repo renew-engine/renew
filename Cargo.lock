@@ -1832,6 +1832,7 @@ dependencies = [
  "renew-event",
  "renew-frame",
  "renew-input",
+ "renew-math",
  "renew-platform",
  "renew-png",
  "renew-render2d",
@@ -1839,6 +1840,8 @@ dependencies = [
  "renew-rhi",
  "renew-sample-glide-world",
  "renew-trace",
+ "renew-ui",
+ "renew-ui-render",
 ]
 
 [[package]]

@@ -163,6 +163,24 @@ fn relabel_into<const N: usize>(
 }
 
 /// The game as the window seam sees it.
+// Sprites reserved for HUD and label text beyond the menu's own
+// quads: enough for the score line and both button labels.
+const UI_TEXT_SPRITES: u32 = 64;
+// Opaque white ink for the HUD score.
+const HUD_INK: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+// Slightly warm ink for button labels.
+const LABEL_INK: [f32; 4] = [0.92, 0.94, 1.0, 1.0];
+
+/// Canvas pixels from the solver's fixed-point, for label placement.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "label coordinates are tens of pixels, exact in an f32"
+)]
+fn fixed_px(value: renew_ui::Fixed) -> f32 {
+    value.to_bits() as f32 / 65536.0
+}
+
+/// The game as the window seam sees it.
 pub struct GlideApp {
     clock: Clock,
     seed: u64,
@@ -177,7 +195,18 @@ pub struct GlideApp {
     /// extend this or lose its edges.
     pending_flaps: u8,
     stats: FrameStats,
+    /// The pause menu: a real widget tree, folded into the session
+    /// digest. Pausing gates the world's steps; the menu decides.
+    menu: crate::menu::Menu,
+    /// The menu's snapshot pair, advanced per redraw while the menu
+    /// is open.
+    presenter: renew_ui_render::UiPresenter,
+    /// The UI's own sprite renderer over the UI atlas — the second
+    /// texture in the frame, drawn as its own item in the same pass.
+    ui_sprites: Option<renew_render2d::SpriteRenderer>,
     scene_scratch: Vec<SceneSprite>,
+    /// The HUD's score line, formatted in place each frame.
+    hud_score: String,
     title: Title,
     /// The score last written into the title, so relabeling happens on
     /// change only. Death changes the suffix, tracked beside it.
@@ -220,7 +249,11 @@ impl GlideApp {
             #[cfg(feature = "audio")]
             muted: None,
             stats: FrameStats::new(),
+            menu: crate::menu::Menu::new(),
+            presenter: renew_ui_render::UiPresenter::new(8),
+            ui_sprites: None,
             scene_scratch: Vec::new(),
+            hud_score: String::with_capacity(24),
             title: Title::new(),
             titled: None,
             frame: None,
@@ -280,9 +313,30 @@ impl GlideApp {
             capacity,
         )
         .map_err(|error| SampleError::failed("building the sprite renderer", &error))?;
+        // The UI's own renderer: a second texture in the frame,
+        // carried as its own whole pipeline and its own item — the
+        // tolerated shape until the frame model revisits descriptors.
+        let ui_capacity =
+            core::num::NonZeroU32::new(self.presenter.max_quads().saturating_add(UI_TEXT_SPRITES))
+                .ok_or_else(|| SampleError::Failed("zero UI sprite capacity".to_string()))?;
+        let ui_sprites = SpriteRenderer::new(
+            &device,
+            &AtlasDesc::new(
+                renew_rhi::Extent {
+                    width: renew_ui_render::atlas::WIDTH,
+                    height: renew_ui_render::atlas::HEIGHT,
+                },
+                &renew_ui_render::atlas::pixels(),
+            ),
+            canvas,
+            target.format(),
+            ui_capacity,
+        )
+        .map_err(|error| SampleError::failed("building the UI sprite renderer", &error))?;
         self.device = Some(device);
         self.target = Some(target);
         self.renderer = Some(renderer);
+        self.ui_sprites = Some(ui_sprites);
         #[cfg(feature = "audio")]
         {
             // A machine with no sound card is a machine that plays in
@@ -298,7 +352,9 @@ impl GlideApp {
 
     /// Draw the world as it stands.
     fn draw(&mut self) {
-        let (Some(target), Some(renderer)) = (&mut self.target, &mut self.renderer) else {
+        let (Some(target), Some(renderer), Some(ui_sprites)) =
+            (&mut self.target, &mut self.renderer, &mut self.ui_sprites)
+        else {
             return;
         };
         scene(&self.world, &mut self.scene_scratch);
@@ -311,13 +367,62 @@ impl GlideApp {
             renderer
                 .push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
         }
+        // The UI over the world: the score always, the menu when
+        // open — panels from the presenter's snapshots, labels
+        // centred in the buttons' solved rectangles by the same
+        // integer advances the tree measured them with.
+        ui_sprites.begin();
+        self.hud_score.clear();
+        let _ = core::fmt::Write::write_fmt(
+            &mut self.hud_score,
+            format_args!("Score {}", self.world.score()),
+        );
+        renew_ui_render::emit_text(ui_sprites, 6.0, 4.0, &self.hud_score, HUD_INK);
+        if self.menu.is_open() {
+            self.presenter.advance(self.menu.ui());
+            self.presenter.emit(renew_math::Alpha::ZERO, ui_sprites);
+            for (node, label) in self.menu.labels() {
+                if let Some(rect) = self.menu.ui().rect(node) {
+                    let text_width = renew_ui::text::measure(label);
+                    let line = renew_ui::Fixed::from_int(
+                        i32::try_from(renew_ui::text::LINE_HEIGHT).unwrap_or(16),
+                    );
+                    let two = renew_ui::Fixed::from_int(2);
+                    let x = rect.x + (rect.width - text_width) / two;
+                    let y = rect.y + (rect.height - line) / two;
+                    renew_ui_render::emit_text(
+                        ui_sprites,
+                        fixed_px(x),
+                        fixed_px(y),
+                        label,
+                        LABEL_INK,
+                    );
+                }
+            }
+        }
         // The frame, composed on this stack; the borrows end at the
-        // render call.
+        // render call. Two items: the world's atlas, then the UI's.
         let color = [renew_render2d::attachment(SKY)];
-        let items = [renderer.item()];
+        let items = [renderer.item(), ui_sprites.item()];
         let passes = [Pass::new(&color, &items)];
         let outcome = target.render(&RenderDesc::new(&passes));
         self.record_draw(outcome);
+    }
+
+    /// A window event with any pointer position rescaled from
+    /// physical surface pixels into the 320x240 canvas the menu
+    /// solved in. Everything else passes through untouched.
+    fn to_canvas(&self, event: WindowEvent) -> WindowEvent {
+        if let WindowEvent::PointerMoved { x, y } = event {
+            let sx = f64::from(VIEW_WIDTH) / f64::from(self.size.width.max(1));
+            let sy = f64::from(VIEW_HEIGHT) / f64::from(self.size.height.max(1));
+            WindowEvent::PointerMoved {
+                x: x * sx,
+                y: y * sy,
+            }
+        } else {
+            event
+        }
     }
 
     /// What a draw outcome means for the run — split from [`Self::draw`]
@@ -396,10 +501,22 @@ impl GlideApp {
             self.pending_flaps = self
                 .pending_flaps
                 .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
+            for action in self.menu.drain() {
+                if action == crate::menu::MenuAction::Restart {
+                    self.world = World::new(self.seed);
+                    self.pending_flaps = 0;
+                }
+            }
+            let paused = self.menu.is_open();
             for _step in plan.steps() {
                 // Readings around the tick: the world exposes no
                 // events, so the difference across a step is what
                 // happened in it.
+                // An open menu pauses the world: frames keep coming,
+                // steps do not, and the pause bit is digested.
+                if paused {
+                    continue;
+                }
                 let flap_passed = self.pending_flaps > 0;
                 let before_alive = self.world.alive();
                 let before_score = self.world.score();
@@ -487,11 +604,13 @@ impl GlideApp {
                 eprintln!("sound: the device stopped mid-run; the rest was silent");
             }
         }
+        let session_hash = self.menu.absorb(self.world.digest()).finish();
         Ok(Report {
             seed: self.seed,
             source: "window".to_string(),
             stats: self.stats,
             world: self.world,
+            session_hash,
         })
     }
 }
@@ -517,7 +636,32 @@ impl WindowApp for GlideApp {
             WindowEvent::Resized { width, height } => self.resize(Extent { width, height }),
             WindowEvent::CloseRequested => self.close_requested = true,
             WindowEvent::Focused(false) => self.input.release_all(),
-            other => self.input.handle(other),
+            other => {
+                // Pointer coordinates arrive in physical window
+                // pixels; the menu solved in canvas pixels, and the
+                // sprite renderer stretches that canvas over the whole
+                // surface — so the driver maps positions into canvas
+                // space BEFORE the tree hears them, or the menu would
+                // draw in one place and hit-test in another. The
+                // mapping is part of the input seam: scripted traces
+                // speak canvas coordinates directly, and this is the
+                // one place a window's pixels become those.
+                let other = self.to_canvas(other);
+                // The menu hears everything; gameplay hears an event
+                // only when the menu was closed as it arrived, so the
+                // click that presses Resume never also flaps. Opening
+                // releases gameplay input: a key held into the pause
+                // must not wedge the map with a press whose release
+                // the menu will swallow.
+                let was_open = self.menu.is_open();
+                self.menu.handle(&other);
+                if !was_open && self.menu.is_open() {
+                    self.input.release_all();
+                }
+                if !was_open {
+                    self.input.handle(other);
+                }
+            }
         }
     }
 

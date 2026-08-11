@@ -30,10 +30,18 @@ renew-frame = { path = "../../crates/frame" }
 renew-input = { path = "../../crates/input" }
 renew-platform = { path = "../../crates/core/platform", default-features = false }
 renew-render2d = { path = "../../crates/render2d", optional = true }
+# The menu's presentation: snapshots and glyphs over the 2D renderer.
+renew-ui-render = { path = "../../crates/ui-render", optional = true }
 renew-audio = { path = "../../crates/audio", optional = true }
 renew-replay = { path = "../../crates/replay" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-sample-glide-world = { path = "world" }
+# The pointer seam: the one documented quantization the drivers and
+# the replay harness apply before events reach the tree.
+renew-math = { path = "../../crates/core/math" }
+# The pause menu: a real retained widget tree, folded into the
+# session digest — a menu that can restart the run is gameplay.
+renew-ui = { path = "../../crates/ui" }
 renew-trace = { path = "../../crates/trace" }
 
 [features]
@@ -42,6 +50,7 @@ renew-trace = { path = "../../crates/trace" }
 # a player runs headless carries none of it.
 window = [
     "renew-platform/window",
+    "dep:renew-ui-render",
     "dep:renew-rhi",
     "renew-rhi/present",
     "dep:renew-render2d",

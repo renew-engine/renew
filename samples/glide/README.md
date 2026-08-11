@@ -129,6 +129,34 @@ nothing to write with. A log that ends mid-run, with a nonzero exit and
 no failure line, is itself the finding — it says the fault was below the
 engine rather than in it.
 
+## The pause menu, and why the digest moved
+
+Escape pauses. The menu is a real retained widget tree — the same
+arena, solver, and hit-tester every future document will use — with
+two buttons sized from their labels by an integer advance table.
+While it is open the world stands still and the session keeps
+counting: events index by session tick, so every trace recorded
+before the menu existed replays unchanged, and a trace that pauses
+carries events at ticks the world never stepped.
+
+The reported digest is the session's, not just the world's: the
+world's own fold first, then whether the menu is open — a bit that
+decides if the world steps at all — then every decision the tree
+made, in order. A menu that can restart the run is gameplay, and a
+digest that ignored it would call two different sessions the same.
+That is why the reported hash changed when the menu landed: not a
+regression, but coverage arriving. The world's own digest is
+untouched, and its frozen pin still stands.
+
+The `menu` trace exercises the whole road: it flies, pauses to
+resume, pauses again to restart, and flies the new run; a test pins
+the world's tick count mid-trace and after the restart, so a pause
+that leaked steps or a restart that kept the old world would move an
+integer the suite watches. Clicks route to exactly one listener: the
+menu hears everything, gameplay hears an event only if the menu was
+closed as it arrived, so the click that presses Resume never also
+flaps.
+
 ## Shape
 
 Two crates. `world/` is the simulation — a pure fixed-step function of

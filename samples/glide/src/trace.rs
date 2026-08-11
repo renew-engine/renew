@@ -30,6 +30,11 @@ const SCRIPTED: &[Scripted] = &[
         summary: "no input at all — gravity wins",
         text: include_str!("../traces/sink.trace"),
     },
+    Scripted {
+        name: "menu",
+        summary: "flies, pauses to resume, pauses again to restart, flies the new run",
+        text: include_str!("../traces/menu.trace"),
+    },
 ];
 
 /// A loaded trace: events by tick from zero, exactly as stored.
