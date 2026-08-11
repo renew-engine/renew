@@ -655,10 +655,10 @@ mod tests {
         assert_eq!(walk(&original), walk(&copy));
     }
 
-    /// Each refusal, by name: the bytes are legal until the one edit,
-    /// and the error names what the edit planted.
+    /// Each header-level refusal, by name: the bytes are legal until
+    /// the one edit, and the error names what the edit planted.
     #[test]
-    fn every_refusal_names_what_it_saw() {
+    fn every_header_refusal_names_what_it_saw() {
         let good = capture(&menu_shaped());
 
         assert_eq!(
@@ -713,6 +713,13 @@ mod tests {
             }),
             "an unaccounted byte"
         );
+    }
+
+    /// Each record-level refusal, by name — the structural rules and
+    /// the style bytes, against the same one-edit-from-legal bytes.
+    #[test]
+    fn every_record_refusal_names_what_it_saw() {
+        let good = capture(&menu_shaped());
 
         let mut bad = good.clone();
         bad[HEADER_BYTES..HEADER_BYTES + 4].copy_from_slice(&0u32.to_le_bytes());
