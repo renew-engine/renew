@@ -22,6 +22,10 @@ simulation = false
 # hand-rolled JSON parser stays hand-rolled.
 [dependencies]
 renew-asset = { path = "../../crates/asset" }
+# The document compiler's target surface: the compiler parses the text
+# grammar, builds a tree through the same API every test uses, and
+# captures it with the runtime crate's own canonical writer.
+renew-ui = { path = "../../crates/ui" }
 
 # Test-only, and already approved for exactly this use: the entry covering
 # it scopes it to dev-dependencies in test code, never linked into shipped
