@@ -1,13 +1,14 @@
 //! The retained widget tree: an arena of generationally addressed
 //! nodes, capacities fixed at construction.
 //!
-//! This crate is the simulation-side half of the UI: the tree, and
-//! the fixed-point solver (the [`layout`] module vocabulary) that
-//! turns its styles into pixel rectangles. Input handling and state
-//! digestion arrive as their own steps; what they will share is here —
-//! a tree whose nodes are stable to address, cheap to add and remove,
-//! and bounded by an explicit limit rather than by whatever the heap
-//! allows.
+//! This crate is the simulation-side half of the UI: the tree, the
+//! fixed-point solver (the [`layout`] module vocabulary) that turns
+//! its styles into pixel rectangles, and the integer-only interaction
+//! surface ([`Ui::handle`], [`Ui::absorb`]) that turns events into
+//! decisions and decisions into digests. Under all three sits the
+//! same ground — a tree whose nodes are stable to address, cheap to
+//! add and remove, and bounded by an explicit limit rather than by
+//! whatever the heap allows.
 //!
 //! **Shape.** Nodes live in one arena, linked intrusively: parent,
 //! first and last child, previous and next sibling. Children keep
@@ -44,8 +45,11 @@
 // anywhere in this crate would be a value a digest could see.
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
+mod input;
 mod layout;
 
+use input::Interaction;
+pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
 use layout::{LayoutSlot, Scratch, Solve};
 use renew_fixed::Fixed;
@@ -105,6 +109,18 @@ pub struct NodeId {
     generation: u64,
 }
 
+impl NodeId {
+    /// The slot index, for the digest's explicit absorption order.
+    pub(crate) fn index(self) -> u32 {
+        self.index
+    }
+
+    /// The generation, likewise.
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
 /// One arena slot. Free slots keep their links meaningless except
 /// `next_sibling`, which threads the free list.
 #[derive(Clone, Copy, Debug)]
@@ -155,6 +171,10 @@ pub struct Ui {
     dirty: bool,
     /// The viewport the current rectangles were solved for.
     solved_for: (Fixed, Fixed),
+    /// Pointer, hover, press, focus, and the decision counters.
+    interaction: Interaction,
+    /// Decisions waiting for the host, capacity fixed with the arena.
+    outputs: Vec<UiOutput>,
     /// Head of the free list, threaded through `next_sibling`.
     free: u32,
     live: u32,
@@ -191,6 +211,8 @@ impl Ui {
             scratch: Scratch::with_capacity(capacity),
             dirty: true,
             solved_for: (Fixed::ZERO, Fixed::ZERO),
+            interaction: Interaction::default(),
+            outputs: Vec::with_capacity(capacity as usize),
             free,
             live: 1,
             limits: UiLimits { nodes: capacity },

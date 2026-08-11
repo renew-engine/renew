@@ -1907,6 +1907,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "renew-fixed",
+ "renew-frame",
  "renew-memory",
 ]
 

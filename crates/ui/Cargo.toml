@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The simulation-side widget tree and its Q47.16 flex-subset layout solver: an arena of generationally addressed nodes with capacities fixed by UiLimits at construction, refusing rather than growing, solved into pixel rectangles behind a dirty flag. Input and state digestion arrive in later steps."
+purpose = "The simulation-side widget tree, its Q47.16 flex-subset layout solver, and its integer-only interaction surface: generationally addressed nodes solved into pixel rectangles behind a dirty flag, hit-tested for hover/press/focus decisions that fold into the engine state fingerprint."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -22,6 +22,9 @@ workspace = true
 # The layout solver's arithmetic: Q47.16, saturating, bit-identical on
 # every target — the crate simulation numbers are written in.
 renew-fixed = { path = "../fixed" }
+# The digest the tree's decisions fold into — the same explicit-order
+# fingerprint every simulation state answers with.
+renew-frame = { path = "../frame" }
 
 # Property tests for the tree's invariants — the containers row of the
 # testing table — and the engine's counting allocator for the
