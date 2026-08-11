@@ -56,8 +56,8 @@ use renew_render3d::{
     Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, attachment, pass,
 };
 use renew_rhi::{
-    Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
-    WindowTarget,
+    Device, DeviceDesc, DeviceError, Extent, ItemList, Mesh, PresentOutcome, RenderDesc,
+    Validation, WindowTarget,
 };
 use renew_sample_cube_world::{Cell, Cube, Intent, Tuning};
 
@@ -670,35 +670,24 @@ impl CubeApp {
         // back from the first resize showing the last frame it managed,
         // for ever.
         //
-        // Two arrays rather than one `Vec`, because this runs once a
-        // frame and the steady-state loop is meant to reach the heap
-        // never: a two-element `Vec` would be an allocation and a free
-        // every frame, to hold a count known at compile time.
-        //
         // The world first, dust over it, the crosshair over everything:
         // the dust tests the world's depth without writing its own, and
         // a sight that hides behind smoke is not a sight. The overlay
         // sits at the near plane, so the depth test cannot put a block
         // in front of it; the order settles it anyway.
         //
-        // Two branches so each holds a fixed-size array: a frame with no
-        // dust — most of them — should not pay for an empty draw, and
-        // neither branch reaches the heap. A crosshair that failed to
-        // upload is simply absent — a frame of the world is worth more
-        // than no frame at all.
-        let outcome = if live > 0 {
-            let items = [
-                world,
-                gpu.sprinkler.item(&gpu.instances, live, &push),
-                gpu.overlay.item(&gpu.crosshair),
-            ];
-            let passes = [shadow, pass(&color, &items)];
-            gpu.target.render(&RenderDesc::new(&passes))
-        } else {
-            let items = [world, gpu.overlay.item(&gpu.crosshair)];
-            let passes = [shadow, pass(&color, &items)];
-            gpu.target.render(&RenderDesc::new(&passes))
-        };
+        // A stack list rather than a `Vec`, because this runs once a
+        // frame and the steady-state loop is meant to reach the heap
+        // never — and rather than the two branches this used to carry,
+        // which duplicated the render call to hold two array sizes. A
+        // frame with no dust — most of them — pays for no empty draw.
+        let mut items = ItemList::<3>::new(world);
+        if live > 0 {
+            items.push(gpu.sprinkler.item(&gpu.instances, live, &push));
+        }
+        items.push(gpu.overlay.item(&gpu.crosshair));
+        let passes = [shadow, pass(&color, items.as_slice())];
+        let outcome = gpu.target.render(&RenderDesc::new(&passes));
         self.record_present(&outcome);
     }
 

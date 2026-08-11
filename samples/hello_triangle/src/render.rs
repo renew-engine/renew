@@ -1,10 +1,7 @@
 //! Where a frame goes, and the colour it goes there with.
 
 use renew_math::Alpha;
-use renew_rhi::{
-    Attachment, ClearValue, Color, LoadOp, OffscreenTarget, RenderDesc, StoreOp, TargetError,
-    TargetFormat,
-};
+use renew_rhi::{Attachment, Color, OffscreenTarget, RenderDesc, TargetError, TargetFormat};
 #[cfg(feature = "window")]
 use renew_rhi::{PresentOutcome, WindowTarget};
 
@@ -78,7 +75,7 @@ impl Surface {
 /// stores it.
 #[must_use]
 pub fn clear_attachment(clear: Color) -> Attachment {
-    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
+    renew_rhi::color_attachment(clear)
 }
 
 /// The clear colour for a frame standing `alpha` of the way past the

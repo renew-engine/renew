@@ -297,6 +297,145 @@ impl<'a> Item<'a> {
     }
 }
 
+/// A pass's draw list, built on the stack.
+///
+/// **The shape every consumer with an optional draw arrives at.** A
+/// frame whose middle item is conditional cannot be one array literal,
+/// so callers reach for one of three things: two whole branches that
+/// each build an array and each call `render` (the duplication is in
+/// the render call, which is the part worth writing once), a `Vec`
+/// (a heap allocation per frame, in a path whose whole discipline is
+/// not to), or an array of `Option`s that nothing downstream accepts.
+/// This is the fourth: fixed capacity, pushed conditionally, handed
+/// over as a slice.
+///
+/// Capacity is a const parameter rather than a ceiling this crate
+/// picks, because a draw list is the caller's shape — [`Pass`] itself
+/// takes any slice, and nothing here bounds how many items a frame may
+/// carry.
+///
+/// ```ignore
+/// let mut items = ItemList::<3>::new(world.item(&mesh, &camera));
+/// if live > 0 {
+///     items.push(dust.item(&packed, live, &push));
+/// }
+/// items.push(overlay.item(&crosshair));
+/// let passes = [Pass::new(&color, items.as_slice())];
+/// ```
+#[derive(Clone, Copy)]
+pub struct ItemList<'a, const N: usize> {
+    /// Seeded with the first item and overwritten by pushes: `Item` is
+    /// `Copy` and has no meaningful empty value, so a filled array with
+    /// a live count is the shape that needs no `unsafe` and no
+    /// `Option` the caller would have to strip.
+    items: [Item<'a>; N],
+    count: usize,
+}
+
+impl<'a, const N: usize> ItemList<'a, N> {
+    /// A list holding `first`.
+    ///
+    /// Seeded rather than empty because a pass drawing nothing is
+    /// written `&[]` — clearer than a list that happens to have had
+    /// nothing pushed into it, and it keeps this type's slice
+    /// non-empty by construction.
+    ///
+    /// # Panics
+    ///
+    /// A zero capacity cannot hold the seed, which is a caller mistake
+    /// no value can express — asserted rather than returned.
+    #[must_use]
+    pub fn new(first: Item<'a>) -> Self {
+        assert!(
+            N > 0,
+            "an item list holds at least the item it is seeded with"
+        );
+        Self {
+            items: [first; N],
+            count: 1,
+        }
+    }
+
+    /// Append `item`.
+    ///
+    /// # Panics
+    ///
+    /// Past the declared capacity. The capacity is the caller's own
+    /// number and the count is known where the list is built, so an
+    /// overflow is a mistake in one place rather than a condition to
+    /// handle — and silently dropping a draw would be a frame that
+    /// renders differently than written.
+    pub fn push(&mut self, item: Item<'a>) {
+        assert!(
+            self.count < N,
+            "an ItemList<{N}> holds {N} items; the {}th was pushed",
+            self.count + 1
+        );
+        self.items[self.count] = item;
+        self.count += 1;
+    }
+
+    /// Append `item` when there is one — the optional-draw shape, so a
+    /// caller writes no `if let` around a push.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::push`], when the item is present.
+    pub fn push_some(&mut self, item: Option<Item<'a>>) {
+        if let Some(item) = item {
+            self.push(item);
+        }
+    }
+
+    /// The items pushed so far, in order — what [`Pass`] takes.
+    #[must_use]
+    pub fn as_slice(&self) -> &[Item<'a>] {
+        &self.items[..self.count]
+    }
+
+    /// How many items are in the list.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Never true: the list is seeded with an item and nothing removes
+    /// one. Present because the lint that pairs it with [`Self::len`]
+    /// is right in general, and answering it honestly is cheaper than
+    /// an exemption.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+impl<const N: usize> fmt::Debug for ItemList<'_, N> {
+    /// The count and the capacity, not the draws — [`RenderDesc`]'s own
+    /// posture.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ItemList")
+            .field("items", &self.count)
+            .field("capacity", &N)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The colour attachment a frame renders into: cleared to `clear`,
+/// stored.
+///
+/// **One definition, because three crates had written it identically.**
+/// The 2D renderer, the 3D renderer and the triangle sample each
+/// carried the same two-line function; a caller composing a frame from
+/// more than one of them imported whichever it happened to name first.
+/// The depth attachment deliberately does NOT join it: that one
+/// encodes the reversed-Z convention and refuses to take the clear
+/// value as a parameter, which is a renderer's policy rather than the
+/// frame vocabulary's.
+#[must_use]
+pub fn color_attachment(clear: Color) -> Attachment {
+    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
+}
+
 /// An item's binding list: up to [`MAX_SAMPLED_BINDINGS`] references,
 /// stored inline so [`Item`] stays `Copy` and borrows no caller-owned
 /// slice storage.
@@ -1151,6 +1290,29 @@ pub(crate) fn vk_clear_depth(attachment: &Attachment) -> ash::vk::ClearValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The colour attachment three crates had written identically.**
+    /// Pinned on content rather than smoke-called: the load op carries
+    /// the clear value, the store op keeps it, and a caller that got
+    /// either backwards would draw a frame that discarded what it just
+    /// rendered.
+    #[test]
+    fn the_colour_attachment_clears_to_its_value_and_stores() {
+        let attachment = color_attachment(Color::new(0.25, 0.5, 0.75, 1.0));
+        assert!(matches!(attachment.store, StoreOp::Store));
+        let LoadOp::Clear(ClearValue::Color(colour)) = attachment.load else {
+            panic!(
+                "a colour attachment clears to a colour, got {:?}",
+                attachment.load
+            );
+        };
+        // Bit equality: the helper moves the value, it never does
+        // arithmetic on it.
+        assert_eq!(
+            [colour.r, colour.g, colour.b, colour.a].map(f32::to_bits),
+            [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits)
+        );
+    }
 
     /// The binding list's device-free boundary: an empty list is a
     /// legal value of the type (the frame contract, not the

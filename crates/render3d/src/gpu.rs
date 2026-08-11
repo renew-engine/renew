@@ -702,9 +702,14 @@ impl core::fmt::Debug for ShadowedCameraRenderer {
 
 /// The colour attachment a 3D frame renders into: cleared to `clear`,
 /// stored.
+///
+/// The definition lives in the rendering crate, which owns the frame
+/// vocabulary; this is the name a 3D consumer already imports. Its
+/// depth sibling below is deliberately NOT forwarded: that one encodes
+/// this crate's reversed-Z convention.
 #[must_use]
 pub fn attachment(clear: Color) -> Attachment {
-    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
+    renew_rhi::color_attachment(clear)
 }
 
 /// The depth attachment a 3D frame needs: cleared to the far plane,

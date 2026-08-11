@@ -4,9 +4,9 @@
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use renew_rhi::{
-    Attachment, Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, ClearValue, Color,
-    Device, Extent, FrameData, Item, LoadOp, PipelineDesc, PipelineError, RenderPipeline,
-    SamplerDesc, Shaders, StoreOp, TargetError, TargetFormat, TextureDesc, VertexAttribute,
+    Attachment, Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Color, Device,
+    Extent, FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders,
+    TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -261,9 +261,12 @@ impl SpriteRenderer {
 /// The color attachment a sprite frame renders into: cleared to
 /// `clear`, stored. The free half of the frame [`SpriteRenderer::item`]
 /// is the draw half of.
+///
+/// The definition lives in the rendering crate, which owns the frame
+/// vocabulary; this is the name a 2D consumer already imports.
 #[must_use]
 pub fn attachment(clear: Color) -> Attachment {
-    Attachment::new(LoadOp::Clear(ClearValue::Color(clear)), StoreOp::Store)
+    renew_rhi::color_attachment(clear)
 }
 
 impl core::fmt::Debug for SpriteRenderer {
