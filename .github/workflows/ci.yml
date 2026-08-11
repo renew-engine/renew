@@ -283,6 +283,15 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-camera $sel
           cargo build $sel
           cargo test $sel
+      # The widget tree: pure structure with no dependencies and no
+      # consumers yet — the UI's later layers and their first embedding
+      # game grow this list when they arrive.
+      - name: Build and test without the widget tree
+        run: |
+          sel="--workspace --exclude renew-ui"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui $sel
+          cargo build $sel
+          cargo test $sel
       # The 2D renderer: policy over the rendering crate, no consumers
       # yet -- the windowed game grows this list when it draws sprites.
       - name: Build and test without the 2D renderer
@@ -402,7 +411,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
