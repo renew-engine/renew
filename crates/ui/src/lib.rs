@@ -47,6 +47,7 @@
 
 mod input;
 mod layout;
+pub mod text;
 
 use input::Interaction;
 pub use input::{UiEvent, UiOutput};
@@ -605,6 +606,36 @@ mod tests {
         assert_eq!(ui.live(), 1024);
         assert!(ui.remove(top.expect("the chain has a first link")));
         assert_eq!(ui.live(), 1);
+    }
+
+    /// The baked advance table: every printable glyph advances, the
+    /// widths are proportional (an i is narrower than a W), and
+    /// measurement is exactly the sum — the same integers on every
+    /// target, which is the whole reason the table is integers.
+    #[test]
+    fn text_measures_as_the_sum_of_integer_advances() {
+        assert_eq!(text::ADVANCES.len(), 95, "printable ASCII, all of it");
+        assert!(
+            text::ADVANCES.iter().skip(1).all(|&advance| advance > 0),
+            "every visible glyph advances the pen"
+        );
+        assert!(
+            text::advance_of('i') < text::advance_of('W'),
+            "the face is proportional, and the table must show it"
+        );
+        let expected: i32 = "Play"
+            .chars()
+            .map(|character| {
+                i32::try_from(text::advance_of(character)).expect("advances are small")
+            })
+            .sum();
+        assert_eq!(text::measure("Play"), Fixed::from_int(expected));
+        assert_eq!(text::measure(""), Fixed::ZERO);
+        assert_eq!(
+            text::advance_of('\u{00e9}'),
+            text::advance_of('?'),
+            "outside the baked range, the stand-in's width is the width"
+        );
     }
 
     /// Every refusal says what happened in words a reader can act on.

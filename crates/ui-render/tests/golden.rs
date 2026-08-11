@@ -186,3 +186,128 @@ fn a_presented_tree_lands_in_computed_pixels() {
         report.first_messages
     );
 }
+
+/// **Text lands where measurement says, and nowhere else.** The glyph
+/// oracle is deliberately weaker than the panel oracle above:
+/// antialiased edge texels blend, and blended bytes are the recorded
+/// reason the exact tier is scoped to opaque draws — so this test is
+/// exact only where exactness is arguable (a fully opaque glyph core
+/// under an opaque tint replaces, byte for byte), structural where it
+/// is not (ink appears inside the measured advance box, nothing
+/// changes outside it), and deterministic throughout (twice, same
+/// bytes). The committed-bytes tier for full glyph images arrives
+/// with the linear-space move that re-decides all of these.
+#[test]
+fn text_lands_inside_its_measured_box() {
+    let Some(device) = device_or_skip().expect("device creation failed for a non-skip reason")
+    else {
+        return;
+    };
+
+    let canvas = Canvas::new(SIZE, SIZE).expect("nonzero canvas");
+    let capacity = core::num::NonZeroU32::new(16).expect("nonzero capacity");
+    let mut sprites = SpriteRenderer::new(
+        &device,
+        &AtlasDesc::new(
+            Extent {
+                width: atlas::WIDTH,
+                height: atlas::HEIGHT,
+            },
+            &atlas::pixels(),
+        ),
+        canvas,
+        TargetFormat::Rgba8Unorm,
+        capacity,
+    )
+    .expect("sprite renderer");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    let text = "Hi";
+    let width = renew_ui::text::measure(text).trunc_int();
+    let width = u32::try_from(width).expect("a two-glyph label fits any canvas");
+    sprites.begin();
+    renew_ui_render::emit_text(&mut sprites, 4.0, 4.0, text, [1.0, 1.0, 1.0, 1.0]);
+    let color = [attachment(CLEAR)];
+    let items = [sprites.item()];
+    let passes = [Pass::new(&color, &items)];
+    target.render(&RenderDesc::new(&passes)).expect("render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    let texel = |x: u32, y: u32| {
+        let at = ((y * SIZE + x) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
+    };
+    // Structure: ink somewhere inside the measured box...
+    let line_height = renew_ui_render::LINE_HEIGHT;
+    let mut inked = 0u32;
+    for y in 4..4 + line_height {
+        for x in 4..4 + width {
+            if texel(x, y) != CLEAR_BYTES {
+                inked += 1;
+            }
+        }
+    }
+    assert!(
+        inked > 10,
+        "two glyphs must leave more than a few texels of ink"
+    );
+    // ...and none past the bearing margin around it — bearings and
+    // antialiasing may reach that far, and nothing may reach further.
+    let bearing = renew_ui_render::BEARING;
+    assert!(
+        bearing <= 4,
+        "the fixture pens at x 4; a bake with a wider bearing must move the pen"
+    );
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let inside = (4 - bearing..4 + width + bearing).contains(&x)
+                && (4..4 + line_height).contains(&y);
+            if !inside {
+                assert_eq!(
+                    texel(x, y),
+                    CLEAR_BYTES,
+                    "ink outside the measured box at ({x}, {y}) — measurement and picture disagree"
+                );
+            }
+        }
+    }
+    // Exact where exactness holds: a thirteen-pixel glyph has fully
+    // opaque core texels, and an opaque texel under an opaque tint
+    // REPLACES — so exact white must exist in the picture. (Every
+    // output alpha is 255 over an opaque clear, so edge texels cannot
+    // be told apart by alpha; the exact claim is existential, and the
+    // blended edges are exactly why the full-image tier waits for the
+    // linear-space move.)
+    let mut exact_cores = 0u32;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            if texel(x, y) == [255, 255, 255, 255] {
+                exact_cores += 1;
+            }
+        }
+    }
+    assert!(
+        exact_cores > 0,
+        "no fully-opaque glyph core replaced exactly: the bake lost its solid texels or the blend is wrong"
+    );
+    // Deterministic throughout.
+    target.render(&RenderDesc::new(&passes)).expect("again");
+    let mut second = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut second);
+    assert_eq!(pixels, second, "same text rendered twice diverged");
+
+    drop(target);
+    drop(sprites);
+    let report = device.validation_report();
+    assert_eq!(
+        report.errors, 0,
+        "validation errors: {:?}",
+        report.first_messages
+    );
+}

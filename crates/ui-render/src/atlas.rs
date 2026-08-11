@@ -12,35 +12,76 @@
 
 use renew_render2d::Region;
 
-/// Atlas width in texels: two tiles of eight.
-pub const WIDTH: u32 = 16;
-/// Atlas height in texels: one tile row.
-pub const HEIGHT: u32 = 8;
+use crate::glyphs;
 
-/// The atlas bytes, premultiplied RGBA, row-major.
+/// The tile row's height: the fill and chrome tiles live above the
+/// glyph strip.
+const TILE_ROW: u32 = 8;
+
+/// Atlas width in texels: the glyph strip is far wider than the two
+/// tiles, so it sets the width.
+pub const WIDTH: u32 = glyphs::STRIP_WIDTH;
+/// Atlas height in texels: the tile row, then the glyph strip.
+pub const HEIGHT: u32 = TILE_ROW + glyphs::LINE_HEIGHT;
+
+/// The atlas bytes, premultiplied RGBA, row-major: the tile row on
+/// top, the baked glyph strip below it — glyph alpha becomes
+/// premultiplied white ink, so a text tint multiplies through the
+/// same way a background tint does.
 #[must_use]
 pub fn pixels() -> Vec<u8> {
     let mut bytes = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-    for y in 0..HEIGHT {
+    for y in 0..TILE_ROW {
         for x in 0..WIDTH {
             let texel: [u8; 4] = if x < 8 {
                 // The fill tile: white everywhere.
                 [255, 255, 255, 255]
-            } else {
+            } else if x < 16 {
                 // The chrome tile: a one-texel white border over
                 // nothing.
                 let inner_x = x - 8;
-                let border = inner_x == 0 || inner_x == 7 || y == 0 || y == HEIGHT - 1;
+                let border = inner_x == 0 || inner_x == 7 || y == 0 || y == TILE_ROW - 1;
                 if border {
                     [255, 255, 255, 255]
                 } else {
                     [0, 0, 0, 0]
                 }
+            } else {
+                // The rest of the tile row is padding: nothing samples
+                // it, and nothing ever should.
+                [0, 0, 0, 0]
             };
             bytes.extend_from_slice(&texel);
         }
     }
+    for y in 0..glyphs::LINE_HEIGHT {
+        for x in 0..WIDTH {
+            let ink = glyphs::STRIP_ALPHA[(y * glyphs::STRIP_WIDTH + x) as usize];
+            bytes.extend_from_slice(&[ink, ink, ink, ink]);
+        }
+    }
     bytes
+}
+
+/// A character's baked glyph and its atlas region. Characters outside
+/// the baked range answer as the question mark, which is also how the
+/// advance table measured them — width and picture agree.
+#[must_use]
+pub fn glyph_of(character: char) -> (glyphs::Glyph, Region) {
+    let code = character as u32;
+    let index = if (glyphs::GLYPH_FIRST..=glyphs::GLYPH_LAST).contains(&code) {
+        code - glyphs::GLYPH_FIRST
+    } else {
+        u32::from(b'?') - glyphs::GLYPH_FIRST
+    };
+    let glyph = glyphs::GLYPHS[index as usize];
+    let region = Region {
+        x: glyph.x,
+        y: TILE_ROW,
+        width: glyph.width,
+        height: glyphs::LINE_HEIGHT,
+    };
+    (glyph, region)
 }
 
 /// The region every background samples: the middle of the fill tile,
@@ -73,6 +114,61 @@ pub fn chrome() -> Region {
 mod tests {
     use super::*;
 
+    /// The two generated halves agree glyph by glyph: the advance the
+    /// simulation measures with is the advance the picture draws with,
+    /// for every character, or a partial re-bake has torn them apart.
+    #[test]
+    fn the_advance_table_and_the_glyphs_are_one_bake() {
+        assert_eq!(glyphs::GLYPH_FIRST, renew_ui::text::TEXT_FIRST);
+        assert_eq!(glyphs::GLYPH_LAST, renew_ui::text::TEXT_LAST);
+        assert_eq!(glyphs::LINE_HEIGHT, renew_ui::text::LINE_HEIGHT);
+        assert_eq!(glyphs::GLYPHS.len(), renew_ui::text::ADVANCES.len());
+        for (index, glyph) in glyphs::GLYPHS.iter().enumerate() {
+            assert_eq!(
+                glyph.advance,
+                u32::from(renew_ui::text::ADVANCES[index]),
+                "glyph {index} measures one width and draws another"
+            );
+        }
+    }
+
+    /// The composed atlas reproduces to the bit: one hash pins the
+    /// tiles and the baked strip together, so an accidental edit to
+    /// either — or a silent re-bake — reddens here before it reaches
+    /// a picture.
+    #[test]
+    fn the_atlas_reproduces_to_the_committed_hash() {
+        let bytes = pixels();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in &bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(
+            hash, 0x2194_d4ce_b511_5281,
+            "the atlas bytes moved; if this was a deliberate re-bake, re-pin \
+             with the value the failure names"
+        );
+    }
+
+    /// Every character answers a glyph whose region sits inside the
+    /// strip, below the tile row, and the fallback is the question
+    /// mark it was measured as.
+    #[test]
+    fn glyph_regions_stay_inside_the_strip() {
+        for code in glyphs::GLYPH_FIRST..=glyphs::GLYPH_LAST {
+            let character = char::from_u32(code).expect("printable ascii");
+            let (glyph, region) = glyph_of(character);
+            assert_eq!(region.x, glyph.x);
+            assert!(region.x + region.width <= WIDTH);
+            assert_eq!(region.y, TILE_ROW);
+            assert_eq!(region.height, glyphs::LINE_HEIGHT);
+        }
+        let (fallback, _) = glyph_of('\u{00e9}');
+        let (question, _) = glyph_of('?');
+        assert_eq!(fallback.x, question.x, "outside the range is the stand-in");
+    }
+
     /// The atlas is the declared size, the fill tile is uniformly
     /// white, the sampled region sits strictly inside it, and the
     /// chrome tile is a border over transparency.
@@ -84,7 +180,7 @@ mod tests {
             let at = ((y * WIDTH + x) * 4) as usize;
             [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]
         };
-        for y in 0..HEIGHT {
+        for y in 0..TILE_ROW {
             for x in 0..8 {
                 assert_eq!(
                     texel(x, y),

@@ -1,0 +1,15 @@
+The baked glyph data in ../src/glyphs.rs and the advance table in
+../../ui/src/text.rs are derived from the Arimo Regular typeface
+(croscore release, version 1.31), licensed under the Apache License,
+Version 2.0 — the same licence as this repository; see the LICENSE
+file at the repository root for its text.
+
+Notices embedded in the source font, reproduced as the licence
+requires:
+
+  Copyright 2010-2014 Google Inc. All Rights Reserved.
+
+  Arimo is a trademark of Google Inc. and may be registered in
+  certain jurisdictions.
+
+  Designed by Steve Matteson (Monotype Imaging Inc.).

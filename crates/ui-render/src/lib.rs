@@ -41,6 +41,9 @@ use renew_render2d::{Sprite, SpriteRenderer};
 use renew_ui::{NodeId, Ui};
 
 pub mod atlas;
+mod glyphs;
+
+pub use glyphs::{BEARING, GLYPH_FIRST, GLYPH_LAST, Glyph, LINE_HEIGHT};
 
 /// One captured node: everything a frame needs to draw it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -218,6 +221,36 @@ impl UiPresenter {
                     .tint(quad.tint),
             );
         }
+    }
+}
+
+/// Push one line of text as glyph sprites, the pen starting at
+/// (`x`, `y`) — the line's top-left — advancing by the same integer
+/// table the simulation measures with, so a label is exactly as wide
+/// as the tree believed. Each bitmap sits at `pen - BEARING`, so ink
+/// may reach [`BEARING`] texels past either end of the measured box —
+/// bearings and antialiasing live there, exactly as type does.
+/// Characters outside the baked range draw as the question mark they
+/// were measured as. Budget one sprite per character.
+pub fn emit_text(sprites: &mut SpriteRenderer, x: f32, y: f32, text: &str, tint: [f32; 4]) {
+    // Glyph dimensions are tens of texels; the widening to f32 is
+    // exact for anything a strip could hold.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "glyph metrics are tens of texels, exact in an f32"
+    )]
+    fn wide(value: u32) -> f32 {
+        value as f32
+    }
+    let mut pen = x;
+    for character in text.chars() {
+        let (glyph, region) = atlas::glyph_of(character);
+        sprites.push(
+            &Sprite::new(region, pen - wide(glyphs::BEARING), y)
+                .size(wide(region.width), wide(region.height))
+                .tint(tint),
+        );
+        pen += wide(glyph.advance);
     }
 }
 
