@@ -12,7 +12,7 @@ use crate::vk::depth::{self, DepthResources};
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
 use crate::vk::pass::{self, MAX_RETAINED_RESOURCES, RenderDesc, Retained};
 use crate::vk::pipeline::{INSTANCE_BINDING, TargetFormat, VERTEX_BINDING};
-use crate::vk::transition::{self, ImageUse};
+use crate::vk::transition;
 
 /// Bytes per pixel of the fixed RGBA8 format.
 pub(crate) const BPP: u64 = 4;
@@ -223,7 +223,9 @@ fn build(
 ) -> Result<OffscreenTarget, TargetError> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(TargetFormat::Rgba8Unorm.to_vk())
+        // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
+        // offscreen target's format is a static fact of this module.
+        .format(vk::Format::R8G8B8A8_UNORM)
         .extent(vk::Extent3D {
             width: extent.width,
             height: extent.height,
@@ -280,7 +282,9 @@ fn build(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        .format(TargetFormat::Rgba8Unorm.to_vk())
+        // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
+        // offscreen target's format is a static fact of this module.
+        .format(vk::Format::R8G8B8A8_UNORM)
         .subresource_range(color_range());
     // SAFETY: image live and bound.
     let view = unsafe {
@@ -496,13 +500,17 @@ impl OffscreenTarget {
             });
         }
         for pass in desc.passes {
+            let surface_pass = matches!(pass.target, pass::PassTarget::Surface);
             for item in pass.items {
                 debug_assert!(
                     Rc::ptr_eq(&self.shared, &item.pipeline.shared),
                     "pipeline and target come from different devices"
                 );
+                // Image passes matched their format against their image
+                // in the contract; the surface's own format is this
+                // target's to assert.
                 debug_assert!(
-                    item.pipeline.format == TargetFormat::Rgba8Unorm,
+                    !surface_pass || item.pipeline.format == TargetFormat::Rgba8Unorm,
                     "pipeline targets {:?}, offscreen is Rgba8Unorm",
                     item.pipeline.format
                 );
@@ -518,6 +526,16 @@ impl OffscreenTarget {
         }
         let mut retained_count = 0usize;
         for pass in desc.passes {
+            // A pass-target image is retained by the pass itself: the
+            // recorded attachment references it whether or not any item
+            // samples it, so the pass walk is where its hold begins.
+            if let pass::PassTarget::Image(image, _) = &pass.target {
+                let resource = Retained::Image(Rc::clone(&image.inner));
+                if !pass::already_retained(&resource, &self.retained[..retained_count]) {
+                    self.retained[retained_count] = Some(resource);
+                    retained_count += 1;
+                }
+            }
             for item in pass.items {
                 if let Some(mesh) = item.mesh {
                     debug_assert!(
@@ -607,65 +625,79 @@ impl OffscreenTarget {
                 )
                 .map_err(|code| creation("vkBeginCommandBuffer", code))?;
 
-            let area = vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: self.extent.width,
-                    height: self.extent.height,
-                },
-            };
             // The walk: for each pass, its boundary barriers from the
-            // pure core, then its attachments, then its items in slice
-            // order. Depth transitions from UNDEFINED once per frame —
-            // frame-local layout state, nothing carried across frames.
-            let mut depth_in_use = false;
+            // shared frame walk (the same state machine the contract
+            // already proved this frame against), then its attachments,
+            // then its items in slice order — every one of them
+            // following the pass's target.
+            let mut walk = pass::FrameWalk::new();
             for (index, pass) in desc.passes.iter().enumerate() {
-                let color_masks = if index == 0 {
-                    transition::pass_boundary(
-                        ImageUse::ColorAttachmentFirstUse,
-                        ImageUse::ColorAttachment,
-                    )
-                } else {
-                    transition::pass_boundary(ImageUse::ColorAttachment, ImageUse::ColorAttachment)
-                };
-                let mut barriers = [vk::ImageMemoryBarrier2::default(); 2];
-                let mut barrier_count = 1;
-                barriers[0] = vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(color_masks.src_stage)
-                    .src_access_mask(color_masks.src_access)
-                    .dst_stage_mask(color_masks.dst_stage)
-                    .dst_access_mask(color_masks.dst_access)
-                    .old_layout(color_masks.old_layout)
-                    .new_layout(color_masks.new_layout)
-                    .image(self.image)
-                    .subresource_range(color_range());
-                // Total by the depth-availability check at the top: a
-                // depth-carrying frame on a depthless target already
-                // returned `DepthUnsupported` before the walk began.
-                let depth_pass = pass.depth.as_ref().zip(self.depth.as_ref());
-                if let Some((_, depth_resources)) = depth_pass {
-                    let depth_masks = if depth_in_use {
-                        transition::pass_boundary(
-                            ImageUse::DepthAttachment,
-                            ImageUse::DepthAttachment,
-                        )
-                    } else {
-                        transition::pass_boundary(
-                            ImageUse::DepthAttachmentFirstUse,
-                            ImageUse::DepthAttachment,
-                        )
+                let uses = walk.advance_target(index, pass);
+                let mut barriers = [vk::ImageMemoryBarrier2::default(); pass::MAX_PASS_BARRIERS];
+                let mut barrier_count = 0usize;
+                if let Some((from, to)) = uses.color {
+                    let masks = transition::pass_boundary(from, to);
+                    let image = match &pass.target {
+                        pass::PassTarget::Surface => self.image,
+                        pass::PassTarget::Image(image, _) => image.inner.image,
                     };
-                    depth_in_use = true;
-                    barriers[1] = vk::ImageMemoryBarrier2::default()
-                        .src_stage_mask(depth_masks.src_stage)
-                        .src_access_mask(depth_masks.src_access)
-                        .dst_stage_mask(depth_masks.dst_stage)
-                        .dst_access_mask(depth_masks.dst_access)
-                        .old_layout(depth_masks.old_layout)
-                        .new_layout(depth_masks.new_layout)
-                        .image(depth_resources.image)
-                        .subresource_range(depth::barrier_range(depth_resources.format));
-                    barrier_count = 2;
+                    barriers[barrier_count] = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(masks.src_stage)
+                        .src_access_mask(masks.src_access)
+                        .dst_stage_mask(masks.dst_stage)
+                        .dst_access_mask(masks.dst_access)
+                        .old_layout(masks.old_layout)
+                        .new_layout(masks.new_layout)
+                        .image(image)
+                        .subresource_range(color_range());
+                    barrier_count += 1;
+                }
+                if let Some((from, to)) = uses.depth {
+                    let masks = transition::pass_boundary(from, to);
+                    // Total by the depth-availability check at the top
+                    // for surface passes; an image pass carries its own
+                    // depth image in its target.
+                    let (image, format) = match &pass.target {
+                        pass::PassTarget::Surface => match self.depth.as_ref() {
+                            Some(depth_resources) => {
+                                (depth_resources.image, depth_resources.format)
+                            }
+                            None => unreachable!(
+                                "a depth-carrying surface pass on a depthless target was \
+                                 refused before recording began"
+                            ),
+                        },
+                        pass::PassTarget::Image(image, _) => {
+                            (image.inner.image, image.inner.format)
+                        }
+                    };
+                    barriers[barrier_count] = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(masks.src_stage)
+                        .src_access_mask(masks.src_access)
+                        .dst_stage_mask(masks.dst_stage)
+                        .dst_access_mask(masks.dst_access)
+                        .old_layout(masks.old_layout)
+                        .new_layout(masks.new_layout)
+                        .image(image)
+                        .subresource_range(depth::barrier_range(format));
+                    barrier_count += 1;
+                }
+                // The sampling transitions this pass forces: each
+                // rendered-then-read image crosses to SHADER_READ_ONLY
+                // at the first reading pass's boundary, once.
+                let (samples, sample_count) = walk.advance_sampling(index, pass);
+                for sample in samples.iter().take(sample_count).flatten() {
+                    let masks = transition::pass_boundary(sample.uses.0, sample.uses.1);
+                    barriers[barrier_count] = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(masks.src_stage)
+                        .src_access_mask(masks.src_access)
+                        .dst_stage_mask(masks.dst_stage)
+                        .dst_access_mask(masks.dst_access)
+                        .old_layout(masks.old_layout)
+                        .new_layout(masks.new_layout)
+                        .image(sample.image)
+                        .subresource_range(sample.range);
+                    barrier_count += 1;
                 }
                 device.cmd_pipeline_barrier2(
                     self.cmd,
@@ -673,26 +705,69 @@ impl OffscreenTarget {
                         .image_memory_barriers(&barriers[..barrier_count]),
                 );
 
-                let color = &pass.color[0];
-                let color_attachment = vk::RenderingAttachmentInfo::default()
-                    .image_view(self.view)
-                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(color.load.to_vk())
-                    .store_op(color.store.to_vk())
-                    .clear_value(pass::vk_clear_color(color));
-                let color_attachments = [color_attachment];
-                let depth_attachment = depth_pass.map(|(attachment, depth_resources)| {
-                    vk::RenderingAttachmentInfo::default()
-                        .image_view(depth_resources.view)
-                        .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                        .load_op(attachment.load.to_vk())
-                        .store_op(attachment.store.to_vk())
-                        .clear_value(pass::vk_clear_depth(attachment))
-                });
+                // Attachments and geometry follow the target: a surface
+                // pass renders into this target's own images at its
+                // extent; an image pass renders into the image at the
+                // image's.
+                let mut color_attachments: [vk::RenderingAttachmentInfo<'_>; 1] =
+                    [vk::RenderingAttachmentInfo::default()];
+                let mut color_attachment_count = 0usize;
+                let mut depth_attachment = None;
+                let extent = match &pass.target {
+                    pass::PassTarget::Surface => {
+                        let color = &pass.color[0];
+                        color_attachments[0] = vk::RenderingAttachmentInfo::default()
+                            .image_view(self.view)
+                            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .load_op(color.load.to_vk())
+                            .store_op(color.store.to_vk())
+                            .clear_value(pass::vk_clear_color(color));
+                        color_attachment_count = 1;
+                        depth_attachment = pass.depth.as_ref().zip(self.depth.as_ref()).map(
+                            |(attachment, depth_resources)| {
+                                vk::RenderingAttachmentInfo::default()
+                                    .image_view(depth_resources.view)
+                                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                    .load_op(attachment.load.to_vk())
+                                    .store_op(attachment.store.to_vk())
+                                    .clear_value(pass::vk_clear_depth(attachment))
+                            },
+                        );
+                        self.extent
+                    }
+                    pass::PassTarget::Image(image, attachment) => {
+                        if image.kind() == crate::RenderImageKind::Depth {
+                            depth_attachment = Some(
+                                vk::RenderingAttachmentInfo::default()
+                                    .image_view(image.inner.view)
+                                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                    .load_op(attachment.load.to_vk())
+                                    .store_op(attachment.store.to_vk())
+                                    .clear_value(pass::vk_clear_depth(attachment)),
+                            );
+                        } else {
+                            color_attachments[0] = vk::RenderingAttachmentInfo::default()
+                                .image_view(image.inner.view)
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .load_op(attachment.load.to_vk())
+                                .store_op(attachment.store.to_vk())
+                                .clear_value(pass::vk_clear_color(attachment));
+                            color_attachment_count = 1;
+                        }
+                        image.extent()
+                    }
+                };
+                let area = vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: extent.width,
+                        height: extent.height,
+                    },
+                };
                 let mut rendering_info = vk::RenderingInfo::default()
                     .render_area(area)
                     .layer_count(1)
-                    .color_attachments(&color_attachments);
+                    .color_attachments(&color_attachments[..color_attachment_count]);
                 if let Some(depth_attachment) = &depth_attachment {
                     rendering_info = rendering_info.depth_attachment(depth_attachment);
                 }
@@ -704,8 +779,8 @@ impl OffscreenTarget {
                     let viewport = vk::Viewport {
                         x: 0.0,
                         y: 0.0,
-                        width: self.extent.width as f32,
-                        height: self.extent.height as f32,
+                        width: extent.width as f32,
+                        height: extent.height as f32,
                         min_depth: 0.0,
                         max_depth: 1.0,
                     };

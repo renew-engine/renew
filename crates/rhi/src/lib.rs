@@ -77,11 +77,15 @@ pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
-pub use vk::pass::{Attachment, Bindings, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
+pub use vk::pass::{
+    Attachment, Bindings, ClearValue, Item, LoadOp, MAX_FRAME_RENDER_IMAGES, Pass, PassTarget,
+    RenderDesc, StoreOp,
+};
 pub use vk::pipeline::{
     AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,
     PipelineDesc, RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
 };
+pub use vk::render_image::{RenderImage, RenderImageDesc, RenderImageKind};
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
 pub use vk::texture::{Texture, TextureDesc};

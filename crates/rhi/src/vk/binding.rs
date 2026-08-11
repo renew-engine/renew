@@ -16,6 +16,7 @@ use ash::vk;
 use crate::error::PipelineError;
 use crate::vk::device::{Device, DeviceShared};
 use crate::vk::pipeline::{Sampler, SamplerInner, creation};
+use crate::vk::render_image::{RenderImage, RenderImageInner};
 use crate::vk::texture::{Texture, TextureInner};
 
 /// How many sampled-binding slots one pipeline may declare, and so the
@@ -32,14 +33,21 @@ pub const MAX_SAMPLED_BINDINGS: usize = 4;
 
 /// What a binding reads.
 ///
-/// An input enum, so `#[non_exhaustive]`: the render-image arm arrives
-/// with render-to-texture and must not break downstream matchers when
-/// it does.
+/// An input enum, so `#[non_exhaustive]`: a later source class must
+/// not break downstream matchers when it arrives.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum BindingSource<'a> {
     /// A host-filled immutable texture.
     Texture(&'a Texture),
+    /// A render image some pass in each frame renders into.
+    ///
+    /// The set is still written once, here at creation — what changes
+    /// per frame is the image's *contents*, which no set write ever
+    /// carries. The frame contract is what refuses sampling an image
+    /// this frame has not rendered, so a binding over a render image
+    /// is only as fresh as the frame that draws with it.
+    Image(&'a RenderImage),
 }
 
 /// Everything a binding needs: what it reads, and how.
@@ -67,6 +75,15 @@ impl<'a> BindingDesc<'a> {
     }
 }
 
+/// Shared ownership of whichever source the set points at — the hold
+/// is what matters, not the kind, so release sites never match on it.
+pub(crate) enum SourceHold {
+    /// The handles are never read through — the hold keeps the sampled
+    /// image alive across a submit; the walk reads only which image.
+    Texture(#[allow(dead_code, reason = "held for its Drop alone")] Rc<TextureInner>),
+    Image(Rc<RenderImageInner>),
+}
+
 /// The binding's owning half: the pool, the set allocated from it, and
 /// shared ownership of everything the set points at.
 ///
@@ -80,11 +97,24 @@ pub(crate) struct BindingInner {
     pub(crate) shared: Rc<DeviceShared>,
     pool: vk::DescriptorPool,
     pub(crate) set: vk::DescriptorSet,
-    /// Never read through — held so the view the set points at outlives
-    /// the set, without the caller sequencing drops.
-    _source: Rc<TextureInner>,
+    /// Held so the view the set points at outlives the set, without
+    /// the caller sequencing drops; read only to tell the frame walk
+    /// which render image, if any, this set samples.
+    source: SourceHold,
     /// As above, for the sampler handle.
     _sampler: Rc<SamplerInner>,
+}
+
+impl BindingInner {
+    /// The render image this binding samples, if its source is one --
+    /// how the frame walk learns which images a pass reads without
+    /// matching on the hold anywhere else.
+    pub(crate) fn sampled_render_image(&self) -> Option<&Rc<RenderImageInner>> {
+        match &self.source {
+            SourceHold::Image(inner) => Some(inner),
+            SourceHold::Texture(_) => None,
+        }
+    }
 }
 
 impl Drop for BindingInner {
@@ -139,15 +169,30 @@ impl Device {
     /// error.
     pub fn create_binding(&self, desc: &BindingDesc<'_>) -> Result<Binding, PipelineError> {
         let shared = &self.shared;
-        let BindingSource::Texture(texture) = desc.source;
-        // Handles from another device would be written into this
-        // device's set and read by it — undefined behaviour that no
-        // return value can report, so it asserts, as the targets do for
-        // a pipeline built on a foreign device.
-        debug_assert!(
-            Rc::ptr_eq(shared, texture.shared()),
-            "texture and binding come from different devices"
-        );
+        // One (view, hold) pair per source class; everything after this
+        // is class-blind. Handles from another device would be written
+        // into this device's set and read by it — undefined behaviour
+        // that no return value can report, so each arm asserts, as the
+        // targets do for a pipeline built on a foreign device.
+        let (view, source_hold) = match desc.source {
+            BindingSource::Texture(texture) => {
+                debug_assert!(
+                    Rc::ptr_eq(shared, texture.shared()),
+                    "texture and binding come from different devices"
+                );
+                (
+                    texture.inner.view,
+                    SourceHold::Texture(Rc::clone(&texture.inner)),
+                )
+            }
+            BindingSource::Image(image) => {
+                debug_assert!(
+                    Rc::ptr_eq(shared, &image.inner.shared),
+                    "render image and binding come from different devices"
+                );
+                (image.inner.view, SourceHold::Image(Rc::clone(&image.inner)))
+            }
+        };
         debug_assert!(
             Rc::ptr_eq(shared, &desc.sampler.inner.shared),
             "sampler and binding come from different devices"
@@ -198,10 +243,11 @@ impl Device {
 
         let image_info = [vk::DescriptorImageInfo::default()
             .sampler(desc.sampler.inner.sampler)
-            .image_view(texture.inner.view)
-            // The upload left the image in this layout and nothing
-            // changes it afterwards, immutability being the texture
-            // contract.
+            .image_view(view)
+            // The layout every sampled read sees. A texture's upload
+            // left it here and immutability keeps it; a render image is
+            // *brought* here by the frame walk's sampling transition
+            // before any draw recorded against this set runs.
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
         let writes = [vk::WriteDescriptorSet::default()
             .dst_set(set)
@@ -219,7 +265,7 @@ impl Device {
                 shared: Rc::clone(shared),
                 pool,
                 set,
-                _source: Rc::clone(&texture.inner),
+                source: source_hold,
                 _sampler: Rc::clone(&desc.sampler.inner),
             }),
         })

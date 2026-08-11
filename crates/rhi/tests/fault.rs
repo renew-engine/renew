@@ -857,11 +857,26 @@ fn every_driver_failure_ladder_behaves() {
                 Ok(_) => return Err("T17: the upload survived a lost device".to_owned()),
             }
             match device.create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS)) {
-                Err(TargetError::DeviceLost) => Ok(()),
-                Err(other) => Err(wrong("T17", "DeviceLost on the next call", &other)),
+                Err(TargetError::DeviceLost) => {}
+                Err(other) => return Err(wrong("T17", "DeviceLost on the next call", &other)),
                 Ok(_) => {
-                    Err("T17: the device was not poisoned, so the next upload proceeded".to_owned())
+                    return Err(
+                        "T17: the device was not poisoned, so the next upload proceeded".to_owned(),
+                    );
                 }
+            }
+            // Every creation path guards on the same poison flag; the
+            // render image's guard is probed on the same lost device.
+            match device.create_render_image(&renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 4,
+                    height: 4,
+                },
+            )) {
+                Err(TargetError::DeviceLost) => Ok(()),
+                Err(other) => Err(wrong("T17", "DeviceLost from create_render_image", &other)),
+                Ok(_) => Err("T17: a render image was created on a poisoned device".to_owned()),
             }
         },
     ));
@@ -908,6 +923,78 @@ fn every_driver_failure_ladder_behaves() {
                 .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
                 .map(|_| ())
                 .map_err(|error| format!("{name}: recovery upload failed: {error}"))
+        }));
+    }
+
+    // ---- R · render-image creation ladder ---------------------------
+    // Every fallible Vulkan call `create_render_image` makes, in the
+    // order it makes them, appended after the ladders that existed when
+    // it landed. No upload and no staging state: each failure must
+    // surface the right call and unwind whatever preceded it, which the
+    // validation check after each case proves.
+    let render_image_ladder: &[(&str, &str, &str, bool)] = &[
+        (
+            "R1",
+            "vkCreateImage=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImage(render)",
+            false,
+        ),
+        (
+            "R2",
+            "vkAllocateMemory=ERROR_OUT_OF_DEVICE_MEMORY",
+            "vkAllocateMemory(render)",
+            true,
+        ),
+        (
+            "R3",
+            "vkBindImageMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkBindImageMemory(render)",
+            false,
+        ),
+        (
+            "R4",
+            "vkCreateImageView=ERROR_OUT_OF_HOST_MEMORY",
+            "vkCreateImageView(render)",
+            false,
+        ),
+        // The allocation's second failure shape: anything that is not
+        // out-of-device-memory reports as Creation through the other
+        // arm of the same match.
+        (
+            "R5",
+            "vkAllocateMemory=ERROR_OUT_OF_HOST_MEMORY",
+            "vkAllocateMemory(render)",
+            false,
+        ),
+    ];
+    for &(name, fault, call, device_memory) in render_image_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            let desc = renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            );
+            match device.create_render_image(&desc) {
+                Err(error) => {
+                    let matched = if device_memory {
+                        matches!(&error, TargetError::OutOfDeviceMemory { call: got } if *got == call)
+                    } else {
+                        matches!(&error, TargetError::Creation { call: got, .. } if *got == call)
+                    };
+                    if !matched {
+                        return Err(wrong(name, call, &error));
+                    }
+                }
+                Ok(_) => {
+                    return Err(format!("{name}: the image was created despite the fault"));
+                }
+            }
+            device
+                .create_render_image(&desc)
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery image failed: {error}"))
         }));
     }
 

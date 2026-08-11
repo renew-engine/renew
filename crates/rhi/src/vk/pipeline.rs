@@ -27,17 +27,25 @@ use crate::vk::pass::Bindings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TargetFormat {
-    /// The offscreen target's format.
+    /// The offscreen target's format, and every color render image's.
     Rgba8Unorm,
     /// The common swapchain format on desktop.
     Bgra8Unorm,
+    /// No color attachment at all: the format of a pipeline that draws
+    /// only into a depth-kinded render image. A depth-only pipeline
+    /// carries no fragment stage and must declare depth state — both
+    /// asserted at creation.
+    DepthOnly,
 }
 
 impl TargetFormat {
-    pub(crate) fn to_vk(self) -> vk::Format {
+    /// The color attachment format, `None` for the depth-only shape
+    /// whose color attachment list is empty.
+    pub(crate) fn to_vk(self) -> Option<vk::Format> {
         match self {
-            Self::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
-            Self::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
+            Self::Rgba8Unorm => Some(vk::Format::R8G8B8A8_UNORM),
+            Self::Bgra8Unorm => Some(vk::Format::B8G8R8A8_UNORM),
+            Self::DepthOnly => None,
         }
     }
 }
@@ -410,6 +418,39 @@ impl<'a> PipelineDesc<'a> {
             // Never read on this path: the draw takes its count from the
             // geometry. Zero rather than a sentinel because no caller can
             // supply it and nothing consults it.
+            vertex_count: 0,
+            blend: Blend::Opaque,
+            sampled_bindings: 0,
+            vertex_input: Some(layout),
+            instance_input: None,
+            depth_state: None,
+            push_constant_size: 0,
+        }
+    }
+
+    /// A depth-only mesh pipeline: one vertex stage over a per-vertex
+    /// stream, no fragment stage, no color attachment — the shape that
+    /// renders geometry into a depth-kinded render image and nothing
+    /// else.
+    ///
+    /// **No fragment shader parameter, and that is the point**: with no
+    /// color attachment there is nothing for one to write, and
+    /// rasterization without a fragment stage still tests and writes
+    /// depth — the whole draw. Depth state must still be declared (a
+    /// builder call), because a depth-only pipeline that neither tests
+    /// nor writes depth does nothing at all; creation asserts it.
+    ///
+    /// The vertex stage may write outputs no stage consumes — reusing a
+    /// full mesh pair's vertex stage is expected, not clever.
+    #[must_use]
+    pub fn depth_mesh(vertex_spirv: &'a [u8], layout: &'a [VertexAttribute]) -> Self {
+        Self {
+            vertex_spirv,
+            // Structurally absent rather than optional: the depth-only
+            // format is what licenses the emptiness, and creation
+            // asserts the pairing in both directions.
+            fragment_spirv: &[],
+            target_format: TargetFormat::DepthOnly,
             vertex_count: 0,
             blend: Blend::Opaque,
             sampled_bindings: 0,
@@ -983,6 +1024,22 @@ impl Device {
         // so the panic owns nothing.
         validate_sampled_bindings(desc.sampled_bindings);
         let sampled_slots = desc.sampled_bindings as usize;
+        // The depth-only pairing: the format is what licenses the
+        // missing fragment stage, and a depth-only pipeline without
+        // depth state does nothing at all. One direction only — an
+        // empty fragment slice on a color pipeline stays the
+        // recoverable InvalidSpirv refusal it has always been.
+        let depth_only = desc.target_format == TargetFormat::DepthOnly;
+        assert!(
+            !depth_only || desc.fragment_spirv.is_empty(),
+            "a depth-only pipeline carries no fragment stage — its color-attachment list \
+             is empty, so there is nothing for one to write"
+        );
+        assert!(
+            !depth_only || desc.depth_state.is_some(),
+            "a depth-only pipeline must declare depth state: with no color attachment and \
+             no depth test or write, the draw does nothing"
+        );
         // Checked before anything is created so this failure path owns
         // nothing. The environment declined, not the caller — a Result,
         // never an assert.
@@ -998,7 +1055,14 @@ impl Device {
             None => None,
         };
         let vs_words = crate::spirv::words_from_bytes("vertex", desc.vertex_spirv)?;
-        let fs_words = crate::spirv::words_from_bytes("fragment", desc.fragment_spirv)?;
+        let fs_words = if depth_only {
+            None
+        } else {
+            Some(crate::spirv::words_from_bytes(
+                "fragment",
+                desc.fragment_spirv,
+            )?)
+        };
 
         // SAFETY: category 2 (ash dispatch): device live via the spine;
         // the word slices outlive the calls; callbacks' ledger outlives
@@ -1010,37 +1074,42 @@ impl Device {
             )
         }
         .map_err(|code| creation("vkCreateShaderModule(vertex)", code))?;
-        // SAFETY: as above.
-        let fs = match unsafe {
-            shared.device.create_shader_module(
-                &vk::ShaderModuleCreateInfo::default().code(&fs_words),
-                Some(&shared.alloc_cbs()),
-            )
-        } {
-            Ok(module) => module,
-            Err(code) => {
-                // SAFETY: `vs` was just created, unused elsewhere.
-                unsafe {
-                    shared
-                        .device
-                        .destroy_shader_module(vs, Some(&shared.alloc_cbs()));
+        let fs = match &fs_words {
+            None => None,
+            // SAFETY: as above.
+            Some(fs_words) => match unsafe {
+                shared.device.create_shader_module(
+                    &vk::ShaderModuleCreateInfo::default().code(fs_words),
+                    Some(&shared.alloc_cbs()),
+                )
+            } {
+                Ok(module) => Some(module),
+                Err(code) => {
+                    // SAFETY: `vs` was just created, unused elsewhere.
+                    unsafe {
+                        shared
+                            .device
+                            .destroy_shader_module(vs, Some(&shared.alloc_cbs()));
+                    }
+                    return Err(creation("vkCreateShaderModule(fragment)", code));
                 }
-                return Err(creation("vkCreateShaderModule(fragment)", code));
-            }
+            },
         };
-        // Both modules exist past this point; this frees them on every
-        // exit (the pipeline retains what it needs — modules are only
-        // creation-time inputs).
+        // Every created module exists past this point; this frees them
+        // on every exit (the pipeline retains what it needs — modules
+        // are only creation-time inputs).
         let destroy_modules = || {
-            // SAFETY: both modules live and unused after pipeline
-            // creation resolves.
+            // SAFETY: modules live and unused after pipeline creation
+            // resolves.
             unsafe {
                 shared
                     .device
                     .destroy_shader_module(vs, Some(&shared.alloc_cbs()));
-                shared
-                    .device
-                    .destroy_shader_module(fs, Some(&shared.alloc_cbs()));
+                if let Some(fs) = fs {
+                    shared
+                        .device
+                        .destroy_shader_module(fs, Some(&shared.alloc_cbs()));
+                }
             }
         };
 
@@ -1075,16 +1144,18 @@ impl Device {
             }
         };
 
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vs)
-                .name(c"main"),
-            vk::PipelineShaderStageCreateInfo::default()
+        let mut stages = [vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vs)
+            .name(c"main"); 2];
+        let mut stage_count = 1usize;
+        if let Some(fs) = fs {
+            stages[1] = vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(fs)
-                .name(c"main"),
-        ];
+                .name(c"main");
+            stage_count = 2;
+        }
         // With neither stream declared this stays the empty state every
         // generative pipeline was built with. The layout itself is a
         // pure function, so its cross-stream location numbering — the
@@ -1136,13 +1207,24 @@ impl Device {
                 .dst_alpha_blend_factor(vk::BlendFactor::ONE)
                 .alpha_blend_op(vk::BlendOp::ADD),
         }];
-        let color_blend =
-            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        // No color attachment, no blend entry: the blend list's length
+        // must equal the attachment count.
+        let blend_count = usize::from(!depth_only);
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(&blend_attachments[..blend_count]);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let formats = [desc.target_format.to_vk()];
-        let mut rendering =
-            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+        // A depth-only pipeline's color list is empty — the same shape
+        // its passes render with. Everything else declares its one
+        // color format.
+        let mut formats = [vk::Format::UNDEFINED; 1];
+        let mut format_count = 0usize;
+        if let Some(format) = desc.target_format.to_vk() {
+            formats[0] = format;
+            format_count = 1;
+        }
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&formats[..format_count]);
         if let Some(format) = depth_format {
             rendering = rendering.depth_attachment_format(format);
         }
@@ -1157,7 +1239,7 @@ impl Device {
         });
 
         let mut info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
+            .stages(&stages[..stage_count])
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport)

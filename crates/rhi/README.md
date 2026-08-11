@@ -54,14 +54,29 @@ display server, and the golden-image tests attest the bytes.
   billboard, and the mesh pairs (sources and compile record in
   [shaders/](shaders/README.md)).
 - `Binding` — one written descriptor set behind the device's one
-  canonical layout (a combined image sampler at binding 0): a texture,
-  the sampler that reads it, and shared ownership of both. Written
-  once at creation, never rewritten — the write-while-outstanding rule
-  a mutable set would need does not exist here. Items name bindings
-  per draw in slot order (slot *i* is set *i*); a mismatch against the
-  pipeline's declared count is a named refusal before any GPU call,
-  and a binding named by several items costs one retention slot, like
-  a mesh.
+  canonical layout (a combined image sampler at binding 0): a texture
+  or render image, the sampler that reads it, and shared ownership of
+  both. Written once at creation, never rewritten — the
+  write-while-outstanding rule a mutable set would need does not exist
+  here. Items name bindings per draw in slot order (slot *i* is set
+  *i*); a mismatch against the pipeline's declared count is a named
+  refusal before any GPU call, and a binding named by several items
+  costs one retention slot, like a mesh.
+- `RenderImage` — what one pass renders into and a later pass samples:
+  one physical image, kinded Color (`Rgba8Unorm`) or Depth (the
+  device's chosen format) at creation, with the format pre-checked
+  against the adapter's own sampled/attachment features. Its
+  **contents are frame-scoped** — every frame's first use starts
+  undefined, enforced by the same walk that plans its barriers — while
+  the image itself is retained by any frame that names it. A pass
+  renders into one via `Pass::render_to` (the image's kind decides the
+  pass shape, so a mismatch is unrepresentable), and items sample it
+  through an ordinary binding. The per-frame identity rules — write
+  before read, no feedback within a pass, no re-targeting after
+  sampling, Store before a later sample, at most 4 distinct images —
+  are named refusals before any GPU call. Depth-kinded images draw
+  through `PipelineDesc::depth_mesh` pipelines: no fragment stage, no
+  color attachment, `TargetFormat::DepthOnly`.
 - `Mesh` — vertex and index bytes written once at creation and read-only
   to the GPU thereafter, in one allocation. Indices are `&[u32]`, and
   **every index is checked against the vertex count at creation**: an
@@ -105,7 +120,8 @@ display server, and the golden-image tests attest the bytes.
 Every resource holds the device spine alive (`Rc`), so drop order is
 free for consumers, and each `Drop` destroys in exact reverse creation
 order. The targets and the pipeline quiesce the GPU first (best-effort
-wait-idle); `Texture`, `Sampler` and `Binding` deliberately do not.
+wait-idle); `Texture`, `Sampler`, `Binding` and `RenderImage`
+deliberately do not.
 The binding holds shared ownership of its texture and sampler, so
 their `Drop` cannot run while a set still points at them — and the
 binding itself is held by the retention table of any frame that named
@@ -127,12 +143,13 @@ presents frames where a display exists.
 ## Status
 
 Early-stage: the surface is exactly device + two target kinds + the
-pass vocabulary + two pipeline shapes + per-draw sampled bindings +
-geometry — per-vertex and per-instance input, vertex-stage push
-constants, indexed draws and target-owned depth exist; no MSAA, no
-image identity on attachments, one fixed descriptor-set layout (a
-combined image sampler at binding 0, repeated per declared slot) —
-grown only when a consumer demands it. Mesh memory is
+pass vocabulary + three pipeline shapes + per-draw sampled bindings +
+render images + geometry — per-vertex and per-instance input,
+vertex-stage push constants, indexed draws, target-owned depth, and
+render-to-texture with one shared barrier walk exist; no MSAA, no
+multiple render targets, one fixed descriptor-set layout (a combined
+image sampler at binding 0, repeated per declared slot) — grown only
+when a consumer demands it. Mesh memory is
 host-visible rather than device-local, which is a recorded decision with
 a written reopening trigger (a real-GPU frame-time measurement showing
 vertex fetch matters) and not an oversight. The `[package.metadata.renew]` table

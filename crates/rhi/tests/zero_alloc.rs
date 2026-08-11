@@ -98,6 +98,25 @@ fn steady_state_frames_allocate_nothing() {
             &sampler,
         ))
         .expect("binding");
+    // The render-image pair, for the image-pass frame below: the pass
+    // walk, the identity state machine, the extra barriers, and the
+    // sampling transition all run inside the measured window, and none
+    // of them may allocate.
+    let render_image = device
+        .create_render_image(&renew_rhi::RenderImageDesc::new(
+            renew_rhi::RenderImageKind::Color,
+            Extent {
+                width: 16,
+                height: 16,
+            },
+        ))
+        .expect("render image");
+    let image_binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Image(&render_image),
+            &sampler,
+        ))
+        .expect("image binding");
     let pipeline = device
         .create_pipeline(
             &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
@@ -198,6 +217,23 @@ fn steady_state_frames_allocate_nothing() {
             // measured on the same zero-delta terms as the single-item
             // frames (which stay above, so a regression names its
             // shape).
+            // The render-to-then-sample frame: an image pass through
+            // the walk's first-use arm, then a surface pass whose item
+            // samples it through the transition arm — the full
+            // render-image path on the same zero-delta terms.
+            let image_ops = Attachment::new(
+                LoadOp::Clear(ClearValue::Color(clear_color)),
+                StoreOp::Store,
+            );
+            let into_image = [Item::new(&pipeline).bindings(&[&binding])];
+            let from_image = [Item::new(&pipeline).bindings(&[&image_binding])];
+            let image_passes = [
+                Pass::render_to(&render_image, image_ops, &into_image),
+                Pass::new(&color, &from_image),
+            ];
+            target
+                .render(&RenderDesc::new(&image_passes))
+                .expect("steady image frame");
             let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
             let first_items = [
                 Item::new(&pipeline).bindings(&[&binding]),
