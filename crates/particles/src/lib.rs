@@ -34,6 +34,11 @@
 // this crate by construction, not convention.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+#[cfg(feature = "render")]
+mod render;
+#[cfg(feature = "render")]
+pub use render::{CameraPush, ParticleBlend, ParticleRenderError, ParticleRenderer};
+
 use renew_rng::Rng;
 pub use renew_rng::{Seed, StreamId};
 
