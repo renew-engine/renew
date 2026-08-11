@@ -8,13 +8,18 @@
 //! trusted because the header said so; every refusal names what it
 //! saw.
 //!
-//! **A document is a tree by construction.** Node records sit in
-//! document order; record 0 is the root and carries the no-parent
-//! sentinel, and every later record's parent index is strictly less
-//! than its own. A blob that violates the rule is refused, so a read
-//! document cannot hold a cycle, an orphan, or a forward reference,
-//! and instantiation never needs to check again. Sibling order is
-//! document order.
+//! **A document is a tree by construction, in one canonical form.**
+//! Record 0 is the root and carries the no-parent sentinel; every
+//! later record's parent index is strictly less than its own; and the
+//! records sit in depth-first order — each record's parent must still
+//! be on the open ancestor path when it appears, so siblings' subtrees
+//! never interleave. Size bits under a cleared flag must be zero. A
+//! blob that violates any of these is refused, so a read document
+//! cannot hold a cycle, an orphan, a forward reference, or a second
+//! spelling of the same tree — [`capture`] of an instantiated
+//! document reproduces its bytes exactly, for every document this
+//! reader accepts — and instantiation never needs to check again.
+//! Sibling order is document order.
 //!
 //! **Version 1 carries structure and base styles only.** The state
 //! variant tables the compiler will one day emit are not speculated
@@ -116,6 +121,23 @@ pub enum DocumentError {
         /// The parent field it carried.
         parent: u32,
     },
+    /// A record whose parent is earlier but no longer on the open
+    /// ancestor path: the records are not in depth-first order, and
+    /// the format admits exactly one spelling of a tree.
+    NotPreorder {
+        /// Which record.
+        index: u32,
+        /// The parent it named.
+        parent: u32,
+    },
+    /// Size bits carried under a cleared flag: dead payload the
+    /// canonical form requires to be zero.
+    UnsetSizeBits {
+        /// Which record.
+        index: u32,
+        /// Which size.
+        field: &'static str,
+    },
     /// An enum byte outside its range.
     BadStyleByte {
         /// Which record.
@@ -153,6 +175,16 @@ impl core::fmt::Display for DocumentError {
                     "record {index} names parent {parent}, which is not earlier"
                 )
             }
+            Self::NotPreorder { index, parent } => {
+                write!(
+                    out,
+                    "record {index} names parent {parent}, which is closed: records \
+                     sit in depth-first order"
+                )
+            }
+            Self::UnsetSizeBits { index, field } => {
+                write!(out, "record {index} carries {field} under a cleared flag")
+            }
             Self::BadStyleByte {
                 index,
                 field,
@@ -188,8 +220,9 @@ fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
 /// this cannot run past the slice; the zero default is unreachable
 /// and draws nothing if that invariant ever bent.
 fn i64_in(record: &[u8], offset: usize) -> i64 {
-    record
-        .get(offset..offset + 8)
+    offset
+        .checked_add(8)
+        .and_then(|end| record.get(offset..end))
         .and_then(|slice| <[u8; 8]>::try_from(slice).ok())
         .map_or(0, i64::from_le_bytes)
 }
@@ -230,12 +263,14 @@ impl<'a> Document<'a> {
         if bytes.get(..MAGIC.len()) != Some(&MAGIC[..]) {
             return Err(DocumentError::NotADocument);
         }
-        let version =
-            u32_at(bytes, OFF_VERSION).ok_or(DocumentError::NoHeader { len: bytes.len() })?;
+        // Total past the length check above; the zero defaults cannot
+        // be reached, and would refuse if they were — version zero is
+        // unknown and count zero is empty. Fail closed, not sideways.
+        let version = u32_at(bytes, OFF_VERSION).unwrap_or(0);
         if version != VERSION {
             return Err(DocumentError::UnknownVersion { found: version });
         }
-        let count = u32_at(bytes, OFF_COUNT).ok_or(DocumentError::NoHeader { len: bytes.len() })?;
+        let count = u32_at(bytes, OFF_COUNT).unwrap_or(0);
         if count == 0 {
             return Err(DocumentError::Empty);
         }
@@ -254,9 +289,16 @@ impl<'a> Document<'a> {
         }
         let nodes = bytes.get(HEADER_BYTES..).unwrap_or_default();
 
+        // The open ancestor path of the depth-first walk. A record's
+        // parent must be on it, or the records interleave subtrees and
+        // the blob is a second spelling of a tree the canonical form
+        // already has one for.
+        let mut path: Vec<u32> = Vec::with_capacity(16);
         for index in 0..count {
             let record = record_of(nodes, index);
-            let parent = u32_at(record, OFF_PARENT).unwrap_or(NO_PARENT);
+            // The default is the one value that cannot pass either
+            // check below: unreachable, and fail-closed if ever bent.
+            let parent = u32_at(record, OFF_PARENT).unwrap_or(index);
             let legal = if index == 0 {
                 parent == NO_PARENT
             } else {
@@ -264,6 +306,17 @@ impl<'a> Document<'a> {
             };
             if !legal {
                 return Err(DocumentError::BadParent { index, parent });
+            }
+            if index == 0 {
+                path.push(0);
+            } else {
+                while path.last().is_some_and(|&open| open != parent) {
+                    path.pop();
+                }
+                if path.is_empty() {
+                    return Err(DocumentError::NotPreorder { index, parent });
+                }
+                path.push(index);
             }
             let direction = record.get(OFF_DIRECTION).copied().unwrap_or(u8::MAX);
             if direction > 1 {
@@ -289,6 +342,18 @@ impl<'a> Document<'a> {
                     index,
                     field: "size flags",
                     value: flags,
+                });
+            }
+            if flags & FLAG_WIDTH_PX == 0 && i64_in(record, OFF_WIDTH) != 0 {
+                return Err(DocumentError::UnsetSizeBits {
+                    index,
+                    field: "width bits",
+                });
+            }
+            if flags & FLAG_HEIGHT_PX == 0 && i64_in(record, OFF_HEIGHT) != 0 {
+                return Err(DocumentError::UnsetSizeBits {
+                    index,
+                    field: "height bits",
                 });
             }
         }
@@ -386,8 +451,9 @@ impl<'a> Document<'a> {
         for index in 1..self.count {
             let parent = self
                 .parent(index)
-                .and_then(|at| ids.get(at as usize).copied())
-                .unwrap_or_else(|| ui.root());
+                .and_then(|at| ids.get(at as usize).copied());
+            debug_assert!(parent.is_some(), "read's proof builds parents first");
+            let parent = parent.unwrap_or_else(|| ui.root());
             // The refusal arm is unreachable past read's proof — the
             // arena is sized to the count and the parent is already
             // built — and the fallback keeps the walk total so the
@@ -417,11 +483,24 @@ fn record_of(nodes: &[u8], index: u32) -> &[u8] {
 
 /// Serialize a live tree into document bytes: the inverse of
 /// [`Document::read`] + [`Document::tree`], used by tests as the
-/// round-trip oracle and by tooling as the writer's backend. Walks in
-/// document order — parents before children, siblings in tree order —
-/// so capture of an instantiated document reproduces its bytes.
+/// round-trip oracle and by tooling as the writer's backend. Walks
+/// depth-first — parents before children, siblings in tree order —
+/// which is the one record order the reader accepts, so capture of an
+/// instantiated document reproduces its bytes exactly, for every
+/// document the reader accepts.
+///
+/// # Panics
+///
+/// When the tree exceeds [`MAX_NODES`] — a document the reader would
+/// refuse must not be minted silently, and the writer is the place
+/// that says so.
 #[must_use]
 pub fn capture(ui: &Ui) -> Vec<u8> {
+    assert!(
+        ui.live() <= MAX_NODES,
+        "a {}-node tree exceeds the document ceiling of {MAX_NODES}",
+        ui.live()
+    );
     let mut out = Vec::new();
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
@@ -669,6 +748,44 @@ mod tests {
             "a second root"
         );
 
+        // menu_shaped's records are [root, row(0), wide(1), leaf(1)].
+        // Reparenting `wide` onto the root closes the row's subtree,
+        // so `leaf` then names a parent no longer on the open path:
+        // the same tree, spelled out of depth-first order.
+        let third = HEADER_BYTES + 2 * NODE_BYTES;
+        let mut bad = good.clone();
+        bad[third..third + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::NotPreorder {
+                index: 3,
+                parent: 1
+            }),
+            "interleaved subtrees"
+        );
+
+        let mut bad = good.clone();
+        bad[HEADER_BYTES + OFF_WIDTH] = 1;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::UnsetSizeBits {
+                index: 0,
+                field: "width bits"
+            }),
+            "width bits under a cleared flag"
+        );
+
+        let mut bad = good.clone();
+        bad[HEADER_BYTES + OFF_HEIGHT + 7] = 0x80;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::UnsetSizeBits {
+                index: 0,
+                field: "height bits"
+            }),
+            "height bits under a cleared flag"
+        );
+
         for (offset, field, planted) in [
             (OFF_DIRECTION, "direction", 2u8),
             (OFF_JUSTIFY, "justify", 3),
@@ -687,6 +804,52 @@ mod tests {
                 "an out-of-range byte for {field}"
             );
         }
+    }
+
+    /// The canonical identity holds for hand-built bytes too, not
+    /// only for capture's own output: whatever the reader accepts,
+    /// capture reproduces.
+    #[test]
+    fn a_hand_built_document_captures_back_to_itself() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        let mut root = [0u8; NODE_BYTES];
+        root[..4].copy_from_slice(&NO_PARENT.to_le_bytes());
+        root[OFF_DIRECTION] = 1;
+        root[OFF_BACKGROUND..OFF_BACKGROUND + 4].copy_from_slice(&[9, 8, 7, 255]);
+        bytes.extend_from_slice(&root);
+        let mut child = [0u8; NODE_BYTES];
+        child[..4].copy_from_slice(&0u32.to_le_bytes());
+        child[OFF_SIZE_FLAGS] = FLAG_WIDTH_PX;
+        child[OFF_WIDTH..OFF_WIDTH + 8]
+            .copy_from_slice(&Fixed::from_int(31).to_bits().to_le_bytes());
+        child[OFF_GROW..OFF_GROW + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&child);
+
+        let document = Document::read(&bytes).expect("hand-built canonical bytes read");
+        assert_eq!(
+            capture(&document.tree()),
+            bytes,
+            "the reader accepted it, so capture must reproduce it"
+        );
+    }
+
+    /// The writer refuses to mint what the reader would refuse: a
+    /// tree past the ceiling is the caller's contract violation, said
+    /// loudly at the writer rather than discovered at a later load.
+    #[test]
+    #[should_panic(expected = "exceeds the document ceiling")]
+    fn capture_refuses_a_tree_past_the_ceiling() {
+        let mut ui = Ui::new(UiLimits {
+            nodes: MAX_NODES + 1,
+        });
+        let root = ui.root();
+        for _ in 0..MAX_NODES {
+            let _ = ui.insert(root);
+        }
+        let _ = capture(&ui);
     }
 
     /// Bounds before read: every truncation of a valid document is an
@@ -746,6 +909,20 @@ mod tests {
                     value: 8,
                 },
                 "justify",
+            ),
+            (
+                DocumentError::NotPreorder {
+                    index: 3,
+                    parent: 1,
+                },
+                "depth-first",
+            ),
+            (
+                DocumentError::UnsetSizeBits {
+                    index: 2,
+                    field: "width bits",
+                },
+                "width bits",
             ),
         ];
         for (error, needle) in cases {

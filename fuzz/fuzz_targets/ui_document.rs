@@ -4,10 +4,12 @@
 //! or a refusal. Both are answers; a panic, a hang, or a read past the
 //! end are not, and this target exists to look for those.
 //!
-//! One step further than the other targets: when the bytes DO read as
-//! a document, the tree is instantiated too. Validation claims the
-//! forward-parent proof makes instantiation infallible — the assert
-//! inside `tree` is that claim, and an input that breaks it is
+//! One step further than the other targets: when the bytes DO read
+//! as a document, the tree is instantiated AND solved. Validation
+//! claims the forward-parent proof makes instantiation infallible,
+//! and the solver claims saturation makes layout total over every
+//! style the format can carry — the assert inside `tree` and the
+//! solve call are those claims, and an input that breaks either is
 //! exactly the finding this harness is for.
 
 #![no_main]
@@ -16,6 +18,7 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(document) = renew_ui::Document::read(data) {
-        let _ = document.tree();
+        let mut tree = document.tree();
+        tree.solve(renew_ui::Fixed::from_int(320), renew_ui::Fixed::from_int(240));
     }
 });

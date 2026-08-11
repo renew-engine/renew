@@ -16,8 +16,8 @@
 use std::path::PathBuf;
 
 /// The committed corpus never shrinks below this without someone
-/// noticing.
-const LOW_WATER: usize = 4;
+/// noticing — the same floor as the pack reader's gate.
+const LOW_WATER: usize = 10;
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/ui_document")
@@ -36,9 +36,21 @@ fn every_recorded_corpus_input_gets_an_answer() {
         let bytes = std::fs::read(entry.path()).expect("corpus files are readable");
         if let Ok(document) = renew_ui::Document::read(&bytes) {
             // The read proof's second half: a validated document
-            // instantiates without re-checking, and the corpus holds
-            // that claim on every push, not only on the fuzz lane.
-            let _ = document.tree();
+            // instantiates without re-checking, solves without
+            // panicking on whatever styles the fuzzer minted, and —
+            // because the accepted form is canonical — captures back
+            // to the exact bytes it came from. The corpus holds all
+            // three claims on every push, not only on the fuzz lane.
+            let mut tree = document.tree();
+            tree.solve(
+                renew_ui::Fixed::from_int(320),
+                renew_ui::Fixed::from_int(240),
+            );
+            assert_eq!(
+                renew_ui::document::capture(&tree),
+                bytes,
+                "an accepted document must capture back to its own bytes"
+            );
             documents += 1;
         }
         replayed += 1;
