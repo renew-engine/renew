@@ -38,7 +38,14 @@ That promise is scoped to the tree that issued the id. A `NodeId`
 carries no memory of its tree: two trees issue the same id sequence,
 so an id used on the wrong tree is not detected — it may miss, or it
 may name an unrelated node. Holding ids across trees is a logic
-error.
+error. The raw halves of the address are public for presentation,
+which keys its snapshots by them; they are never a serialization.
+
+Styles carry one visual field — an integer premultiplied background,
+transparent by default — which presentation converts to its own
+vocabulary; richer visuals arrive with the compiled style tables.
+The solver's arithmetic type is re-exported as `Fixed`, because the
+API speaks it.
 
 ## Bounds
 

@@ -111,6 +111,13 @@ pub struct Style {
     pub justify: Align,
     /// Where each child sits along the cross axis.
     pub align_cross: Align,
+    /// The fill behind this node, as premultiplied RGBA bytes — an
+    /// integer, because this crate's numbers must be. All zeros — the
+    /// default — draws nothing at all; presentation converts everything
+    /// else to its own vocabulary. Richer visuals (borders, images,
+    /// text) arrive with the compiled style tables, not as more fields
+    /// here.
+    pub background: [u8; 4],
 }
 
 /// A solved box: absolute position and size, in pixels.
