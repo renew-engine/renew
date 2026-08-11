@@ -2,10 +2,12 @@
 
 Fuzz harnesses for the five parsers that read data the engine did not
 write: the asset pack reader, the input-trace codec, the WAV reader, the
-UI document reader, and the UI text grammar. The document target goes one step past the
-others: bytes that read as a document are also instantiated as a tree,
-because validation claims instantiation never needs to re-check — an
-input that breaks that claim is a finding.
+UI document reader, and the UI text grammar. The two UI targets go
+further than the first three: bytes that read as a document are also
+instantiated as a tree, because validation claims instantiation never
+needs to re-check, and text that compiles is read back through the
+runtime reader, because the compiler claims it only mints what that
+reader accepts — an input that breaks either claim is a finding.
 
 ## Why this is a separate workspace
 

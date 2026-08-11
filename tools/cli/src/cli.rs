@@ -495,10 +495,10 @@ fn check_determinism_mode(
 
 /// The asset subcommands' own flag rules.
 ///
-/// Separate from [`check_combination`] rather than three more parameters
-/// on it: that function already carries five, and a sixth and seventh
-/// would make the one thing it is good at — reading as a list of rules —
-/// stop being true.
+/// Separate from [`check_combination`] rather than more parameters on
+/// it: that function already carries five, and the four file flags
+/// here would make the one thing it is good at — reading as a list of
+/// rules — stop being true.
 fn check_file_combination(
     command: Option<Command>,
     pack: Option<&str>,
@@ -1077,13 +1077,19 @@ mod tests {
         }
     }
 
-    /// `--out` on a subcommand that carries no flags of its own is
-    /// the flag's own rejection; on one with required flags of its
-    /// own, the earlier missing-flag rules answer first, as they do
-    /// for the pack flags.
+    /// `--out` anywhere ui-compile is not: within the file-flag rules
+    /// strays answer before missing flags, so even asset-pack hears
+    /// about the `--out` it typed rather than the `--pack` it did not.
+    /// Sample-taking subcommands answer from their own earlier rules
+    /// first, which is why they are not looped here.
     #[test]
-    fn the_out_flag_on_a_flagless_subcommand_is_rejected() {
-        for command in [Command::Check, Command::Modules, Command::Lint] {
+    fn the_out_flag_on_another_subcommand_is_rejected() {
+        for command in [
+            Command::Check,
+            Command::Modules,
+            Command::Lint,
+            Command::AssetPack,
+        ] {
             let name = command.name();
             assert_eq!(
                 parse(&arguments(&[name, "--out", "menu.uib"])),

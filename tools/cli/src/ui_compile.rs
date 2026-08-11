@@ -87,17 +87,9 @@ pub fn compile(source: &str) -> Result<Compiled, Diagnostic> {
     if !scanner.at_end() {
         return Err(scanner.refuse("the document ends after its one root element"));
     }
-    // Bounded by MAX_DEPTH times per-element growth, but stated
-    // directly: the reader's ceiling is the compiler's ceiling, said
-    // here as a diagnostic rather than downstream as a panic.
+    // The push-time ceiling in parse_element proved this in range:
+    // hostile input cannot size this list, so it cannot wrap this cast.
     let count = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
-    if count > MAX_NODES {
-        return Err(Diagnostic {
-            line: 1,
-            column: 1,
-            message: format!("{count} nodes exceed the document ceiling of {MAX_NODES}"),
-        });
-    }
 
     let mut ui = Ui::new(UiLimits { nodes: count });
     let mut ids = Vec::with_capacity(nodes.len());
@@ -126,9 +118,13 @@ pub fn compile(source: &str) -> Result<Compiled, Diagnostic> {
 }
 
 /// Print a live tree in the grammar, one element per line — the
-/// compiler's inverse, used by the round-trip property and by porting
-/// work that starts from a builder-built tree. Only what differs from
-/// the default is printed, so emitted text stays as compact as the
+/// compiler's inverse **on trees the grammar can spell**: non-negative
+/// whole-pixel styles within the value ceiling, nesting within the
+/// depth ceiling. Fractional values truncate to the nearest spelling
+/// and negative or over-ceiling values print text the compiler
+/// refuses, so a tree from outside the grammar's vocabulary does not
+/// round-trip and is not claimed to. Only what differs from the
+/// default is printed, so emitted text stays as compact as the
 /// hand-written form.
 #[must_use]
 pub fn emit(ui: &Ui) -> String {
@@ -327,15 +323,28 @@ fn parse_element(
     if depth >= MAX_DEPTH {
         return Err(scanner.refuse(format!("nesting deeper than {MAX_DEPTH} levels")));
     }
+    // The reader's ceiling, enforced where elements are born rather
+    // than after a hostile document has already sized the list: the
+    // diagnostic lands on the element past the limit, and memory
+    // stays bounded by the ceiling, not by the input.
+    if nodes.len() >= MAX_NODES as usize {
+        return Err(scanner.refuse(format!(
+            "the document ceiling of {MAX_NODES} nodes is exceeded"
+        )));
+    }
     scanner.skip_trivia();
+    let element_line = scanner.line;
+    let element_column = scanner.column;
     let name = scanner.ident();
     let direction = match name.as_str() {
         "row" | "node" => Direction::Row,
         "column" => Direction::Column,
         _ => {
-            return Err(scanner.refuse(format!(
-                "expected an element (row, column, or node), found {name:?}"
-            )));
+            return Err(Diagnostic {
+                line: element_line,
+                column: element_column,
+                message: format!("expected an element (row, column, or node), found {name:?}"),
+            });
         }
     };
     let style = parse_attributes(scanner, direction)?;
@@ -344,6 +353,10 @@ fn parse_element(
 
     scanner.skip_trivia();
     if scanner.peek() == Some('{') {
+        if name == "node" {
+            return Err(scanner
+                .refuse("node is a leaf; row and column are the elements that hold children"));
+        }
         scanner.bump();
         loop {
             scanner.skip_trivia();
@@ -375,6 +388,8 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
         // An identifier here is an attribute only when `=` follows;
         // otherwise it opens the next sibling and belongs to the
         // caller. Clone-ahead keeps the scanner untouched until known.
+        let attribute_line = scanner.line;
+        let attribute_column = scanner.column;
         let mut lookahead = Scanner {
             rest: scanner.rest.clone(),
             line: scanner.line,
@@ -387,6 +402,13 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
         *scanner = lookahead;
         scanner.bump();
 
+        // Refusals about the attribute point at its first character,
+        // the way compilers point, even though the scan is past it.
+        let at_name = |message: String| Diagnostic {
+            line: attribute_line,
+            column: attribute_column,
+            message,
+        };
         let known = |sighted: &str| -> Result<&'static str, Diagnostic> {
             const KNOWN: [&str; 9] = [
                 "w", "h", "margin", "pad", "gap", "grow", "justify", "align", "bg",
@@ -395,7 +417,7 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
                 .into_iter()
                 .find(|&option| option == sighted)
                 .ok_or_else(|| {
-                    scanner.refuse(format!(
+                    at_name(format!(
                         "unknown attribute {sighted:?}; the attributes are w, h, margin, \
                          pad, gap, grow, justify, align, and bg"
                     ))
@@ -403,7 +425,7 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
         };
         let attribute = known(&name)?;
         if seen.contains(&attribute) {
-            return Err(scanner.refuse(format!("{attribute} appears twice on one element")));
+            return Err(at_name(format!("{attribute} appears twice on one element")));
         }
         seen.push(attribute);
 
@@ -686,8 +708,8 @@ column gap=8 justify=center align=end bg=#0a141eff {
     fn the_diagnostic_points_at_the_right_line() {
         let source = "column {\n    node w=3\n    panel\n}\n";
         let refused = compile(source).expect_err("panel is not an element");
-        assert_eq!((refused.line, refused.column), (3, 10));
-        assert_eq!(refused.to_string(), format!("3:10: {}", refused.message));
+        assert_eq!((refused.line, refused.column), (3, 5));
+        assert_eq!(refused.to_string(), format!("3:5: {}", refused.message));
     }
 
     /// A second root is trailing garbage, said plainly.
@@ -698,21 +720,40 @@ column gap=8 justify=center align=end bg=#0a141eff {
         assert!(refused.message.contains("one root element"));
     }
 
-    /// Nesting past the depth ceiling is refused, not recursed into.
+    /// The depth ceiling from both sides: sixty-four levels compile,
+    /// sixty-five refuse — the boundary is pinned, not assumed.
     #[test]
-    fn nesting_past_the_ceiling_is_refused() {
-        let mut source = String::new();
-        for _ in 0..70 {
-            source.push_str("row {");
-        }
-        let refused = compile(&source).expect_err("too deep");
+    fn the_depth_ceiling_holds_at_its_edge() {
+        let nested = |levels: usize| {
+            let mut source = String::new();
+            for _ in 0..levels.saturating_sub(1) {
+                source.push_str("row {");
+            }
+            source.push_str("node");
+            for _ in 0..levels.saturating_sub(1) {
+                source.push('}');
+            }
+            source
+        };
+        let deepest = compile(&nested(64)).expect("sixty-four levels are legal");
+        assert_eq!(deepest.nodes, 64);
+        let refused = compile(&nested(65)).expect_err("sixty-five are not");
         assert!(refused.message.contains("deeper than 64"));
     }
 
-    /// More nodes than the blob may hold is the compiler's diagnostic,
-    /// not the writer's panic.
+    /// A node with braces is refused by name: the leaf spelling stays
+    /// a leaf, as the grammar promises.
     #[test]
-    fn the_node_ceiling_is_a_diagnostic() {
+    fn a_node_with_children_is_refused() {
+        let refused = compile("node {\n    node\n}\n").expect_err("a leaf holds nothing");
+        assert!(refused.message.contains("node is a leaf"));
+    }
+
+    /// More nodes than the blob may hold is refused where the element
+    /// past the limit is born — a real line, and memory bounded by the
+    /// ceiling rather than by however much input arrived.
+    #[test]
+    fn the_node_ceiling_is_a_diagnostic_with_a_place() {
         let mut source = String::from("row {\n");
         for _ in 0..MAX_NODES {
             source.push_str("node\n");
@@ -720,9 +761,14 @@ column gap=8 justify=center align=end bg=#0a141eff {
         source.push('}');
         let refused = compile(&source).expect_err("past the ceiling");
         assert!(
-            refused.message.contains("exceed the document ceiling"),
+            refused.message.contains("ceiling of 4096 nodes"),
             "{:?}",
             refused.message
+        );
+        assert_eq!(
+            u64::from(refused.line),
+            1 + u64::from(MAX_NODES),
+            "the diagnostic points at the element past the limit"
         );
     }
 }

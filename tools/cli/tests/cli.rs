@@ -1913,7 +1913,7 @@ fn ui_compile_prints_a_human_diagnostic() -> std::io::Result<()> {
     assert!(!output.status.success());
     let printed = String::from_utf8_lossy(&output.stderr);
     assert!(
-        printed.contains("1:6:") && printed.contains("row, column, or node"),
+        printed.contains("1:1:") && printed.contains("row, column, or node"),
         "the human line carries the place and the expectation: {printed:?}"
     );
     Ok(())
