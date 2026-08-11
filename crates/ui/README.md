@@ -55,9 +55,10 @@ bits required zero — so no cycle, orphan, forward reference, or
 second spelling of the same tree survives `Document::read`, and
 instantiation never re-checks. `capture` is the exact inverse for
 every accepted blob, used by the round-trip oracle and one day by the
-compiler's writer. The blob carries structure and base styles in
-version 1; the version field is the evolution path for the compiled
-state tables. Being a parser of external data, it is fuzz-covered
+compiler's writer. The blob carries structure, base styles, and
+the compiled state tables in version 2 — a first-use-ordered pool of
+resolved patches with no dead freight, and a per-node index for every
+state combination — the evolution the version field was built for. Being a parser of external data, it is fuzz-covered
 from its first commit, and the recorded corpus replays as a
 merge-gating test that also holds the canonical identity.
 
