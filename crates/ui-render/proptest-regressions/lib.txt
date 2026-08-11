@@ -4,4 +4,14 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
+#
+# Provenance, so nobody reads these as clip-code defects. Both are
+# failures of the property's own tolerance: the containment allowance
+# scaled with the edge being compared while the rounding it forgives
+# happens at the magnitude of the operands the edge was derived from,
+# so a small edge cut from a large rectangle failed on a legal
+# one-step spill. The first was found by a local run during
+# development; the second by a remote run. The clip code was correct
+# for both; the assertion was not.
 cc 24cda75ce4359fa20aaeab284a334d94d58fd6c13a08fdd5cdc9842e1b7ad675 # shrinks to rect = [-29.371904, 0.0, -66.170815, 45.944168], clip_a = [-43.535595, 0.0, 67.08066, 82.20785], clip_b = [-45.26216, 0.0, -52.094357, 63.585453]
+cc 285fab3ff485940fbf80cf67d28ac07c9277436ebe96cb02899bd95c41c5838d # as generated remotely: rect = [0.0, -31.56227, -97.60441, 93.57196], clip_a = [0.0, -70.84951, 86.24885, -75.53496], clip_b = [0.0, -98.04869, -76.44562, 99.42183]

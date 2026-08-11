@@ -537,10 +537,15 @@ mod tests {
             clip_a in proptest::array::uniform4(-100.0f32..100.0),
             clip_b in proptest::array::uniform4(-100.0f32..100.0),
         ) {
-            let close = |a: f32, b: f32| {
-                (a - b).abs() <= f32::EPSILON * 4.0 * (1.0 + a.abs() + b.abs())
-            };
-            let within = |value: f32, bound: f32| value <= bound || close(value, bound);
+            // The allowance scales with the values a sum passes
+            // through, not with the edge that comes out: a small edge
+            // derived from large operands carries the operands'
+            // rounding error, and a bound scaled only to the edge
+            // rejects a legal one-step spill whenever the operands
+            // dwarf it — the committed regression seeds are exactly
+            // such cases. A real containment defect spills by
+            // fractions of the overlap, orders of magnitude past this.
+            let step = |magnitude: f32| f32::EPSILON * 4.0 * (1.0 + magnitude);
             let rect = [rect[0], rect[1], rect[2].abs(), rect[3].abs()];
             let clip = intersect(
                 [clip_a[0], clip_a[1], clip_a[0] + clip_a[2].abs(), clip_a[1] + clip_a[3].abs()],
@@ -548,6 +553,10 @@ mod tests {
             );
             let tint = [1.0, 1.0, 1.0, 1.0];
             if let Some(quad) = clipped(rect, clip, tint) {
+                let mag =
+                    quad.x.abs() + quad.y.abs() + quad.width.abs() + quad.height.abs();
+                let within = |value: f32, bound: f32| value <= bound + step(mag + bound.abs());
+                let close = |a: f32, b: f32| (a - b).abs() <= step(mag);
                 proptest::prop_assert!(quad.x >= rect[0]);
                 proptest::prop_assert!(quad.x >= clip[0]);
                 proptest::prop_assert!(within(quad.x + quad.width, rect[0] + rect[2]));
