@@ -208,6 +208,33 @@ pub mod builtin {
     pub const INSTANCED_DEPTH_LAYOUT: &[crate::VertexAttribute] =
         &[crate::VertexAttribute::Vec4, crate::VertexAttribute::Vec4];
 
+    /// Vertex stage SPIR-V for the particle billboard.
+    pub static PARTICLE_VS_SPV: &[u8] = include_bytes!("../shaders/particle.vert.spv");
+    /// Fragment stage SPIR-V multiplying the atlas texel by the
+    /// instance colour.
+    pub static PARTICLE_FS_SPV: &[u8] = include_bytes!("../shaders/particle.frag.spv");
+
+    /// The particle billboard: six expanded vertices per instance,
+    /// facing the camera whose matrix and billboard basis arrive as a
+    /// ninety-six-byte push block (the matrix, then right and up as
+    /// vec4s with unused `w`). Samples set 0 binding 0. The matching
+    /// instance layout is [`PARTICLE_INSTANCE_LAYOUT`]; shader and
+    /// slice describe the same bytes and change together.
+    pub const PARTICLE: Shaders<'static> = Shaders {
+        vertex: PARTICLE_VS_SPV,
+        fragment: PARTICLE_FS_SPV,
+        vertex_count: 6,
+    };
+
+    /// The instance layout [`PARTICLE`] consumes: centre and size in
+    /// one four-float group, a premultiplied colour, and the atlas
+    /// rectangle — packing to 48 bytes.
+    pub const PARTICLE_INSTANCE_LAYOUT: &[crate::VertexAttribute] = &[
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+        crate::VertexAttribute::Vec4,
+    ];
+
     /// The colored triangle: three vertices, no descriptors.
     pub const TRIANGLE: Shaders<'static> = Shaders {
         vertex: TRIANGLE_VS_SPV,

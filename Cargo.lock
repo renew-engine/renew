@@ -1694,6 +1694,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "renew-memory",
+ "renew-rhi",
  "renew-rng",
 ]
 

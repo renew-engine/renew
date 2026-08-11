@@ -48,8 +48,8 @@ display server, and the golden-image tests attest the bytes.
   per-vertex layout, and has no count at all because the geometry
   supplies it. `builtin` carries the embedded shader bundles — a colored
   triangle, a textured full-target quad, instanced quads with and
-  without per-instance depth, and the mesh pairs (sources and compile
-  record in [shaders/](shaders/README.md)).
+  without per-instance depth, the particle billboard, and the mesh
+  pairs (sources and compile record in [shaders/](shaders/README.md)).
 - `Mesh` — vertex and index bytes written once at creation and read-only
   to the GPU thereafter, in one allocation. Indices are `&[u32]`, and
   **every index is checked against the vertex count at creation**: an

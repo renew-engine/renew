@@ -9,17 +9,21 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Presentation-side particles: a fixed-capacity pool stepped at the simulation cadence, seeded from digested observables so replays reproduce identical visuals without the digest carrying a particle."
+purpose = "Presentation-side particles: a seeded fixed-capacity pool stepped at the simulation cadence, and (behind the render feature) the billboard renderer that draws what it packs."
 maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
 
-# The seeded generator and nothing else in v0: this half is pure
-# arithmetic over a pool, testable on any machine. The GPU-facing half
-# arrives as a module with its own dependency when the renderer lands.
+# The pure half's only dependency is the seeded generator, so pools are
+# testable on any machine; the GPU-facing half sits behind the `render`
+# feature with its own dependency below.
 [dependencies]
 renew-rng = { path = "../rng" }
+# The GPU half's dependency, behind its feature so the pure half stays
+# device-free and the removability story stays one crate wide: a
+# consumer that only steps pools never compiles a graphics API.
+renew-rhi = { path = "../rhi", default-features = false, optional = true }
 
 # Property tests for the pool's bounds and expiry — the containers row
 # of the testing table (the lerp endpoint is a bit-exact unit test
@@ -37,6 +41,8 @@ renew-memory = { path = "../core/memory" }
 # honest.
 [features]
 sanitized = []
+# The renderer module: billboard pipeline, atlas, the draw item.
+render = ["dep:renew-rhi"]
 
 [lints]
 workspace = true

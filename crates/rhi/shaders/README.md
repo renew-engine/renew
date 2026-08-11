@@ -286,3 +286,26 @@ so nobody re-derives whether comments reach SPIR-V. The arithmetic in
 all three stages is untouched: the same `mat4 * vec4` multiply reading
 the same sixty-four bytes from a different channel, which is what the
 byte-compared renders downstream attest.
+
+## particle.vert and .frag - compiled 2026-08-11
+
+The particle billboard: six generated vertices per instance expanded
+from the camera's right and up (pushed beside the matrix in one
+ninety-six-byte block), a forty-eight-byte instance stream at binding 1
+(centre and size, premultiplied colour, atlas rectangle), and a fragment
+stage that multiplies the atlas texel by the instance colour. Version
+output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O particle.vert -o particle.vert.spv
+> glslc -O particle.frag -o particle.frag.spv
+```
+
+1992 bytes and 564 bytes, the exact blobs `builtin` embeds.

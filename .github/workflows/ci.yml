@@ -535,6 +535,16 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-rhi --test golden --test device --test zero_alloc
+      # The particle renderer's oracle on the same pinned rasterizer,
+      # same rule: a pool's packed bytes through the billboard pipeline
+      # land in computed colours, twice identically, or the lane says
+      # so by name.
+      - name: Particle-renderer tests on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: |
+          cargo clippy -p renew-particles --features render --all-targets -- -D warnings
+          cargo test --package renew-particles --features render
       # The sprite renderer's oracles on the same pinned rasterizer,
       # under the same rule: its computed-image test must run exactly
       # here too, and its committed golden is only compared on this
@@ -859,6 +869,11 @@ jobs:
           # feature-gated unit tests (display-less-safe -- they open no
           # window), and the windowed arm live under the virtual display.
           # Keyboardless there: the bird falls; a legal run.
+          # The particle renderer, behind its feature: without this run
+          # the whole module never compiles under instrumentation and the
+          # gate measures nothing of it. The lavapipe driver above makes
+          # its golden run for real here.
+          cargo llvm-cov --no-report test -p renew-particles --features render
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
           cargo llvm-cov --no-report test -p renew-sample-cube --features window
           # The voxel game's three views, one run each. The line above

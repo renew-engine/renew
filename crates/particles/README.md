@@ -30,13 +30,27 @@ maturity, dependencies and core status.
 - **All allocation happens at construction**, gate-tested from the
   first commit; a burst past capacity saturates.
 
+## The renderer half, behind the `render` feature
+
+`ParticleRenderer` draws what the pool packed: camera-facing quads
+through a billboard pipeline, the camera and its right/up basis pushed
+per draw, depth tested without writing so particles respect the world
+and leave no footprint for each other. `CameraPush` packs the
+ninety-six bytes; `ParticleBlend` chooses additive (light that
+accumulates — order-independent, the recommended mode where sorting has
+not been paid for) or premultiplied alpha (media that occlude, accepted
+unsorted in v0). The atlas bytes are premultiplied RGBA8 — the same
+caller obligation every blending path in this engine carries. One
+renderer owns one per-frame buffer and yields one item per frame, which
+is the rendering crate's contract for per-frame bytes. The feature
+exists so a consumer that only steps pools never compiles a graphics
+API — the pure half stays device-free.
+
 ## What this deliberately is not, yet
 
-No renderer — the GPU-facing half (billboard pipeline, atlas, blend
-choice) arrives as its own module with its own dependency, and until
-then this crate touches no device. No continuous-rate emission, no
-per-particle rotation, no tile ranges: each lands with the first
-consumer that needs it, because surface built ahead of use is the
-pattern this repository's own register warns about. No sorting: the
-recommended blend for unsorted batches is additive, which is
-order-independent by arithmetic.
+No continuous-rate emission, no per-particle rotation, no tile ranges:
+each lands with the first consumer that needs it, because surface built
+ahead of use is the pattern this repository's own register warns about.
+No sorting: additive blending is order-independent by arithmetic, and
+the alpha mode documents its unsorted artifact where the choice is
+made.
