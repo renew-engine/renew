@@ -10,7 +10,7 @@
 
 use renew_fixed::Fixed;
 use renew_memory::{CountingAllocator, counters};
-use renew_ui::{Size, Style, Ui, UiLimits};
+use renew_ui::{Size, Style, Ui, UiEvent, UiLimits};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -88,4 +88,27 @@ fn the_steady_state_allocates_nothing() {
         }
     });
     verdict.expect("re-solving stays heap-silent");
+
+    // The interaction half: moving, clicking, and draining decisions
+    // works the preallocated queue and the retained rectangles, never
+    // the heap. One click first as warmup, then the window clicks and
+    // drains and asserts the decisions really flowed.
+    ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+    ui.handle(UiEvent::PointerPressed);
+    ui.handle(UiEvent::PointerReleased);
+    assert_eq!(ui.drain_outputs().count(), 1, "the warmup click must land");
+    let verdict = counters::quiet_window(5, || {
+        for _ in 0..8 {
+            ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+            ui.handle(UiEvent::PointerPressed);
+            ui.handle(UiEvent::PointerMoved { x: 6, y: 6 });
+            ui.handle(UiEvent::PointerReleased);
+            assert_eq!(
+                ui.drain_outputs().count(),
+                1,
+                "every windowed click must decide"
+            );
+        }
+    });
+    verdict.expect("interaction stays heap-silent");
 }

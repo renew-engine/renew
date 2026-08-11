@@ -1,10 +1,13 @@
 # renew-ui
 
-The retained widget tree and its fixed-point layout solver: an arena
-of generationally addressed nodes, capacities fixed at construction,
-solved into pixel rectangles by a trimmed flexbox subset over Q47.16.
-This crate is the simulation-side half of the UI — input handling and
-state digestion arrive as their own steps and walk what is built here.
+The retained widget tree, its fixed-point layout solver, and its
+integer-only interaction surface: an arena of generationally
+addressed nodes, capacities fixed at construction, solved into pixel
+rectangles by a trimmed flexbox subset over Q47.16, hit-tested into
+hover, press, and focus decisions that fold into the engine's state
+fingerprint. This crate is the simulation-side half of the UI;
+presentation arrives as its own crate and draws what is decided
+here.
 
 Machine-readable facts — maturity, dependencies, core status — live in
 this crate's manifest metadata (`Cargo.toml`, `[package.metadata.renew]`).
@@ -59,8 +62,8 @@ with the rest of flexbox landing when a real document needs it.
 Everything is `Fixed` (Q47.16), so a solve is integer arithmetic
 under the hood, the same on every target by construction. A test
 builds the same tree twice and compares every rectangle to the bit;
-the cross-target lane that turns that claim into evidence arrives
-with state digestion. Leftover space
+the cross-target determinism-lane scenario that turns that claim
+into three-platform evidence stands as its own step, next. Leftover space
 among growers is shared by largest remainder over raw fixed-point
 units — shares sum to the leftover exactly, property-tested, with
 ties breaking toward the earlier sibling. Both passes are iterative
@@ -70,3 +73,30 @@ nothing — the same counting-allocator gate holds both promises.
 Solving is retained behind one dirty flag: a clean tree with an
 unchanged viewport returns without walking. Exact per-node damage
 arrives with the compiled style tables.
+
+## Input and decisions
+
+The event surface is integer-only: pointer coordinates arrive as
+`i32` physical pixels through `Ui::handle`, and the one documented
+float-to-integer seam (`quantize_pointer`, in the maths crate beside
+the render interpolation factor) is applied by windowed drivers and
+the replay harness before events get here — so a recorded trace
+replays into the same integers everywhere, and no float exists in
+this crate for a digest to see.
+
+The v0 vocabulary is hover, press/release activation, and focus.
+Hit-testing walks the retained rectangles topmost-first (children
+over parents, later siblings over earlier); a press remembers its
+node, a release on the same node activates it — queueing
+`UiOutput::Activated` and moving focus there — and a release
+anywhere else abandons the press, the way every toolkit lets a
+mis-click be dragged off a button. The output queue is bounded by
+the node count; past that, decisions are dropped and counted, never
+silently lost.
+
+`Ui::absorb` folds the discrete decisions into the engine's state
+fingerprint: pointer, pressed, focus, the activation ordinal, and
+the overflow count. What it leaves out is named in the source beside
+it — hover is derived, geometry reaches the digest only by changing
+a decision, and a test pins exactly that: a padding tweak with no
+press between digests identically.

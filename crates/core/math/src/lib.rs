@@ -1,8 +1,9 @@
 //! Linear algebra value types: vectors, a column-major matrix, a
 //! quaternion, and an axis-aligned bounding box, all `f32` — plus
-//! [`Alpha`], the render interpolation factor, which lives here because
-//! this is the crate a simulation is mechanically forbidden from
-//! reaching.
+//! [`Alpha`], the render interpolation factor, and
+//! [`quantize_pointer`], the pointer's float-to-integer seam — both
+//! live here because this is the crate a simulation is mechanically
+//! forbidden from reaching.
 //!
 //! # Contract
 //!
@@ -27,11 +28,13 @@
 mod aabb;
 mod alpha;
 mod mat4;
+mod quantize;
 mod quat;
 mod vec;
 
 pub use aabb::Aabb3;
 pub use alpha::Alpha;
 pub use mat4::Mat4;
+pub use quantize::quantize_pointer;
 pub use quat::Quat;
 pub use vec::{Vec2, Vec3, Vec4};

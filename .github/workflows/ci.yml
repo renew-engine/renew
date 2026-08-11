@@ -179,7 +179,7 @@ jobs:
       # accumulator, and the bench suite.
       - name: Build and test without the frame loop
         run: |
-          sel="--workspace --exclude renew-frame --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
+          sel="--workspace --exclude renew-frame --exclude renew-ui --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
@@ -283,9 +283,10 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-camera $sel
           cargo build $sel
           cargo test $sel
-      # The widget tree: pure structure with no dependencies and no
-      # consumers yet — the UI's later layers and their first embedding
-      # game grow this list when they arrive.
+      # The widget tree: structure, layout, and interaction over the
+      # fixed-point and digest crates, no consumers yet — the UI's
+      # presentation crate and its first embedding game grow this list
+      # when they arrive.
       - name: Build and test without the widget tree
         run: |
           sel="--workspace --exclude renew-ui"
