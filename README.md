@@ -103,12 +103,13 @@ claim from the other side, and the reason the window is a feature rather than a 
 | **`renew-render2d`** | Sprites from an atlas, one instanced draw | `bootstrap` · optional |
 | **`renew-render3d`** | Indexed geometry, depth-tested, in submission order | `bootstrap` · optional |
 | **`renew-camera`** | Presentation-side viewpoints: a look-at view, a reversed-depth perspective, and a blend between ticks for display-rate smoothness | `bootstrap` · optional |
+| **`renew-snapshot`** | Two captures of one slot space blended by the interpolation factor, keyed so a recycled slot never inherits the previous tenant's motion | `bootstrap` · optional |
 | **`renew-particles`** | A fixed-capacity particle pool stepped at the simulation's cadence, seeded so replays reproduce the picture | `bootstrap` · optional |
 | **`renew-audio`** | Mixing and playback, behind the platform's device seam | `bootstrap` · optional |
 | **`renew-asset`** | Content-addressed asset packs, with every entry verifiable against its digest | `bootstrap` · optional |
 | **`renew-png`** | PNG encoding with no dependencies — pixels in, the bytes of a file out, so a sample can commit a picture of itself | `bootstrap` · optional |
 
-Twenty-three engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
+Twenty-six engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
 prints the live list with each crate's declared maturity, read from its manifest rather than from
 this table.
 

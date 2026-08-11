@@ -1,0 +1,39 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: a snapshot pair is a pure function of the captures it took
+# and the blend factor it was handed — it never reads a clock, never
+# touches the filesystem, never spawns a thread. Floats are its medium
+# on purpose: this crate is presentation-side, and the structure
+# checker's float fence is what keeps it out of every simulation
+# crate's closure.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a snapshot pair is advanced by the caller at the cadence the caller owns" },
+    { path = "std::time::SystemTime::now", reason = "a snapshot pair is advanced by the caller at the cadence the caller owns" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::thread::spawn", reason = "this crate never spawns; parallelism belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "a snapshot pair holds no randomness at all, and nothing self-seeding may suggest otherwise" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "self-seeding entropy has no place behind a reproducibility contract" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

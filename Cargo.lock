@@ -1900,6 +1900,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-snapshot"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-math",
+ "renew-memory",
+]
+
+[[package]]
 name = "renew-trace"
 version = "0.1.0"
 dependencies = [
