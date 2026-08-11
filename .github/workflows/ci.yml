@@ -888,6 +888,13 @@ jobs:
           # gate measures nothing of it. The lavapipe driver above makes
           # its golden run for real here.
           cargo llvm-cov --no-report test -p renew-particles --features render
+          # The widget tree's scenario binary: the comparison legs run
+          # it for real elsewhere; here it runs once so the entry
+          # point's lines are executed by the suite that measures them.
+          # Its two refusal arms are exempted by name — an exiting
+          # process does not reliably flush its counters, so covering
+          # them here would hinge on an exit-path detail.
+          cargo llvm-cov --no-report run -p renew-ui
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
           cargo llvm-cov --no-report test -p renew-sample-cube --features window
           # The voxel game's three views, one run each. The line above

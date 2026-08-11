@@ -1004,11 +1004,16 @@ type PinnedRun = (
     &'static [&'static str],
 );
 
-/// Glide reports two hashes; the samples added since report one each.
+/// Glide reports two hashes; every run added since reports one.
 const GLIDE_FIELDS: &[&str] = &["schedule_hash", "state_hash"];
 const ONE_DIGEST: &[&str] = &["digest"];
 
-const PINNED_RUNS: [PinnedRun; 9] = [
+const PINNED_RUNS: [PinnedRun; 10] = [
+    // The widget tree: a scripted menu session through the fixed-point
+    // solver, the hit-tester, and the decision fold. Everything in it
+    // is integer arithmetic, and this row is what turns that claim
+    // into three targets agreeing rather than one target asserting.
+    ("ui/menu-16", "renew-ui", &[], ONE_DIGEST),
     (
         "glide/seed-7-600",
         "renew-sample-glide",
@@ -1084,9 +1089,9 @@ const PINNED_RUNS: [PinnedRun; 9] = [
 ///
 /// Each run contributes whichever digests its own report carries — two for
 /// the glide sample, which computes a frame-schedule hash beside its world
-/// hash, and one for the three added since. A lane that assumed one shape
-/// would tell the others their report was missing a field, which is true and
-/// useless.
+/// hash, and one apiece for every run added since. A lane that assumed one
+/// shape would tell the others their report was missing a field, which is
+/// true and useless.
 fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
     let runner = match Runner::anchored("determinism", json_mode) {
         Ok(runner) => runner,

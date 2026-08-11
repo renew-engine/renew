@@ -101,12 +101,12 @@ reason = "The arm that clears a voice whose sound index is missing. A voice is o
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [80, 81, 82, 1090, 1091, 1092, 1093, 1099, 1100, 1102, 1103, 1104, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1125, 1129, 1130, 1131, 1132, 1133, 1134, 1135, 1136, 1137, 1138, 1139, 1140, 1142, 1146, 1147]
-reason = "The emit half of determinism: it spawns nine cargo runs across four samples and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."
+lines = [80, 81, 82, 1095, 1096, 1097, 1098, 1104, 1105, 1107, 1108, 1109, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1122, 1123, 1124, 1125, 1126, 1127, 1128, 1129, 1130, 1134, 1135, 1136, 1137, 1138, 1139, 1140, 1141, 1142, 1143, 1144, 1145, 1147, 1151, 1152]
+reason = "The emit half of determinism: it spawns a cargo run per pinned scenario and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [1153]
+lines = [1158]
 reason = "The comparison refusing to start because no workspace root is above it. Every other subcommand carries the same arm and reaches it the same way -- never, from a test, because a test runs inside the workspace it is testing. Reaching it would mean invoking the binary from outside any cargo project, which is a property of where a caller stands rather than of anything this code does."
 
 [[exempt]]
@@ -128,3 +128,8 @@ reason = "A test double's required method that cannot be called: its argument bo
 file = "crates/core/platform/src/window.rs"
 lines = [404, 405, 406, 407, 408, 409, 410, 411, 412, 413]
 reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run."
+
+[[exempt]]
+file = "crates/ui/src/bin/ui_digest.rs"
+lines = [33, 34, 41, 42]
+reason = "The scenario binary's two refusal arms: the argument guard (a drifted pinned-run row must fail loudly rather than run a different scenario under the same name) and the impossible-construction arm (reachable only if a four-insert scenario overflows a sixteen-node limit; a vacuous zero digest must never reach the comparison). Each is two lines - a message and a nonzero exit - and an exiting process does not reliably flush its coverage counters, so exercising them under the instrumented lane would hinge on an exit-path implementation detail rather than prove anything. The happy path is executed by the lane's own run of the binary."
