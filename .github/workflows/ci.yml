@@ -181,7 +181,7 @@ jobs:
       # accumulator, and the bench suite.
       - name: Build and test without the frame loop
         run: |
-          sel="--workspace --exclude renew-frame --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench"
+          sel="--workspace --exclude renew-frame --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
@@ -287,11 +287,13 @@ jobs:
           cargo test $sel
       # The widget tree: structure, layout, and interaction over the
       # fixed-point and digest crates. Its consumers are the UI
-      # presenter, the windowed game whose pause menu embeds it, and
-      # the bench suite that times its solve from its bench targets.
+      # presenter, the windowed game whose pause menu embeds it, the
+      # bench suite that times its solve, and the tool whose document
+      # compiler builds trees to capture — excluded alongside, as the
+      # asset cell already excludes it.
       - name: Build and test without the widget tree
         run: |
-          sel="--workspace --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-bench"
+          sel="--workspace --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui $sel
           cargo build $sel
           cargo test $sel
@@ -360,7 +362,7 @@ jobs:
       # each went red here until the cell named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench"
+          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel
