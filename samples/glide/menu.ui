@@ -1,0 +1,17 @@
+// The pause menu, as data. What the buttons say is still the game's
+// business — this document owns the boxes they say it in, and how
+// those boxes dress when pointed at, pressed, and left alone. The
+// sizes are the measured labels plus their padding, held against the
+// font by a test beside the loader.
+column gap=8 justify=center align=center {
+    // Resume
+    node w=72 h=25 bg=#282c34e6 {
+        hover { bg=#3a4152e6 }
+        pressed { bg=#20242ce6 }
+    }
+    // Restart
+    node w=66 h=25 bg=#282c34e6 {
+        hover { bg=#3a4152e6 }
+        pressed { bg=#20242ce6 }
+    }
+}
