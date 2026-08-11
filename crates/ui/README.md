@@ -47,6 +47,18 @@ vocabulary; richer visuals arrive with the compiled style tables.
 The solver's arithmetic type is re-exported as `Fixed`, because the
 API speaks it.
 
+The `document` module reads the compiled document blob: an
+eight-byte magic, a version refused outright when unknown, whole-file
+size accounting checked before any entry, and a forward-parent rule
+that makes every validated blob a tree by construction — no cycle,
+orphan, or forward reference can survive `Document::read`, so
+instantiation never re-checks. `capture` is the inverse, used by the
+round-trip oracle and one day by the compiler's writer. The blob
+carries structure and base styles in version 1; the version field is
+the evolution path for the compiled state tables. Being a parser of
+external data, it is fuzz-covered from its first commit, and the
+recorded corpus replays as a merge-gating test.
+
 The `text` module holds the baked face's integer advance table and a
 pure-integer `measure` — the same sum on every target, which is what
 lets a simulation size a button to its label without a float or a

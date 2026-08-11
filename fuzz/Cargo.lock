@@ -84,6 +84,14 @@ name = "renew-audio"
 version = "0.1.0"
 
 [[package]]
+name = "renew-fixed"
+version = "0.1.0"
+
+[[package]]
+name = "renew-frame"
+version = "0.1.0"
+
+[[package]]
 name = "renew-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -91,11 +99,20 @@ dependencies = [
  "renew-asset",
  "renew-audio",
  "renew-trace",
+ "renew-ui",
 ]
 
 [[package]]
 name = "renew-trace"
 version = "0.1.0"
+
+[[package]]
+name = "renew-ui"
+version = "0.1.0"
+dependencies = [
+ "renew-fixed",
+ "renew-frame",
+]
 
 [[package]]
 name = "shlex"

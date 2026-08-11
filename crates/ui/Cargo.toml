@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The simulation-side widget tree, its Q47.16 flex-subset layout solver, and its integer-only interaction surface: generationally addressed nodes solved into pixel rectangles behind a dirty flag, hit-tested for hover/press/focus decisions that fold into the engine state fingerprint."
+purpose = "The simulation-side widget tree, its Q47.16 flex-subset layout solver, its integer-only interaction surface, and the versioned document blob trees are read from: generationally addressed nodes solved into pixel rectangles behind a dirty flag, hit-tested for hover/press/focus decisions that fold into the engine state fingerprint."
 maturity = "bootstrap"
 core = false
 extension_points = []
