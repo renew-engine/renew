@@ -1256,6 +1256,23 @@ fn every_driver_failure_ladder_behaves() {
             )),
         },
     ));
+    // E12 fails after the device exists: the unwinder has the device
+    // itself to take back down beside the instance and messenger.
+    verdicts.push(bringup_case(
+        "E12 sampled-set-layout/initialization-failed",
+        "vkCreateDescriptorSetLayout=ERROR_INITIALIZATION_FAILED",
+        |got| match got {
+            Err(DeviceError::Creation {
+                call: "vkCreateDescriptorSetLayout",
+                ..
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "Creation(vkCreateDescriptorSetLayout)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
     // E3 fails between the instance and the device: the unwinder has an
     // instance (and possibly a messenger) to take back down.
     verdicts.push(bringup_case(
