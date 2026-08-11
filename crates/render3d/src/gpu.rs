@@ -565,6 +565,15 @@ const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowM
 ///    from the light, depth only;
 /// 2. a surface pass whose [`Self::item`]s draw the same world through
 ///    the camera, dimmed where the map recorded something nearer.
+///
+/// # Colour is not carried through unchanged
+///
+/// As [`CameraRenderer`]: this path fades toward a horizon with
+/// distance, with the same two constants, because pipelines drawing
+/// one world must fade alike or the seam between them shows. The
+/// shadow term multiplies the surface before that fade, so a shadowed
+/// face at the far plane is faded, not doubly darkened. The constants
+/// stay in the shader for the reason recorded on [`CameraRenderer`].
 pub struct ShadowedCameraRenderer {
     caster: RenderPipeline,
     lit: RenderPipeline,
@@ -579,10 +588,12 @@ impl ShadowedCameraRenderer {
     ///
     /// # Errors
     ///
-    /// As [`TexturedCameraRenderer::new`], plus a refusal to create
-    /// the shadow map — an adapter whose depth format cannot be
-    /// sampled refuses at creation, by the rendering crate's own
-    /// pre-check.
+    /// As [`TexturedCameraRenderer::new`], plus the shadow map's own
+    /// refusals: [`Render3dError::DepthUnsupported`] on an adapter
+    /// with no depth format in the chain, or one whose depth format
+    /// cannot be sampled (the rendering crate pre-checks the feature
+    /// rather than discovering it in a later frame), and
+    /// [`Render3dError::Texture`] for any other creation failure.
     pub fn new(
         device: &Device,
         format: TargetFormat,
@@ -606,7 +617,18 @@ impl ShadowedCameraRenderer {
                     height: shadow_size,
                 },
             ))
-            .map_err(Render3dError::Texture)?;
+            // A depthless adapter refuses the map by name, and that
+            // refusal is this crate's own variant rather than a
+            // texture failure — the same translation the depth-tested
+            // pipelines make, for the same reason: the environment
+            // declined, and a reader sent to "creating the texture"
+            // would be sent to the wrong thing entirely.
+            .map_err(|error| match error {
+                TargetError::DepthUnsupported { chain } => {
+                    Render3dError::DepthUnsupported { chain }
+                }
+                other => Render3dError::Texture(other),
+            })?;
         let shadow_binding = device.create_binding(&renew_rhi::BindingDesc::new(
             renew_rhi::BindingSource::Image(&shadow_map),
             &sampler,
@@ -741,6 +763,51 @@ pub fn pass<'a>(color: &'a [Attachment], items: &'a [Item<'a>]) -> Pass<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The shadowed pack carries the camera FIRST and the light
+    /// second, and a swap is what this proves.** The two matrices are
+    /// the same type and the same size, so the compiler cannot tell
+    /// them apart: a transposed argument order draws a whole world
+    /// lit from the wrong place, which reads as a plausible picture
+    /// rather than a failure. Thirty-two distinct values (1..=32, all
+    /// exact in `f32`), so a swap, a reversal or an offset shows.
+    #[test]
+    fn the_shadow_pack_puts_the_camera_first_and_the_light_second() {
+        let mut value = 1.0f32;
+        let mut next = || {
+            let taken = value;
+            value += 1.0;
+            [taken, taken + 100.0, taken + 200.0, taken + 300.0]
+        };
+        let camera = [next(), next(), next(), next()];
+        let light = [next(), next(), next(), next()];
+        let packed = ShadowMatrices::from_columns(camera, light);
+        let bytes = packed.bytes();
+        assert_eq!(bytes.len(), SHADOW_PUSH_BYTES as usize);
+        let mut at = 0;
+        for (half, columns) in [("camera", camera), ("light", light)] {
+            for (index, column) in columns.iter().enumerate() {
+                for (row, expected) in column.iter().enumerate() {
+                    let found = f32::from_ne_bytes([
+                        bytes[at],
+                        bytes[at + 1],
+                        bytes[at + 2],
+                        bytes[at + 3],
+                    ]);
+                    assert_eq!(
+                        found.to_bits(),
+                        expected.to_bits(),
+                        "{half} column {index} row {row} at byte {at}"
+                    );
+                    at += 4;
+                }
+            }
+        }
+        // The camera half is byte-identical to what the single-matrix
+        // pack produces, so the two push blocks agree where they
+        // overlap and a shader reading either finds the same bytes.
+        assert_eq!(&bytes[..64], Camera::from_columns(camera).bytes());
+    }
 
     /// **The packing, driven with no GPU at all.** The crate claims the
     /// bytes cross unchanged in column order; that claim is arithmetic,

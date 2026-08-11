@@ -54,11 +54,18 @@ impl std::error::Error for RenderError {}
 /// couple of kilobytes, large enough that a block is several pixels.
 pub const SIZE: u32 = 512;
 
-/// The shadow map's side, in texels. Four texels per world unit over
-/// this arena's diagonal — enough that a block's shadow has a clean
-/// edge at the committed render's size, cheap enough that the map
-/// costs four megabytes.
-pub const SHADOW_MAP_SIZE: u32 = 1024;
+/// The shadow map's side, in texels.
+///
+/// The sun's box spans the arena's bounding sphere — about 59 world
+/// units across for this arena — so 2048 texels is roughly 35 per
+/// world unit, or 35 across one block's face. **Chosen by comparing
+/// pictures, not by taste**: at 1024 the shadow the far wall throws
+/// across the floor in `digging.png` carried a step visible at the
+/// committed size, and doubling the side halved it. It still steps
+/// where the light grazes a surface — one unfiltered tap decides
+/// every edge (DEBT-0067) — but at block scale the edges read clean.
+/// The map costs sixteen megabytes of device memory.
+pub const SHADOW_MAP_SIZE: u32 = 2048;
 
 /// The background. Not black and not any face colour, so a gap in the
 /// geometry reads as a gap rather than as a shadowed surface.
@@ -340,8 +347,7 @@ pub(crate) fn draw_scene(
         .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
     // The caster's own mesh: the same world minus the roof — see
-    // `casting_scene` for why the lamp's map must not hold its own
-    // fixture's ceiling.
+    // `casting_scene` for why the sun's map leaves the roof out.
     let caster_mesh = renderer
         .upload(&device, caster)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
@@ -450,23 +456,21 @@ pub fn to_png_through(
     std::fs::write(path, png).map_err(|error| RenderError::Output(error.to_string()))
 }
 
-/// The world-space corner below every cell in `grid`.
+/// The world as the sun's shadow map sees it: every solid except the
+/// ceiling layer.
 ///
-/// **Derived rather than written down.** These were the arena's own
-/// numbers, typed in — correct for the one world this sample builds and
-/// silently wrong for any other, framing a box that no longer matches
-/// what is drawn. A cell spans one unit centred on its integer, so the
-/// world starts half a unit below the lowest cell.
-/// The world as the lamp's shadow map sees it: every solid except
-/// the ceiling layer.
+/// **The roof does not cast, and that is what lets a sun light a
+/// closed box.** The arena's shell has a ceiling; a light outside it
+/// would find every ray stopped there and dim the whole interior
+/// uniformly, which is not a picture of anything. Leaving the top
+/// layer out of the map is the honest form of "the roof is glass":
+/// the walls, the mound and everything a player builds still cast,
+/// and only the surface nobody looks at stops blocking the light.
 ///
-/// **The roof is the fixture's own housing.** The lamp hangs just
-/// under it, and a tilted interior light sees the far reaches of its
-/// own ceiling IN FRONT of itself — which would record the roof as
-/// the nearest surface over half the map and put half the floor in
-/// its "shadow". Excluding the top layer from the caster is the
-/// standard shape of the fix, and it is honest: nothing under a roof
-/// expects the roof's shadow from the lamp bolted to it.
+/// The aim highlight is deliberately absent (`None`): what a player
+/// is pointing at changes how a cell is *drawn*, never what it
+/// blocks, and a caster that tracked the aim would remesh the arena
+/// every time the mouse crossed a block boundary.
 pub(crate) fn casting_scene(grid: &Grid) -> Scene {
     let (width, height, depth) = grid.size();
     let min = grid.min();
@@ -480,6 +484,13 @@ pub(crate) fn casting_scene(grid: &Grid) -> Scene {
     build_world_space(&roofless, None)
 }
 
+/// The world-space corner below every cell in `grid`.
+///
+/// **Derived rather than written down.** These were the arena's own
+/// numbers, typed in — correct for the one world this sample builds and
+/// silently wrong for any other, framing a box that no longer matches
+/// what is drawn. A cell spans one unit centred on its integer, so the
+/// world starts half a unit below the lowest cell.
 pub(crate) fn low_corner(grid: &Grid) -> [f32; 3] {
     let min = grid.min();
     [
@@ -524,6 +535,46 @@ fn normalised(component: i32) -> f32 {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// **The roof is left out of the shadow map, and only the roof.**
+    /// This is what lets a sun light a closed box, so it is worth more
+    /// than a picture a human must eyeball: a caster that kept the
+    /// ceiling would dim the whole interior uniformly, and one that
+    /// dropped a layer too many would stop a wall casting. The grid is
+    /// deliberately lopsided with a non-zero minimum, because "the top
+    /// layer" is arithmetic that a cubic grid at the origin cannot
+    /// distinguish from several wrong answers.
+    #[test]
+    fn the_caster_drops_the_ceiling_and_nothing_else() {
+        use renew_sample_cube_world::grid::{Cell, Grid};
+        let min = Cell::new(-3, 5, 2);
+        let mut grid = Grid::new(min, (4, 3, 5));
+        let top = min.y + 3 - 1;
+        // One solid on the ceiling, one directly below it.
+        let roof_cell = Cell::new(-2, top, 4);
+        let under_cell = Cell::new(-2, top - 1, 4);
+        grid.fill(roof_cell, roof_cell, renew_sample_cube_world::grid::STONE);
+        let roof_only = super::casting_scene(&grid);
+        assert!(
+            roof_only.is_empty(),
+            "a world whose only solid is in the ceiling must cast nothing"
+        );
+        grid.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
+        let with_block = super::casting_scene(&grid);
+        assert!(
+            !with_block.is_empty(),
+            "a block below the ceiling must cast"
+        );
+        // And it casts as much as it would with no roof above it at
+        // all: the ceiling contributes nothing either way.
+        let mut roofless = Grid::new(min, (4, 3, 5));
+        roofless.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
+        assert_eq!(
+            with_block.vertex_count(),
+            super::casting_scene(&roofless).vertex_count(),
+            "the ceiling changed what the block below it casts"
+        );
+    }
+
     use super::*;
 
     /// An all-air world has no faces, and that is data rather than a bug:

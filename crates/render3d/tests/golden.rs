@@ -831,20 +831,28 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
 
     // The floor spans the whole target at depth 0.3; the blocker is a
-    // nearer strip over clip x in [-0.25, 0.25]. The light SHEARS x by
-    // half the depth (a translation would keep its rays parallel to
-    // the camera's, hiding every cast directly behind its caster): a
-    // ray through the blocker at depth 0.8 lands on the floor at depth
-    // 0.3 shifted +0.25 in x, so the cast strip is x in [0, 0.5] —
-    // half of it in the camera's plain view beside the blocker.
+    // nearer patch over clip x in [-0.25, 0.25] AND clip y in [-1, 0].
+    // The light SHEARS x by half the depth (a translation would keep
+    // its rays parallel to the camera's, hiding every cast directly
+    // behind its caster): a ray through the blocker at depth 0.8 lands
+    // on the floor at depth 0.3 shifted +0.25 in x, so the cast patch
+    // is x in [0, 0.5] — half of it in the camera's plain view beside
+    // the blocker.
+    //
+    // **Bounded in y deliberately.** A blocker spanning the full
+    // height would make every column of the map constant, and a
+    // shadow-uv lookup that flipped v would sample an identical texel
+    // and pass — the classic silent bug this suite exists to catch.
+    // Bounded, the cast covers clip y in [-1, 0] only: the top half of
+    // the screen, since clip y points down.
     let mut scene = Scene::new();
     full_quad(&mut scene, 0.3, [1.0, 1.0, 1.0, 1.0]);
     scene.quad(
         [
             [-0.25, -1.0, 0.8],
             [0.25, -1.0, 0.8],
-            [0.25, 1.0, 0.8],
-            [-0.25, 1.0, 0.8],
+            [0.25, 0.0, 0.8],
+            [-0.25, 0.0, 0.8],
         ],
         [1.0, 1.0, 1.0, 1.0],
     );
@@ -862,12 +870,18 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     )?;
     let mesh = renderer.upload(&device, &scene)?;
 
-    // In the shadowed strip's middle and in the open floor at the
-    // mirror position: same floor, same texel, same fade — the only
-    // difference the shadow term.
+    // Three probes on the floor, all the same texel and the same
+    // fade, differing only in what the map says about them:
+    //   - `shadowed`: inside the cast patch (x in the strip, y in the
+    //     blocked half),
+    //   - `lit_beside`: the same row, open floor away from the strip,
+    //   - `lit_below`: the same COLUMN, the half of the screen the
+    //     bounded blocker does not cover — the v-flip discriminator.
     let shadowed_x = 11 * SIZE / 16; // clip x = 0.375: cast strip, beside the blocker
     let open_x = SIZE / 4; // clip x = -0.5: open floor
-    let mut draw = |cast: bool| -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    let shadow_y = SIZE / 4; // clip y = -0.5: the blocked half (clip y points down)
+    let open_y = 3 * SIZE / 4; // clip y = +0.5: below the blocker's reach
+    let draw = |cast: bool| -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
         let run = |target: &mut renew_rhi::OffscreenTarget|
         -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             let casting_items = [renderer.caster_item(&mesh, &camera)];
@@ -901,23 +915,40 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         "the same open frame twice diverged"
     );
 
-    let y = SIZE / 2;
-    let shadowed = at(&cast_first, shadowed_x, y);
-    let lit_beside = at(&cast_first, open_x, y);
-    let unshadowed = at(&open_first, shadowed_x, y);
-    // The strip is dimmed, not black: well below its lit mirror image,
-    // well above zero.
+    let shadowed = at(&cast_first, shadowed_x, shadow_y);
+    let lit_beside = at(&cast_first, open_x, shadow_y);
+    let lit_below = at(&cast_first, shadowed_x, open_y);
+    let unshadowed = at(&open_first, shadowed_x, shadow_y);
+    // The patch is dimmed, not black: well below its lit neighbour,
+    // and well above zero — the dim factor is a little over half, so a
+    // threshold of 100 admits the shipped value (~138) while refusing
+    // anything that reads as a hole.
     assert!(
         u32::from(shadowed[0]) * 10 < u32::from(lit_beside[0]) * 8,
-        "the shadowed strip {shadowed:?} should be darker than the open floor {lit_beside:?}"
+        "the shadowed patch {shadowed:?} should be darker than the open floor {lit_beside:?}"
     );
-    assert!(shadowed[0] > 20, "a shadow is a dimming, got {shadowed:?}");
+    assert!(shadowed[0] > 100, "a shadow is a dimming, got {shadowed:?}");
+    // The same column, the other half of the screen: the bounded
+    // blocker casts nothing there, so it must read exactly like open
+    // floor. A shadow-uv lookup with v flipped would put the cast
+    // here instead, and this is what would catch it.
+    assert_eq!(
+        lit_below, lit_beside,
+        "the half the blocker does not cover must be lit; a flipped shadow uv would \
+         darken it instead"
+    );
     // With an empty caster the same pixel reads like the open floor:
     // what dimmed it was the map's contents, nothing else.
     assert_eq!(
         unshadowed, lit_beside,
-        "an empty map must light the strip exactly like the open floor"
+        "an empty map must light the patch exactly like the open floor"
     );
+    // The renderer names itself without leaking a handle, as its
+    // siblings do — asserted here because this suite is where a
+    // device exists to build one.
+    let shown = format!("{renderer:?}");
+    assert!(shown.starts_with("ShadowedCameraRenderer"), "{shown}");
+    assert!(!shown.contains("0x"), "a handle leaked into {shown}");
 
     drop(mesh);
     drop(renderer);

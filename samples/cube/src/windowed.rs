@@ -260,9 +260,16 @@ struct Gpu {
     /// arena's bounds ever move.
     light: RenderCamera,
     light_columns: [[f32; 4]; 4],
-    /// The caster's own mesh: the world minus the roof — the lamp's
-    /// map must not hold its own fixture's ceiling. Rebuilt with the
-    /// world mesh, from the same edits.
+    /// Which edit count the caster mesh was built from. Its own
+    /// counter rather than sharing the world mesh's: the caster is a
+    /// function of the blocks ALONE (`casting_scene` never sees the
+    /// aim), so rebuilding it when the player merely turns would remesh
+    /// the whole arena into byte-identical geometry — and tracking it
+    /// separately is also what lets a refused upload be re-asked on the
+    /// next frame instead of being skipped for that world state.
+    cast_at: (u32, u32),
+    /// The caster's own mesh: the world minus the roof, which is what
+    /// lets a sun light a closed box. Rebuilt when the blocks change.
     caster_mesh: Mesh,
     /// The world's geometry, uploaded once and redrawn from every angle.
     ///
@@ -558,6 +565,7 @@ impl CubeApp {
             light_columns,
             mesh,
             caster_mesh,
+            cast_at: self.world.edits(),
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
             overlay,
@@ -604,14 +612,22 @@ impl CubeApp {
             gpu.mesh = mesh;
             gpu.built_at = edits;
             gpu.aimed_at = aimed;
-            // The caster follows the same edits; a refused rebuild
-            // keeps the old shadows for a frame rather than none.
-            if let Ok(caster) = gpu.renderer.upload(
+        }
+
+        // The caster is rebuilt when the BLOCKS change, which is not
+        // the same event as the world mesh's: that one also rebuilds
+        // when the aim moves, and the aim is invisible to the shadow.
+        // A refused upload leaves `cast_at` behind, so the next frame
+        // asks again rather than shadowing a world that no longer
+        // exists for as long as the player stands still.
+        if gpu.cast_at != edits
+            && let Ok(caster) = gpu.renderer.upload(
                 &gpu.device,
                 &crate::render::casting_scene(self.world.grid()),
-            ) {
-                gpu.caster_mesh = caster;
-            }
+            )
+        {
+            gpu.caster_mesh = caster;
+            gpu.cast_at = edits;
         }
 
         // A resize changes what "square" means, so the arms are rebuilt

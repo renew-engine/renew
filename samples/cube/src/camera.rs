@@ -43,16 +43,25 @@ pub fn player_eye_view(world: &Cube) -> View {
     View::look_at(eye, eye + look)
 }
 
-/// The arena's lamp: an orthographic light hung just under the
-/// ceiling, tilted off-centre so every cast shadow falls the same
-/// visible way.
+/// The arena's sun: a fixed directional light, tilted so every cast
+/// shadow leans the same visible way.
 ///
-/// **A lamp, not a sun, because this arena is a closed box.** The
-/// world's shell has a ceiling; a sun outside it would put the entire
-/// interior in its own roof's shadow — one uniform dimming, which is
-/// no picture at all. Hanging the light inside, with the ceiling
-/// behind its near plane, means the roof never casts while every
-/// block and wall does.
+/// **A sun over a closed box works because the roof does not cast.**
+/// The world's shell has a ceiling, and every ray from outside would
+/// stop there — one uniform dimming, which is no picture at all. What
+/// makes the interior lit is [`crate::render::casting_scene`], which
+/// leaves the top layer out of the shadow map: the sun shines in as
+/// though the roof were glass, and the walls, the mound and anything a
+/// player builds all cast onto the floor.
+///
+/// **The box is fitted to the arena's bounding sphere, and that is
+/// what makes it total.** The eye sits two radii back along the light
+/// direction, the half-extents are one radius, and the depth range
+/// runs from half a radius to three and a half — so every point within
+/// a radius of the centre is inside the box from *any* direction the
+/// light might come from. A frustum fitted to the room's corners
+/// instead would depend on the tilt, and the first arrangement that
+/// clipped a corner would draw the clip line itself as a shadow.
 ///
 /// **Fixed, because a shadow is evidence too.** A light that moved
 /// would make every picture a function of when it was taken; this one
@@ -63,30 +72,19 @@ pub fn sun_light(low: [f32; 3], high: [f32; 3]) -> LightCamera {
     let low = Vec3::new(low[0], low[1], low[2]);
     let high = Vec3::new(high[0], high[1], high[2]);
     let centre = (low + high) * 0.5;
-    // Off-centre by fixed fractions of the room, so shadows lean
-    // toward +x/+z instead of pooling under their casters; just under
-    // the ceiling's inner face (the shell's top layer ends half a unit
-    // below `high`, and the lamp hangs a little below that).
-    let eye = Vec3::new(
-        centre.x + (high.x - centre.x) * 0.38,
-        high.y - 1.6,
-        centre.z + (high.z - centre.z) * 0.26,
-    );
-    let floor_centre = Vec3::new(centre.x, low.y, centre.z);
-    // The box: half the room's diagonal on both axes covers every
-    // interior cell from the tilted eye, with slack — geometry on the
-    // exact edge of the map casts badly, and texels are cheap.
-    let half = (high - low).length() * 0.6;
+    let extent = high - low;
+    // Where the light comes FROM, as fractions of the room's own size:
+    // mostly above, leaning over +x and +z so shadows fall away from
+    // the corner the pictures are taken from rather than pooling under
+    // their casters. Normalised from the room's proportions, so the
+    // tilt reads the same in a room of any shape.
+    let toward_sun = Vec3::new(extent.x * 0.30, extent.y * 0.80, extent.z * 0.22).normalize();
+    // The bounding sphere of the whole shell. Rotation-invariant: no
+    // tilt can put a corner outside a box fitted to it.
+    let radius = extent.length() * 0.5;
     LightCamera {
-        view: View::look_at(eye, floor_centre),
-        projection: Orthographic::new(
-            half,
-            half,
-            // The near plane sits just past the lamp, which is what
-            // keeps the ceiling above it out of the map entirely.
-            0.2,
-            (high - low).length() + 2.0,
-        ),
+        view: View::look_at(centre + toward_sun * (radius * 2.0), centre),
+        projection: Orthographic::new(radius, radius, radius * 0.5, radius * 3.5),
     }
 }
 
@@ -149,6 +147,74 @@ fn scalar(value: renew_fixed::Fixed) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Every corner of the arena is inside the sun's box, from any
+    /// tilt.** This is the rule a shadow map lives or dies by: a
+    /// caster clipped by the light's frustum does not merely lose its
+    /// shadow, it makes the clip plane ITSELF read as a hard shadow
+    /// edge across the floor — a straight line no geometry explains.
+    /// Corners rather than a sampled interior, because the frustum is
+    /// convex: if the eight corners are in, everything between them
+    /// is.
+    #[test]
+    fn every_arena_corner_sits_inside_the_suns_box() {
+        // Deliberately not the arena's own numbers: a lopsided room
+        // with an off-origin minimum exercises the fitting rather than
+        // one lucky shape. The square room is the arena's case.
+        for (low, high) in [
+            ([-9.5f32, -0.5, -9.5], [9.5f32, 8.5, 9.5]),
+            ([-3.0, 0.0, -40.0], [37.0, 4.0, -2.0]),
+            ([100.0, 100.0, 100.0], [101.0, 101.0, 101.0]),
+        ] {
+            let matrix = sun_light(low, high).view_projection();
+            for corner in [
+                [low[0], low[1], low[2]],
+                [high[0], low[1], low[2]],
+                [low[0], high[1], low[2]],
+                [high[0], high[1], low[2]],
+                [low[0], low[1], high[2]],
+                [high[0], low[1], high[2]],
+                [low[0], high[1], high[2]],
+                [high[0], high[1], high[2]],
+            ] {
+                let clip =
+                    matrix.transform(renew_math::Vec4::new(corner[0], corner[1], corner[2], 1.0));
+                // Orthographic: w is one, so clip space IS normalised
+                // device space and no divide is needed.
+                assert!(
+                    (clip.w - 1.0).abs() < 1e-5,
+                    "corner {corner:?} of {low:?}..{high:?} has w {}",
+                    clip.w
+                );
+                assert!(
+                    clip.x.abs() <= 1.0 && clip.y.abs() <= 1.0,
+                    "corner {corner:?} of {low:?}..{high:?} falls outside the map at                      ({}, {})",
+                    clip.x,
+                    clip.y
+                );
+                assert!(
+                    (0.0..=1.0).contains(&clip.z),
+                    "corner {corner:?} of {low:?}..{high:?} is clipped in depth at {}",
+                    clip.z
+                );
+            }
+        }
+    }
+
+    /// The sun is a constant of the arena's corners: the same room
+    /// always produces the same matrix, so a committed picture is a
+    /// function of the world and nothing else.
+    #[test]
+    fn the_sun_is_a_function_of_the_room_alone() {
+        let first = sun_light([-9.5, -0.5, -9.5], [9.5, 8.5, 9.5]);
+        let again = sun_light([-9.5, -0.5, -9.5], [9.5, 8.5, 9.5]);
+        assert_eq!(first, again);
+        let elsewhere = sun_light([-9.5, -0.5, -9.5], [9.5, 12.5, 9.5]);
+        assert_ne!(
+            first, elsewhere,
+            "a differently-shaped room must fit a different box"
+        );
+    }
 
     /// The player's camera stands where the player stands and looks
     /// where the player looks — the integration this sample owns, now
