@@ -76,22 +76,22 @@ reason = "The depthless-adapter arm of target creation: no depth image is built 
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [492, 493, 494]
+lines = [494, 495, 496]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter. Same unreachability as the creation arm above: every measuring lane's adapter offers a depth format, and the query that decides it cannot be faulted. The error construction is driven by the display test in the error module; the branch condition's false side runs on every depth-carrying frame."
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [981, 982, 983]
+lines = [993, 994, 995]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [506, 507, 508]
+lines = [508, 509, 510]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter, window side - same unreachability as the offscreen twin: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [1270]
+lines = [1272]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
 
 [[exempt]]
