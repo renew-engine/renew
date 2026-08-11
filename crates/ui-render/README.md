@@ -37,6 +37,20 @@ atlas region is a uniform white texel, so clipping the rectangle is
 clipping the image — the proportional-UV half arrives with the first
 non-uniform region.
 
+## Text
+
+The atlas carries a baked typeface: Arimo Regular (the Apache-2.0
+croscore release) rasterized offline at one fixed size into a glyph
+strip below the tile row — the runtime ships bitmaps and integers,
+never a font file or a rasterizer. The recipe, the face's pinned
+identity, and the licence notices live in `bake/`. `emit_text` draws
+a line of glyph sprites advancing by the same integer table the
+simulation measures with, so a label is exactly as wide as the tree
+believed; bitmaps sit a fixed bearing to the pen's left, so ink may
+reach that margin past either end of the measured box — bearings and
+antialiasing live there, as type does. Characters outside the baked
+range draw and measure as the question mark.
+
 ## Atlas and evidence
 
 The atlas is generated — a white fill tile and a chrome border tile
