@@ -1606,6 +1606,7 @@ dependencies = [
  "renew-jobs",
  "renew-math",
  "renew-memory",
+ "renew-particles",
  "renew-platform",
  "renew-rng",
 ]
