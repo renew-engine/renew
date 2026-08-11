@@ -162,7 +162,6 @@ fn relabel_into<const N: usize>(
     true
 }
 
-/// The game as the window seam sees it.
 // Sprites reserved for HUD and label text beyond the menu's own
 // quads: enough for the score line and both button labels.
 const UI_TEXT_SPRITES: u32 = 64;
@@ -178,6 +177,17 @@ const LABEL_INK: [f32; 4] = [0.92, 0.94, 1.0, 1.0];
 )]
 fn fixed_px(value: renew_ui::Fixed) -> f32 {
     value.to_bits() as f32 / 65536.0
+}
+
+/// Where a label starts inside its button: centred both ways by the
+/// same integer advances the tree measured the button with.
+fn label_origin(rect: &renew_ui::Rect, label: &str) -> (f32, f32) {
+    let text_width = renew_ui::text::measure(label);
+    let line = renew_ui::Fixed::from_int(i32::try_from(renew_ui::text::LINE_HEIGHT).unwrap_or(16));
+    let two = renew_ui::Fixed::from_int(2);
+    let x = rect.x + (rect.width - text_width) / two;
+    let y = rect.y + (rect.height - line) / two;
+    (fixed_px(x), fixed_px(y))
 }
 
 /// The game as the window seam sees it.
@@ -383,20 +393,8 @@ impl GlideApp {
             self.presenter.emit(renew_math::Alpha::ZERO, ui_sprites);
             for (node, label) in self.menu.labels() {
                 if let Some(rect) = self.menu.ui().rect(node) {
-                    let text_width = renew_ui::text::measure(label);
-                    let line = renew_ui::Fixed::from_int(
-                        i32::try_from(renew_ui::text::LINE_HEIGHT).unwrap_or(16),
-                    );
-                    let two = renew_ui::Fixed::from_int(2);
-                    let x = rect.x + (rect.width - text_width) / two;
-                    let y = rect.y + (rect.height - line) / two;
-                    renew_ui_render::emit_text(
-                        ui_sprites,
-                        fixed_px(x),
-                        fixed_px(y),
-                        label,
-                        LABEL_INK,
-                    );
+                    let (x, y) = label_origin(&rect, label);
+                    renew_ui_render::emit_text(ui_sprites, x, y, label, LABEL_INK);
                 }
             }
         }
@@ -497,10 +495,15 @@ impl GlideApp {
             // Capture the edge before it retires, count it, spend one
             // per step: a press on a zero-step frame survives to the
             // next frame's first step, and two presses with two due
-            // steps deliver two flaps.
-            self.pending_flaps = self
-                .pending_flaps
-                .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
+            // steps deliver two flaps. An edge banks only while the
+            // menu is closed: a press racing the pause is abandoned,
+            // exactly as the scripted loop abandons it when the paused
+            // step never runs and the frame's advance retires it.
+            if !self.menu.is_open() {
+                self.pending_flaps = self
+                    .pending_flaps
+                    .saturating_add(u8::from(self.input.state(Action::Flap).just_pressed));
+            }
             for action in self.menu.drain() {
                 if action == crate::menu::MenuAction::Restart {
                     self.world = World::new(self.seed);
@@ -716,6 +719,133 @@ mod tests {
             pressed: false,
             repeat: false,
         });
+    }
+
+    fn escape(app: &mut GlideApp) {
+        app.event(WindowEvent::Key {
+            code: renew_event::KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+        });
+    }
+
+    /// A click in physical window pixels, routed through the seam:
+    /// the driver rescales it into canvas space before the menu
+    /// hears it.
+    fn click_physical(app: &mut GlideApp, x: f64, y: f64) {
+        app.event(WindowEvent::PointerMoved { x, y });
+        app.event(WindowEvent::PointerButton {
+            button: renew_event::PointerButton::Left,
+            pressed: true,
+        });
+        app.event(WindowEvent::PointerButton {
+            button: renew_event::PointerButton::Left,
+            pressed: false,
+        });
+    }
+
+    /// A button's centre in canvas pixels, from the same solved
+    /// rectangle the menu hit-tests with.
+    fn centre_of(app: &GlideApp, index: usize) -> (f64, f64) {
+        let (node, _) = app.menu.labels()[index];
+        let rect = app.menu.ui().rect(node).expect("solved");
+        let two = renew_ui::Fixed::from_int(2);
+        let x = rect.x + rect.width / two;
+        let y = rect.y + rect.height / two;
+        let px = |value: renew_ui::Fixed| f64::from(i32::try_from(value.trunc_int()).unwrap_or(0));
+        (px(x), px(y))
+    }
+
+    #[test]
+    fn opening_the_menu_pauses_the_world_and_releases_input() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // A key held into the pause: opening releases it, and the
+        // release the menu later swallows can no longer wedge the map.
+        press(&mut app);
+        escape(&mut app);
+        assert!(app.menu.is_open());
+        app.update_at(Timestamp::from_nanos(3 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 0, "an open menu holds the world still");
+        release(&mut app);
+        escape(&mut app);
+        assert!(!app.menu.is_open());
+        press(&mut app);
+        app.update_at(Timestamp::from_nanos(4 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 1, "resuming lets the world step again");
+        assert_eq!(app.pending_flaps, 0, "the fresh press was a clean edge");
+    }
+
+    #[test]
+    fn a_restart_click_lands_through_the_physical_to_canvas_seam() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(5 * STEP), &mut control);
+        assert_eq!(app.world.tick(), 5, "the run has an age to lose");
+        escape(&mut app);
+        // The window is twice the canvas in each direction: the click
+        // arrives in physical pixels and must still land, because the
+        // driver rescales positions before the tree hears them.
+        app.size = Extent {
+            width: 2 * VIEW_WIDTH,
+            height: 2 * VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 1);
+        click_physical(&mut app, 2.0 * x, 2.0 * y);
+        app.update_at(Timestamp::from_nanos(6 * STEP), &mut control);
+        assert!(!app.menu.is_open(), "an activated button closes the menu");
+        assert_eq!(
+            app.world.tick(),
+            1,
+            "the restart made the world new; one step has run since"
+        );
+        assert_eq!(app.pending_flaps, 0, "a restart abandons pending flaps");
+    }
+
+    #[test]
+    fn a_resume_click_plays_on_from_where_it_paused() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        app.update_at(Timestamp::from_nanos(5 * STEP), &mut control);
+        escape(&mut app);
+        // A window exactly the canvas size: the rescale is identity.
+        app.size = Extent {
+            width: VIEW_WIDTH,
+            height: VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 0);
+        click_physical(&mut app, x, y);
+        app.update_at(Timestamp::from_nanos(6 * STEP), &mut control);
+        assert!(!app.menu.is_open());
+        assert_eq!(
+            app.world.tick(),
+            6,
+            "resume keeps the world; a restart would have reset it"
+        );
+    }
+
+    /// The placement arithmetic behind the exempt draw block: every
+    /// label starts strictly inside its own button.
+    #[test]
+    fn labels_centre_inside_their_buttons() {
+        let app = app();
+        for (node, label) in app.menu.labels() {
+            let rect = app.menu.ui().rect(node).expect("solved");
+            let (x, y) = label_origin(&rect, label);
+            assert!(
+                fixed_px(rect.x) < x,
+                "{label} starts right of its left edge"
+            );
+            assert!(
+                x < fixed_px(rect.x + rect.width),
+                "{label} starts left of its right edge"
+            );
+            assert!(fixed_px(rect.y) < y, "{label} starts below its top edge");
+            assert!(
+                y < fixed_px(rect.y + rect.height),
+                "{label} starts above its bottom edge"
+            );
+        }
     }
 
     #[test]

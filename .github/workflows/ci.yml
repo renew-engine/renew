@@ -888,12 +888,15 @@ jobs:
             --headless --input-trace walk
           xvfb-run -a cargo llvm-cov --no-report run -p renew-sample-input-echo --bin input_echo -- \
             --frames 30
-          # The game's two committed traces: one that plays, one that
-          # falls. Both are pure headless runs, so they execute anywhere.
+          # The game's three committed traces: one that plays, one that
+          # falls, one that pauses and restarts through the menu. All
+          # are pure headless runs, so they execute anywhere.
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace soar --frames 600
           cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
             --input-trace sink --frames 600
+          cargo llvm-cov --no-report run -p renew-sample-glide --bin glide -- \
+            --input-trace menu --frames 600
           # The game's windowed feature, in two instrumented pieces: the
           # feature-gated unit tests (display-less-safe -- they open no
           # window), and the windowed arm live under the virtual display.

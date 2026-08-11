@@ -297,4 +297,28 @@ mod tests {
         };
         assert_eq!(run(), run());
     }
+
+    /// The default menu is the new menu: closed, solved, ready.
+    #[test]
+    fn the_default_menu_starts_closed() {
+        assert!(!Menu::default().is_open());
+    }
+
+    /// A click on empty space activates the root, which is not a
+    /// button: drain maps it to nothing, and the menu stays open.
+    #[test]
+    fn empty_space_decides_nothing() {
+        let mut menu = Menu::new();
+        menu.handle(&WindowEvent::Key {
+            code: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+        });
+        press_at(&mut menu, 2.0, 2.0);
+        assert_eq!(menu.drain().count(), 0, "the root decides nothing");
+        assert!(
+            menu.is_open(),
+            "an empty-space click does not close the menu"
+        );
+    }
 }
