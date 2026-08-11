@@ -21,6 +21,7 @@ libfuzzer-sys = "=0.4.13"
 renew-asset = { path = "../crates/asset" }
 renew-audio = { path = "../crates/audio" }
 renew-trace = { path = "../crates/trace" }
+renew-ui = { path = "../crates/ui" }
 
 # Fuzzing measures the parser, not the optimiser's mood. Debug assertions
 # stay on so a violated internal invariant is a finding rather than
@@ -47,6 +48,13 @@ bench = false
 [[bin]]
 name = "wav"
 path = "fuzz_targets/wav.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ui_document"
+path = "fuzz_targets/ui_document.rs"
 test = false
 doc = false
 bench = false

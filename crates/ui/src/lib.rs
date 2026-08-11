@@ -45,10 +45,12 @@
 // anywhere in this crate would be a value a digest could see.
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
+pub mod document;
 mod input;
 mod layout;
 pub mod text;
 
+pub use document::{Document, DocumentError};
 use input::Interaction;
 pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
