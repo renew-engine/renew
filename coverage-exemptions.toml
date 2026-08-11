@@ -76,7 +76,7 @@ reason = "The unreachable arm of the walk's surface-depth barrier: a depth-carry
 
 [[exempt]]
 file = "crates/rhi/src/vk/pass.rs"
-lines = [730]
+lines = [862]
 reason = "The unreachable arm behind the sample-before-write refusal: the assert immediately above proved the entry exists, and the let-else restates it without a banned expect. No frame can drive it."
 
 [[exempt]]
@@ -131,7 +131,7 @@ reason = "The comparison refusing to start because no workspace root is above it
 
 [[exempt]]
 file = "samples/cube/src/windowed.rs"
-lines = [639, 640, 641, 642, 643, 644, 729]
+lines = [639, 640, 641, 642, 643, 644, 718]
 reason = "The two places a window resize is acted on: rebuilding the crosshair for the new shape, and telling the swapchain its new size. Both need a real window-system resize, and the lane that measures coverage has none - its windowed runs happen under a virtual display with no window manager, so the window it opens is the only size it will ever be. Note for anyone running coverage on a desktop: these lines ARE covered there, because a real window manager sends a resize on the way up, and the gate will call this exemption stale. The gate that decides is the headless one. Everything these lines follow from is covered everywhere: record_present drives the recovery from a dormant swapchain with a constructed outcome, the resize event handler is driven with a constructed event, and the crosshair geometry is checked at four aspects without a device."
 
 [[exempt]]

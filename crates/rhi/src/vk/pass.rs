@@ -1290,19 +1290,21 @@ mod tests {
     /// either backwards would draw a frame that discarded what it just
     /// rendered.
     #[test]
+    #[allow(unsafe_code)]
     fn the_colour_attachment_clears_to_its_value_and_stores() {
         let attachment = color_attachment(Color::new(0.25, 0.5, 0.75, 1.0));
         assert!(matches!(attachment.store, StoreOp::Store));
-        let LoadOp::Clear(ClearValue::Color(colour)) = attachment.load else {
-            panic!(
-                "a colour attachment clears to a colour, got {:?}",
-                attachment.load
-            );
-        };
+        // Read through the crate's own converter rather than matching
+        // the load op: the converter is total, so this proves the same
+        // thing with no arm that only a broken helper could reach —
+        // and it proves the two agree, which a match would not.
+        // SAFETY: reading the union arm the converter just wrote, as
+        // the clear-value test beside this one does.
+        let raw = unsafe { vk_clear_color(&attachment).color.float32 };
         // Bit equality: the helper moves the value, it never does
         // arithmetic on it.
         assert_eq!(
-            [colour.r, colour.g, colour.b, colour.a].map(f32::to_bits),
+            raw.map(f32::to_bits),
             [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits)
         );
     }
