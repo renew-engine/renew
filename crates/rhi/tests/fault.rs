@@ -362,6 +362,20 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
     verdicts.push(bringup_case(
+        "A5 sampled-set-layout/out-of-host-memory",
+        "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
+        |got| match got {
+            Err(DeviceError::OutOfHostMemory {
+                call: "vkCreateDescriptorSetLayout",
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "OutOfHostMemory(vkCreateDescriptorSetLayout)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    verdicts.push(bringup_case(
         "A4 create-device/out-of-host-memory",
         "vkCreateDevice=ERROR_OUT_OF_HOST_MEMORY",
         |got| match got {
@@ -637,12 +651,11 @@ fn every_driver_failure_ladder_behaves() {
     // so these arm the fault and then build one. Each is a distinct
     // creation call inside `create_pipeline`, and each must leave the
     // device able to build the same pipeline on a second attempt.
+    // C6 (descriptor-set-layout creation) moved to the bring-up
+    // ladder as A5: the layout is the device spine's one shared
+    // object now, created with the device, so arming that call fails
+    // bring-up rather than pipeline creation.
     let descriptor_ladder: &[(&str, &str, &str)] = &[
-        (
-            "C6",
-            "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
-            "vkCreateDescriptorSetLayout",
-        ),
         (
             "C7",
             "vkCreateDescriptorPool=ERROR_OUT_OF_HOST_MEMORY",
