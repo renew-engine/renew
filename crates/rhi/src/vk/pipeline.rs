@@ -610,6 +610,15 @@ impl AddressMode {
     }
 }
 
+/// The sampler's owning half, split like the texture's and for the
+/// same reason: a future binding object holds the inner alive while
+/// callers pass borrows. The contract lives on [`Sampler`], where its
+/// reader is.
+pub(crate) struct SamplerInner {
+    pub(crate) shared: Rc<DeviceShared>,
+    pub(crate) sampler: vk::Sampler,
+}
+
 /// A sampler. Holds its device alive; destroyed on drop.
 ///
 /// # Contract
@@ -624,14 +633,6 @@ impl AddressMode {
 /// only run once the pipeline has released its clone, which happens
 /// inside `RenderPipeline`'s own `Drop`, after that has waited for the
 /// device to go idle and destroyed the pool.
-/// The sampler's owning half, split like the texture's and for the
-/// same reason: a future binding object holds the inner alive while
-/// callers pass borrows.
-pub(crate) struct SamplerInner {
-    pub(crate) shared: Rc<DeviceShared>,
-    pub(crate) sampler: vk::Sampler,
-}
-
 pub struct Sampler {
     pub(crate) inner: Rc<SamplerInner>,
 }

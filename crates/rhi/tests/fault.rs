@@ -362,20 +362,6 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
     verdicts.push(bringup_case(
-        "A5 sampled-set-layout/out-of-host-memory",
-        "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
-        |got| match got {
-            Err(DeviceError::OutOfHostMemory {
-                call: "vkCreateDescriptorSetLayout",
-            }) => Ok(()),
-            other => Err(wrong(
-                "",
-                "OutOfHostMemory(vkCreateDescriptorSetLayout)",
-                &other.map(|_| "a device"),
-            )),
-        },
-    ));
-    verdicts.push(bringup_case(
         "A4 create-device/out-of-host-memory",
         "vkCreateDevice=ERROR_OUT_OF_HOST_MEMORY",
         |got| match got {
@@ -385,6 +371,20 @@ fn every_driver_failure_ladder_behaves() {
             other => Err(wrong(
                 "",
                 "OutOfHostMemory(vkCreateDevice)",
+                &other.map(|_| "a device"),
+            )),
+        },
+    ));
+    verdicts.push(bringup_case(
+        "A5 sampled-set-layout/out-of-host-memory",
+        "vkCreateDescriptorSetLayout=ERROR_OUT_OF_HOST_MEMORY",
+        |got| match got {
+            Err(DeviceError::OutOfHostMemory {
+                call: "vkCreateDescriptorSetLayout",
+            }) => Ok(()),
+            other => Err(wrong(
+                "",
+                "OutOfHostMemory(vkCreateDescriptorSetLayout)",
                 &other.map(|_| "a device"),
             )),
         },
@@ -646,7 +646,7 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
 
-    // ---- C6-C8 · descriptor ladder ---------------------------------
+    // ---- C7-C10 · descriptor ladder ---------------------------------
     // A textured pipeline is the only thing that allocates descriptors,
     // so these arm the fault and then build one. Each is a distinct
     // creation call inside `create_pipeline`, and each must leave the

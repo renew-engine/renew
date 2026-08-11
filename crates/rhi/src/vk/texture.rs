@@ -203,6 +203,19 @@ impl Drop for Partial<'_> {
     }
 }
 
+/// The texture's owning half, behind the handle the caller holds —
+/// the mesh split, applied here so a future binding object can keep
+/// the image alive with an `Rc` clone while callers pass plain
+/// borrows and drop whenever they like. The contract lives on
+/// [`Texture`], where its reader is.
+pub(crate) struct TextureInner {
+    pub(crate) shared: Rc<DeviceShared>,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    pub(crate) view: vk::ImageView,
+    extent: Extent,
+}
+
 /// An image the GPU can sample. Holds its device alive; destroyed on
 /// drop.
 ///
@@ -222,18 +235,6 @@ impl Drop for Partial<'_> {
 /// A texture whose pixels change — an animated or glyph atlas — breaks
 /// that argument rather than extending it, and needs a type that states
 /// its own rule about when a write is legal.
-/// The texture's owning half, behind the handle the caller holds —
-/// the mesh split, applied here so a future binding object can keep
-/// the image alive with an `Rc` clone while callers pass plain
-/// borrows and drop whenever they like.
-pub(crate) struct TextureInner {
-    pub(crate) shared: Rc<DeviceShared>,
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    pub(crate) view: vk::ImageView,
-    extent: Extent,
-}
-
 pub struct Texture {
     pub(crate) inner: Rc<TextureInner>,
 }
