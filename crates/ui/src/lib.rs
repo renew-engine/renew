@@ -1,9 +1,10 @@
 //! The retained widget tree: an arena of generationally addressed
 //! nodes, capacities fixed at construction.
 //!
-//! This crate is the simulation-side ground the rest of the UI stands
-//! on. Layout solving, input handling, and state digestion arrive as
-//! their own steps; what ships here is the structure they all share —
+//! This crate is the simulation-side half of the UI: the tree, and
+//! the fixed-point solver (the [`layout`] module vocabulary) that
+//! turns its styles into pixel rectangles. Input handling and state
+//! digestion arrive as their own steps; what they will share is here —
 //! a tree whose nodes are stable to address, cheap to add and remove,
 //! and bounded by an explicit limit rather than by whatever the heap
 //! allows.
@@ -38,14 +39,21 @@
 //! grows, and nothing here panics on data.
 
 // The simulation's crates deny float arithmetic wholesale (the closure
-// rule checks every crate in a simulation's shipping graph); the tree
-// is pure structure and needs no arithmetic at all beyond indices.
+// rule checks every crate in a simulation's shipping graph); the
+// solver's numbers are Fixed — integers under the hood — and a float
+// anywhere in this crate would be a value a digest could see.
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
+
+mod layout;
+
+pub use layout::{Align, Direction, Edges, Rect, Size, Style};
+use layout::{LayoutSlot, Scratch, Solve};
+use renew_fixed::Fixed;
 
 /// Nothing here: the marker every slot uses for "no neighbour". One
 /// value, not an `Option<u32>`, so a slot stays eight words no matter
 /// how many links are empty.
-const NIL: u32 = u32::MAX;
+pub(crate) const NIL: u32 = u32::MAX;
 
 /// Capacities for one [`Ui`], fixed at construction.
 ///
@@ -100,7 +108,7 @@ pub struct NodeId {
 /// One arena slot. Free slots keep their links meaningless except
 /// `next_sibling`, which threads the free list.
 #[derive(Clone, Copy, Debug)]
-struct Slot {
+pub(crate) struct Slot {
     /// Bumped on every removal, so old ids miss. Sixty-four bits so
     /// the bump can never cycle in a physical run — "stays stale
     /// forever" is a claim about this counter, and a u32 makes it
@@ -111,10 +119,10 @@ struct Slot {
     generation: u64,
     live: bool,
     parent: u32,
-    first_child: u32,
+    pub(crate) first_child: u32,
     last_child: u32,
     prev_sibling: u32,
-    next_sibling: u32,
+    pub(crate) next_sibling: u32,
 }
 
 impl Slot {
@@ -137,6 +145,16 @@ impl Slot {
 #[derive(Debug)]
 pub struct Ui {
     slots: Vec<Slot>,
+    /// Per-slot layout state: style in, solved rectangle out.
+    layout: Vec<LayoutSlot>,
+    /// The solver's reusable workspace, sized with the arena.
+    scratch: Scratch,
+    /// Whether anything changed since the last solve — structure,
+    /// style, or viewport. One flag for the whole tree in v0: exact
+    /// damage arrives with the compiled style tables.
+    dirty: bool,
+    /// The viewport the current rectangles were solved for.
+    solved_for: (Fixed, Fixed),
     /// Head of the free list, threaded through `next_sibling`.
     free: u32,
     live: u32,
@@ -169,6 +187,10 @@ impl Ui {
         let free = if capacity > 1 { 1 } else { NIL };
         Self {
             slots,
+            layout: vec![LayoutSlot::default(); capacity as usize],
+            scratch: Scratch::with_capacity(capacity),
+            dirty: true,
+            solved_for: (Fixed::ZERO, Fixed::ZERO),
             free,
             live: 1,
             limits: UiLimits { nodes: capacity },
@@ -226,6 +248,8 @@ impl Ui {
         };
         self.link_last(parent_index, index);
         self.live += 1;
+        self.layout[index as usize] = LayoutSlot::default();
+        self.dirty = true;
         Ok(NodeId { index, generation })
     }
 
@@ -243,6 +267,7 @@ impl Ui {
         }
         self.unlink(index);
         self.free_subtree(index);
+        self.dirty = true;
         true
     }
 
@@ -264,6 +289,56 @@ impl Ui {
             ui: self,
             at: first,
         }
+    }
+
+    /// Give `node` a new style. Answers whether it landed: `false` is
+    /// the miss for a stale id. Any change marks the tree for
+    /// re-solving; setting the same style again does too, and the
+    /// solve it provokes is idempotent, so the cost is a no-op walk
+    /// rather than a wrong picture.
+    pub fn set_style(&mut self, node: NodeId, style: Style) -> bool {
+        let Some(index) = self.slot_of(node) else {
+            return false;
+        };
+        self.layout[index as usize].style = style;
+        self.dirty = true;
+        true
+    }
+
+    /// The style `node` currently holds; `None` for stale ids.
+    #[must_use]
+    pub fn style(&self, node: NodeId) -> Option<Style> {
+        let index = self.slot_of(node)?;
+        Some(self.layout[index as usize].style)
+    }
+
+    /// Solve the tree into absolute rectangles, the root filling the
+    /// viewport at the origin.
+    ///
+    /// Retained: when nothing changed since the last solve — no edit,
+    /// no style, same viewport — this returns without walking. The
+    /// walk itself allocates nothing; construction sized everything.
+    pub fn solve(&mut self, viewport_width: Fixed, viewport_height: Fixed) {
+        if !self.dirty && self.solved_for == (viewport_width, viewport_height) {
+            return;
+        }
+        Solve {
+            slots: &mut self.slots,
+            layout: &mut self.layout,
+            scratch: &mut self.scratch,
+        }
+        .run(viewport_width, viewport_height);
+        self.dirty = false;
+        self.solved_for = (viewport_width, viewport_height);
+    }
+
+    /// The rectangle the last [`Self::solve`] gave `node`; `None` for
+    /// stale ids. Meaningful only after a solve — before one, every
+    /// rectangle is the zero default.
+    #[must_use]
+    pub fn rect(&self, node: NodeId) -> Option<Rect> {
+        let index = self.slot_of(node)?;
+        Some(self.layout[index as usize].rect)
     }
 
     /// The live slot index behind `node`, if the id still names one.

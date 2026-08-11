@@ -8,8 +8,9 @@
 //! measured window works a tree that genuinely churns, and the test
 //! asserts the churn happened.
 
+use renew_fixed::Fixed;
 use renew_memory::{CountingAllocator, counters};
-use renew_ui::{Ui, UiLimits};
+use renew_ui::{Size, Style, Ui, UiLimits};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -48,4 +49,43 @@ fn the_steady_state_allocates_nothing() {
         }
     });
     verdict.expect("the tree's steady state stays heap-silent");
+
+    // The solver's half of the promise: styling and re-solving a real
+    // tree — dirtied every time, so every pass walks — reaches the
+    // heap exactly as often as the tree does. Built (and solved once,
+    // for the same warmup reason) before the window opens.
+    let wide = ui.insert(root).expect("room for the solver's subject");
+    for _ in 0..16 {
+        ui.insert(wide).expect("room for a row child");
+    }
+    ui.solve(Fixed::from_int(640), Fixed::from_int(360));
+    // Two styles alternated so every pass provably re-solves: the
+    // rectangle must flip between the two widths, which a retained or
+    // skipped solve could not produce.
+    let narrow = Style {
+        width: Size::Px(Fixed::from_int(20)),
+        height: Size::Px(Fixed::from_int(10)),
+        ..Style::default()
+    };
+    let wide_style = Style {
+        width: Size::Px(Fixed::from_int(40)),
+        ..narrow
+    };
+    let verdict = counters::quiet_window(5, || {
+        for pass in 0..8u32 {
+            let (style, expected) = if pass % 2 == 0 {
+                (narrow, Fixed::from_int(20))
+            } else {
+                (wide_style, Fixed::from_int(40))
+            };
+            assert!(ui.set_style(wide, style), "the subject must be live");
+            ui.solve(Fixed::from_int(640), Fixed::from_int(360));
+            assert_eq!(
+                ui.rect(wide).expect("the subject must be live").width,
+                expected,
+                "the re-solve must really lay the tree out"
+            );
+        }
+    });
+    verdict.expect("re-solving stays heap-silent");
 }
