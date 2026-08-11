@@ -188,7 +188,7 @@ jobs:
       # makes an exclude list stop being upward-closed if it is forgotten.
       - name: Build and test without the generator
         run: |
-          sel="--workspace --exclude renew-rng --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
+          sel="--workspace --exclude renew-rng --exclude renew-particles --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
           cargo build $sel
           cargo test $sel
@@ -260,6 +260,15 @@ jobs:
         run: |
           sel="--workspace --exclude renew-replay --exclude renew-sample-input-echo --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-replay $sel
+          cargo build $sel
+          cargo test $sel
+      # The particle pool: arithmetic over the seeded generator, no
+      # consumer yet — the renderer half and the game that bursts on a
+      # broken block both arrive later, and each grows this list.
+      - name: Build and test without the particle pool
+        run: |
+          sel="--workspace --exclude renew-particles"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-particles $sel
           cargo build $sel
           cargo test $sel
       # The camera crate: maths over the maths crate, its one consumer
@@ -390,7 +399,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

@@ -1689,6 +1689,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-particles"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-memory",
+ "renew-rng",
+]
+
+[[package]]
 name = "renew-physics2d"
 version = "0.1.0"
 dependencies = [

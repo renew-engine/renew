@@ -5,7 +5,7 @@ resolver = "3"
 # stable build every merge depends on would break it.
 exclude = ["fuzz"]
 members = ["bench/suite", "crates/asset", "crates/audio", "crates/camera", "crates/core/diag", "crates/core/event", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/fixed", "crates/frame", "crates/physics2d",
-    "crates/png", "crates/physics3d", "crates/input", "crates/jobs", "crates/render2d", "crates/render3d", "crates/replay", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/chess", "samples/chess/rules", "samples/cube", "samples/cube/world", "samples/glide", "samples/leap", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
+    "crates/png", "crates/physics3d", "crates/input", "crates/jobs", "crates/particles", "crates/render2d", "crates/render3d", "crates/replay", "crates/rhi", "crates/rng", "crates/trace", "hello-engine", "samples/chess", "samples/chess/rules", "samples/cube", "samples/cube/world", "samples/glide", "samples/leap", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
 
 [workspace.package]
 version = "0.1.0"

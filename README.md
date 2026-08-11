@@ -102,11 +102,13 @@ claim from the other side, and the reason the window is a feature rather than a 
 | **`renew-rhi`** | The GPU doorway: Vulkan through `ash`, behind an interface that names no Vulkan type in its public API | `bootstrap` · optional |
 | **`renew-render2d`** | Sprites from an atlas, one instanced draw | `bootstrap` · optional |
 | **`renew-render3d`** | Indexed geometry, depth-tested, in submission order | `bootstrap` · optional |
+| **`renew-camera`** | Presentation-side viewpoints: a look-at view, a reversed-depth perspective, and a blend between ticks for display-rate smoothness | `bootstrap` · optional |
+| **`renew-particles`** | A fixed-capacity particle pool stepped at the simulation's cadence, seeded so replays reproduce the picture | `bootstrap` · optional |
 | **`renew-audio`** | Mixing and playback, behind the platform's device seam | `bootstrap` · optional |
 | **`renew-asset`** | Content-addressed asset packs, with every entry verifiable against its digest | `bootstrap` · optional |
 | **`renew-png`** | PNG encoding with no dependencies — pixels in, the bytes of a file out, so a sample can commit a picture of itself | `bootstrap` · optional |
 
-Twenty-one engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
+Twenty-three engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
 prints the live list with each crate's declared maturity, read from its manifest rather than from
 this table.
 
@@ -185,7 +187,7 @@ mapping, 2D samples — has shipped. What is actually next:
   perspective camera — now an engine crate of its own, with display-rate smoothing between
   simulation ticks — and draws from a texture atlas generated in code so golden images stay
   byte-comparable. Depth is reversed engine-wide, and per-draw constants ride push constants.
-  Still to come: particles, and instancing for chunked geometry.
+  Still to come: the particle pool's renderer half, and instancing for chunked geometry.
 - **Modules climbing the maturity ladder.** Nothing is `stable` yet, and nothing will claim it
   before its API is under change control and its parsers have been fuzzed.
 - **An editor, eventually**, as a client of the same public APIs every other tool uses — never a
