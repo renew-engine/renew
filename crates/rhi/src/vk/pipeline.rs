@@ -1,6 +1,7 @@
 //! The v0 graphics pipeline: two SPIR-V stages, dynamic rendering into
-//! one color attachment, optionally one sampled texture, and optionally
-//! vertex input — per-vertex at binding 0, per-instance at binding 1.
+//! one color attachment, optionally sampled-binding slots filled per
+//! item, and optionally vertex input — per-vertex at binding 0,
+//! per-instance at binding 1.
 //!
 //! **Two pipeline shapes, and which one a pipeline is decides where its
 //! vertex count comes from.** A generative pipeline's stages write their
@@ -16,9 +17,10 @@ use std::rc::Rc;
 use ash::vk;
 
 use crate::error::PipelineError;
+use crate::vk::binding::MAX_SAMPLED_BINDINGS;
 use crate::vk::buffer::Buffer;
 use crate::vk::device::{Device, DeviceShared};
-use crate::vk::texture::Texture;
+use crate::vk::pass::Bindings;
 
 /// The color format a pipeline renders into. Must match the target it
 /// is used with (checked as a contract in dev builds).
@@ -157,21 +159,19 @@ pub struct PipelineDesc<'a> {
     /// [`Blend::Opaque`] — no blending — unless the builder says
     /// otherwise.
     pub blend: Blend,
-    /// The texture this pipeline samples, and how.
+    /// How many sampled-binding slots this pipeline's shaders read;
+    /// zero for none.
     ///
-    /// **Bound here rather than after creation, and that is the whole
-    /// design.** The descriptor set is written once, before the pipeline
-    /// can be used, so it can never be rewritten while a submit that
-    /// reads it is still running -- the rule a post-creation setter
-    /// would need is not merely satisfied but unstatable. The cost is
-    /// that two textures mean two pipelines over identical shaders,
-    /// which is free for one atlas and is not free for a material
-    /// system.
+    /// Slot `i` is descriptor set `i`, binding 0, one combined image
+    /// sampler each — the crate's one canonical layout, repeated. What
+    /// fills the slots is not named here: an item names its
+    /// [`Binding`](crate::Binding)s per draw, and the frame contract
+    /// refuses a count mismatch by name before any GPU call. That is
+    /// what lets N textures share one pipeline.
     ///
-    /// Shared ownership because the pipeline must keep both alive for
-    /// as long as the set points at them, without the caller having to
-    /// sequence drops correctly.
-    pub texture: Option<(Rc<Texture>, Rc<Sampler>)>,
+    /// At most [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS),
+    /// asserted at creation.
+    pub sampled_bindings: u32,
     /// Depth testing, or `None` for the depth-free pipelines every
     /// depthless pass records. A pipeline carrying this can only draw
     /// inside a pass that carries a depth attachment, and the reverse —
@@ -344,7 +344,7 @@ impl<'a> PipelineDesc<'a> {
             target_format,
             vertex_count: shaders.vertex_count,
             blend: Blend::Opaque,
-            texture: None,
+            sampled_bindings: 0,
             vertex_input: None,
             instance_input: None,
             depth_state: None,
@@ -395,7 +395,7 @@ impl<'a> PipelineDesc<'a> {
             // supply it and nothing consults it.
             vertex_count: 0,
             blend: Blend::Opaque,
-            texture: None,
+            sampled_bindings: 0,
             vertex_input: Some(layout),
             instance_input: None,
             depth_state: None,
@@ -418,14 +418,21 @@ impl<'a> PipelineDesc<'a> {
         self
     }
 
-    /// Sample `texture` through `sampler`, at set 0 binding 0.
+    /// Declare `count` sampled-binding slots: descriptor sets
+    /// `0..count`, one combined image sampler at binding 0 each.
     ///
-    /// The fragment stage must declare a matching combined image
-    /// sampler; a pipeline given a texture its shader does not sample
-    /// is not an error, merely a set nothing reads.
+    /// The shaders must declare matching combined image samplers at
+    /// those set indices; a declared slot the shader never reads is not
+    /// an error, merely a set nothing samples. Every item drawn through
+    /// this pipeline must then name exactly `count`
+    /// [`Binding`](crate::Binding)s — presence and count are frame-
+    /// contract refusals, the same way push data matches its range.
+    ///
+    /// At most [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS),
+    /// refused at creation rather than quietly clamped.
     #[must_use]
-    pub fn texture(mut self, texture: Rc<Texture>, sampler: Rc<Sampler>) -> Self {
-        self.texture = Some((texture, sampler));
+    pub fn sampled_bindings(mut self, count: u32) -> Self {
+        self.sampled_bindings = count;
         self
     }
 
@@ -611,9 +618,8 @@ impl AddressMode {
 }
 
 /// The sampler's owning half, split like the texture's and for the
-/// same reason: a future binding object holds the inner alive while
-/// callers pass borrows. The contract lives on [`Sampler`], where its
-/// reader is.
+/// same reason: a binding holds the inner alive while callers pass
+/// borrows. The contract lives on [`Sampler`], where its reader is.
 pub(crate) struct SamplerInner {
     pub(crate) shared: Rc<DeviceShared>,
     pub(crate) sampler: vk::Sampler,
@@ -626,13 +632,14 @@ pub(crate) struct SamplerInner {
 /// A sampler must outlive every descriptor set that references it.
 ///
 /// **The caller cannot violate that, because they do not hold the
-/// obligation.** [`PipelineDesc::texture`] takes shared ownership, and
-/// the [`RenderPipeline`] keeps its clone for as long as the descriptor
-/// set exists — so a caller who drops their own handle mid-frame takes
-/// nothing away from the set. `Drop` therefore needs no quiesce: it can
-/// only run once the pipeline has released its clone, which happens
-/// inside `RenderPipeline`'s own `Drop`, after that has waited for the
-/// device to go idle and destroyed the pool.
+/// obligation.** [`Device::create_binding`](crate::Device::create_binding)
+/// takes shared ownership of the inner half, and the
+/// [`Binding`](crate::Binding) keeps its clone for as long as the
+/// descriptor set exists — so a caller who drops their own handle the
+/// moment the binding is built takes nothing away from the set. `Drop`
+/// therefore needs no quiesce: it can only run once every binding has
+/// released its clone, which each one's own `Drop` proves happens after
+/// the last submit that read the set.
 pub struct Sampler {
     pub(crate) inner: Rc<SamplerInner>,
 }
@@ -652,40 +659,6 @@ impl Drop for SamplerInner {
             self.shared
                 .device
                 .destroy_sampler(self.sampler, Some(&self.shared.alloc_cbs()));
-        }
-    }
-}
-
-/// The descriptor state of a textured pipeline: one layout, one pool
-/// sized for exactly one set, and that set.
-///
-/// **A pool per pipeline rather than one shared across the crate.** With
-/// the set written once at creation and never reallocated, the pool has
-/// no churn to amortise, and a pool whose lifetime is exactly that of
-/// its single set needs no free list, no fragmentation story and no
-/// rule about who may allocate from it when. That reasoning stops
-/// holding the moment sets are allocated per frame.
-#[derive(Clone, Copy)]
-struct Descriptors {
-    pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
-}
-
-impl Descriptors {
-    /// Destroy the pool; the set is freed with it and must not be
-    /// freed separately. The set layout is the device spine's one
-    /// shared object and is not this struct's to destroy.
-    ///
-    /// # Safety
-    ///
-    /// No submit referencing the set may still be running.
-    unsafe fn destroy(self, shared: &DeviceShared) {
-        // SAFETY: forwarded to the caller; the pool was created by
-        // `create_descriptors` with these callbacks.
-        unsafe {
-            shared
-                .device
-                .destroy_descriptor_pool(self.pool, Some(&shared.alloc_cbs()));
         }
     }
 }
@@ -714,21 +687,17 @@ pub struct RenderPipeline {
     /// none. The frame contract asserts every item's push data matches
     /// it exactly, the same way it matches depth state to the pass.
     pub(crate) push_constant_size: u32,
-    descriptors: Option<Descriptors>,
-    /// Kept alive because the descriptor set points at them. Never read
-    /// through — the set holds the handles the GPU uses, and these hold
-    /// the right to keep those handles valid.
-    _bound: Option<(Rc<Texture>, Rc<Sampler>)>,
+    /// Declared sampled-binding slot count; zero for none. The frame
+    /// contract asserts every item names exactly this many bindings,
+    /// the same way push data matches its declared range.
+    pub(crate) sampled_bindings: u32,
 }
 
 impl Drop for RenderPipeline {
     fn drop(&mut self) {
         // SAFETY: category 2 (ash dispatch): device live via the spine
         // Rc; wait-idle guarantees no submitted work still references
-        // the pipeline or its descriptor set; handles were created with
-        // these callbacks. The set is destroyed before the texture and
-        // sampler it points at, which `_bound` releases after this
-        // returns.
+        // the pipeline; handles were created with these callbacks.
         unsafe {
             // Best-effort quiesce; failure is logged, never a panic (D5)
             // — the diag record is the only observable this path has.
@@ -744,41 +713,48 @@ impl Drop for RenderPipeline {
             self.shared
                 .device
                 .destroy_pipeline_layout(self.layout, Some(&self.shared.alloc_cbs()));
-            if let Some(descriptors) = self.descriptors {
-                descriptors.destroy(&self.shared);
-            }
         }
     }
 }
 
 impl RenderPipeline {
-    /// Bind this pipeline's descriptor set, if it has one.
+    /// Bind an item's named bindings as descriptor sets `0..count`.
     ///
     /// **One implementation, called by both targets.** The two record
     /// paths are otherwise independent, and a bind duplicated across
     /// them is a correctness rule maintained in two places — the set
-    /// index and bind point have to agree with the pipeline layout
+    /// indices and bind point have to agree with the pipeline layout
     /// built here, not with whichever target is being read.
     ///
     /// # Safety
     ///
     /// `cmd` must be recording, and its command pool must belong to
-    /// this pipeline's device.
-    pub(crate) unsafe fn bind_descriptors(&self, cmd: vk::CommandBuffer) {
-        let Some(descriptors) = self.descriptors else {
-            return;
-        };
+    /// this pipeline's device. The frame contract proved the binding
+    /// count equals this pipeline's declared slot count, and the
+    /// target's retention table holds every named binding alive past
+    /// the submit.
+    pub(crate) unsafe fn bind_bindings(&self, cmd: vk::CommandBuffer, bindings: &Bindings<'_>) {
+        let mut sets = [vk::DescriptorSet::null(); MAX_SAMPLED_BINDINGS];
+        let mut count = 0usize;
+        for binding in bindings.iter() {
+            sets[count] = binding.inner.set;
+            count += 1;
+        }
+        // No empty-list arm: the record paths call this only for an
+        // item carrying bindings, and the contract proved that list's
+        // length equals the pipeline's declared, non-zero slot count.
         // SAFETY: forwarded to the caller for the command buffer; the
-        // layout and set were created together by `create_pipeline` and
-        // are live for as long as `self` is; set 0 is the only set the
-        // layout declares.
+        // layout is live for as long as `self` is; each set is live via
+        // the binding the item names, retained by the target; slot `i`
+        // is set `i`, exactly the layout list `create_pipeline` built;
+        // the slice is non-empty by the contract argument above.
         unsafe {
             self.shared.device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.layout,
                 0,
-                &[descriptors.set],
+                &sets[..count],
                 &[],
             );
         }
@@ -787,7 +763,7 @@ impl RenderPipeline {
     /// Record an item's push-constant bytes into `cmd`.
     ///
     /// **One implementation, called by both targets**, for the reason
-    /// [`Self::bind_descriptors`] states: the stage flags and offset
+    /// [`Self::bind_bindings`] states: the stage flags and offset
     /// must agree with the one range the layout built here declares,
     /// not with whichever target happens to be recording.
     ///
@@ -815,89 +791,7 @@ impl RenderPipeline {
     }
 }
 
-/// Create the layout, pool and set for one combined image sampler, and
-/// write it to point at `texture` through `sampler`.
-fn create_descriptors(
-    shared: &DeviceShared,
-    texture: &Texture,
-    sampler: &Sampler,
-) -> Result<Descriptors, PipelineError> {
-    // Handles from another device would be written into this device's
-    // set and used by it — undefined behaviour that no return value can
-    // report, so it asserts, as the two targets already do for a
-    // pipeline built on a foreign device.
-    debug_assert!(
-        core::ptr::eq(shared, Rc::as_ptr(texture.shared())),
-        "texture and pipeline come from different devices"
-    );
-    debug_assert!(
-        core::ptr::eq(shared, Rc::as_ptr(&sampler.inner.shared)),
-        "sampler and pipeline come from different devices"
-    );
-    let sizes = [vk::DescriptorPoolSize::default()
-        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1)];
-    let pool_info = vk::DescriptorPoolCreateInfo::default()
-        .max_sets(1)
-        .pool_sizes(&sizes);
-    // SAFETY: category 2 (ash dispatch): device live via the spine; the
-    // size array is a local outliving the call. (The same argument
-    // covers every dispatch call in this function.)
-    let pool = unsafe {
-        shared
-            .device
-            .create_descriptor_pool(&pool_info, Some(&shared.alloc_cbs()))
-    }
-    .map_err(|code| creation("vkCreateDescriptorPool", code))?;
-
-    // The spine's one shared layout: identity is what makes this set
-    // compatible with every pipeline that declares the slot.
-    let set_layouts = [shared.sampled_set_layout];
-    let alloc_info = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(pool)
-        .set_layouts(&set_layouts);
-    // SAFETY: pool and layout live; the layout array is a local.
-    let allocated = unsafe { shared.device.allocate_descriptor_sets(&alloc_info) };
-    // One layout in, one set out is the driver contract, and ash sizes
-    // the result from the layout count — so the empty case is
-    // unreachable rather than unlikely. Folded into the failure path to
-    // keep it diagnosable instead of asserted, at no cost.
-    let (set, code) = match allocated {
-        Ok(sets) => (sets.into_iter().next(), vk::Result::ERROR_UNKNOWN),
-        Err(code) => (None, code),
-    };
-    let Some(set) = set else {
-        let partial = Descriptors {
-            pool,
-            set: vk::DescriptorSet::null(),
-        };
-        // SAFETY: nothing was allocated from the pool, so no submit can
-        // reference it.
-        unsafe { partial.destroy(shared) };
-        return Err(creation("vkAllocateDescriptorSets", code));
-    };
-
-    let image_info = [vk::DescriptorImageInfo::default()
-        .sampler(sampler.inner.sampler)
-        .image_view(texture.inner.view)
-        // The upload left the image in this layout and nothing changes
-        // it afterwards, immutability being the texture contract.
-        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-    let writes = [vk::WriteDescriptorSet::default()
-        .dst_set(set)
-        .dst_binding(0)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .image_info(&image_info)];
-    // SAFETY: the set is live and not in use by any submit — nothing can
-    // have been recorded against a pipeline that does not exist yet. The
-    // write array and the image info it points at are locals outliving
-    // the call.
-    unsafe { shared.device.update_descriptor_sets(&writes, &[]) };
-
-    Ok(Descriptors { pool, set })
-}
-
-fn creation(call: &'static str, code: vk::Result) -> PipelineError {
+pub(crate) fn creation(call: &'static str, code: vk::Result) -> PipelineError {
     PipelineError::Creation {
         call,
         code: code.as_raw(),
@@ -1044,6 +938,15 @@ impl Device {
     /// [`PipelineError::InvalidSpirv`] when either byte slice fails the
     /// structural checks; [`PipelineError::Creation`] when the driver
     /// rejects a creation call.
+    ///
+    /// # Panics
+    ///
+    /// In a dev build, on a malformed declaration — a push-constant
+    /// range outside the guaranteed ceiling or granularity, or more
+    /// sampled slots than
+    /// [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS). Both are
+    /// contract violations valid on no adapter, asserted before
+    /// anything is created so the panic owns nothing.
     #[expect(
         clippy::too_many_lines,
         reason = "the fixed-function state block is one declaration list; splitting it scatters what belongs together"
@@ -1058,6 +961,16 @@ impl Device {
         // any adapter — asserted, like the vertex-attribute ceiling,
         // and before anything is created so the panic owns nothing.
         validate_push_constant_size(desc.push_constant_size);
+        // The same reasoning as the push-constant ceiling: the bound is
+        // the spec's guaranteed minimum for bound descriptor sets, so a
+        // count this refuses was never valid on any adapter — asserted
+        // before anything is created so the panic owns nothing.
+        let sampled_slots = desc.sampled_bindings as usize;
+        assert!(
+            sampled_slots <= MAX_SAMPLED_BINDINGS,
+            "a pipeline declares at most {MAX_SAMPLED_BINDINGS} sampled bindings (the \
+             guaranteed device minimum for bound sets), got {sampled_slots}"
+        );
         // Checked before anything is created so this failure path owns
         // nothing. The environment declined, not the caller — a Result,
         // never an assert.
@@ -1119,23 +1032,12 @@ impl Device {
             }
         };
 
-        let descriptors = match &desc.texture {
-            Some((texture, sampler)) => match create_descriptors(shared, texture, sampler) {
-                Ok(descriptors) => Some(descriptors),
-                Err(error) => {
-                    destroy_modules();
-                    return Err(error);
-                }
-            },
-            None => None,
-        };
-
-        // An untextured pipeline keeps the empty layout it has always
-        // had; a textured one declares the single set the crate defines.
-        let set_layouts: &[vk::DescriptorSetLayout] = match &descriptors {
-            Some(_) => core::slice::from_ref(&shared.sampled_set_layout),
-            None => &[],
-        };
+        // A pipeline with no sampled slots keeps the empty layout it
+        // has always had; a declaring one lists the crate's one
+        // canonical set layout once per slot — set `i` is slot `i`,
+        // which is the agreement `bind_bindings` records against.
+        let slot_layouts = [shared.sampled_set_layout; MAX_SAMPLED_BINDINGS];
+        let set_layouts: &[vk::DescriptorSetLayout] = &slot_layouts[..sampled_slots];
         // One vertex-stage range at offset zero, present exactly when
         // the descriptor declares a size — the record path pushes with
         // the same stage flags and offset, one definition apart.
@@ -1157,11 +1059,6 @@ impl Device {
             Ok(layout) => layout,
             Err(code) => {
                 destroy_modules();
-                if let Some(descriptors) = descriptors {
-                    // SAFETY: no pipeline exists, so no submit can
-                    // reference the set.
-                    unsafe { descriptors.destroy(shared) };
-                }
                 return Err(creation("vkCreatePipelineLayout", code));
             }
         };
@@ -1284,15 +1181,11 @@ impl Device {
             Err((_partial, code)) => (None, code),
         };
         let Some(pipeline) = built else {
-            // SAFETY: layout live, no pipeline retained it; and no
-            // pipeline exists to have referenced the descriptor set.
+            // SAFETY: layout live, no pipeline retained it.
             unsafe {
                 shared
                     .device
                     .destroy_pipeline_layout(layout, Some(&shared.alloc_cbs()));
-                if let Some(descriptors) = descriptors {
-                    descriptors.destroy(shared);
-                }
             }
             return Err(creation("vkCreateGraphicsPipelines", code));
         };
@@ -1307,8 +1200,7 @@ impl Device {
             vertex_stride: vertex_layout.vertex_stride,
             depth: desc.depth_state.is_some(),
             push_constant_size: desc.push_constant_size,
-            descriptors,
-            _bound: desc.texture.clone(),
+            sampled_bindings: desc.sampled_bindings,
         })
     }
 }

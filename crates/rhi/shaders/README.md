@@ -309,3 +309,24 @@ Target: SPIR-V 1.0
 ```
 
 1992 bytes and 564 bytes, the exact blobs `builtin` embeds.
+
+## textured_pair.frag - compiled 2026-08-11
+
+The two-slot fragment stage: the canonical single-binding set layout
+repeated at set 0 and set 1, the left half of the target sampling
+slot 0 and the right half slot 1 — so a wrong bind order shows as a
+visibly wrong image. It shares `textured.vert`, whose blob is
+untouched. Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O textured_pair.frag -o textured_pair.frag.spv
+```
+
+784 bytes, the exact blob `builtin` embeds.

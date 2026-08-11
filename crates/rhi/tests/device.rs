@@ -7,9 +7,10 @@
 //! layer skip: correctness is proven where the oracle exists.
 
 use renew_rhi::{
-    AddressMode, Attachment, BufferUsage, ClearValue, Color, DepthState, Device, DeviceDesc,
-    DeviceError, Extent, Filter, FrameData, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
-    PipelineError, RenderDesc, SamplerDesc, Shaders, StoreOp, TargetFormat, Validation, builtin,
+    AddressMode, Attachment, Binding, BindingDesc, BindingSource, BufferUsage, ClearValue, Color,
+    DepthState, Device, DeviceDesc, DeviceError, Extent, Filter, FrameData, Item, LoadOp, MeshDesc,
+    Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders, StoreOp,
+    TargetFormat, Texture, Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -31,6 +32,32 @@ static PUSH_COLOR_FS_SPV: &[u8] = include_bytes!("../shaders/push_color.frag.spv
 /// The fixture's stage pair: three generated vertices, no buffers.
 fn push_color_shaders() -> Shaders<'static> {
     Shaders::new(PUSH_COLOR_VS_SPV, PUSH_COLOR_FS_SPV, 3)
+}
+
+/// A minimal binding and the resources it samples, for the contract
+/// refusals: a two-by-two atlas through the atlas sampler. The source
+/// handles ride along so the test controls every drop. `Err` carries
+/// which creation refused; the panic lives in the `#[test]` body.
+fn binding_fixture(device: &Device) -> Result<(Texture, Sampler, Binding), String> {
+    let texture = device
+        .create_texture(&renew_rhi::TextureDesc::new(
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &[0u8; 16],
+        ))
+        .map_err(|error| format!("fixture texture: {error}"))?;
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .map_err(|error| format!("fixture sampler: {error}"))?;
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .map_err(|error| format!("fixture binding: {error}"))?;
+    Ok((texture, sampler, binding))
 }
 
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
@@ -518,21 +545,25 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
-    let many: Vec<renew_rhi::Buffer> = (0..9)
+    let many: Vec<renew_rhi::Buffer> = (0..17)
         .map(|_| {
             device
                 .create_buffer(64, BufferUsage::PerFrame)
                 .expect("boundary buffer")
         })
         .collect();
-    refused("a ninth distinct buffer", "distinct resources", &|target| {
-        let color = clear(black);
-        let items: Vec<Item<'_>> = many
-            .iter()
-            .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
-            .collect();
-        let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
-    });
+    refused(
+        "a seventeenth distinct buffer",
+        "distinct resources",
+        &|target| {
+            let color = clear(black);
+            let items: Vec<Item<'_>> = many
+                .iter()
+                .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
 
     // The mesh half of the same contract. A mesh pipeline and a
     // generative one refuse the opposite mistakes, and the stride rule
@@ -618,6 +649,55 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
+
+    // The binding half of the same contract: presence must match the
+    // declared slot count, and the count must be exact. A one-slot
+    // pipeline and a slotless one refuse the opposite mistakes; the
+    // two-slot pipeline is legal over a shader that reads only set 0,
+    // because a layout may declare sets a stage ignores.
+    let (texture, sampler, binding) = binding_fixture(&device).expect("binding fixture");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let two_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(2),
+        )
+        .expect("two-slot pipeline");
+    refused(
+        "a declared sampled slot never filled",
+        "names bindings exactly when",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&one_slot)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "bindings on a pipeline that declares no slots",
+        "names bindings exactly when",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&pipeline).bindings(&[&binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused(
+        "fewer bindings than declared slots",
+        "fills every declared sampled slot",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&two_slot).bindings(&[&binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    drop(two_slot);
+    drop(one_slot);
+    drop(binding);
+    drop(sampler);
+    drop(texture);
     std::panic::set_hook(hook);
 
     // The refusals fired before any GPU work: the same target still

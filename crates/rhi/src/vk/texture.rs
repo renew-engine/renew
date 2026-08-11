@@ -204,10 +204,10 @@ impl Drop for Partial<'_> {
 }
 
 /// The texture's owning half, behind the handle the caller holds —
-/// the mesh split, applied here so a future binding object can keep
-/// the image alive with an `Rc` clone while callers pass plain
-/// borrows and drop whenever they like. The contract lives on
-/// [`Texture`], where its reader is.
+/// the mesh split, applied here so a binding keeps the image alive
+/// with an `Rc` clone while callers pass plain borrows and drop
+/// whenever they like. The contract lives on [`Texture`], where its
+/// reader is.
 pub(crate) struct TextureInner {
     pub(crate) shared: Rc<DeviceShared>,
     image: vk::Image,
@@ -226,11 +226,12 @@ pub(crate) struct TextureInner {
 ///
 /// **Immutability is what makes the first half tractable.** Because no
 /// host write can reach the image after it exists, the only ordering
-/// question left is destruction, and destruction is owned by whatever
-/// holds the descriptor set — by holding the texture, not by asking the
-/// caller to sequence drops. `Drop` therefore needs no quiesce: a submit
-/// that reads this image can only have been recorded against a set that
-/// is keeping it alive.
+/// question left is destruction, and destruction is owned by the
+/// [`Binding`](crate::Binding) whose set references it — by holding the
+/// texture's inner half, not by asking the caller to sequence drops.
+/// `Drop` therefore needs no quiesce: a submit that reads this image
+/// can only have been recorded against a binding that is keeping it
+/// alive.
 ///
 /// A texture whose pixels change — an animated or glyph atlas — breaks
 /// that argument rather than extending it, and needs a type that states

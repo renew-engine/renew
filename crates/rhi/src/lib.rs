@@ -72,11 +72,12 @@ mod vk;
 
 pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation};
 pub use error::{DeviceError, PipelineError, TargetError};
+pub use vk::binding::{Binding, BindingDesc, BindingSource, MAX_SAMPLED_BINDINGS};
 pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
-pub use vk::pass::{Attachment, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
+pub use vk::pass::{Attachment, Bindings, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
 pub use vk::pipeline::{
     AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,
     PipelineDesc, RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
@@ -247,6 +248,20 @@ pub mod builtin {
     pub const TEXTURED: Shaders<'static> = Shaders {
         vertex: TEXTURED_VS_SPV,
         fragment: TEXTURED_FS_SPV,
+        vertex_count: 6,
+    };
+
+    /// Fragment stage SPIR-V sampling two slots: set 0 for the left
+    /// half of the target, set 1 for the right.
+    pub static TEXTURED_PAIR_FS_SPV: &[u8] = include_bytes!("../shaders/textured_pair.frag.spv");
+
+    /// The two-slot quad: [`TEXTURED`]'s vertex stage over a fragment
+    /// stage reading two sampled bindings — the shape that proves N
+    /// textures share one pipeline. The halves split at the target's
+    /// horizontal midline, so a wrong bind order is visibly wrong.
+    pub const TEXTURED_PAIR: Shaders<'static> = Shaders {
+        vertex: TEXTURED_VS_SPV,
+        fragment: TEXTURED_PAIR_FS_SPV,
         vertex_count: 6,
     };
 

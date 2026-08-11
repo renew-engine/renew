@@ -247,6 +247,7 @@ impl Camera {
 /// by, and a caller that wants one has projected the world itself.
 pub struct TexturedMeshRenderer {
     pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
 }
 
 impl TexturedMeshRenderer {
@@ -269,12 +270,16 @@ impl TexturedMeshRenderer {
             .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
             .map_err(Render3dError::Texture)?;
         let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_TEXTURED, format, LAYOUT)
-                .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
+                .sampled_bindings(1)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline })
+        Ok(Self { pipeline, binding })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -291,7 +296,9 @@ impl TexturedMeshRenderer {
     /// The draw for `mesh`, ready to sit in a pass.
     #[must_use]
     pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
-        Item::new(&self.pipeline).mesh(mesh)
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .bindings(&[&self.binding])
     }
 }
 
@@ -312,9 +319,9 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 /// of its corners is — and leave an evenly lit world that is flat again,
 /// with a pattern on it.
 ///
-/// The texture is bound to the pipeline, so one renderer draws one
-/// atlas. That is the shape the rendering crate offers and it suits a
-/// voxel world, where every block samples the same sheet.
+/// The texture rides the one binding this renderer holds, so one
+/// renderer draws one atlas — which suits a voxel world, where every
+/// block samples the same sheet.
 ///
 /// # Colour is not carried through unchanged
 ///
@@ -323,6 +330,7 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 /// must fade alike or the seam between them shows.
 pub struct TexturedCameraRenderer {
     pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
 }
 
 impl TexturedCameraRenderer {
@@ -348,13 +356,17 @@ impl TexturedCameraRenderer {
         // arm already says so; only the image itself is a texture
         // failure.
         let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
-                .texture(std::rc::Rc::new(texture), std::rc::Rc::new(sampler))
+                .sampled_bindings(1)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline })
+        Ok(Self { pipeline, binding })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -375,6 +387,7 @@ impl TexturedCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
+            .bindings(&[&self.binding])
     }
 }
 

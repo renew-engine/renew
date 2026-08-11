@@ -10,12 +10,10 @@
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
-use std::rc::Rc;
-
 use renew_rhi::{
-    Attachment, ClearValue, Color, DepthState, Device, DeviceDesc, DeviceError, Extent, Item,
-    LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, SamplerDesc, StoreOp, TargetError,
-    TextureDesc, Validation, WindowTarget, builtin,
+    Attachment, BindingDesc, BindingSource, ClearValue, Color, DepthState, Device, DeviceDesc,
+    DeviceError, Extent, Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, SamplerDesc,
+    StoreOp, TargetError, TextureDesc, Validation, WindowTarget, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -39,6 +37,9 @@ struct SmokeApp {
     device: Option<Device>,
     target: Option<WindowTarget>,
     pipeline: Option<renew_rhi::RenderPipeline>,
+    /// The one binding the textured pipeline's item names — built with
+    /// its pipeline, held for the run.
+    binding: Option<renew_rhi::Binding>,
     /// A depth-testing triangle for the frame's depth passes, `None`
     /// when the adapter offers no depth format — a reported skip of the
     /// depth passes off the strict lane, a failure on it (the exercise
@@ -70,6 +71,7 @@ impl SmokeApp {
             device: None,
             target: None,
             pipeline: None,
+            binding: None,
             depth_pipeline: None,
             push_pipeline: None,
             mesh_pipeline: None,
@@ -158,8 +160,8 @@ impl WindowApp for SmokeApp {
         // **Textured, so that the window record path actually binds a
         // descriptor set** — see `textured_fixture` for the reasoning,
         // which is the point of this suite drawing anything at all.
-        let pipeline = match textured_fixture(&device, target.format()) {
-            Ok(pipeline) => pipeline,
+        let (pipeline, binding) = match textured_fixture(&device, target.format()) {
+            Ok(pair) => pair,
             Err(error) => {
                 self.failure = Some(error);
                 return;
@@ -214,6 +216,7 @@ impl WindowApp for SmokeApp {
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
+        self.binding = Some(binding);
         self.depth_pipeline = depth_pipeline;
         self.push_pipeline = Some(push_pipeline);
         self.mesh_pipeline = Some(mesh_pipeline);
@@ -302,20 +305,24 @@ impl WindowApp for SmokeApp {
                 }
                 // Built together in `ready`, like the mesh pair: "one
                 // without the other" is a state this app cannot reach.
-                let drawn = self.pipeline.as_ref().zip(self.push_pipeline.as_ref());
+                let drawn = self
+                    .pipeline
+                    .as_ref()
+                    .zip(self.push_pipeline.as_ref())
+                    .zip(self.binding.as_ref());
                 let items: &[Item<'_>] = match (drawn, geometry) {
-                    (Some((pipeline, push_pipeline)), Some((mesh_pipeline, mesh))) => {
+                    (Some(((pipeline, push_pipeline), binding)), Some((mesh_pipeline, mesh))) => {
                         items_with_mesh = [
                             Item::new(push_pipeline).push_data(&pushed),
-                            Item::new(pipeline),
+                            Item::new(pipeline).bindings(&[binding]),
                             Item::new(mesh_pipeline).mesh(mesh),
                         ];
                         &items_with_mesh
                     }
-                    (Some((pipeline, push_pipeline)), None) => {
+                    (Some(((pipeline, push_pipeline), binding)), None) => {
                         items_storage = [
                             Item::new(push_pipeline).push_data(&pushed),
-                            Item::new(pipeline),
+                            Item::new(pipeline).bindings(&[binding]),
                         ];
                         &items_storage
                     }
@@ -423,7 +430,7 @@ impl WindowApp for SmokeApp {
 fn textured_fixture(
     device: &Device,
     format: renew_rhi::TargetFormat,
-) -> Result<renew_rhi::RenderPipeline, String> {
+) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Binding), String> {
     let texels: [u8; 16] = [
         10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
     ];
@@ -435,15 +442,20 @@ fn textured_fixture(
             },
             &texels,
         ))
-        .map(Rc::new)
         .map_err(|error| format!("atlas upload failed: {error}"))?;
     let sampler = device
         .create_sampler(&SamplerDesc::atlas())
-        .map(Rc::new)
         .map_err(|error| format!("sampler failed: {error}"))?;
-    device
-        .create_pipeline(&PipelineDesc::new(builtin::TEXTURED, format).texture(texture, sampler))
-        .map_err(|error| format!("pipeline failed: {error}"))
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .map_err(|error| format!("binding failed: {error}"))?;
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(builtin::TEXTURED, format).sampled_bindings(1))
+        .map_err(|error| format!("pipeline failed: {error}"))?;
+    Ok((pipeline, binding))
 }
 
 /// The push-constant pipeline, built outside the frame loop.
