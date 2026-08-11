@@ -52,7 +52,9 @@ use input::Interaction;
 pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
 use layout::{LayoutSlot, Scratch, Solve};
-use renew_fixed::Fixed;
+/// Re-exported because the API speaks it: rectangles, styles, and the
+/// solver's whole vocabulary are in this arithmetic.
+pub use renew_fixed::Fixed;
 
 /// Nothing here: the marker every slot uses for "no neighbour". One
 /// value, not an `Option<u32>`, so a slot stays eight words no matter
@@ -110,13 +112,18 @@ pub struct NodeId {
 }
 
 impl NodeId {
-    /// The slot index, for the digest's explicit absorption order.
-    pub(crate) fn index(self) -> u32 {
+    /// The raw slot index. Public for presentation, which keys its
+    /// snapshot pairs by (slot, generation); not meaningful across
+    /// trees, and not a stable serialization — an id is an address,
+    /// never data to store outside the process.
+    #[must_use]
+    pub fn index(self) -> u32 {
         self.index
     }
 
-    /// The generation, likewise.
-    pub(crate) fn generation(self) -> u64 {
+    /// The generation half of the address, likewise.
+    #[must_use]
+    pub fn generation(self) -> u64 {
         self.generation
     }
 }
