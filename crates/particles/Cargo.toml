@@ -1,0 +1,42 @@
+[package]
+name = "renew-particles"
+description = "Presentation-side particles: a fixed-capacity pool stepped at the simulation cadence, seeded so replays reproduce the same picture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Presentation-side particles: a fixed-capacity pool stepped at the simulation cadence, seeded from digested observables so replays reproduce identical visuals without the digest carrying a particle."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# The seeded generator and nothing else in v0: this half is pure
+# arithmetic over a pool, testable on any machine. The GPU-facing half
+# arrives as a module with its own dependency when the renderer lands.
+[dependencies]
+renew-rng = { path = "../rng" }
+
+# Property tests for the pool's bounds and expiry — the containers row
+# of the testing table (the lerp endpoint is a bit-exact unit test
+# beside the packing) — and the engine's counting
+# allocator for the zero-allocation gate, which ships with the crate's
+# first per-frame code rather than after it.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators, so the gate ignores itself
+# there. Declared only because the gate exists; the workspace test that
+# pairs every declaration with the workflow line is what keeps this
+# honest.
+[features]
+sanitized = []
+
+[lints]
+workspace = true
