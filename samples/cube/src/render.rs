@@ -660,44 +660,54 @@ pub(crate) mod tests {
             draw_through(&grid, &camera, None, None, None),
             golden_strict(),
         ) {
-            // A burst in the open air between the eye and the mound,
-            // three steps old: young enough that all of it lives, and
-            // in front of everything solid so the depth test cannot
-            // silently discard the evidence.
-            let mut young = crate::burst::pool();
-            young.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
-            for _ in 0..3 {
-                young.step(crate::burst::DT);
-            }
-            let dusty = draw_through(&grid, &camera, None, None, Some(&young))
-                .expect("the dusty draw should succeed");
-            assert!(
-                differing_bytes(&plain, &dusty) > 0,
-                "a living burst changed no pixel, so it never reached the pass"
-            );
-            let again = draw_through(&grid, &camera, None, None, Some(&young))
-                .expect("the second dusty draw should succeed");
-            assert_eq!(
-                differing_bytes(&dusty, &again),
-                0,
-                "the same dust must draw the same picture"
-            );
-
-            // The same burst stepped past every possible lifetime.
-            let mut dead = crate::burst::pool();
-            dead.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
-            for _ in 0..60 {
-                dead.step(crate::burst::DT);
-            }
-            assert_eq!(dead.live(), 0, "a second is longer than any dust lifetime");
-            let after = draw_through(&grid, &camera, None, None, Some(&dead))
-                .expect("the dead-pool draw should succeed");
-            assert_eq!(
-                differing_bytes(&plain, &after),
-                0,
-                "dead dust must leave the picture exactly alone"
-            );
+            assert_dust_reaches_only_while_alive(&grid, &camera, &plain);
         }
+    }
+
+    /// A living burst changes pixels, the same pool twice is
+    /// byte-identical, and a dead pool changes nothing.
+    fn assert_dust_reaches_only_while_alive(
+        grid: &Grid,
+        camera: &crate::camera::Camera,
+        plain: &[u8],
+    ) {
+        // A burst in the open air between the eye and the mound, three
+        // steps old: young enough that all of it lives, and in front
+        // of everything solid so the depth test cannot silently
+        // discard the evidence.
+        let mut young = crate::burst::pool();
+        young.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
+        for _ in 0..3 {
+            young.step(crate::burst::DT);
+        }
+        let dusty = draw_through(grid, camera, None, None, Some(&young))
+            .expect("the dusty draw should succeed");
+        assert!(
+            differing_bytes(plain, &dusty) > 0,
+            "a living burst changed no pixel, so it never reached the pass"
+        );
+        let again = draw_through(grid, camera, None, None, Some(&young))
+            .expect("the second dusty draw should succeed");
+        assert_eq!(
+            differing_bytes(&dusty, &again),
+            0,
+            "the same dust must draw the same picture"
+        );
+
+        // The same burst stepped past every possible lifetime.
+        let mut dead = crate::burst::pool();
+        dead.burst([-2.0, 3.75, -5.0], crate::burst::BURST);
+        for _ in 0..60 {
+            dead.step(crate::burst::DT);
+        }
+        assert_eq!(dead.live(), 0, "a second is longer than any dust lifetime");
+        let after = draw_through(grid, camera, None, None, Some(&dead))
+            .expect("the dead-pool draw should succeed");
+        assert_eq!(
+            differing_bytes(plain, &after),
+            0,
+            "dead dust must leave the picture exactly alone"
+        );
     }
 
     /// An overlay marks the middle of the picture; an empty one marks
