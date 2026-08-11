@@ -1,0 +1,42 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: the widget tree is simulation-designated — its state will
+# feed digests once absorption lands — so it reads no clock, touches no
+# filesystem, spawns no thread, and holds no self-seeding container.
+# The float deny is at the crate root, beside the sentence explaining it.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "the tree is stepped by its host at the cadence the host owns; simulation state reads no clock" },
+    { path = "std::time::SystemTime::now", reason = "the tree is stepped by its host at the cadence the host owns; simulation state reads no clock" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::thread::spawn", reason = "this crate never spawns; simulation is single-threaded and parallelism belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::env::var", reason = "a value from the environment would make one run differ from the next with nothing in the inputs to explain it" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "self-seeding entropy has no place in state that will feed a digest" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "self-seeding entropy has no place in state that will feed a digest" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs of the same binary" },
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on File::open misses" },
+    { path = "std::path::Path", reason = "the crate takes node ids and limits, never a path" },
+    { path = "std::path::PathBuf", reason = "the crate takes node ids and limits, never a path" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

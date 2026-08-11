@@ -1,0 +1,35 @@
+[package]
+name = "renew-ui"
+description = "The retained widget tree: arena-backed nodes with generational ids, capacities fixed at construction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "The simulation-side widget tree: an arena of generationally addressed nodes with capacities fixed by UiLimits at construction, refusing rather than growing. Layout, input, and state digestion arrive in later steps; the tree is their common ground."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+# Property tests for the tree's invariants — the containers row of the
+# testing table — and the engine's counting allocator for the
+# zero-allocation gate, which ships with the crate's first per-frame
+# code rather than after it.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators, so the gate ignores itself
+# there.
+[features]
+sanitized = []
