@@ -61,9 +61,9 @@ with the rest of flexbox landing when a real document needs it.
 
 Everything is `Fixed` (Q47.16), so a solve is integer arithmetic
 under the hood, the same on every target by construction. A test
-builds the same tree twice and compares every rectangle to the bit;
-the cross-target determinism-lane scenario that turns that claim
-into three-platform evidence stands as its own step, next. Leftover space
+builds the same tree twice and compares every rectangle to the bit,
+and the `ui_digest` scenario below carries the claim to the
+cross-target comparison lane. Leftover space
 among growers is shared by largest remainder over raw fixed-point
 units — shares sum to the leftover exactly, property-tested, with
 ties breaking toward the earlier sibling. Both passes are iterative
@@ -95,8 +95,15 @@ the node count; past that, decisions are dropped and counted, never
 silently lost.
 
 `Ui::absorb` folds the discrete decisions into the engine's state
-fingerprint: pointer, pressed, focus, the activation ordinal, and
-the overflow count. What it leaves out is named in the source beside
-it — hover is derived, geometry reaches the digest only by changing
-a decision, and a test pins exactly that: a padding tweak with no
-press between digests identically.
+fingerprint: pointer, pressed, focus, the activation ordinal, a
+running fold of every activated id in order, and the overflow count.
+What it leaves out is named in the source beside it — hover is
+computed fresh rather than stored, geometry reaches the digest only
+by changing a decision, and a test pins exactly that: a padding
+tweak with no press between digests identically.
+
+The crate's one binary, `ui_digest`, runs a fixed scripted menu
+session headless and prints its digest as one JSON line — the
+scenario the cross-platform comparison lane holds against itself on
+every target, so the integer-arithmetic claim above is three
+machines agreeing rather than one machine asserting.

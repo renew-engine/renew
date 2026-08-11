@@ -369,8 +369,8 @@ fn escape(text: &str) -> String {
 ///
 /// The pure half of `--emit`: everything between "a child process wrote
 /// some bytes" and "the report holds two digests". Separated from the
-/// orchestration around it because the orchestration spawns four cargo
-/// runs and cannot be reached by a unit test, while every way this can go
+/// orchestration around it because the orchestration spawns a cargo run
+/// per pinned scenario and cannot be reached by a unit test, while every way this can go
 /// wrong can be — a run that printed nothing, printed something that is
 /// not JSON, or printed JSON missing a hash the comparison needs.
 ///
