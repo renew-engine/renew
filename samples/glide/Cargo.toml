@@ -39,6 +39,10 @@ renew-sample-glide-world = { path = "world" }
 # The pointer seam: the one documented quantization the drivers and
 # the replay harness apply before events reach the tree.
 renew-math = { path = "../../crates/core/math" }
+# The snapshot pair, unconditional rather than behind the window
+# feature: the blended fill is part of the game's picture, and a plain
+# headless test has to be able to reach it.
+renew-snapshot = { path = "../../crates/snapshot" }
 # The pause menu: a real retained widget tree, folded into the
 # session digest — a menu that can restart the run is gameplay.
 renew-ui = { path = "../../crates/ui" }

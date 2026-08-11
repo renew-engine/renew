@@ -13,6 +13,7 @@
 use renew_event::WindowEvent;
 use renew_frame::{FrameLoop, FrameStats, Nanos, StepBudget, Timestamp, Timestep};
 use renew_input::InputMap;
+use renew_math::Alpha;
 use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, NativeWindow, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
@@ -26,7 +27,7 @@ use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 #[cfg(feature = "audio")]
 use crate::audio::Audio;
 use crate::cli::{Options, Report};
-use crate::scene::{SceneSprite, Tile, scene};
+use crate::scene::{Presentation, SceneSprite, Tile};
 use crate::{SampleError, scripted};
 
 /// The window's base title; the score readout appends to it.
@@ -215,6 +216,14 @@ pub struct GlideApp {
     /// texture in the frame, drawn as its own item in the same pass.
     ui_sprites: Option<renew_render2d::SpriteRenderer>,
     scene_scratch: Vec<SceneSprite>,
+    /// The last two ticks of the world's picture, so a frame between
+    /// them draws between them rather than repeating whichever tick
+    /// happened last.
+    presentation: Presentation,
+    /// How far past the last executed step this frame stands. Stored
+    /// rather than passed, because drawing is an event the platform
+    /// raises and not a tail of the update that computed it.
+    alpha: Alpha,
     /// The HUD's score line, formatted in place each frame.
     hud_score: String,
     title: Title,
@@ -247,11 +256,17 @@ pub struct GlideApp {
 impl GlideApp {
     #[must_use]
     pub fn new(options: &Options) -> Self {
+        // Hoisted so the presentation starts from a real tick: seeded
+        // from a default world, the first frame would blend the bird up
+        // from y = 0.
+        let world = World::new(options.seed);
         Self {
             clock: Clock::start(),
             seed: options.seed,
             ticks_wanted: options.window_ticks,
-            world: World::new(options.seed),
+            presentation: Presentation::new(&world),
+            alpha: Alpha::ZERO,
+            world,
             input: scripted::input_map(),
             pending_flaps: 0,
             #[cfg(feature = "audio")]
@@ -367,7 +382,7 @@ impl GlideApp {
         else {
             return;
         };
-        scene(&self.world, &mut self.scene_scratch);
+        self.presentation.fill(self.alpha, &mut self.scene_scratch);
         renderer.begin();
         for sprite in &self.scene_scratch {
             let region = match sprite.tile {
@@ -507,6 +522,12 @@ impl GlideApp {
             for action in self.menu.drain() {
                 if action == crate::menu::MenuAction::Restart {
                     self.world = World::new(self.seed);
+                    // The pair belongs to the world it captured. Keeping
+                    // it across a restart would blend the new bird out of
+                    // the old one's last position and drag every pipe
+                    // across the screen for one interval.
+                    self.presentation = Presentation::new(&self.world);
+                    self.alpha = Alpha::ZERO;
                     self.pending_flaps = 0;
                 }
             }
@@ -544,8 +565,22 @@ impl GlideApp {
                     // drift away from the sounding one.
                     let _ = (before_alive, before_score, flap_passed);
                 }
+                // Once per EXECUTED step, never once per frame: a frame
+                // that runs three catch-up steps must leave the earlier
+                // capture one tick back, not three.
+                self.presentation.capture(&self.world);
             }
             self.input.advance();
+            // The factor moves only while the world does. The plan's
+            // remainder keeps cycling whether or not the caller executes
+            // the steps, so updating this while paused would sweep it
+            // from zero to one against a frozen pair of captures and make
+            // a paused game oscillate by a whole tick of motion — worse
+            // than the stutter this removes. Frozen factor over a frozen
+            // pair is the last frame drawn before the pause, exactly.
+            if !paused {
+                self.alpha = Alpha::new(plan.remainder().get(), Timestep::HZ_60.nanos());
+            }
             self.stats.absorb(&plan);
             let _ = self.relabel();
             if self.drawn_since_update {

@@ -1842,6 +1842,7 @@ dependencies = [
  "renew-replay",
  "renew-rhi",
  "renew-sample-glide-world",
+ "renew-snapshot",
  "renew-trace",
  "renew-ui",
  "renew-ui-render",

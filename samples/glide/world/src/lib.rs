@@ -36,7 +36,13 @@ use renew_frame::StateHash;
 use renew_rng::{Rng, Seed, StreamId};
 
 /// Fixed-point scale: world units per screen unit.
-const ONE: i64 = 1_000;
+/// World units per screen unit. Public because presentation has to
+/// divide by it in floats this crate is forbidden to compute in: the
+/// conversion happens at the consumer's boundary, and a consumer that
+/// cannot see the scale would have to hard-code it.
+pub const UNITS_PER_PIXEL: i64 = 1_000;
+
+const ONE: i64 = UNITS_PER_PIXEL;
 
 const GRAVITY: i64 = 45;
 /// Tuned for a steering input rather than a blind schedule: strong
@@ -223,6 +229,16 @@ impl World {
         (self.bird_y / ONE) as i32
     }
 
+    /// The bird's centre in world units, unrounded.
+    ///
+    /// The whole-unit reading above loses everything below a screen
+    /// pixel, which is most of a tick's motion near the apex of a flap;
+    /// presentation blends between ticks and needs what was lost.
+    #[must_use]
+    pub fn bird_y(&self) -> i64 {
+        self.bird_y
+    }
+
     /// Visit every pipe as (left edge x, gap centre y) in whole screen
     /// units, ascending slot order — the store's own guarantee, so draw
     /// order is a property of the rules, not the storage. Allocation-free
@@ -235,8 +251,35 @@ impl World {
         reason = "pipe coordinates are bounded by spawn position and exit cull to well under i32"
     )]
     pub fn for_each_pipe_units(&self, mut visit: impl FnMut(i32, i32)) {
-        for (_, pipe) in self.body.iter() {
-            visit((pipe.x / ONE) as i32, (pipe.gap_y / ONE) as i32);
+        // One line over the keyed walk below, so the truncation lives in
+        // exactly one place and this reading cannot drift from that one.
+        self.for_each_pipe(|_, _, x, gap_y| visit((x / ONE) as i32, (gap_y / ONE) as i32));
+    }
+
+    /// Visit every pipe as (slot, generation, left edge x, gap centre y)
+    /// in world units, ascending slot order — the store's own guarantee.
+    ///
+    /// The un-truncated, keyed companion to [`World::for_each_pipe_units`],
+    /// and both halves of that are load-bearing. Presentation blends
+    /// between ticks, so it needs finer than whole screen units; and it
+    /// needs the generation, because a slot freed by a pipe leaving the
+    /// screen is handed to a new pipe within ninety ticks, and a
+    /// slot-keyed blend without the generation would drag the newcomer
+    /// across the whole screen out of its predecessor's corpse.
+    ///
+    /// Plain integers rather than the handle itself: the key a consumer
+    /// builds from these names no storage type, so presentation does not
+    /// inherit a dependency on how the world stores things.
+    pub fn for_each_pipe(&self, mut visit: impl FnMut(u32, u32, i64, i64)) {
+        for (slot, pipe) in self.body.iter() {
+            // Skip rather than default. The digest may read a missing
+            // handle as generation 0 because it is hashing, but here 0 is
+            // a real generation, and defaulting to it would let the guard
+            // pass across two different tenants of one slot.
+            let Some(entity) = self.pipe.get(slot).copied() else {
+                continue;
+            };
+            visit(slot, entity.generation(), pipe.x, pipe.gap_y);
         }
     }
 
