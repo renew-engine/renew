@@ -165,8 +165,9 @@ jobs:
       # that is what makes it impossible to change what a cell builds
       # without changing what the guard checked.
       #
-      # renew-bench appears in two exclude lists because it reaches
-      # both renew-jobs and renew-frame from its bench targets.
+      # renew-bench appears in several exclude lists because its bench
+      # targets reach the crates they time (jobs, frame, rng, ecs,
+      # particles); each crate's cell excludes it alongside the crate.
       - name: Build and test without the job system
         run: |
           sel="--workspace --exclude renew-jobs --exclude renew-bench"
@@ -265,10 +266,11 @@ jobs:
       # The particle pool: arithmetic over the seeded generator. Its
       # one consumer is the voxel game, which bursts dust on a broken
       # block behind its render feature — excluded with it, as the
-      # removability rule asks of dependents.
+      # removability rule asks of dependents. renew-bench reaches the
+      # pool from its bench targets, like the job pool before it.
       - name: Build and test without the particle pool
         run: |
-          sel="--workspace --exclude renew-particles --exclude renew-sample-cube"
+          sel="--workspace --exclude renew-particles --exclude renew-sample-cube --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-particles $sel
           cargo build $sel
           cargo test $sel

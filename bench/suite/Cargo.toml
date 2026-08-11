@@ -1,6 +1,6 @@
 [package]
 name = "renew-bench"
-description = "Benchmark suite: math, allocator, and job-pool kernels with allocation-count assertions"
+description = "Benchmark suite: criterion timings over engine kernels with allocation-count assertions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over the math, allocator, and job-pool kernels, paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles — paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -38,6 +38,9 @@ renew-jobs = { path = "../../crates/jobs" }
 # The storage decision was settled on measurements that were never
 # committed, so nothing here could detect a regression in what shipped.
 renew-ecs = { path = "../../crates/ecs" }
+# Bench-target-only: the pool's allocation behaviour is gated in its
+# own crate; this suite only times it.
+renew-particles = { path = "../../crates/particles" }
 
 [lints]
 workspace = true
@@ -72,4 +75,8 @@ harness = false
 
 [[bench]]
 name = "clock"
+harness = false
+
+[[bench]]
+name = "particles"
 harness = false
