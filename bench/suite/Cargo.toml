@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles — paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter — paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -41,6 +41,11 @@ renew-ecs = { path = "../../crates/ecs" }
 # Bench-target-only: the pool's allocation behaviour is gated in its
 # own crate; this suite only times it.
 renew-particles = { path = "../../crates/particles" }
+# Bench-target-only, and the same shape again: the tree and the
+# presenter gate their allocations in their own crates; this suite
+# times the solve, the re-solve, and the snapshot copy.
+renew-ui = { path = "../../crates/ui" }
+renew-ui-render = { path = "../../crates/ui-render" }
 
 [lints]
 workspace = true
@@ -79,4 +84,8 @@ harness = false
 
 [[bench]]
 name = "particles"
+harness = false
+
+[[bench]]
+name = "ui"
 harness = false

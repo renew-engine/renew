@@ -167,7 +167,9 @@ jobs:
       #
       # renew-bench appears in several exclude lists because its bench
       # targets reach the crates they time (jobs, frame, rng, ecs,
-      # particles); each crate's cell excludes it alongside the crate.
+      # particles, ui, ui-render) and, through those, what they build
+      # on (render2d, rhi, fixed); every cell that removes a crate in
+      # that closure excludes the suite alongside it.
       - name: Build and test without the job system
         run: |
           sel="--workspace --exclude renew-jobs --exclude renew-bench"
@@ -212,7 +214,7 @@ jobs:
       # other side.
       - name: Build and test without the rendering crate
         run: |
-          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-render3d --exclude renew-ui-render --exclude renew-sample-cube --exclude renew-sample-hello-triangle --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-rhi --exclude renew-render2d --exclude renew-render3d --exclude renew-ui-render --exclude renew-sample-cube --exclude renew-sample-hello-triangle --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rhi $sel
           cargo build $sel
           cargo test $sel
@@ -285,20 +287,21 @@ jobs:
           cargo test $sel
       # The widget tree: structure, layout, and interaction over the
       # fixed-point and digest crates. Its consumers are the UI
-      # presenter and the windowed game whose pause menu embeds it —
-      # the growth this comment once promised.
+      # presenter, the windowed game whose pause menu embeds it, and
+      # the bench suite that times its solve from its bench targets.
       - name: Build and test without the widget tree
         run: |
-          sel="--workspace --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui $sel
           cargo build $sel
           cargo test $sel
       # The UI presenter: snapshots over the widget tree, emitted
-      # through the 2D renderer. Its one consumer is the windowed game
-      # whose pause menu it draws.
+      # through the 2D renderer. Its consumers are the windowed game
+      # whose pause menu it draws and the bench suite that times its
+      # snapshot copy from its bench targets.
       - name: Build and test without the UI presenter
         run: |
-          sel="--workspace --exclude renew-ui-render --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ui-render $sel
           cargo build $sel
           cargo test $sel
@@ -308,7 +311,7 @@ jobs:
       # yet -- the windowed game grows this list when it draws sprites.
       - name: Build and test without the 2D renderer
         run: |
-          sel="--workspace --exclude renew-render2d --exclude renew-ui-render --exclude renew-sample-glide"
+          sel="--workspace --exclude renew-render2d --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d $sel
           cargo build $sel
           cargo test $sel
@@ -357,7 +360,7 @@ jobs:
       # each went red here until the cell named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world"
+          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel

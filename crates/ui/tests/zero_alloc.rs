@@ -9,6 +9,7 @@
 //! asserts the churn happened.
 
 use renew_fixed::Fixed;
+use renew_frame::StateHash;
 use renew_memory::{CountingAllocator, counters};
 use renew_ui::{Size, Style, Ui, UiEvent, UiLimits};
 
@@ -111,4 +112,21 @@ fn the_steady_state_allocates_nothing() {
         }
     });
     verdict.expect("interaction stays heap-silent");
+
+    // The digest half: folding the tree's structure and decisions into
+    // a hash reads retained state only. Warmed once outside the
+    // window; asserted stable inside it, because a fold that read
+    // nothing would also be quiet — identical digests of an unchanged
+    // tree are what show the fold really ran over real state.
+    let baseline = ui.absorb(StateHash::new()).finish();
+    let verdict = counters::quiet_window(5, || {
+        for _ in 0..8 {
+            assert_eq!(
+                ui.absorb(StateHash::new()).finish(),
+                baseline,
+                "an unchanged tree must digest identically"
+            );
+        }
+    });
+    verdict.expect("the digest stays heap-silent");
 }
