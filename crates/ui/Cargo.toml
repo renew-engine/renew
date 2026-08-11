@@ -1,6 +1,6 @@
 [package]
 name = "renew-ui"
-description = "The retained widget tree: arena-backed nodes with generational ids, capacities fixed at construction"
+description = "The retained widget tree and its fixed-point layout solver: arena-backed nodes solved into pixel rectangles, capacities fixed at construction"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "The simulation-side widget tree: an arena of generationally addressed nodes with capacities fixed by UiLimits at construction, refusing rather than growing. Layout, input, and state digestion arrive in later steps; the tree is their common ground."
+purpose = "The simulation-side widget tree and its Q47.16 flex-subset layout solver: an arena of generationally addressed nodes with capacities fixed by UiLimits at construction, refusing rather than growing, solved into pixel rectangles behind a dirty flag. Input and state digestion arrive in later steps."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -19,6 +19,9 @@ simulation = true
 workspace = true
 
 [dependencies]
+# The layout solver's arithmetic: Q47.16, saturating, bit-identical on
+# every target — the crate simulation numbers are written in.
+renew-fixed = { path = "../fixed" }
 
 # Property tests for the tree's invariants — the containers row of the
 # testing table — and the engine's counting allocator for the

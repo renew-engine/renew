@@ -337,14 +337,15 @@ jobs:
           cargo test $sel
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png -p renew-sample-cube
           cargo build -p renew-sample-cube
-      # The fixed-point arithmetic, and the collision crate written in it.
-      # This cell was a single leaf when it landed, with a comment saying
-      # the first crate to depend on it should discover the obligation
-      # from a red lane rather than from nobody. It did: physics arrived
-      # and this cell went red until it named the dependent.
+      # The fixed-point arithmetic, and the crates written in it. This
+      # cell was a single leaf when it landed, with a comment saying the
+      # first crate to depend on it should discover the obligation from
+      # a red lane rather than from nobody. It has now worked twice:
+      # physics arrived, and later the widget tree's layout solver, and
+      # each went red here until the cell named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world"
+          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel

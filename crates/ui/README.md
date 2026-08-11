@@ -1,10 +1,10 @@
 # renew-ui
 
-The retained widget tree: an arena of generationally addressed nodes,
-capacities fixed at construction. This crate is the simulation-side
-ground the rest of the UI stands on — layout solving, input handling,
-and state digestion arrive as their own steps and all walk the tree
-built here.
+The retained widget tree and its fixed-point layout solver: an arena
+of generationally addressed nodes, capacities fixed at construction,
+solved into pixel rectangles by a trimmed flexbox subset over Q47.16.
+This crate is the simulation-side half of the UI — input handling and
+state digestion arrive as their own steps and walk what is built here.
 
 Machine-readable facts — maturity, dependencies, core status — live in
 this crate's manifest metadata (`Cargo.toml`, `[package.metadata.renew]`).
@@ -47,3 +47,26 @@ error vocabulary, and property tests drive random operation sequences
 against the tree's invariants: reachability matches the live count,
 children and parents agree, capacity is a wall, and stale ids miss
 everywhere at once.
+
+## Layout
+
+`solve` turns styles into absolute rectangles, the root filling the
+viewport. The v0 surface is deliberately small — row and column
+containers; pixel or content-driven sizes; start, centre, and end
+placement on both axes; margin, padding, gap; and integer `grow` —
+with the rest of flexbox landing when a real document needs it.
+
+Everything is `Fixed` (Q47.16), so a solve is integer arithmetic
+under the hood, the same on every target by construction. A test
+builds the same tree twice and compares every rectangle to the bit;
+the cross-target lane that turns that claim into evidence arrives
+with state digestion. Leftover space
+among growers is shared by largest remainder over raw fixed-point
+units — shares sum to the leftover exactly, property-tested, with
+ties breaking toward the earlier sibling. Both passes are iterative
+(the tree is data, and data must not choose the stack depth), run in
+scratch buffers sized at construction, and re-solving allocates
+nothing — the same counting-allocator gate holds both promises.
+Solving is retained behind one dirty flag: a clean tree with an
+unchanged viewport returns without walking. Exact per-node damage
+arrives with the compiled style tables.

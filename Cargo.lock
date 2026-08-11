@@ -1906,6 +1906,7 @@ name = "renew-ui"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "renew-fixed",
  "renew-memory",
 ]
 
