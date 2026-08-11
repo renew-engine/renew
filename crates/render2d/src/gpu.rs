@@ -3,12 +3,10 @@
 //! Everything that touches `renew_rhi` lives in this module — the
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
-use std::rc::Rc;
-
 use renew_rhi::{
-    Attachment, Blend, Buffer, BufferUsage, ClearValue, Color, Device, Extent, FrameData, Item,
-    LoadOp, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders, StoreOp,
-    TargetError, TargetFormat, TextureDesc, VertexAttribute,
+    Attachment, Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, ClearValue, Color,
+    Device, Extent, FrameData, Item, LoadOp, PipelineDesc, PipelineError, RenderPipeline,
+    SamplerDesc, Shaders, StoreOp, TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -115,6 +113,7 @@ impl From<TargetError> for Render2dError {
 /// !Sync` like everything else on it.
 pub struct SpriteRenderer {
     pipeline: RenderPipeline,
+    binding: Binding,
     buffer: Buffer,
     scratch: Vec<u8>,
     count: u32,
@@ -148,19 +147,24 @@ impl SpriteRenderer {
         let texture =
             device.create_texture(&TextureDesc::new(atlas.extent, atlas.rgba8_premultiplied))?;
         let sampler = device.create_sampler(&SamplerDesc::atlas())?;
+        let binding = device.create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
         let pipeline = device.create_pipeline(
             &PipelineDesc::new(
                 Shaders::new(SPRITE_VS_SPV, SPRITE_FS_SPV, SPRITE_VERTEX_COUNT),
                 format,
             )
             .instance_input(SPRITE_LAYOUT)
-            .texture(Rc::new(texture), Rc::new(sampler))
+            .sampled_bindings(1)
             .blend(Blend::PremultipliedAlpha),
         )?;
         let capacity = max_sprites.get() as usize * fill::INSTANCE_STRIDE;
         let buffer = device.create_buffer(capacity, BufferUsage::PerFrame)?;
         Ok(Self {
             pipeline,
+            binding,
             buffer,
             scratch: vec![0u8; capacity],
             count: 0,
@@ -244,11 +248,13 @@ impl SpriteRenderer {
     #[must_use]
     pub fn item(&self) -> Item<'_> {
         let filled = self.count as usize * fill::INSTANCE_STRIDE;
-        Item::new(&self.pipeline).frame_data(FrameData::new(
-            &self.buffer,
-            &self.scratch[..filled],
-            self.count,
-        ))
+        Item::new(&self.pipeline)
+            .frame_data(FrameData::new(
+                &self.buffer,
+                &self.scratch[..filled],
+                self.count,
+            ))
+            .bindings(&[&self.binding])
     }
 }
 

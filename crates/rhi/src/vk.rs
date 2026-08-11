@@ -12,6 +12,7 @@
 //! messenger callback, and the one mapped-memory read site.
 
 pub mod alloc;
+pub mod binding;
 pub mod buffer;
 pub mod debug;
 pub mod depth;

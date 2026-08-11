@@ -9,6 +9,7 @@
 use std::fmt;
 
 use crate::config::Color;
+use crate::vk::binding::{Binding, MAX_SAMPLED_BINDINGS};
 use crate::vk::mesh::Mesh;
 use crate::vk::pipeline::{FrameData, RenderPipeline};
 
@@ -169,6 +170,19 @@ pub struct Item<'a> {
     /// matched. The bytes are copied into the command stream at record
     /// time, so nothing here is retained past the `render` call.
     pub push_data: Option<&'a [u8]>,
+    /// The bindings filling the pipeline's sampled slots, in slot
+    /// order — slot `i` is descriptor set `i`.
+    ///
+    /// Present exactly when the pipeline declares sampled bindings, and
+    /// exactly its declared count; both are refused by the frame
+    /// contract before any GPU call, the same way push data matches its
+    /// range. Named per draw rather than welded to the pipeline — that
+    /// is what lets N textures share one pipeline.
+    ///
+    /// **Like a mesh, a binding may be named by any number of items** —
+    /// nothing copies into it, so the one-buffer-one-item rule does not
+    /// reach it; each distinct binding costs one retention slot.
+    pub bindings: Option<Bindings<'a>>,
 }
 
 impl<'a> Item<'a> {
@@ -180,6 +194,7 @@ impl<'a> Item<'a> {
             mesh: None,
             frame_data: None,
             push_data: None,
+            bindings: None,
         }
     }
 
@@ -204,23 +219,109 @@ impl<'a> Item<'a> {
         self.push_data = Some(bytes);
         self
     }
+
+    /// Fill the pipeline's sampled slots with `bindings`, in slot
+    /// order. Must be exactly the count the pipeline declared.
+    ///
+    /// The references are copied into the item — the slice itself may
+    /// be a temporary.
+    #[must_use]
+    pub fn bindings(mut self, bindings: &[&'a Binding]) -> Self {
+        self.bindings = Some(Bindings::new(bindings));
+        self
+    }
+}
+
+/// An item's binding list: up to [`MAX_SAMPLED_BINDINGS`] references,
+/// stored inline so [`Item`] stays `Copy` and borrows no caller-owned
+/// slice storage.
+///
+/// The fields are private because they carry an invariant the
+/// constructor proves: the first `count` slots are `Some`, the rest
+/// `None`.
+#[derive(Clone, Copy)]
+pub struct Bindings<'a> {
+    slots: [Option<&'a Binding>; MAX_SAMPLED_BINDINGS],
+    count: u8,
+}
+
+impl<'a> Bindings<'a> {
+    /// Copy `list`'s references inline, in order.
+    ///
+    /// # Panics
+    ///
+    /// Over [`MAX_SAMPLED_BINDINGS`] entries — the same ceiling a
+    /// pipeline's slot declaration is held to, asserted rather than
+    /// returned because the list was never valid anywhere.
+    #[must_use]
+    pub fn new(list: &[&'a Binding]) -> Self {
+        // The message value is bound first and captured inline: a call
+        // left inside the argument list is a region that runs only on
+        // failure, which is a hole in the coverage gate.
+        let named = list.len();
+        assert!(
+            named <= MAX_SAMPLED_BINDINGS,
+            "an item names at most {MAX_SAMPLED_BINDINGS} bindings, got {named}"
+        );
+        let mut slots = [None; MAX_SAMPLED_BINDINGS];
+        for (slot, binding) in slots.iter_mut().zip(list) {
+            *slot = Some(*binding);
+        }
+        Self {
+            slots,
+            // The assert above bounds the length far inside u8.
+            #[allow(clippy::cast_possible_truncation)]
+            count: named as u8,
+        }
+    }
+
+    /// How many slots are filled.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.count as usize
+    }
+
+    /// Whether no slots are filled.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The named bindings, in slot order.
+    ///
+    /// Flattening the option array is exact, not defensive: the
+    /// constructor's invariant puts every `Some` in the leading
+    /// `count` slots, so this yields exactly them, in order, with no
+    /// panic path for a hole that cannot exist.
+    pub fn iter(&self) -> impl Iterator<Item = &'a Binding> + '_ {
+        self.slots.iter().flatten().copied()
+    }
+}
+
+impl fmt::Debug for Bindings<'_> {
+    /// Reports the count, not the handles — the shape is the useful
+    /// part, matching [`RenderDesc`]'s own Debug.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bindings")
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One resource a recorded frame references and must outlive.
 ///
-/// **The two arms exist so retention has one table and one clearing
+/// **The arms exist so retention has one table and one clearing
 /// rule.** Release sites only ever write `None`, so none of them cares
-/// which arm they hold — which is what lets a second resource class join
+/// which arm they hold — which is what let the binding class join
 /// without touching a single one of the four proofs that decide when
-/// memory may die.
+/// memory may die, and lets the next class do the same.
 pub(crate) enum Retained {
     /// A per-frame buffer whose slot region the frame copied into.
     ///
-    /// **Never read through — held for its `Drop` alone**, the same
-    /// reasoning `RenderPipeline`'s `_bound` records: the recorded
-    /// command stream holds the Vulkan handles the GPU uses, and this
-    /// holds the right to keep those handles valid until the work has
-    /// provably ended.
+    /// **Never read through — held for its `Drop` alone**: the
+    /// recorded command stream holds the Vulkan handles the GPU uses,
+    /// and this holds the right to keep those handles valid until the
+    /// work has provably ended.
     #[allow(
         dead_code,
         reason = "held to keep the allocation alive across a submit, never read through"
@@ -230,6 +331,31 @@ pub(crate) enum Retained {
     /// already retained this frame, so several items may name one mesh
     /// without spending a slot each.
     Mesh(std::rc::Rc<crate::vk::mesh::MeshInner>),
+    /// A descriptor set the frame's draws sample through. Read only to
+    /// recognise a binding already retained this frame, exactly as a
+    /// mesh is — nothing copies into a binding, so items may share one
+    /// freely.
+    Binding(std::rc::Rc<crate::vk::binding::BindingInner>),
+}
+
+/// Whether `resource` is already held in `held` — true only for the
+/// repeatable classes (meshes and bindings), which several items may
+/// name while spending one slot.
+///
+/// **One definition, consumed by both targets' fill loops**, so the
+/// recognition rule cannot drift between them. A per-frame buffer never
+/// matches: the contract's one-buffer-one-item rule means a duplicate
+/// cannot reach retention.
+pub(crate) fn already_retained(resource: &Retained, held: &[Option<Retained>]) -> bool {
+    match resource {
+        Retained::Frame(_) => false,
+        Retained::Mesh(mesh) => held.iter().any(|slot| {
+            matches!(slot, Some(Retained::Mesh(seen)) if std::rc::Rc::ptr_eq(seen, mesh))
+        }),
+        Retained::Binding(binding) => held.iter().any(|slot| {
+            matches!(slot, Some(Retained::Binding(seen)) if std::rc::Rc::ptr_eq(seen, binding))
+        }),
+    }
 }
 
 /// Everything one item's recorded work references, in retention order.
@@ -239,12 +365,13 @@ pub(crate) enum Retained {
 /// `frame_data` being `Some`, so any new resource-bearing field would
 /// have been skipped silently — memory freed under a live submit, on the
 /// asynchronous path only, where freed-but-untouched memory usually still
-/// reads fine. Adding a third resource to [`Item`] now fails to compile
-/// here rather than passing every test.
-pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; 2] {
+/// reads fine. Adding a resource-bearing field to [`Item`] now fails to
+/// compile here rather than passing every test — the binding list
+/// entered through exactly this door.
+pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOURCES] {
     // **Destructured with no `..` rest pattern, and that is the whole
     // mechanism.** Matching a locally-built tuple would compile happily
-    // when a third resource-bearing field appeared on `Item` — the
+    // when a new resource-bearing field appeared on `Item` — the
     // guarantee this function advertises would be fiction. Naming every
     // field makes the addition a compile error *here*, which is the one
     // place that has to learn about it. `#[non_exhaustive]` does not
@@ -256,20 +383,34 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; 2] {
         // Copied into the command stream by the record path's push
         // call, so no allocation outlives `render` — nothing to retain.
         push_data: _,
+        bindings,
     } = item;
-    match (*mesh, frame_data.as_ref()) {
-        (None, None) => [None, None],
-        (Some(mesh), None) => [Some(Retained::Mesh(std::rc::Rc::clone(&mesh.inner))), None],
-        (None, Some(data)) => [
-            Some(Retained::Frame(std::rc::Rc::clone(&data.buffer.inner))),
-            None,
-        ],
-        (Some(mesh), Some(data)) => [
-            Some(Retained::Mesh(std::rc::Rc::clone(&mesh.inner))),
-            Some(Retained::Frame(std::rc::Rc::clone(&data.buffer.inner))),
-        ],
+    let mut out = [const { None }; MAX_ITEM_RESOURCES];
+    let mut count = 0usize;
+    if let Some(mesh) = mesh {
+        out[count] = Some(Retained::Mesh(std::rc::Rc::clone(&mesh.inner)));
+        count += 1;
     }
+    if let Some(data) = frame_data {
+        out[count] = Some(Retained::Frame(std::rc::Rc::clone(&data.buffer.inner)));
+        count += 1;
+    }
+    if let Some(bindings) = bindings {
+        for binding in bindings.iter() {
+            // In bounds by construction: the list is capped at
+            // MAX_SAMPLED_BINDINGS and the array leaves room for it
+            // beside the two singleton classes.
+            out[count] = Some(Retained::Binding(std::rc::Rc::clone(&binding.inner)));
+            count += 1;
+        }
+    }
+    out
 }
+
+/// The most resources one item can reference: its mesh, its per-frame
+/// buffer, and a full binding list. Sizes [`retained_of`]'s answer, so
+/// the fill loops stay allocation-free.
+pub(crate) const MAX_ITEM_RESOURCES: usize = 2 + MAX_SAMPLED_BINDINGS;
 
 /// The frame-shape contract, asserted identically by both targets
 /// before any GPU call: the refusals that make a malformed frame a
@@ -401,9 +542,34 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                     bytes.len()
                 );
             }
+            check_binding_contract(index, item);
         }
     }
     check_retention_bound(desc);
+}
+
+/// The push-data rules again, for sampled slots: a declared slot never
+/// filled samples an unbound set, and bindings on a slotless pipeline
+/// bind sets its layout does not declare — invalid usage either way,
+/// refused by name. A sibling of [`check_retention_bound`] for the same
+/// reason: one rule family, its own function.
+fn check_binding_contract(index: usize, item: &Item<'_>) {
+    let declared_slots = item.pipeline.sampled_bindings as usize;
+    assert!(
+        item.bindings.is_some() == (declared_slots > 0),
+        "pass {index}: an item names bindings exactly when its pipeline declares \
+         sampled slots — a declared slot never filled samples an unbound set, and \
+         bindings on a slotless pipeline are invalid usage"
+    );
+    if let Some(bindings) = &item.bindings {
+        let named = bindings.len();
+        assert!(
+            named == declared_slots,
+            "pass {index}: an item fills every declared sampled slot, in order \
+             ({declared_slots} declared, {named} named) — a partial fill leaves \
+             unbound sets, and a surplus binds past the layout"
+        );
+    }
 }
 
 /// The retention half of the frame contract: how many distinct resources
@@ -419,24 +585,39 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
     // - **One buffer, one item, per frame.** Two items naming one
     //   per-frame buffer would have the second copy silently win before
     //   either draws. Unchanged, in wording and in force.
-    // - **A mesh may repeat.** Nothing copies into a mesh, so there is no
-    //   race for the rule above to prevent, and drawing one voxel mesh
-    //   from several items is an ordinary thing to want. It costs one
-    //   retention slot however many items name it.
+    // - **A mesh or a binding may repeat.** Nothing copies into either,
+    //   so there is no race for the rule above to prevent, and drawing
+    //   one voxel mesh — or one atlas binding — from several items is an
+    //   ordinary thing to want. Each distinct one costs one retention
+    //   slot however many items name it.
     let mut seen: [Option<*const u8>; MAX_RETAINED_RESOURCES] = [None; MAX_RETAINED_RESOURCES];
     let mut count = 0usize;
+    // The repeatable classes share one recognise-or-count arm; the
+    // pointer key spaces cannot collide across classes, because each is
+    // the address of a distinct live allocation.
+    let count_repeatable = |seen: &mut [Option<*const u8>; MAX_RETAINED_RESOURCES],
+                            count: &mut usize,
+                            key: *const u8| {
+        if !seen[..*count].contains(&Some(key)) {
+            assert!(
+                *count < MAX_RETAINED_RESOURCES,
+                "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
+                 (per-frame buffers, meshes and bindings together)"
+            );
+            seen[*count] = Some(key);
+            *count += 1;
+        }
+    };
     for pass in desc.passes {
         for item in pass.items {
             if let Some(mesh) = item.mesh {
                 let key = std::rc::Rc::as_ptr(&mesh.inner).cast::<u8>();
-                if !seen[..count].contains(&Some(key)) {
-                    assert!(
-                        count < MAX_RETAINED_RESOURCES,
-                        "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
-                         (per-frame buffers and meshes together)"
-                    );
-                    seen[count] = Some(key);
-                    count += 1;
+                count_repeatable(&mut seen, &mut count, key);
+            }
+            if let Some(bindings) = &item.bindings {
+                for binding in bindings.iter() {
+                    let key = std::rc::Rc::as_ptr(&binding.inner).cast::<u8>();
+                    count_repeatable(&mut seen, &mut count, key);
                 }
             }
             let Some(data) = &item.frame_data else {
@@ -451,7 +632,7 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
             assert!(
                 count < MAX_RETAINED_RESOURCES,
                 "a frame carries at most {MAX_RETAINED_RESOURCES} distinct resources \
-                 (per-frame buffers and meshes together)"
+                 (per-frame buffers, meshes and bindings together)"
             );
             seen[count] = Some(key);
             count += 1;
@@ -461,10 +642,12 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
 
 /// How many distinct resources one frame may keep alive, per target slot
 /// — the hard bound that keeps retention tables fixed-width and the frame
-/// path allocation-free. Per-frame buffers and meshes share it, because
-/// they share one table. The ninth distinct resource is refused by name
-/// in [`check_frame_contract`].
-pub(crate) const MAX_RETAINED_RESOURCES: usize = 8;
+/// path allocation-free. Per-frame buffers, meshes and bindings share it,
+/// because they share one table. The seventeenth distinct resource is
+/// refused by name in [`check_frame_contract`]. Sixteen, doubled from
+/// eight when bindings joined the table: every draw's sampled slots now
+/// spend from the same budget its geometry does.
+pub(crate) const MAX_RETAINED_RESOURCES: usize = 16;
 
 impl LoadOp {
     pub(crate) fn to_vk(self) -> ash::vk::AttachmentLoadOp {
@@ -512,6 +695,23 @@ pub(crate) fn vk_clear_depth(attachment: &Attachment) -> ash::vk::ClearValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The binding list's device-free boundary: an empty list is a
+    /// legal value of the type (the frame contract, not the
+    /// constructor, is what refuses it on any pipeline), reporting
+    /// itself consistently through every accessor. The populated side
+    /// lives with the device suites, where a real binding exists to
+    /// name.
+    #[test]
+    fn an_empty_binding_list_is_consistent_across_its_accessors() {
+        let bindings = Bindings::new(&[]);
+        assert_eq!(bindings.len(), 0);
+        assert!(bindings.is_empty());
+        assert_eq!(bindings.iter().count(), 0);
+        let shown = format!("{bindings:?}");
+        assert!(shown.contains("Bindings"), "{shown}");
+        assert!(shown.contains("count: 0"), "{shown}");
+    }
 
     /// The Debug form reports shape, not handles — pinned on content so
     /// the claim cannot rot into a mere smoke call.

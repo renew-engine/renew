@@ -5,8 +5,6 @@
 //! split point is the packed bytes: the pool writes them, this module
 //! rides them to a draw, and nothing else crosses.
 
-use std::rc::Rc;
-
 use renew_rhi::{
     Blend, Device, Extent, Item, PipelineDesc, PipelineError, RenderPipeline, TargetError,
     TargetFormat, builtin,
@@ -129,6 +127,7 @@ impl std::error::Error for ParticleRenderError {
 /// unsorted additive batches read correctly.
 pub struct ParticleRenderer {
     pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
     buffer: renew_rhi::Buffer,
 }
 
@@ -160,13 +159,19 @@ impl ParticleRenderer {
         let sampler = device
             .create_sampler(&renew_rhi::SamplerDesc::atlas())
             .map_err(ParticleRenderError::Pipeline)?;
+        let binding = device
+            .create_binding(&renew_rhi::BindingDesc::new(
+                renew_rhi::BindingSource::Texture(&texture),
+                &sampler,
+            ))
+            .map_err(ParticleRenderError::Pipeline)?;
         let pipeline = device
             .create_pipeline(
                 &PipelineDesc::new(builtin::PARTICLE, format)
                     .instance_input(builtin::PARTICLE_INSTANCE_LAYOUT)
                     .push_constant_size(96)
                     .blend(blend.to_rhi())
-                    .texture(Rc::new(texture), Rc::new(sampler))
+                    .sampled_bindings(1)
                     .depth_state(renew_rhi::DepthState::test_only()),
             )
             .map_err(ParticleRenderError::Pipeline)?;
@@ -176,7 +181,11 @@ impl ParticleRenderer {
                 renew_rhi::BufferUsage::PerFrame,
             )
             .map_err(ParticleRenderError::Buffer)?;
-        Ok(Self { pipeline, buffer })
+        Ok(Self {
+            pipeline,
+            binding,
+            buffer,
+        })
     }
 
     /// The draw for `live` instances packed in `instances`, seen
@@ -208,6 +217,7 @@ impl ParticleRenderer {
                 live,
             ))
             .push_data(camera.bytes())
+            .bindings(&[&self.binding])
     }
 }
 

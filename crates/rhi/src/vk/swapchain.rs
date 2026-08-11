@@ -468,10 +468,12 @@ impl WindowTarget {
     /// must match its pass; one buffer feeds at most one item per
     /// frame; an item names geometry exactly when its pipeline declares
     /// per-vertex input, and a mesh's vertex stride equals the stride
-    /// that pipeline's layout packs to; and a frame carries at most the
-    /// retention table's width of distinct resources — per-frame buffers
-    /// and meshes together, a mesh counting once however many items name
-    /// it. Frame data longer than its buffer's
+    /// that pipeline's layout packs to; an item names bindings exactly
+    /// when its pipeline declares sampled slots, and exactly as many as
+    /// it declares; and a frame carries at most the retention table's
+    /// width of distinct resources — per-frame buffers, meshes and
+    /// bindings together, the repeatable classes counting once however
+    /// many items name them. Frame data longer than its buffer's
     /// per-frame capacity also panics through a retained assertion: the
     /// length bounds a copy into mapped device memory, which makes it a
     /// memory-safety boundary rather than a contract nicety.
@@ -595,19 +597,27 @@ impl WindowTarget {
                             "mesh and target come from different devices"
                         );
                     }
+                    if let Some(bindings) = &item.bindings {
+                        for binding in bindings.iter() {
+                            debug_assert!(
+                                Rc::ptr_eq(&binding.inner.shared, &self.shared),
+                                "binding and target come from different devices"
+                            );
+                        }
+                    }
                     // Retention is enumerated by one shared function with
                     // a total match over the item's shape, so a resource
                     // class added to `Item` cannot be skipped here
                     // silently — which on this path would free memory
-                    // under a live submit. A mesh named by several items
-                    // is retained once; the frame contract bounded the
-                    // distinct count.
+                    // under a live submit. A mesh or binding named by
+                    // several items is retained once; the frame contract
+                    // bounded the distinct count, and the recognition
+                    // rule is one shared definition.
                     for resource in pass::retained_of(item).into_iter().flatten() {
-                        if let Retained::Mesh(mesh) = &resource
-                            && self.retained[frame][..retained_count].iter().any(|held| {
-                                matches!(held, Some(Retained::Mesh(seen)) if Rc::ptr_eq(seen, mesh))
-                            })
-                        {
+                        if pass::already_retained(
+                            &resource,
+                            &self.retained[frame][..retained_count],
+                        ) {
                             continue;
                         }
                         self.retained[frame][retained_count] = Some(resource);
@@ -862,7 +872,9 @@ impl WindowTarget {
                         vk::PipelineBindPoint::GRAPHICS,
                         item.pipeline.pipeline,
                     );
-                    item.pipeline.bind_descriptors(cmd);
+                    if let Some(bindings) = &item.bindings {
+                        item.pipeline.bind_bindings(cmd, bindings);
+                    }
                     if let Some(bytes) = item.push_data {
                         // The contract proved presence and length match
                         // the pipeline's declared range; the bytes are

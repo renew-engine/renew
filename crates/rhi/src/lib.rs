@@ -72,11 +72,12 @@ mod vk;
 
 pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation};
 pub use error::{DeviceError, PipelineError, TargetError};
+pub use vk::binding::{Binding, BindingDesc, BindingSource, MAX_SAMPLED_BINDINGS};
 pub use vk::buffer::{Buffer, BufferUsage};
 pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
-pub use vk::pass::{Attachment, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
+pub use vk::pass::{Attachment, Bindings, ClearValue, Item, LoadOp, Pass, RenderDesc, StoreOp};
 pub use vk::pipeline::{
     AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,
     PipelineDesc, RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
@@ -147,9 +148,10 @@ pub mod builtin {
     ///
     /// **A second pair rather than a flag on the first.** The two
     /// pipelines differ in what they bind, not only in what they compute:
-    /// this one carries a descriptor set and [`MESH_CAMERA`] does not. A
-    /// uniform choosing between them would cost a fetch and a branch per
-    /// fragment for a decision fixed when the pipeline was built.
+    /// a pipeline over this pair declares a sampled slot and one over
+    /// [`MESH_CAMERA`] does not. A uniform choosing between them would
+    /// cost a fetch and a branch per fragment for a decision fixed when
+    /// the pipeline was built.
     ///
     /// The per-vertex layout is [`MESH_LAYOUT`], shared with
     /// [`MESH_CAMERA`], which is what lets one scene feed either; the
@@ -247,6 +249,20 @@ pub mod builtin {
     pub const TEXTURED: Shaders<'static> = Shaders {
         vertex: TEXTURED_VS_SPV,
         fragment: TEXTURED_FS_SPV,
+        vertex_count: 6,
+    };
+
+    /// Fragment stage SPIR-V sampling two slots: set 0 for the left
+    /// half of the target, set 1 for the right.
+    pub static TEXTURED_PAIR_FS_SPV: &[u8] = include_bytes!("../shaders/textured_pair.frag.spv");
+
+    /// The two-slot quad: [`TEXTURED`]'s vertex stage over a fragment
+    /// stage reading two sampled bindings — the shape that proves N
+    /// textures share one pipeline. The target splits left/right at
+    /// its vertical midline, so a wrong bind order is visibly wrong.
+    pub const TEXTURED_PAIR: Shaders<'static> = Shaders {
+        vertex: TEXTURED_VS_SPV,
+        fragment: TEXTURED_PAIR_FS_SPV,
         vertex_count: 6,
     };
 

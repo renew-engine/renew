@@ -19,13 +19,13 @@
 #![allow(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::rc::Rc;
 use std::sync::Mutex;
 
 use renew_rhi::{
-    Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, Item,
-    LoadOp, MeshDesc, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders,
-    StoreOp, TargetError, TargetFormat, Texture, TextureDesc, Validation, builtin,
+    Attachment, BindingDesc, BindingSource, BufferUsage, ClearValue, Color, Device, DeviceDesc,
+    DeviceError, Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc, PipelineError, RenderDesc,
+    Sampler, SamplerDesc, Shaders, StoreOp, TargetError, TargetFormat, Texture, TextureDesc,
+    Validation, builtin,
 };
 
 const SIZE: Extent = Extent {
@@ -156,26 +156,25 @@ const TEXELS: [u8; 16] = [
     10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
 ];
 
-/// The texture and sampler a textured pipeline needs, built with no
-/// fault armed against them — the descriptor ladder arms calls that
-/// only `create_pipeline` makes, so these must succeed first.
-fn textured_inputs(device: &Device) -> Result<(Rc<Texture>, Rc<Sampler>), String> {
-    let texture = Rc::new(
-        device
-            .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
-            .map_err(|error| format!("texture: {error}"))?,
-    );
-    let sampler = Rc::new(
-        device
-            .create_sampler(&SamplerDesc::atlas())
-            .map_err(|error| format!("sampler: {error}"))?,
-    );
+/// The texture and sampler a binding needs, built with no fault armed
+/// against them — the binding ladder arms calls that only
+/// `create_binding` makes, so these must succeed first.
+fn textured_inputs(device: &Device) -> Result<(Texture, Sampler), String> {
+    let texture = device
+        .create_texture(&TextureDesc::new(TEXEL_SIZE, &TEXELS))
+        .map_err(|error| format!("texture: {error}"))?;
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .map_err(|error| format!("sampler: {error}"))?;
     Ok((texture, sampler))
 }
 
-fn textured_desc<'a>(texture: &Rc<Texture>, sampler: &Rc<Sampler>) -> PipelineDesc<'a> {
-    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
-        .texture(Rc::clone(texture), Rc::clone(sampler))
+fn binding_desc<'a>(texture: &'a Texture, sampler: &'a Sampler) -> BindingDesc<'a> {
+    BindingDesc::new(BindingSource::Texture(texture), sampler)
+}
+
+fn sampled_desc() -> PipelineDesc<'static> {
+    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1)
 }
 
 fn pipeline_desc() -> PipelineDesc<'static> {
@@ -646,30 +645,53 @@ fn every_driver_failure_ladder_behaves() {
         },
     ));
 
-    // ---- C7-C10 · descriptor ladder ---------------------------------
-    // A textured pipeline is the only thing that allocates descriptors,
-    // so these arm the fault and then build one. Each is a distinct
-    // creation call inside `create_pipeline`, and each must leave the
-    // device able to build the same pipeline on a second attempt.
-    // C6 (descriptor-set-layout creation) moved to the bring-up
-    // ladder as A5: the layout is the device spine's one shared
-    // object now, created with the device, so arming that call fails
-    // bring-up rather than pipeline creation.
-    let descriptor_ladder: &[(&str, &str, &str)] = &[
+    // ---- C7-C8 · binding ladder --------------------------------------
+    // A binding is the only thing that allocates descriptors now, so
+    // these arm the fault and then build one — retargeted from pipeline
+    // creation when the pool and set moved out of it. Each is a
+    // distinct creation call inside `create_binding`, and each must
+    // leave the device able to build the same binding on a second
+    // attempt. C6 (descriptor-set-layout creation) moved to the
+    // bring-up ladder as A5: the layout is the device spine's one
+    // shared object, created with the device, so arming that call
+    // fails bring-up rather than binding creation.
+    let binding_ladder: &[(&str, &str, &str)] = &[
         (
             "C7",
             "vkCreateDescriptorPool=ERROR_OUT_OF_HOST_MEMORY",
             "vkCreateDescriptorPool",
         ),
+        // C8 fails *after* the pool exists, which is the case that has
+        // to unwind it again — nothing else reaches that cleanup.
         (
             "C8",
             "vkAllocateDescriptorSets=ERROR_OUT_OF_HOST_MEMORY",
             "vkAllocateDescriptorSets",
         ),
-        // C9 and C10 fail *after* the descriptor set exists, which is
-        // the case that has to unwind it again. Nothing else reaches
-        // that cleanup: the untextured ladder above takes the same two
-        // failures with no set to destroy.
+    ];
+    for &(name, fault, call) in binding_ladder {
+        verdicts.push(device_case(name, fault, |device| {
+            let (texture, sampler) = textured_inputs(device)
+                .map_err(|error| format!("{name}: textured inputs: {error}"))?;
+            match device.create_binding(&binding_desc(&texture, &sampler)) {
+                Err(PipelineError::Creation { call: got, .. }) if got == call => {}
+                Err(other) => return Err(wrong(name, &format!("Creation({call})"), &other)),
+                Ok(_) => return Err(format!("{name}: the binding was built despite the fault")),
+            }
+            device
+                .create_binding(&binding_desc(&texture, &sampler))
+                .map(|_| ())
+                .map_err(|error| format!("{name}: recovery binding failed: {error}"))
+        }));
+    }
+
+    // ---- C9-C10 · slot-declaring pipeline ladder ---------------------
+    // The same two calls the untextured ladder above arms, through a
+    // pipeline that declares a sampled slot — the path whose layout
+    // list is non-empty. The descriptor pool and set moved to the
+    // binding ladder; what is left to prove here is that a declaring
+    // pipeline's failures unwind cleanly and a second attempt succeeds.
+    let slot_ladder: &[(&str, &str, &str)] = &[
         (
             "C9",
             "vkCreatePipelineLayout=ERROR_OUT_OF_HOST_MEMORY",
@@ -681,17 +703,15 @@ fn every_driver_failure_ladder_behaves() {
             "vkCreateGraphicsPipelines",
         ),
     ];
-    for &(name, fault, call) in descriptor_ladder {
+    for &(name, fault, call) in slot_ladder {
         verdicts.push(device_case(name, fault, |device| {
-            let (texture, sampler) = textured_inputs(device)
-                .map_err(|error| format!("{name}: textured inputs: {error}"))?;
-            match device.create_pipeline(&textured_desc(&texture, &sampler)) {
+            match device.create_pipeline(&sampled_desc()) {
                 Err(PipelineError::Creation { call: got, .. }) if got == call => {}
                 Err(other) => return Err(wrong(name, &format!("Creation({call})"), &other)),
                 Ok(_) => return Err(format!("{name}: the build succeeded despite the fault")),
             }
             device
-                .create_pipeline(&textured_desc(&texture, &sampler))
+                .create_pipeline(&sampled_desc())
                 .map(|_| ())
                 .map_err(|error| format!("{name}: recovery build failed: {error}"))
         }));

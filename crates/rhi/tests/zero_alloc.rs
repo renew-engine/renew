@@ -8,13 +8,11 @@
 //! side of the line. Validation stays off: the messenger deliberately
 //! allocates when it speaks, and it must not speak into the window.
 
-use std::rc::Rc;
-
 use renew_memory::{CountingAllocator, counters};
 use renew_rhi::{
-    Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, FrameData,
-    Item, LoadOp, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp, TargetFormat, TextureDesc,
-    Validation, builtin,
+    Attachment, BindingDesc, BindingSource, BufferUsage, ClearValue, Color, Device, DeviceDesc,
+    DeviceError, Extent, FrameData, Item, LoadOp, Pass, PipelineDesc, RenderDesc, SamplerDesc,
+    StoreOp, TargetFormat, TextureDesc, Validation, builtin,
 };
 
 /// The engine's own counting allocator, not a local copy of one.
@@ -82,28 +80,29 @@ fn steady_state_frames_allocate_nothing() {
     let texels: [u8; 16] = [
         10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
     ];
-    let texture = Rc::new(
-        device
-            .create_texture(&TextureDesc::new(
-                Extent {
-                    width: 2,
-                    height: 2,
-                },
-                &texels,
-            ))
-            .expect("atlas upload"),
-    );
-    let sampler = Rc::new(
-        device
-            .create_sampler(&SamplerDesc::atlas())
-            .expect("sampler"),
-    );
+    let texture = device
+        .create_texture(&TextureDesc::new(
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &texels,
+        ))
+        .expect("atlas upload");
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .expect("binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
-                .texture(texture, sampler),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
         )
-        .expect("textured pipeline");
+        .expect("sampled pipeline");
     // The frame under measurement carries per-frame bytes: a gate that
     // measured a byte-free frame would pass vacuously the moment the
     // data path allocated. The copy into the mapped region is the whole
@@ -138,7 +137,7 @@ fn steady_state_frames_allocate_nothing() {
     // Warmup: first frames may lazily initialize driver state.
     for _ in 0..3 {
         let color = clear(clear_color);
-        let items = [Item::new(&pipeline)];
+        let items = [Item::new(&pipeline).bindings(&[&binding])];
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup frame");
@@ -166,7 +165,7 @@ fn steady_state_frames_allocate_nothing() {
     let verdict = counters::quiet_window(5, || {
         for _ in 0..16 {
             let color = clear(clear_color);
-            let items = [Item::new(&pipeline)];
+            let items = [Item::new(&pipeline).bindings(&[&binding])];
             target
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady frame");
@@ -194,13 +193,14 @@ fn steady_state_frames_allocate_nothing() {
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady push frame");
             // The multi-pass, multi-buffer frame: two passes, three
-            // items, two distinct buffers retained in one frame — the
-            // walk's loops and the retention table's width, measured on
-            // the same zero-delta terms as the single-item frames
-            // (which stay above, so a regression names its shape).
+            // items, two distinct buffers and a binding retained in one
+            // frame — the walk's loops and the retention table's width,
+            // measured on the same zero-delta terms as the single-item
+            // frames (which stay above, so a regression names its
+            // shape).
             let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
             let first_items = [
-                Item::new(&pipeline),
+                Item::new(&pipeline).bindings(&[&binding]),
                 Item::new(&instanced).frame_data(FrameData::new(&buffer, &instance_bytes, 1)),
             ];
             let second_items =

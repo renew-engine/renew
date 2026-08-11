@@ -21,12 +21,10 @@
 
 use std::path::{Path, PathBuf};
 
-use std::rc::Rc;
-
 use renew_rhi::{
-    AdapterKind, Attachment, Blend, ClearValue, Color, DepthState, Device, DeviceDesc, DeviceError,
-    Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc, RenderDesc, SamplerDesc, StoreOp,
-    TargetFormat, TextureDesc, Validation, builtin,
+    AdapterKind, Attachment, BindingDesc, BindingSource, Blend, ClearValue, Color, DepthState,
+    Device, DeviceDesc, DeviceError, Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
+    RenderDesc, SamplerDesc, StoreOp, TargetFormat, TextureDesc, Validation, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -329,7 +327,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
 /// Because the quad is drawn from `gl_VertexIndex` with no vertex
 /// buffer, what this proves is the resource path: an image uploaded
 /// through a staging buffer, transitioned to shader-read, bound through
-/// a descriptor set written at pipeline creation, and sampled.
+/// a descriptor set written at binding creation, and sampled.
 #[test]
 fn a_sampled_texture_is_byte_exact_everywhere() {
     // Four texels, one per quadrant of the target. The size is a
@@ -346,22 +344,18 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
         return;
     };
-    let texture = Rc::new(
-        device
-            .create_texture(&TextureDesc::new(
-                Extent {
-                    width: TEXELS,
-                    height: TEXELS,
-                },
-                &ATLAS,
-            ))
-            .expect("texture upload"),
-    );
-    let sampler = Rc::new(
-        device
-            .create_sampler(&SamplerDesc::atlas())
-            .expect("sampler"),
-    );
+    let texture = device
+        .create_texture(&TextureDesc::new(
+            Extent {
+                width: TEXELS,
+                height: TEXELS,
+            },
+            &ATLAS,
+        ))
+        .expect("texture upload");
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
     // The accessor and `Debug` are exercised here rather than in the
     // device suite, which skips wherever the validation layer is absent.
     // Asserted on content: the extent must be the one the texture was
@@ -373,12 +367,17 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     assert!(shown.starts_with("Texture"), "{shown}");
     assert!(shown.contains("extent"), "{shown}");
 
+    let binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .expect("binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm)
-                .texture(Rc::clone(&texture), Rc::clone(&sampler)),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
         )
-        .expect("textured pipeline");
+        .expect("sampled pipeline");
     let mut target = device
         .create_offscreen_target(Extent {
             width: SIZE,
@@ -389,7 +388,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     // failed to cover the target would show as unwritten rather than
     // blending into a plausible result.
     let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
-    let items = [Item::new(&pipeline)];
+    let items = [Item::new(&pipeline).bindings(&[&binding])];
     let passes = [Pass::new(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
@@ -413,11 +412,9 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         }
     }
 
-    // The pipeline must keep the texture and sampler alive on its own.
-    // `Rc::strong_count` states the claim directly: one handle here, one
-    // held by the pipeline.
-    assert_eq!(Rc::strong_count(&texture), 2, "the pipeline must hold it");
-    assert_eq!(Rc::strong_count(&sampler), 2);
+    // The binding must keep the texture and sampler alive on its own:
+    // the caller's handles go away here, and the set the next draw
+    // samples through still points at a live view and sampler.
     drop(texture);
     drop(sampler);
 
@@ -439,8 +436,130 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
     );
 
     // Teardown first, oracle second: destruction-time findings count.
+    // The target goes first so its retention table releases the
+    // binding's last frame reference before the binding itself drops.
     drop(target);
     drop(pipeline);
+    drop(binding);
+    assert_no_validation_errors(&device);
+}
+
+/// Two textures through ONE pipeline, then the same two swapped — the
+/// shape the binding type exists for. The pair fragment stage reads
+/// slot 0 left of the midline and slot 1 right of it, so each half
+/// must answer with its own atlas byte-exactly, and the swapped frame
+/// must answer with the halves exchanged through the same pipeline
+/// object with nothing recreated. One sampler serves both bindings,
+/// which is its own claim: a sampler is an input to a binding, never
+/// owned by one.
+#[test]
+fn two_textures_share_one_pipeline() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 2;
+    #[rustfmt::skip]
+    const LEFT_ATLAS: [u8; 16] = [
+        10, 20, 30, 255,    40, 50, 60, 255,
+        70, 80, 90, 255,    100, 110, 120, 255,
+    ];
+    #[rustfmt::skip]
+    const RIGHT_ATLAS: [u8; 16] = [
+        200, 15, 25, 255,   210, 45, 55, 255,
+        220, 75, 85, 255,   230, 105, 115, 255,
+    ];
+    /// The texel a target pixel samples, and which atlas it reads under
+    /// the given slot order — the CPU statement of the fragment stage's
+    /// midline split.
+    fn expected(atlases: [&[u8; 16]; 2], x: u32, y: u32) -> &[u8] {
+        let atlas = atlases[usize::from(x >= SIZE / 2)];
+        let texel = (((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE) as usize;
+        &atlas[texel * 4..texel * 4 + 4]
+    }
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let size = Extent {
+        width: TEXELS,
+        height: TEXELS,
+    };
+    let left_texture = device
+        .create_texture(&TextureDesc::new(size, &LEFT_ATLAS))
+        .expect("left texture");
+    let right_texture = device
+        .create_texture(&TextureDesc::new(size, &RIGHT_ATLAS))
+        .expect("right texture");
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    let left = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&left_texture),
+            &sampler,
+        ))
+        .expect("left binding");
+    // The Debug form is asserted here rather than in the device suite,
+    // which skips wherever the validation layer is absent — the same
+    // reasoning the sampler's Debug assertion records in the fault
+    // suite.
+    let shown = format!("{left:?}");
+    assert!(shown.starts_with("Binding"), "{shown}");
+    let right = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&right_texture),
+            &sampler,
+        ))
+        .expect("right binding");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED_PAIR, TargetFormat::Rgba8Unorm)
+                .sampled_bindings(2),
+        )
+        .expect("two-slot pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    for (order, atlases) in [
+        ([&left, &right], [&LEFT_ATLAS, &RIGHT_ATLAS]),
+        // The swap: the same pipeline draws the halves exchanged,
+        // because which texture a draw samples is the item's to say.
+        ([&right, &left], [&RIGHT_ATLAS, &LEFT_ATLAS]),
+    ] {
+        let items = [Item::new(&pipeline).bindings(&order)];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("two-slot render");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let offset = ((y * SIZE + x) as usize) * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    expected(atlases, x, y),
+                    "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
+                    atlases.map(|atlas| atlas[0]),
+                    device.adapter()
+                );
+            }
+        }
+    }
+
+    // Teardown first, oracle second, the whole cast: the bindings
+    // release their inner holds only after they drop, so the sources
+    // go last among the resources and everything precedes the oracle.
+    drop(target);
+    drop(pipeline);
+    drop(left);
+    drop(right);
+    drop(left_texture);
+    drop(right_texture);
+    drop(sampler);
     assert_no_validation_errors(&device);
 }
 
