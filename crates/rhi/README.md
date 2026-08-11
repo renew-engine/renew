@@ -105,9 +105,12 @@ display server, and the golden-image tests attest the bytes.
 Every resource holds the device spine alive (`Rc`), so drop order is
 free for consumers, and each `Drop` destroys in exact reverse creation
 order. The targets and the pipeline quiesce the GPU first (best-effort
-wait-idle); `Texture` and `Sampler` deliberately do not, because a
-pipeline that references either holds shared ownership of it, so their
-`Drop` cannot run while a submit could still name them. The
+wait-idle); `Texture`, `Sampler` and `Binding` deliberately do not.
+The binding holds shared ownership of its texture and sampler, so
+their `Drop` cannot run while a set still points at them — and the
+binding itself is held by the retention table of any frame that named
+it, released only after that frame's work provably ended, so its own
+`Drop` cannot run while a submit could still read the set. The
 `WindowTarget` owns a keep-alive handle to its window: the OS window
 cannot be torn down under a live surface, by construction.
 

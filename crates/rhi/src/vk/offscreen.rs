@@ -456,13 +456,15 @@ impl OffscreenTarget {
     /// buffer feeds at most one item per frame; an item names geometry
     /// exactly when its pipeline declares per-vertex input, and a mesh's
     /// vertex stride equals the stride that pipeline's layout packs to;
-    /// and a frame carries at most the retention table's width of
-    /// distinct resources — per-frame buffers and meshes together, a
-    /// mesh counting once however many items name it. Frame data
-    /// longer than its buffer's per-frame capacity also panics through
-    /// a retained assertion: the length bounds a copy into mapped
-    /// device memory, which makes it a memory-safety boundary rather
-    /// than a contract nicety.
+    /// an item names bindings exactly when its pipeline declares
+    /// sampled slots, and exactly as many as it declares; and a frame
+    /// carries at most the retention table's width of distinct
+    /// resources — per-frame buffers, meshes and bindings together,
+    /// the repeatable classes counting once however many items name
+    /// them. Frame data longer than its buffer's per-frame capacity
+    /// also panics through a retained assertion: the length bounds a
+    /// copy into mapped device memory, which makes it a memory-safety
+    /// boundary rather than a contract nicety.
     ///
     /// # Errors
     ///

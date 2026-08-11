@@ -193,10 +193,11 @@ fn steady_state_frames_allocate_nothing() {
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady push frame");
             // The multi-pass, multi-buffer frame: two passes, three
-            // items, two distinct buffers retained in one frame — the
-            // walk's loops and the retention table's width, measured on
-            // the same zero-delta terms as the single-item frames
-            // (which stay above, so a regression names its shape).
+            // items, two distinct buffers and a binding retained in one
+            // frame — the walk's loops and the retention table's width,
+            // measured on the same zero-delta terms as the single-item
+            // frames (which stay above, so a regression names its
+            // shape).
             let load = [Attachment::new(LoadOp::Load, StoreOp::Store)];
             let first_items = [
                 Item::new(&pipeline).bindings(&[&binding]),

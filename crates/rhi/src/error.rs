@@ -116,7 +116,8 @@ impl fmt::Display for TargetError {
 
 impl std::error::Error for TargetError {}
 
-/// Why a pipeline could not be built.
+/// Why a pipeline — or the sampler or binding a draw samples
+/// through — could not be built.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PipelineError {

@@ -693,6 +693,28 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
+    // The surplus direction of the same clause: one shared assert, but
+    // the refusal message promises both, so both are driven. A binding
+    // may repeat within an item (nothing copies into it), which is what
+    // lets one fixture overfill the count.
+    refused(
+        "more bindings than declared slots",
+        "fills every declared sampled slot",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&binding, &binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // The item-side ceiling fires while the item is built, before any
+    // render call — still inside the harness, still refused by name.
+    refused(
+        "a binding list past the item ceiling",
+        "names at most",
+        &|_| {
+            let _ = Item::new(&two_slot).bindings(&[&binding; 5]);
+        },
+    );
     drop(two_slot);
     drop(one_slot);
     drop(binding);

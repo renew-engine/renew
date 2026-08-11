@@ -310,19 +310,18 @@ impl fmt::Debug for Bindings<'_> {
 
 /// One resource a recorded frame references and must outlive.
 ///
-/// **The two arms exist so retention has one table and one clearing
+/// **The arms exist so retention has one table and one clearing
 /// rule.** Release sites only ever write `None`, so none of them cares
-/// which arm they hold — which is what lets a second resource class join
+/// which arm they hold — which is what let the binding class join
 /// without touching a single one of the four proofs that decide when
-/// memory may die.
+/// memory may die, and lets the next class do the same.
 pub(crate) enum Retained {
     /// A per-frame buffer whose slot region the frame copied into.
     ///
-    /// **Never read through — held for its `Drop` alone**, the same
-    /// reasoning `RenderPipeline`'s `_bound` records: the recorded
-    /// command stream holds the Vulkan handles the GPU uses, and this
-    /// holds the right to keep those handles valid until the work has
-    /// provably ended.
+    /// **Never read through — held for its `Drop` alone**: the
+    /// recorded command stream holds the Vulkan handles the GPU uses,
+    /// and this holds the right to keep those handles valid until the
+    /// work has provably ended.
     #[allow(
         dead_code,
         reason = "held to keep the allocation alive across a submit, never read through"
@@ -366,8 +365,9 @@ pub(crate) fn already_retained(resource: &Retained, held: &[Option<Retained>]) -
 /// `frame_data` being `Some`, so any new resource-bearing field would
 /// have been skipped silently — memory freed under a live submit, on the
 /// asynchronous path only, where freed-but-untouched memory usually still
-/// reads fine. Adding a third resource to [`Item`] now fails to compile
-/// here rather than passing every test.
+/// reads fine. Adding a resource-bearing field to [`Item`] now fails to
+/// compile here rather than passing every test — the binding list
+/// entered through exactly this door.
 pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOURCES] {
     // **Destructured with no `..` rest pattern, and that is the whole
     // mechanism.** Matching a locally-built tuple would compile happily

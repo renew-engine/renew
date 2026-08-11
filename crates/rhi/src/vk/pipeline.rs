@@ -217,6 +217,23 @@ pub(crate) fn validate_push_constant_size(size: u32) {
     );
 }
 
+/// Refuse a sampled-slot declaration outside what the spec guarantees.
+/// A pure function so the rule is unit-tested without a device, like
+/// its push-constant sibling above.
+///
+/// # Panics
+///
+/// Over [`MAX_SAMPLED_BINDINGS`] slots — a caller mistake, asserted
+/// rather than returned: the ceiling is the guaranteed device minimum
+/// for bound sets, so the declaration was never valid anywhere.
+pub(crate) fn validate_sampled_bindings(count: u32) {
+    let declared = count as usize;
+    assert!(
+        declared <= MAX_SAMPLED_BINDINGS,
+        "a pipeline declares at most {MAX_SAMPLED_BINDINGS} sampled bindings (the guaranteed          device minimum for bound sets), got {declared}"
+    );
+}
+
 /// How a pipeline's output is combined with what the target already
 /// holds.
 ///
@@ -961,16 +978,11 @@ impl Device {
         // any adapter — asserted, like the vertex-attribute ceiling,
         // and before anything is created so the panic owns nothing.
         validate_push_constant_size(desc.push_constant_size);
-        // The same reasoning as the push-constant ceiling: the bound is
-        // the spec's guaranteed minimum for bound descriptor sets, so a
-        // count this refuses was never valid on any adapter — asserted
-        // before anything is created so the panic owns nothing.
+        // The same reasoning as the push-constant ceiling, checked by
+        // the same pure-validator shape — before anything is created,
+        // so the panic owns nothing.
+        validate_sampled_bindings(desc.sampled_bindings);
         let sampled_slots = desc.sampled_bindings as usize;
-        assert!(
-            sampled_slots <= MAX_SAMPLED_BINDINGS,
-            "a pipeline declares at most {MAX_SAMPLED_BINDINGS} sampled bindings (the \
-             guaranteed device minimum for bound sets), got {sampled_slots}"
-        );
         // Checked before anything is created so this failure path owns
         // nothing. The environment declined, not the caller — a Result,
         // never an assert.
@@ -1391,6 +1403,26 @@ mod tests {
         assert!(
             std::panic::catch_unwind(|| validate_push_constant_size(66)).is_err(),
             "a non-multiple-of-four range must refuse"
+        );
+    }
+
+    /// The sampled-slot ceiling, both sides, with no device involved —
+    /// the push-constant test's reasoning, one rule over.
+    #[test]
+    fn sampled_slot_counts_outside_the_spec_floor_are_refused() {
+        // Legal: absent, one slot, and exactly the ceiling — the
+        // guaranteed minimum every adapter honours. The ceiling is
+        // four; the literal cast is a lint formality, not a risk.
+        #[allow(clippy::cast_possible_truncation)]
+        const CEILING: u32 = MAX_SAMPLED_BINDINGS as u32;
+        validate_sampled_bindings(0);
+        validate_sampled_bindings(1);
+        validate_sampled_bindings(CEILING);
+        // Over the ceiling: valid on some adapters, which is exactly
+        // why it is refused — the portability bug the floor prevents.
+        assert!(
+            std::panic::catch_unwind(|| validate_sampled_bindings(CEILING + 1)).is_err(),
+            "over the guaranteed minimum must refuse"
         );
     }
 

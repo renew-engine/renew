@@ -550,10 +550,16 @@ fn two_textures_share_one_pipeline() {
         }
     }
 
+    // Teardown first, oracle second, the whole cast: the bindings
+    // release their inner holds only after they drop, so the sources
+    // go last among the resources and everything precedes the oracle.
     drop(target);
     drop(pipeline);
     drop(left);
     drop(right);
+    drop(left_texture);
+    drop(right_texture);
+    drop(sampler);
     assert_no_validation_errors(&device);
 }
 

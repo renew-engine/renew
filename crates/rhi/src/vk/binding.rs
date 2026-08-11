@@ -23,13 +23,11 @@ use crate::vk::texture::{Texture, TextureInner};
 ///
 /// A fixed ceiling rather than a `Vec`, so pipeline layouts, item
 /// binding lists, and the record path's set array are all stack-sized
-/// and the frame path allocates nothing — the [`MAX_VERTEX_ATTRIBUTES`]
-/// reasoning. Four is double what any consumer in this tree binds
-/// (shadow map + atlas is two) and far inside
-/// `maxBoundDescriptorSets`, whose guaranteed floor is four — so a
-/// declaration this accepts is one every conformant adapter accepts.
-///
-/// [`MAX_VERTEX_ATTRIBUTES`]: crate::VertexAttribute
+/// and the frame path allocates nothing — the `MAX_VERTEX_ATTRIBUTES`
+/// reasoning. Four is exactly `maxBoundDescriptorSets`' guaranteed
+/// floor, so a declaration this accepts is one every conformant
+/// adapter accepts — and it is headroom in this tree, where every
+/// consumer binds one and the widest user is the two-slot golden.
 pub const MAX_SAMPLED_BINDINGS: usize = 4;
 
 /// What a binding reads.
@@ -37,7 +35,7 @@ pub const MAX_SAMPLED_BINDINGS: usize = 4;
 /// An input enum, so `#[non_exhaustive]`: the render-image arm arrives
 /// with render-to-texture and must not break downstream matchers when
 /// it does.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum BindingSource<'a> {
     /// A host-filled immutable texture.
@@ -48,7 +46,7 @@ pub enum BindingSource<'a> {
 ///
 /// `#[non_exhaustive]` with a constructor, per the descriptor pattern
 /// this crate uses everywhere.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct BindingDesc<'a> {
     /// The image this binding samples.
@@ -95,10 +93,10 @@ impl Drop for BindingInner {
         // Rc; the pool was created with these callbacks; the set is
         // freed with its pool and must not be freed separately. No
         // submit still references the set: a recorded frame retains
-        // this inner through the target's retention table, which
-        // releases only after the frame's fence proved the work ended —
-        // so the last `Rc` release, wherever it happens, is after every
-        // read.
+        // this inner through the target's retention table, released
+        // only after the frame's work provably ended — or by the
+        // targets' best-effort teardown quiesce, the same corner every
+        // retained class shares and the retention fields document.
         unsafe {
             self.shared
                 .device

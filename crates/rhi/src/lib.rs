@@ -148,9 +148,10 @@ pub mod builtin {
     ///
     /// **A second pair rather than a flag on the first.** The two
     /// pipelines differ in what they bind, not only in what they compute:
-    /// this one carries a descriptor set and [`MESH_CAMERA`] does not. A
-    /// uniform choosing between them would cost a fetch and a branch per
-    /// fragment for a decision fixed when the pipeline was built.
+    /// a pipeline over this pair declares a sampled slot and one over
+    /// [`MESH_CAMERA`] does not. A uniform choosing between them would
+    /// cost a fetch and a branch per fragment for a decision fixed when
+    /// the pipeline was built.
     ///
     /// The per-vertex layout is [`MESH_LAYOUT`], shared with
     /// [`MESH_CAMERA`], which is what lets one scene feed either; the
@@ -257,8 +258,8 @@ pub mod builtin {
 
     /// The two-slot quad: [`TEXTURED`]'s vertex stage over a fragment
     /// stage reading two sampled bindings — the shape that proves N
-    /// textures share one pipeline. The halves split at the target's
-    /// horizontal midline, so a wrong bind order is visibly wrong.
+    /// textures share one pipeline. The target splits left/right at
+    /// its vertical midline, so a wrong bind order is visibly wrong.
     pub const TEXTURED_PAIR: Shaders<'static> = Shaders {
         vertex: TEXTURED_VS_SPV,
         fragment: TEXTURED_PAIR_FS_SPV,

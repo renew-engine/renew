@@ -9,7 +9,8 @@ mesh comes out, and a draw item goes into a frame the caller composes.
   the numbering are testable on any machine.
 - `MeshRenderer` / `TexturedMeshRenderer` — the clip-space device half.
   Each owns its pipeline, uploads a scene into a `Mesh`, and hands back
-  an `Item`; the textured one samples an atlas bound at creation.
+  an `Item`; the textured one samples an atlas through the one
+  binding it holds.
 - `CameraRenderer` / `TexturedCameraRenderer` — the world-space device
   half. Same shape, plus a `Camera`: sixty-four packed bytes of
   view-projection matrix that ride each item as push data, so the GPU
