@@ -17,20 +17,24 @@ streaks the newcomer out of its predecessor's last position. So every value is k
 `(slot, generation)`, and a pair blends only when both halves agree:
 
 ```rust
+use renew_math::Alpha;
 use renew_snapshot::{Key, Snapshots};
 
 let mut pipes = Snapshots::<f32>::new(16);
 
 // Once per executed producer step:
-let mut capture = pipes.capture();
-capture.put(Key::new(3, 0), 320.0);
-drop(capture);
+{
+    let mut capture = pipes.capture();
+    capture.put(Key::new(3, 0), 320.0);
+}
 
 // Once per frame, with the loop's interpolation factor:
+let alpha = Alpha::ZERO; // in a real loop, from the frame plan's remainder
 for drawn in pipes.frame(alpha) {
-    // drawn.value is already resolved — blended, or standing at its
-    // one known tick. There is no call site here that could blend
-    // across a recycled slot.
+    // drawn.value is already resolved — blended, or standing at its one
+    // known tick. There is no call site here that could blend across a
+    // recycled slot.
+    let _ = drawn.value;
 }
 ```
 
@@ -59,10 +63,12 @@ them all and each reset clears exactly the set the previous reset let through. I
 rather than an optimisation: both passes cross-read the other buffer, so a slot live two steps ago
 and absent since would otherwise still read as present and wrongly suppress a dying row.
 
-**Capacity is fixed, with `resize` as the named escape.** The steady-state frame loop performs no
-heap allocation, so growth-on-demand inside the loop is not available. The budget is the
-consumer's obligation; a producer whose live set is bounded by its own rules asserts that bound in
-a test, and `put` refuses by name rather than as a bare slice index if the rules ever outgrow it.
+**Capacity is fixed at construction.** The steady-state frame loop performs no heap allocation,
+so growth-on-demand inside the loop is not available. The budget is the consumer's obligation; a
+producer whose live set is bounded by its own rules asserts that bound in a test, and `put`
+refuses by name rather than as a bare slice index if the rules ever outgrow it. There is
+deliberately no `resize` — every producer in this tree has a bounded live set, so it would be a
+method nobody had ever run, and it is free to add when one arrives that does not.
 
 ## Limits, stated rather than implied
 

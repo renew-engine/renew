@@ -579,7 +579,7 @@ impl GlideApp {
             // than the stutter this removes. Frozen factor over a frozen
             // pair is the last frame drawn before the pause, exactly.
             if !paused {
-                self.alpha = Alpha::new(plan.remainder().get(), Timestep::HZ_60.nanos());
+                self.alpha = Alpha::new(plan.remainder().get(), plan.timestep().nanos());
             }
             self.stats.absorb(&plan);
             let _ = self.relabel();
@@ -1237,5 +1237,157 @@ mod tests {
     fn the_unavailable_error_displays_its_reason() {
         let error = SampleError::Unavailable("no display server".to_string());
         assert_eq!(error.to_string(), "no display server");
+    }
+
+    /// **The pause freezes the interpolation factor, not only the steps.**
+    ///
+    /// The frame plan's remainder keeps cycling from wall time whether or
+    /// not the caller executes any steps. Advancing the factor from it
+    /// while the world is frozen would sweep the picture from one capture
+    /// to the other and back, at display rate, for as long as the menu
+    /// stayed open — a paused game oscillating by a whole tick of motion,
+    /// which is worse than the stutter the blend removes.
+    #[test]
+    fn an_open_menu_freezes_the_interpolation_factor_with_the_world() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // Run far enough that a pair of captures exists and the factor is
+        // somewhere in the middle of a step.
+        app.update_at(Timestamp::from_nanos(4 * STEP + STEP / 2), &mut control);
+        let running = app.alpha;
+        let tick = app.world.tick();
+        assert!(
+            running.get() > 0.0,
+            "premise: the factor must be mid-step, or freezing it proves nothing"
+        );
+
+        escape(&mut app);
+        assert!(app.menu.is_open());
+        // Frames keep arriving at times that would give quite different
+        // factors if the pause were not honoured.
+        for eighth in 1..=6u64 {
+            app.update_at(
+                Timestamp::from_nanos(5 * STEP + eighth * STEP / 8),
+                &mut control,
+            );
+            assert_eq!(
+                app.alpha.get().to_bits(),
+                running.get().to_bits(),
+                "the factor moved while the world was paused"
+            );
+            assert_eq!(
+                app.world.tick(),
+                tick,
+                "and the world must not have stepped"
+            );
+        }
+    }
+
+    /// A restart replaces the world, so it must replace the captures with
+    /// it — otherwise the first frame after a restart blends the new bird
+    /// out of the dead one's last position and drags every pipe across
+    /// the screen for one interval.
+    #[test]
+    fn a_restart_replaces_the_captures_with_the_world() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // Fly a while, so the world's picture is far from a new world's.
+        // Several updates rather than one long jump: the step budget caps
+        // how much catch-up a single update will run.
+        for tick in 1..=200u64 {
+            app.update_at(Timestamp::from_nanos(tick * STEP), &mut control);
+        }
+        let mut before = Vec::new();
+        app.presentation.fill(renew_math::Alpha::ZERO, &mut before);
+        let flown = app.world.tick();
+        assert!(
+            flown > 100,
+            "premise: the world must really have flown, reached {flown}"
+        );
+
+        escape(&mut app);
+        app.size = Extent {
+            width: VIEW_WIDTH,
+            height: VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 1);
+        click_physical(&mut app, x, y);
+        app.update_at(Timestamp::from_nanos(201 * STEP), &mut control);
+        assert!(
+            !app.menu.is_open(),
+            "premise: the restart button was activated"
+        );
+        assert!(
+            app.world.tick() < flown,
+            "premise: the world really restarted"
+        );
+
+        let mut after = Vec::new();
+        app.presentation.fill(renew_math::Alpha::ZERO, &mut after);
+        assert_ne!(
+            before, after,
+            "the captures must have been replaced along with the world"
+        );
+        // And what it holds is the NEW world, not a blend reaching back
+        // into the old one: the bird stands where a freshly started world
+        // puts it, not where two hundred ticks of flying had taken it.
+        let fresh = World::new(7);
+        let mut expected = Vec::new();
+        crate::scene::Presentation::new(&fresh).fill(renew_math::Alpha::ZERO, &mut expected);
+        let restarted_bird = after
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .expect("a bird is drawn");
+        let fresh_bird = expected
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .expect("a bird is drawn");
+        assert!(
+            (restarted_bird.y - fresh_bird.y).abs() < 4.0,
+            "the restarted bird stands at {}, not near a new world's {} — the captures              still reach into the world that was replaced",
+            restarted_bird.y,
+            fresh_bird.y
+        );
+    }
+
+    /// A frame that runs several catch-up steps captures once per step,
+    /// so the pair it leaves behind spans one tick rather than several.
+    #[test]
+    fn a_catch_up_frame_captures_once_per_executed_step() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // One update covering many steps at once.
+        app.update_at(Timestamp::from_nanos(5 * STEP), &mut control);
+        let caught_up = app.world.tick();
+        assert!(
+            caught_up >= 5,
+            "premise: several steps must have run at once"
+        );
+
+        // The pair now spans exactly the last interval: the picture at the
+        // boundary is one tick behind the world, not five.
+        let mut at_zero = Vec::new();
+        app.presentation.fill(renew_math::Alpha::ZERO, &mut at_zero);
+        let mut reference = crate::scene::Presentation::new(&app.world);
+        reference.capture(&app.world);
+        reference.capture(&app.world);
+        let mut current = Vec::new();
+        reference.fill(renew_math::Alpha::ZERO, &mut current);
+        let bird_at_zero = at_zero
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .expect("a bird is drawn");
+        let bird_now = current
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .expect("a bird is drawn");
+        // One tick of bird travel is small; five would not be.
+        assert!(
+            (bird_at_zero.y - bird_now.y).abs() < 4.0,
+            "the earlier capture is {} against a current {}, which is more than one tick \
+             of travel — the captures did not keep up with the steps",
+            bird_at_zero.y,
+            bird_now.y
+        );
     }
 }

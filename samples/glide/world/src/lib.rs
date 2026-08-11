@@ -259,23 +259,35 @@ impl World {
     /// Visit every pipe as (slot, generation, left edge x, gap centre y)
     /// in world units, ascending slot order — the store's own guarantee.
     ///
-    /// The un-truncated, keyed companion to [`World::for_each_pipe_units`],
-    /// and both halves of that are load-bearing. Presentation blends
-    /// between ticks, so it needs finer than whole screen units; and it
-    /// needs the generation, because a slot freed by a pipe leaving the
-    /// screen is handed to a new pipe within ninety ticks, and a
-    /// slot-keyed blend without the generation would drag the newcomer
-    /// across the whole screen out of its predecessor's corpse.
+    /// The un-truncated, keyed companion to [`World::for_each_pipe_units`].
+    ///
+    /// Un-truncated because presentation blends between ticks and needs
+    /// finer than whole screen units — the rounded reading loses nine
+    /// tenths of a unit of pipe travel per tick, which is most of it.
+    ///
+    /// Keyed because a consumer pairing captures across ticks must be
+    /// able to tell one tenant of a slot from the next. **In this game it
+    /// never has to:** a slot vacated by a pipe leaving the screen sits
+    /// empty for seventy-seven ticks before a new pipe takes it, measured
+    /// over three thousand, so no two consecutive captures ever hold
+    /// different tenants of one slot. The generation is offered because a
+    /// reading that omits it cannot be used safely by any consumer whose
+    /// producer is less forgiving, not because this world would misbehave
+    /// without it.
     ///
     /// Plain integers rather than the handle itself: the key a consumer
     /// builds from these names no storage type, so presentation does not
     /// inherit a dependency on how the world stores things.
     pub fn for_each_pipe(&self, mut visit: impl FnMut(u32, u32, i64, i64)) {
         for (slot, pipe) in self.body.iter() {
-            // Skip rather than default. The digest may read a missing
-            // handle as generation 0 because it is hashing, but here 0 is
-            // a real generation, and defaulting to it would let the guard
-            // pass across two different tenants of one slot.
+            // Unreachable: `spawn_pipes` writes both stores together and
+            // `sweep` removes from both, so a body without its handle does
+            // not occur. Written as a skip rather than a default because
+            // the two wrong answers differ in kind — a default of zero is
+            // a REAL generation, and would silently let a consumer pair
+            // two different tenants of one slot, where a skip only ever
+            // omits a pipe. When neither branch can be reached, take the
+            // one whose failure is visible.
             let Some(entity) = self.pipe.get(slot).copied() else {
                 continue;
             };

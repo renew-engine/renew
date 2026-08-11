@@ -25,8 +25,9 @@
 //!   case is this container's guarantee rather than each payload's, so a
 //!   sloppy `blend` cannot move a picture that an oracle or a committed
 //!   image stands on.
-//! - **Nothing here allocates** after construction, except
-//!   [`Snapshots::resize`], which says so in its own name.
+//! - **Nothing here allocates** after construction. The budget is fixed
+//!   at construction and [`Capture::put`] refuses a slot past it by
+//!   name.
 //!
 //! # Capture locals, never composed transforms
 //!
@@ -108,9 +109,14 @@ pub trait Blend: Copy {
 impl Blend for f32 {
     fn blend(from: Self, to: Self, alpha: Alpha) -> Self {
         // `from + (to - from) * t` rather than `from * (1 - t) + to * t`:
-        // the first is exact at t = 0 for every input, which is the case
-        // the container short-circuits anyway, and it is the spelling the
-        // rest of the tree already uses.
+        // fewer roundings, and the spelling the rest of the tree uses.
+        //
+        // It is NOT exact at t = 0 — `-0.0 + (x - -0.0) * 0.0` is `+0.0`,
+        // so the sign of a zero would be lost. That is precisely why the
+        // container short-circuits the boundary rather than trusting this
+        // to reproduce it, and why the trait says so in its contract.
+        // `alpha_zero_is_bit_exactly_the_earlier_capture` is the test that
+        // would fail if the short-circuit were removed.
         from + (to - from) * alpha.get()
     }
 }
@@ -188,55 +194,27 @@ pub struct Snapshots<T> {
     current: Buffer<T>,
 }
 
-impl<T> Snapshots<T> {
-    /// How many slots this pair was sized for. A [`Capture::put`] past
-    /// this refuses by name.
-    #[must_use]
-    pub fn slots(&self) -> u32 {
-        // Built from a u32 and only ever grown from one.
-        u32::try_from(self.current.entries.len()).unwrap_or(u32::MAX)
-    }
-}
-
 impl<T: Default + Copy> Snapshots<T> {
     /// A pair sized for `slots` slots, both captures empty.
     ///
-    /// **The budget is the consumer's obligation.** A producer whose live
-    /// set is bounded by its own rules asserts that bound in a test; one
-    /// whose bound can rise calls [`Snapshots::resize`] between frames.
-    /// Sizing by a storage crate's high-water slot count works and never
-    /// shrinks, which is the safe direction.
+    /// **The budget is the consumer's obligation, and it is fixed.** A
+    /// producer whose live set is bounded by its own rules asserts that
+    /// bound in a test; sizing by a storage crate's high-water slot count
+    /// also works, and never shrinks, which is the safe direction.
+    /// [`Capture::put`] refuses by name rather than silently dropping a
+    /// value if the budget turns out to be wrong.
+    ///
+    /// There is deliberately no `resize`. Growing while keeping both
+    /// captures is easy to write and nothing in the tree needs it — every
+    /// producer here has a bounded live set — and an unused method is a
+    /// method nobody has ever run. It is free to add when a producer
+    /// arrives whose slot space really does grow.
     #[must_use]
     pub fn new(slots: u32) -> Self {
         Self {
             previous: Buffer::with_slots(slots),
             current: Buffer::with_slots(slots),
         }
-    }
-
-    /// Grow to `slots`, keeping both captures.
-    ///
-    /// **The one method here that allocates.** Call it between frames,
-    /// never inside the loop. Reconstructing the pair instead would
-    /// discard the earlier capture and make every slot a newborn for one
-    /// tick, which is a visible pop.
-    ///
-    /// Growing only: a request at or below the current size is a no-op.
-    /// Shrinking is not offered because it would have to decide what
-    /// becomes of live slots past the new bound, and nothing needs it.
-    pub fn resize(&mut self, slots: u32) {
-        let wanted = slots as usize;
-        if wanted <= self.current.entries.len() {
-            return;
-        }
-        self.previous.entries.resize(wanted, Entry::default());
-        self.current.entries.resize(wanted, Entry::default());
-        self.previous
-            .order
-            .reserve(wanted - self.previous.order.len());
-        self.current
-            .order
-            .reserve(wanted - self.current.order.len());
     }
 }
 
@@ -278,6 +256,14 @@ impl<T: Blend> Snapshots<T> {
     ///
     /// At `Alpha::ZERO` every [`Fate::Living`] value is bit-exactly its
     /// earlier capture, and [`Blend::blend`] is not called.
+    ///
+    /// **The same rule is implemented a second time in the tree**, over a
+    /// different payload: `UiPresenter::frame` in `renew-ui-render` blends
+    /// widget rectangles and their inherited clips under exactly this
+    /// generation guard. The two were not merged — the payloads have
+    /// little in common and one is already green — so a correction to the
+    /// rule has to be made in both, and each names the other so neither
+    /// is corrected alone.
     pub fn frame(&self, alpha: Alpha) -> impl Iterator<Item = Drawn<T>> + '_ {
         // Alpha is a ratio of unsigned integers clamped below one, so it
         // is never negative and never a negative zero; comparing bits is
@@ -531,6 +517,15 @@ mod tests {
         }
     }
 
+    /// The premise of the test below: this payload really does refuse.
+    /// Without this, a `NeverBlends` that had quietly stopped panicking
+    /// would make the short-circuit test pass for no reason.
+    #[test]
+    #[should_panic(expected = "must not consult blend")]
+    fn the_refusing_payload_really_refuses() {
+        let _ = NeverBlends::blend(NeverBlends(1.0), NeverBlends(2.0), half());
+    }
+
     #[test]
     fn blend_is_never_consulted_at_zero() {
         let mut pair = Snapshots::<NeverBlends>::new(4);
@@ -593,37 +588,6 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(), run(), "same captures, same frame, bit for bit");
-    }
-
-    #[test]
-    fn resize_preserves_both_captures() {
-        let mut pair = Snapshots::<f32>::new(2);
-        tick(&mut pair, [(0, 0, 0.0)]);
-        tick(&mut pair, [(0, 0, 100.0)]);
-        pair.resize(64);
-        assert_eq!(pair.slots(), 64);
-        let frame = drawn(&pair, quarter());
-        assert_eq!(frame.len(), 1);
-        assert_eq!(
-            frame[0].fate,
-            Fate::Living,
-            "growing must not make a survivor look newborn — that is a visible pop"
-        );
-        assert_eq!(frame[0].value.to_bits(), 25.0f32.to_bits());
-        // And the new room is usable.
-        tick(&mut pair, [(0, 0, 200.0), (63, 0, 7.0)]);
-        assert_eq!(drawn(&pair, half()).len(), 2);
-    }
-
-    #[test]
-    fn resize_never_shrinks() {
-        let mut pair = Snapshots::<f32>::new(16);
-        pair.resize(4);
-        assert_eq!(
-            pair.slots(),
-            16,
-            "a smaller request is a no-op, not a truncation"
-        );
     }
 
     #[test]

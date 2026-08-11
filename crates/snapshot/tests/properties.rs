@@ -15,10 +15,27 @@ const SLOTS: u32 = 12;
 /// unique because putting a slot twice is a refusal by contract rather
 /// than a case to explore.
 fn capture_strategy() -> impl Strategy<Value = Vec<(u32, u64, f32)>> {
-    prop::collection::vec((0..SLOTS, 0..4u64, -1000.0f32..1000.0), 0..8).prop_map(|mut rows| {
-        rows.sort_by_key(|&(slot, _, _)| slot);
-        rows.dedup_by_key(|&mut (slot, _, _)| slot);
-        rows
+    // The value space includes a negative zero on purpose. For every
+    // ordinary float `from + (to - from) * 0.0` is bit-identical to
+    // `from`, so without this the boundary property could not tell a
+    // short-circuit from a blend, and would pass against its own
+    // deletion.
+    let value = prop_oneof![Just(-0.0f32), Just(0.0f32), -1000.0f32..1000.0];
+    prop::collection::vec((0..SLOTS, 0..4u64, value), 0..8).prop_map(|rows| {
+        // Unique by slot, because putting one twice is a refusal by
+        // contract rather than a case to explore — but the FIRST
+        // occurrence's position is kept rather than sorting, or the put
+        // order would always be ascending and the property claiming that
+        // order survives would be testing nothing.
+        let mut seen = Vec::new();
+        let mut unique = Vec::new();
+        for row in rows {
+            if !seen.contains(&row.0) {
+                seen.push(row.0);
+                unique.push(row);
+            }
+        }
+        unique
     })
 }
 
@@ -134,11 +151,20 @@ proptest! {
 
     /// At the tick boundary every living value is bit-exactly its earlier
     /// capture — the guarantee committed images stand on.
+    ///
+    /// The second capture's values are forced to differ from the first's,
+    /// so a container that blended at zero instead of short-circuiting
+    /// would produce a different number and fail here. Without that, both
+    /// captures could agree and the test would pass either way.
     #[test]
     fn the_tick_boundary_is_the_earlier_capture_exactly(
         first in capture_strategy(),
         second in capture_strategy(),
     ) {
+        let second: Vec<_> = second
+            .into_iter()
+            .map(|(slot, generation, value)| (slot, generation, value + 1234.5))
+            .collect();
         let mut pair = Snapshots::<f32>::new(SLOTS);
         {
             let mut capture = pair.capture();

@@ -30,9 +30,10 @@ pub enum Tile {
 /// screen units; y down from the top-left).
 ///
 /// `#[non_exhaustive]` without a constructor — a deliberate deviation
-/// from the descriptor pattern: this is a read-side record produced
-/// only by [`scene`], never built by callers, so the constructor would
-/// have exactly one caller and it lives in this file.
+/// from the descriptor pattern: this is a read-side record produced only
+/// by this module, by [`scene`] and by [`Presentation::fill`], never
+/// built by callers, so a constructor would have no caller outside this
+/// file.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct SceneSprite {
@@ -177,6 +178,10 @@ pub struct Presentation {
 impl Presentation {
     /// A presentation seeded from the world as it stands, so the first
     /// frame blends out of a real tick rather than out of a zero.
+    ///
+    /// Only the bird is seeded, and only the bird needs to be: a new
+    /// world holds no pipes at all — the first appears inside a step —
+    /// so there is nothing for the pipe captures to start from.
     #[must_use]
     pub fn new(world: &World) -> Self {
         Self {
@@ -205,9 +210,17 @@ impl Presentation {
         self.bird_y = units(world.bird_y());
     }
 
-    /// Fill `out` with the picture standing `alpha` past the last
-    /// capture, in [`scene`]'s draw order: pipes as two bars each, then
-    /// the bird over them.
+    /// Fill `out` with the picture standing `alpha` of the way from the
+    /// second-newest capture to the newest, in [`scene`]'s draw order:
+    /// pipes as two bars each, then the bird over them.
+    ///
+    /// **So the picture lags the world by up to one tick.** At a zero
+    /// factor this draws the tick before last, and it reaches the last
+    /// tick only as the factor approaches one. That is inherent to
+    /// interpolating between two known states rather than extrapolating
+    /// past the newest one, and it is the usual trade: extrapolation has
+    /// no lag and overshoots instead, which shows as a rubber-band
+    /// correction on every direction change.
     ///
     /// A pipe that left between the two captures draws once more at its
     /// last known place, underneath the living. It is still on screen
@@ -425,21 +438,17 @@ mod tests {
         let mut scratch = Vec::new();
         let mut departure = None;
         for _ in 0..900 {
-            let before = {
-                presentation.fill(Alpha::ZERO, &mut scratch);
-                scratch.iter().filter(|s| s.tile == Tile::Pipe).count()
-            };
             let live_before = pipe_slots(&world);
             advance(&mut presentation, &mut world);
             let live_after = pipe_slots(&world);
             if live_after.len() < live_before.len() {
                 presentation.fill(Alpha::ZERO, &mut scratch);
                 let drawn = scratch.iter().filter(|s| s.tile == Tile::Pipe).count();
-                departure = Some((before, drawn, live_after.len()));
+                departure = Some((drawn, live_after.len()));
                 break;
             }
         }
-        let (_, drawn_on_the_tick_it_left, live) =
+        let (drawn_on_the_tick_it_left, live) =
             departure.expect("a pipe must leave the screen within nine hundred ticks");
         assert_eq!(
             drawn_on_the_tick_it_left,
@@ -452,9 +461,11 @@ mod tests {
         advance(&mut presentation, &mut world);
         presentation.fill(Alpha::ZERO, &mut scratch);
         let drawn = scratch.iter().filter(|s| s.tile == Tile::Pipe).count();
-        assert!(
-            drawn <= live * 2,
-            "and then it stops being drawn rather than lingering"
+        assert_eq!(
+            drawn,
+            live * 2,
+            "and then it stops being drawn rather than lingering — exactly the {live} live \
+             pipes, as two bars each, and no more"
         );
     }
 
@@ -548,30 +559,159 @@ mod tests {
             let flap = world.autopilot();
             world.step(flap);
             world.for_each_pipe(|slot, _, _, _| highest = highest.max(slot));
-            if !world.alive() {
-                world = World::new(7);
-            }
         }
+        // Asserted rather than handled: the pilot survives the whole run,
+        // so a restart arm here would be a branch nothing reaches, and a
+        // dead world would silently stop spawning and make the budget
+        // claim vacuous.
+        assert!(
+            world.alive(),
+            "the pilot must survive, or nothing was spawning"
+        );
         assert!(
             highest < PIPE_SLOTS,
             "the rules allocated slot {highest}, past the presentation budget of {PIPE_SLOTS}"
         );
     }
 
-    /// A frozen pair with a frozen factor is the same picture every
-    /// frame. This is what a paused game rests on — the driver holds the
-    /// factor still, and this is the half of that contract living here.
+    /// **The claim the blended fill exists to make.** Between two ticks a
+    /// pipe stands strictly between where it was and where it is, and it
+    /// gets there monotonically as the factor rises.
+    ///
+    /// Without this the whole fill could ignore its factor for pipes and
+    /// every other test here would still pass: the rest read at the
+    /// boundary, or through the bird, or across two identical captures.
     #[test]
-    fn a_frozen_pair_at_a_frozen_factor_repeats_exactly() {
-        let world = piloted(300);
+    fn a_pipe_between_ticks_stands_between_its_captured_positions() {
+        let mut world = piloted(200);
         let mut presentation = Presentation::new(&world);
         presentation.capture(&world);
-        let mut first = Vec::new();
-        presentation.fill(half(), &mut first);
+        let earlier = pipe_lefts(&presentation, Alpha::ZERO);
+        advance(&mut presentation, &mut world);
+        let later = pipe_lefts_at_one(&presentation);
+        assert!(!earlier.is_empty(), "premise: there must be pipes to move");
+        assert_eq!(
+            earlier.len(),
+            later.len(),
+            "premise: the same pipes both ticks"
+        );
+        assert!(
+            earlier.iter().zip(&later).all(|(was, is)| is < was),
+            "premise: the pipes must actually have moved left ({earlier:?} then {later:?})"
+        );
+
+        let mut previous = earlier.clone();
+        for step in 1..=4u64 {
+            let alpha = Alpha::new(
+                step * 200,
+                core::num::NonZeroU64::new(1000).expect("nonzero"),
+            );
+            let between = pipe_lefts(&presentation, alpha);
+            for (index, drawn) in between.iter().enumerate() {
+                let (was, is) = (earlier[index], later[index]);
+                let held = previous[index];
+                assert!(
+                    *drawn < was && *drawn > is,
+                    "at factor {step}/5 pipe {index} stands at {drawn}, outside ({is} .. {was})"
+                );
+                assert!(
+                    *drawn < held,
+                    "and each step of the factor must move pipe {index} further than {held}, \
+                     never hold it"
+                );
+            }
+            previous = between;
+        }
+    }
+
+    /// The bird interpolates too, and by the same rule.
+    #[test]
+    fn the_bird_between_ticks_stands_between_its_captured_heights() {
+        let mut world = piloted(205);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        let earlier = bird_top(&presentation, Alpha::ZERO);
+        advance(&mut presentation, &mut world);
+        let later = bird_top_at_one(&presentation);
+        assert!(
+            b(earlier) != b(later),
+            "premise: the bird must actually have moved between these ticks"
+        );
+        let middle = bird_top(&presentation, half());
+        let low = earlier.min(later);
+        let high = earlier.max(later);
+        assert!(
+            middle > low && middle < high,
+            "the half-way bird stands at {middle}, outside ({low} .. {high})"
+        );
+    }
+
+    /// A frozen pair with a frozen factor repeats the picture it was
+    /// frozen at — which is what a paused game rests on, the driver
+    /// holding the factor still being the other half of that contract.
+    ///
+    /// Asserting only that two calls agree would be a tautology: `fill`
+    /// is a pure function, so it would pass with the body deleted. The
+    /// picture is therefore compared against the one taken before the
+    /// freeze, and asserted non-empty.
+    #[test]
+    fn a_frozen_pair_at_a_frozen_factor_repeats_the_picture_it_froze_at() {
+        let mut world = piloted(300);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        advance(&mut presentation, &mut world);
+        let mut before_the_pause = Vec::new();
+        presentation.fill(half(), &mut before_the_pause);
+        assert!(
+            before_the_pause.iter().any(|s| s.tile == Tile::Pipe),
+            "premise: the frozen picture must contain something to freeze"
+        );
+        // The world keeps stepping; nothing is captured, exactly as a
+        // paused driver behaves.
         for _ in 0..4 {
+            let flap = world.autopilot();
+            world.step(flap);
             let mut again = Vec::new();
             presentation.fill(half(), &mut again);
-            assert_eq!(first, again, "nothing moves while nothing is captured");
+            assert_eq!(
+                before_the_pause, again,
+                "an uncaptured world must not reach the picture"
+            );
         }
+    }
+
+    /// Every pipe's left edge at `alpha`, in draw order.
+    fn pipe_lefts(presentation: &Presentation, alpha: Alpha) -> Vec<f32> {
+        let mut out = Vec::new();
+        presentation.fill(alpha, &mut out);
+        out.iter()
+            .filter(|s| s.tile == Tile::Pipe)
+            .map(|s| s.x)
+            .step_by(2)
+            .collect()
+    }
+
+    /// The same, as close to the newer capture as the factor can get.
+    fn pipe_lefts_at_one(presentation: &Presentation) -> Vec<f32> {
+        pipe_lefts(
+            presentation,
+            Alpha::new(u64::MAX, core::num::NonZeroU64::new(1).expect("one")),
+        )
+    }
+
+    fn bird_top(presentation: &Presentation, alpha: Alpha) -> f32 {
+        let mut out = Vec::new();
+        presentation.fill(alpha, &mut out);
+        out.iter()
+            .find(|s| s.tile == Tile::Bird)
+            .map(|s| s.y)
+            .expect("a bird is always drawn")
+    }
+
+    fn bird_top_at_one(presentation: &Presentation) -> f32 {
+        bird_top(
+            presentation,
+            Alpha::new(u64::MAX, core::num::NonZeroU64::new(1).expect("one")),
+        )
     }
 }

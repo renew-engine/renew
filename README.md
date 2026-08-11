@@ -75,9 +75,9 @@ time pending: 11666657 ns
 ## Modules
 
 Every module is independently buildable, testable, and — outside the minimal core —
-removable. CI proves the last part on every commit, and proves it *one crate at a time*: sixteen
+removable. CI proves the last part on every commit, and proves it *one crate at a time*: twenty-one
 configurations, each with one optional crate and everything that depends on it excluded, every one
-built **and** tested. A seventeenth builds the minimal core alone and asserts that no optional crate
+built **and** tested. A twenty-second builds the minimal core alone and asserts that no optional crate
 reached its graph. The platform crate is built again with its windowing feature compiled away, and
 the game is built with no graphics crate in its dependency graph at all — which is the removability
 claim from the other side, and the reason the window is a feature rather than a default.
@@ -105,6 +105,8 @@ claim from the other side, and the reason the window is a feature rather than a 
 | **`renew-camera`** | Presentation-side viewpoints: a look-at view, a reversed-depth perspective, and a blend between ticks for display-rate smoothness | `bootstrap` · optional |
 | **`renew-snapshot`** | Two captures of one slot space blended by the interpolation factor, keyed so a recycled slot never inherits the previous tenant's motion | `bootstrap` · optional |
 | **`renew-particles`** | A fixed-capacity particle pool stepped at the simulation's cadence, seeded so replays reproduce the picture | `bootstrap` · optional |
+| **`renew-ui`** | A widget tree solved in fixed point inside the simulation, so a layout is part of what a replay reproduces | `bootstrap` · optional |
+| **`renew-ui-render`** | Presentation for the widget tree: retained snapshots blended at display rate, clipped on the CPU, emitted as sprites | `bootstrap` · optional |
 | **`renew-audio`** | Mixing and playback, behind the platform's device seam | `bootstrap` · optional |
 | **`renew-asset`** | Content-addressed asset packs, with every entry verifiable against its digest | `bootstrap` · optional |
 | **`renew-png`** | PNG encoding with no dependencies — pixels in, the bytes of a file out, so a sample can commit a picture of itself | `bootstrap` · optional |
@@ -175,7 +177,7 @@ Every commit on `main` clears all of these, on Windows, Linux, and macOS:
 | No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo`, `dbg!` denied outside tests |
 | `unsafe` denied by default | workspace-wide `unsafe_code = "deny"`; the crates that need it opt in per crate, and `undocumented_unsafe_blocks = "deny"` makes every block state the invariant that keeps it sound |
 | Module graph is a DAG | crate manifest and dependency-graph check (`renew check`) |
-| Optional modules stay removable | sixteen configurations, each excluding one optional crate and its dependents, all built and tested; plus the minimal core alone, asserted to contain no optional crate |
+| Optional modules stay removable | twenty-one configurations, each excluding one optional crate and its dependents, all built and tested; plus the minimal core alone, asserted to contain no optional crate |
 | Licenses and advisories | `cargo-deny`, over the full dependency tree including dev-dependencies |
 | Sanitizers and Miri | scheduled nightly runs (ASan, TSan, Miri) |
 

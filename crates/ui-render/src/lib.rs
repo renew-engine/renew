@@ -174,6 +174,13 @@ impl UiPresenter {
     /// This is the whole of what a frame draws, as data: every
     /// decision the presenter makes is observable here without a
     /// device, which is where the tests hold it.
+    ///
+    /// **The same rule is implemented a second time in the tree**, over a
+    /// different payload: `Snapshots::frame` in `renew-snapshot` blends an
+    /// arbitrary payload under exactly this generation guard. The two were
+    /// not merged — the payloads have little in common and this one was
+    /// already green — so a correction to the rule has to be made in both,
+    /// and each names the other so neither is corrected alone.
     pub fn frame(&self, alpha: Alpha) -> impl Iterator<Item = Quad> + '_ {
         let dying = self.previous.order.iter().filter_map(move |&index| {
             let old = self.previous.entries[index as usize];
