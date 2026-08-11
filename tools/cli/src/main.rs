@@ -62,6 +62,12 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.verify,
             invocation.json,
         ),
+        // Parsing guarantees both paths, as it does for the pack.
+        Command::UiCompile => run_ui_compile(
+            invocation.from.as_deref().unwrap_or_default(),
+            invocation.out.as_deref().unwrap_or_default(),
+            invocation.json,
+        ),
         // Parsing guarantees the path; an empty one would simply fail to
         // open, which is the same answer by a shorter road.
         Command::Coverage => run_coverage(
@@ -419,6 +425,102 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
 }
 
 /// One refusal shape for both asset subcommands.
+/// `renew ui-compile` -- compile a text document into the binary blob.
+fn run_ui_compile(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+    let source = match std::fs::read_to_string(from) {
+        Ok(source) => source,
+        Err(error) => {
+            let message = format!("cannot read {from}: {error}");
+            return ui_compile_failure(&message, None, json_mode, started);
+        }
+    };
+    let compiled = match renew_cli::ui_compile::compile(&source) {
+        Ok(compiled) => compiled,
+        Err(diagnostic) => {
+            // The human line leads with the file, the way compilers
+            // do; the JSON carries the parts separately.
+            let message = format!("{from}:{diagnostic}");
+            return ui_compile_failure(&message, Some(&diagnostic), json_mode, started);
+        }
+    };
+    if let Err(error) = std::fs::write(out_path, &compiled.bytes) {
+        let message = format!("cannot write {out_path}: {error}");
+        return ui_compile_failure(&message, None, json_mode, started);
+    }
+    let nodes = i64::from(compiled.nodes);
+    let size = i64::try_from(compiled.bytes.len()).unwrap_or(i64::MAX);
+    if json_mode {
+        let document = Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1)),
+            (
+                "command".to_string(),
+                Value::String("ui-compile".to_string()),
+            ),
+            ("status".to_string(), Value::String("ok".to_string())),
+            ("exit_code".to_string(), Value::Number(0)),
+            (
+                "duration_ms".to_string(),
+                Value::Number(duration_ms(started)),
+            ),
+            ("stdout".to_string(), Value::String(String::new())),
+            ("stderr".to_string(), Value::String(String::new())),
+            ("errors".to_string(), Value::Array(Vec::new())),
+            ("nodes".to_string(), Value::Number(nodes)),
+            ("bytes".to_string(), Value::Number(size)),
+            ("out".to_string(), Value::String(out_path.to_string())),
+        ]);
+        emit_stdout_line(&document.render());
+    } else {
+        emit_stdout(&format!(
+            "compiled {nodes} nodes into {out_path} ({size} bytes)\n"
+        ));
+    }
+    ExitCode::SUCCESS
+}
+
+/// The compile subcommand's error half: the message always, and the
+/// diagnostic's place as structured fields when the refusal has one —
+/// an unreadable file does not, a grammar refusal does.
+fn ui_compile_failure(
+    message: &str,
+    diagnostic: Option<&renew_cli::ui_compile::Diagnostic>,
+    json_mode: bool,
+    started: Instant,
+) -> ExitCode {
+    if json_mode {
+        let errors = diagnostic
+            .map(|found| {
+                vec![Value::Object(vec![
+                    ("line".to_string(), Value::Number(i64::from(found.line))),
+                    ("column".to_string(), Value::Number(i64::from(found.column))),
+                    ("message".to_string(), Value::String(found.message.clone())),
+                ])]
+            })
+            .unwrap_or_default();
+        let document = Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1)),
+            (
+                "command".to_string(),
+                Value::String("ui-compile".to_string()),
+            ),
+            ("status".to_string(), Value::String("error".to_string())),
+            ("exit_code".to_string(), Value::Number(1)),
+            (
+                "duration_ms".to_string(),
+                Value::Number(duration_ms(started)),
+            ),
+            ("stdout".to_string(), Value::String(String::new())),
+            ("stderr".to_string(), Value::String(message.to_string())),
+            ("errors".to_string(), Value::Array(errors)),
+        ]);
+        emit_stdout_line(&document.render());
+    } else {
+        eprintln!("error: {message}");
+    }
+    ExitCode::FAILURE
+}
+
 fn asset_failure(command: &str, message: &str, json_mode: bool, started: Instant) -> ExitCode {
     if json_mode {
         let document = Value::Object(vec![
