@@ -15,14 +15,25 @@
 //! integers. The driver checks [`Menu::is_open`] *before* handing the
 //! same event to gameplay input, so the click that presses Resume
 //! never also flaps the bird.
+//!
+//! **The tree is data.** `menu.ui` beside this crate is the authored
+//! form, `menu.uib` the compiled blob this module embeds and
+//! instantiates — structure, boxes, and the hover and pressed dress
+//! the buttons wear, resolved into state tables before the game ever
+//! ran. What the buttons *say* stays here, beside the code that acts
+//! on them; a test holds the document's boxes against the measured
+//! labels so the two cannot drift apart silently.
 
 use renew_event::{KeyCode, PointerButton, WindowEvent};
 use renew_frame::StateHash;
 use renew_math::quantize_pointer;
 use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH};
-use renew_ui::{
-    Align, Direction, Fixed, NodeId, Size, Style, Ui, UiEvent, UiLimits, UiOutput, text,
-};
+use renew_ui::{Document, Fixed, NodeId, Ui, UiEvent, UiLimits, UiOutput};
+
+/// The compiled pause-menu document, embedded at build time and held
+/// byte-identical to its authored source by the compiler's fidelity
+/// gate.
+const DOCUMENT: &[u8] = include_bytes!("../menu.uib");
 
 /// A decision the menu made this frame, for the driver to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,30 +54,29 @@ pub struct Menu {
     open: bool,
 }
 
-/// Space around a button label, in pixels.
-const PAD_X: i32 = 12;
-const PAD_Y: i32 = 5;
-
 impl Menu {
-    /// Build and solve the tree once: the menu's layout is static,
-    /// and the buttons size themselves from their labels through the
-    /// same integer measurement the digest never fears.
+    /// Instantiate the compiled document and solve it once: the
+    /// menu's whole look — boxes, dress, spacing — is authored data,
+    /// and this function only wakes it up.
+    ///
+    /// # Panics
+    ///
+    /// When the embedded blob does not read — a build defect, since
+    /// the blob is committed beside its source and the compiler's
+    /// fidelity gate holds them identical.
     #[must_use]
     pub fn new() -> Self {
-        let mut ui = Ui::new(UiLimits { nodes: 8 });
+        let document = Document::read(DOCUMENT);
+        assert!(document.is_ok(), "the committed menu blob must read");
+        let mut ui = document.map_or_else(|_| Ui::new(UiLimits { nodes: 1 }), |found| found.tree());
         let root = ui.root();
-        ui.set_style(
-            root,
-            Style {
-                direction: Direction::Column,
-                justify: Align::Center,
-                align_cross: Align::Center,
-                gap: Fixed::from_int(8),
-                ..Style::default()
-            },
-        );
-        let resume = button(&mut ui, root, "Resume");
-        let restart = button(&mut ui, root, "Restart");
+        let (resume, restart) = {
+            let mut buttons = ui.children(root);
+            (
+                buttons.next().unwrap_or(root),
+                buttons.next().unwrap_or(root),
+            )
+        };
         ui.solve(
             Fixed::from_int(i32::try_from(VIEW_WIDTH).unwrap_or(i32::MAX)),
             Fixed::from_int(i32::try_from(VIEW_HEIGHT).unwrap_or(i32::MAX)),
@@ -178,28 +188,59 @@ impl Default for Menu {
     }
 }
 
-/// One button: sized from its label by the integer advance table,
-/// padded, dark until the compiled style tables bring richer looks.
-fn button(ui: &mut Ui, parent: NodeId, label: &str) -> NodeId {
-    let node = ui.insert(parent).unwrap_or(parent);
-    let width = text::measure(label) + Fixed::from_int(2 * PAD_X);
-    let line = i32::try_from(text::LINE_HEIGHT).unwrap_or(16);
-    let height = Fixed::from_int(line + 2 * PAD_Y);
-    ui.set_style(
-        node,
-        Style {
-            width: Size::Px(width),
-            height: Size::Px(height),
-            background: [40, 44, 52, 230],
-            ..Style::default()
-        },
-    );
-    node
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use renew_ui::text;
+
+    /// The padding the document's boxes were authored with.
+    const PAD_X: i32 = 12;
+    const PAD_Y: i32 = 5;
+
+    /// The document's boxes against the measured labels: the sizes in
+    /// `menu.ui` are data, and this is the tripwire that reddens when
+    /// a label or the face changes without the document following.
+    #[test]
+    fn the_documents_boxes_still_fit_their_labels() {
+        let menu = Menu::new();
+        for (node, label) in menu.labels() {
+            let rect = menu.ui().rect(node).expect("solved");
+            let expected_width = text::measure(label) + Fixed::from_int(2 * PAD_X);
+            let line = i32::try_from(text::LINE_HEIGHT).unwrap_or(16);
+            let expected_height = Fixed::from_int(line + 2 * PAD_Y);
+            assert_eq!(
+                rect.width, expected_width,
+                "{label}'s authored width must match its measured label"
+            );
+            assert_eq!(
+                rect.height, expected_height,
+                "{label}'s authored height must match the line height"
+            );
+        }
+    }
+
+    /// The exact-damage promise, held at the consumer: hovering a
+    /// button wears its colour-only patch and provokes no layout walk.
+    #[test]
+    fn hovering_a_button_recolours_without_re_solving() {
+        let mut menu = Menu::new();
+        menu.handle(&WindowEvent::Key {
+            code: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+        });
+        let base = menu.ui().style(menu.resume).expect("live").background;
+        let walked = menu.ui().layout_passes();
+        let (x, y) = centre_of(&menu, menu.resume);
+        menu.handle(&WindowEvent::PointerMoved { x, y });
+        let worn = menu.ui().style(menu.resume).expect("live").background;
+        assert_ne!(worn, base, "hover must wear the document's dress");
+        assert_eq!(
+            menu.ui().layout_passes(),
+            walked,
+            "a colour-only flip must not re-solve the menu"
+        );
+    }
 
     fn press_at(menu: &mut Menu, x: f64, y: f64) {
         menu.handle(&WindowEvent::PointerMoved { x, y });

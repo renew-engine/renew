@@ -1,0 +1,18 @@
+row { row {   node w=9
+}
+  row { row {    node w=9
+}
+   node w=9999 row {
+      node w=4
+} node w=9998
+row {
+    node w=9
+} node w=9999
+}
+ node w=9row {
+      node w=9
+} node w=9999
+row {
+    node w=9
+} node w=9
+}

@@ -132,8 +132,16 @@ engine rather than in it.
 ## The pause menu, and why the digest moved
 
 Escape pauses. The menu is a real retained widget tree — the same
-arena, solver, and hit-tester every future document will use — with
-two buttons sized from their labels by an integer advance table.
+arena, solver, and hit-tester every document uses — and it IS a
+document now: `menu.ui` beside this crate is the authored form,
+`menu.uib` the compiled blob the game embeds, held byte-identical by
+the compiler's fidelity gate. The document owns the boxes and the
+hover and pressed dress the buttons wear — resolved into state
+tables at compile time, worn at runtime as one lookup and one swap,
+with a colour-only flip provoking no layout walk (a counter assert,
+not a promise). What the buttons say stays in code, beside what
+they do; a test holds the authored boxes against the measured
+labels so neither drifts without the other.
 While it is open the world stands still and the session keeps
 counting: events index by session tick, so every trace recorded
 before the menu existed replays unchanged, and a trace that pauses

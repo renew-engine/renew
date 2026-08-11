@@ -1,0 +1,10 @@
+row {
+     node w=80 h=20 {
+        hover { bg=#565656 }
+      pressed { w=22 bg=#505050 }
+    }
+   node w=60 h=40 bg=#0a0a0a {
+        hover { bg=#565656 }
+        pressed { w=8}
+    }
+}

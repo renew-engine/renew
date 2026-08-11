@@ -1,0 +1,9 @@
+row {
+     node w=800 bg=#0a0a0a {
+        focus { bg=#112592 }
+           }      hover { bg=#112592 } 
+       pressed { w=44 bg=#505050 }
+
+   node w=8      focus { bg=#112592 }
+    focus { bg=#ma=#505050 }
+    }

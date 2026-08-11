@@ -21,10 +21,14 @@
 //! reader accepts — and instantiation never needs to check again.
 //! Sibling order is document order.
 //!
-//! **Version 1 carries structure and base styles only.** The state
-//! variant tables the compiler will one day emit are not speculated
-//! here as dead sections; the version field is the evolution path,
-//! and an unknown version is refused, never skipped over.
+//! **Version 2 carries structure, base styles, and the compiled
+//! state tables**: a shared pool of complete resolved patches and a
+//! per-node index for every combination of the four interaction
+//! states. The canonical form extends over them — the pool sits in
+//! first-use order over the document walk, every entry is referenced,
+//! and dead freight refuses — so capture stays the exact inverse of
+//! reading. Version 1 carried structure and base styles alone; the
+//! version field was the evolution path, and it was taken.
 
 use renew_fixed::Fixed;
 
@@ -35,13 +39,16 @@ use crate::{NodeId, Ui, UiLimits};
 pub const MAGIC: [u8; 8] = *b"RENEWUI\0";
 
 /// The one blob layout this reader understands. Anything else is
-/// refused outright — version negotiation is a writer's job.
-pub const VERSION: u32 = 1;
+/// refused outright — version negotiation is a writer's job. Version
+/// two added the state-patch pool and the per-node combination
+/// tables; version one is refused like any other stranger.
+pub const VERSION: u32 = 2;
 
-/// Header: `MAGIC` + `version` + `node_count`.
-pub const HEADER_BYTES: usize = 16;
+/// Header: `MAGIC` + `version` + `node_count` + `patch_count`.
+pub const HEADER_BYTES: usize = 20;
 const OFF_VERSION: usize = 8;
 const OFF_COUNT: usize = 12;
+const OFF_PATCH_COUNT: usize = 16;
 
 /// One node record, fixed width.
 ///
@@ -56,7 +63,9 @@ const OFF_COUNT: usize = 12;
 /// | 88 | gap bits, `i64` |
 /// | 96 | grow, `u32` |
 /// | 100 | background RGBA, four bytes |
-pub const NODE_BYTES: usize = 104;
+/// | 104 | state table: sixteen `u16` patch indices, one per state
+///   combination, [`crate::NO_PATCH`] wearing the base |
+pub const NODE_BYTES: usize = 136;
 const OFF_PARENT: usize = 0;
 const OFF_DIRECTION: usize = 4;
 const OFF_JUSTIFY: usize = 5;
@@ -69,6 +78,15 @@ const OFF_PADDING: usize = 56;
 const OFF_GAP: usize = 88;
 const OFF_GROW: usize = 96;
 const OFF_BACKGROUND: usize = 100;
+const OFF_TABLE: usize = 104;
+
+/// One pooled state patch, fixed width: a flags byte (bit zero:
+/// wearing it moves geometry), three zero padding bytes, then the
+/// same style block a node record carries at the same offsets.
+pub const PATCH_BYTES: usize = 104;
+const OFF_PATCH_FLAGS: usize = 0;
+/// The one meaningful patch flag: layout fields differ from base.
+const PATCH_TOUCHES_LAYOUT: u8 = 1;
 
 /// Width is `Px` when set; `Auto` otherwise.
 const FLAG_WIDTH_PX: u8 = 1;
@@ -81,6 +99,10 @@ pub const NO_PARENT: u32 = u32::MAX;
 /// The most nodes one document may declare. A ceiling, not a target:
 /// the reader refuses past it before multiplying anything by anything.
 pub const MAX_NODES: u32 = 4096;
+
+/// The most pooled patches one document may declare, on the same
+/// reasoning — and far below the table entries' own sentinel.
+pub const MAX_PATCHES: u32 = 4096;
 
 /// Why a byte string is not a document. Every variant names what was
 /// seen, because "invalid" teaches a reader nothing.
@@ -147,6 +169,57 @@ pub enum DocumentError {
         /// The byte it carried.
         value: u8,
     },
+    /// More pooled patches than [`MAX_PATCHES`].
+    TooManyPatches {
+        /// What the header declared.
+        count: u32,
+    },
+    /// A byte inside a pooled patch outside its range — an enum, the
+    /// flags byte, or padding that must be zero.
+    BadPatch {
+        /// Which patch.
+        index: u32,
+        /// Which field.
+        field: &'static str,
+        /// The byte it carried.
+        value: u8,
+    },
+    /// Size bits carried under a cleared flag inside a pooled patch.
+    UnsetPatchBits {
+        /// Which patch.
+        index: u32,
+        /// Which size.
+        field: &'static str,
+    },
+    /// A state-table entry pointing past the declared pool.
+    PatchOutOfPool {
+        /// Which record's table.
+        index: u32,
+        /// The entry it carried.
+        entry: u16,
+    },
+    /// A pooled patch whose layout flag lies about the reference: the
+    /// flag must equal whether the patch's style moves geometry
+    /// relative to the referencing node's base — the runtime trusts
+    /// it in the frame loop, so the reader proves it at the door.
+    WrongPatchFlag {
+        /// Which record's table made the reference.
+        index: u32,
+        /// The pooled patch whose flag disagrees.
+        entry: u16,
+    },
+    /// The pool is not in canonical first-use order, or holds entries
+    /// no table references: scanning every table entry in document
+    /// order, each patch index must first appear exactly when the
+    /// count of already-seen patches equals it, and the scan must end
+    /// having seen them all.
+    PoolNotCanonical {
+        /// How many patches had appeared when the rule broke.
+        expected: u32,
+        /// What appeared instead — or the declared count, when the
+        /// scan ended short.
+        found: u32,
+    },
 }
 
 impl core::fmt::Display for DocumentError {
@@ -185,6 +258,38 @@ impl core::fmt::Display for DocumentError {
             Self::UnsetSizeBits { index, field } => {
                 write!(out, "record {index} carries {field} under a cleared flag")
             }
+            Self::TooManyPatches { count } => {
+                write!(out, "{count} patches exceed the ceiling of {MAX_PATCHES}")
+            }
+            Self::BadPatch {
+                index,
+                field,
+                value,
+            } => {
+                write!(out, "patch {index}: {value} is not a {field}")
+            }
+            Self::UnsetPatchBits { index, field } => {
+                write!(out, "patch {index} carries {field} under a cleared flag")
+            }
+            Self::PatchOutOfPool { index, entry } => {
+                write!(
+                    out,
+                    "record {index} names patch {entry}, which is outside the pool"
+                )
+            }
+            Self::WrongPatchFlag { index, entry } => {
+                write!(
+                    out,
+                    "patch {entry}'s layout flag disagrees with record {index}'s base"
+                )
+            }
+            Self::PoolNotCanonical { expected, found } => {
+                write!(
+                    out,
+                    "the pool is not in first-use order: after {expected} patches, \
+                     {found} appeared"
+                )
+            }
             Self::BadStyleByte {
                 index,
                 field,
@@ -205,6 +310,8 @@ impl core::error::Error for DocumentError {}
 pub struct Document<'a> {
     nodes: &'a [u8],
     count: u32,
+    pool: &'a [u8],
+    patch_count: u32,
 }
 
 /// Read a little-endian `u32` at `offset`, or `None` past the end.
@@ -230,6 +337,18 @@ fn i64_in(record: &[u8], offset: usize) -> i64 {
 /// One `Fixed` from record bytes.
 fn fixed_in(record: &[u8], offset: usize) -> Fixed {
     Fixed::from_bits(i64_in(record, offset))
+}
+
+/// Read a little-endian `u16` at `offset`, the same posture as its
+/// wider siblings: total where the caller proved bounds, fail-closed
+/// where it did not — the sentinel wears the base and references
+/// nothing, so it cannot slip past the pool checks.
+fn u16_at(bytes: &[u8], offset: usize) -> u16 {
+    offset
+        .checked_add(2)
+        .and_then(|end| bytes.get(offset..end))
+        .and_then(|slice| <[u8; 2]>::try_from(slice).ok())
+        .map_or(crate::NO_PATCH, u16::from_le_bytes)
 }
 
 /// Decode an alignment byte, naming the field on refusal.
@@ -277,87 +396,39 @@ impl<'a> Document<'a> {
         if count > MAX_NODES {
             return Err(DocumentError::TooManyNodes { count });
         }
-        // The ceiling above keeps this multiplication small, but the
+        // The zero-patch default here is fail-closed too: a header too
+        // short to carry the count already refused above.
+        let patch_count = u32_at(bytes, OFF_PATCH_COUNT).unwrap_or(0);
+        if patch_count > MAX_PATCHES {
+            return Err(DocumentError::TooManyPatches { count: patch_count });
+        }
+        // The ceilings above keep these multiplications small, but the
         // accounting stays in u64 anyway: the check must not depend on
-        // the ceiling staying small forever.
-        let declared = (HEADER_BYTES as u64) + u64::from(count) * (NODE_BYTES as u64);
+        // the ceilings staying small forever.
+        let table_bytes = u64::from(count) * (NODE_BYTES as u64);
+        let pool_bytes = u64::from(patch_count) * (PATCH_BYTES as u64);
+        let declared = (HEADER_BYTES as u64) + table_bytes + pool_bytes;
         if declared != bytes.len() as u64 {
             return Err(DocumentError::SizeMismatch {
                 declared,
                 actual: bytes.len(),
             });
         }
-        let nodes = bytes.get(HEADER_BYTES..).unwrap_or_default();
+        // Both region bounds hold by the equality just proven.
+        let pool_start = HEADER_BYTES + count as usize * NODE_BYTES;
+        let nodes = bytes.get(HEADER_BYTES..pool_start).unwrap_or_default();
+        let pool = bytes.get(pool_start..).unwrap_or_default();
 
-        // The open ancestor path of the depth-first walk. A record's
-        // parent must be on it, or the records interleave subtrees and
-        // the blob is a second spelling of a tree the canonical form
-        // already has one for.
-        let mut path: Vec<u32> = Vec::with_capacity(16);
-        for index in 0..count {
-            let record = record_of(nodes, index);
-            // The default is the one value that cannot pass either
-            // check below: unreachable, and fail-closed if ever bent.
-            let parent = u32_at(record, OFF_PARENT).unwrap_or(index);
-            let legal = if index == 0 {
-                parent == NO_PARENT
-            } else {
-                parent < index
-            };
-            if !legal {
-                return Err(DocumentError::BadParent { index, parent });
-            }
-            if index == 0 {
-                path.push(0);
-            } else {
-                while path.last().is_some_and(|&open| open != parent) {
-                    path.pop();
-                }
-                if path.is_empty() {
-                    return Err(DocumentError::NotPreorder { index, parent });
-                }
-                path.push(index);
-            }
-            let direction = record.get(OFF_DIRECTION).copied().unwrap_or(u8::MAX);
-            if direction > 1 {
-                return Err(DocumentError::BadStyleByte {
-                    index,
-                    field: "direction",
-                    value: direction,
-                });
-            }
-            align_of(
-                index,
-                "justify",
-                record.get(OFF_JUSTIFY).copied().unwrap_or(u8::MAX),
-            )?;
-            align_of(
-                index,
-                "align_cross",
-                record.get(OFF_ALIGN_CROSS).copied().unwrap_or(u8::MAX),
-            )?;
-            let flags = record.get(OFF_SIZE_FLAGS).copied().unwrap_or(u8::MAX);
-            if flags & !(FLAG_WIDTH_PX | FLAG_HEIGHT_PX) != 0 {
-                return Err(DocumentError::BadStyleByte {
-                    index,
-                    field: "size flags",
-                    value: flags,
-                });
-            }
-            if flags & FLAG_WIDTH_PX == 0 && i64_in(record, OFF_WIDTH) != 0 {
-                return Err(DocumentError::UnsetSizeBits {
-                    index,
-                    field: "width bits",
-                });
-            }
-            if flags & FLAG_HEIGHT_PX == 0 && i64_in(record, OFF_HEIGHT) != 0 {
-                return Err(DocumentError::UnsetSizeBits {
-                    index,
-                    field: "height bits",
-                });
-            }
-        }
-        Ok(Self { nodes, count })
+        check_records(nodes, count)?;
+        check_patches(pool, patch_count)?;
+        check_tables(nodes, pool, count, patch_count)?;
+
+        Ok(Self {
+            nodes,
+            count,
+            pool,
+            patch_count,
+        })
     }
 
     /// How many nodes the document holds, root included.
@@ -378,45 +449,41 @@ impl<'a> Document<'a> {
         if index >= self.count {
             return None;
         }
-        let record = record_of(self.nodes, index);
-        let flags = record.get(OFF_SIZE_FLAGS).copied().unwrap_or(0);
-        let size = |flag: u8, offset: usize| {
-            if flags & flag == 0 {
-                Size::Auto
-            } else {
-                Size::Px(fixed_in(record, offset))
-            }
-        };
-        let edges = |offset: usize| Edges {
-            left: fixed_in(record, offset),
-            right: fixed_in(record, offset + 8),
-            top: fixed_in(record, offset + 16),
-            bottom: fixed_in(record, offset + 24),
-        };
-        // The enum bytes were validated by read; the defaults here are
-        // the unreachable arms of that proof, not a second decoder.
-        let direction = if record.get(OFF_DIRECTION).copied().unwrap_or(0) == 1 {
-            Direction::Column
-        } else {
-            Direction::Row
-        };
-        let realign = |value: u8| align_of(0, "validated", value).unwrap_or(Align::Start);
-        let mut background = [0u8; 4];
-        if let Some(bytes) = record.get(OFF_BACKGROUND..OFF_BACKGROUND + 4) {
-            background.copy_from_slice(bytes);
+        Some(style_in(record_of(self.nodes, index)))
+    }
+
+    /// How many pooled patches the document carries.
+    #[must_use]
+    pub fn patch_count(&self) -> u32 {
+        self.patch_count
+    }
+
+    /// The pooled patch at `index`, decoded; `None` past the pool.
+    #[must_use]
+    pub fn patch(&self, index: u32) -> Option<crate::StatePatch> {
+        if index >= self.patch_count {
+            return None;
         }
-        Some(Style {
-            direction,
-            width: size(FLAG_WIDTH_PX, OFF_WIDTH),
-            height: size(FLAG_HEIGHT_PX, OFF_HEIGHT),
-            margin: edges(OFF_MARGIN),
-            padding: edges(OFF_PADDING),
-            gap: fixed_in(record, OFF_GAP),
-            grow: u32_at(record, OFF_GROW).unwrap_or(0),
-            justify: realign(record.get(OFF_JUSTIFY).copied().unwrap_or(0)),
-            align_cross: realign(record.get(OFF_ALIGN_CROSS).copied().unwrap_or(0)),
-            background,
+        let record = patch_of(self.pool, index);
+        let flags = record.get(OFF_PATCH_FLAGS).copied().unwrap_or(0);
+        Some(crate::StatePatch {
+            style: style_in(record),
+            touches_layout: flags & PATCH_TOUCHES_LAYOUT != 0,
         })
+    }
+
+    /// The state table of record `index`; `None` past the end.
+    #[must_use]
+    pub fn state_table(&self, index: u32) -> Option<[u16; crate::STATE_COMBINATIONS]> {
+        if index >= self.count {
+            return None;
+        }
+        let record = record_of(self.nodes, index);
+        let mut table = [crate::NO_PATCH; crate::STATE_COMBINATIONS];
+        for (slot, entry) in table.iter_mut().enumerate() {
+            *entry = u16_at(record, OFF_TABLE + slot * 2);
+        }
+        Some(table)
     }
 
     /// The parent index of record `index`; `None` for the root or past
@@ -469,6 +536,26 @@ impl<'a> Document<'a> {
             self.count,
             "a validated document must instantiate every record"
         );
+        if self.patch_count > 0 {
+            let pool: Vec<crate::StatePatch> = (0..self.patch_count)
+                .filter_map(|at| self.patch(at))
+                .collect();
+            // Validation proved the pool addressable and every table
+            // entry inside it; a refusal here would be that proof
+            // broken, said loudly.
+            assert!(ui.set_patch_pool(pool), "a validated pool must load");
+            for index in 0..self.count {
+                if let Some(table) = self.state_table(index)
+                    && table.iter().any(|&entry| entry != crate::NO_PATCH)
+                {
+                    let node = ids[index as usize];
+                    assert!(
+                        ui.set_state_table(node, table),
+                        "a validated table must land"
+                    );
+                }
+            }
+        }
         ui
     }
 }
@@ -481,6 +568,282 @@ fn record_of(nodes: &[u8], index: u32) -> &[u8] {
     nodes.get(start..start + NODE_BYTES).unwrap_or_default()
 }
 
+/// The byte record of pooled patch `index`, same posture.
+fn patch_of(pool: &[u8], index: u32) -> &[u8] {
+    let start = (index as usize) * PATCH_BYTES;
+    pool.get(start..start + PATCH_BYTES).unwrap_or_default()
+}
+
+/// Every node record's structural and style rules: the forward-parent
+/// rule, the open-ancestor-path depth-first order — a record's parent
+/// must still be on the path, or subtrees interleave and the blob is a
+/// second spelling of a tree the canonical form already has one for —
+/// and the enum, flag, and dead-bit checks.
+fn check_records(nodes: &[u8], count: u32) -> Result<(), DocumentError> {
+    let mut path: Vec<u32> = Vec::with_capacity(16);
+    for index in 0..count {
+        let record = record_of(nodes, index);
+        // The default is the one value that cannot pass either check
+        // below: unreachable, and fail-closed if ever bent.
+        let parent = u32_at(record, OFF_PARENT).unwrap_or(index);
+        let legal = if index == 0 {
+            parent == NO_PARENT
+        } else {
+            parent < index
+        };
+        if !legal {
+            return Err(DocumentError::BadParent { index, parent });
+        }
+        if index == 0 {
+            path.push(0);
+        } else {
+            while path.last().is_some_and(|&open| open != parent) {
+                path.pop();
+            }
+            if path.is_empty() {
+                return Err(DocumentError::NotPreorder { index, parent });
+            }
+            path.push(index);
+        }
+        let direction = record.get(OFF_DIRECTION).copied().unwrap_or(u8::MAX);
+        if direction > 1 {
+            return Err(DocumentError::BadStyleByte {
+                index,
+                field: "direction",
+                value: direction,
+            });
+        }
+        align_of(
+            index,
+            "justify",
+            record.get(OFF_JUSTIFY).copied().unwrap_or(u8::MAX),
+        )?;
+        align_of(
+            index,
+            "align_cross",
+            record.get(OFF_ALIGN_CROSS).copied().unwrap_or(u8::MAX),
+        )?;
+        let flags = record.get(OFF_SIZE_FLAGS).copied().unwrap_or(u8::MAX);
+        if flags & !(FLAG_WIDTH_PX | FLAG_HEIGHT_PX) != 0 {
+            return Err(DocumentError::BadStyleByte {
+                index,
+                field: "size flags",
+                value: flags,
+            });
+        }
+        if flags & FLAG_WIDTH_PX == 0 && i64_in(record, OFF_WIDTH) != 0 {
+            return Err(DocumentError::UnsetSizeBits {
+                index,
+                field: "width bits",
+            });
+        }
+        if flags & FLAG_HEIGHT_PX == 0 && i64_in(record, OFF_HEIGHT) != 0 {
+            return Err(DocumentError::UnsetSizeBits {
+                index,
+                field: "height bits",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Every pooled patch, held to the same style rules as a node, plus
+/// its own flags byte and zero padding.
+fn check_patches(pool: &[u8], patch_count: u32) -> Result<(), DocumentError> {
+    for index in 0..patch_count {
+        let record = patch_of(pool, index);
+        let flags = record.get(OFF_PATCH_FLAGS).copied().unwrap_or(u8::MAX);
+        if flags & !PATCH_TOUCHES_LAYOUT != 0 {
+            return Err(DocumentError::BadPatch {
+                index,
+                field: "patch flags",
+                value: flags,
+            });
+        }
+        for at in 1..4 {
+            let byte = record.get(at).copied().unwrap_or(u8::MAX);
+            if byte != 0 {
+                return Err(DocumentError::BadPatch {
+                    index,
+                    field: "padding",
+                    value: byte,
+                });
+            }
+        }
+        let direction = record.get(OFF_DIRECTION).copied().unwrap_or(u8::MAX);
+        if direction > 1 {
+            return Err(DocumentError::BadPatch {
+                index,
+                field: "direction",
+                value: direction,
+            });
+        }
+        for (field, offset) in [("justify", OFF_JUSTIFY), ("align_cross", OFF_ALIGN_CROSS)] {
+            let value = record.get(offset).copied().unwrap_or(u8::MAX);
+            if value > 2 {
+                return Err(DocumentError::BadPatch {
+                    index,
+                    field,
+                    value,
+                });
+            }
+        }
+        let size_flags = record.get(OFF_SIZE_FLAGS).copied().unwrap_or(u8::MAX);
+        if size_flags & !(FLAG_WIDTH_PX | FLAG_HEIGHT_PX) != 0 {
+            return Err(DocumentError::BadPatch {
+                index,
+                field: "size flags",
+                value: size_flags,
+            });
+        }
+        if size_flags & FLAG_WIDTH_PX == 0 && i64_in(record, OFF_WIDTH) != 0 {
+            return Err(DocumentError::UnsetPatchBits {
+                index,
+                field: "width bits",
+            });
+        }
+        if size_flags & FLAG_HEIGHT_PX == 0 && i64_in(record, OFF_HEIGHT) != 0 {
+            return Err(DocumentError::UnsetPatchBits {
+                index,
+                field: "height bits",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The tables, in one scan that proves four things at once: every
+/// entry lands inside the pool, the pool sits in first-use order, no
+/// pooled patch goes unreferenced, and every referenced patch's
+/// layout flag tells the truth about the referencing node's base —
+/// the runtime trusts that flag in the frame loop, so the reader
+/// proves it at the door rather than letting a crafted blob skip
+/// re-solves it needed. A canonical blob carries no dead freight and
+/// admits exactly one spelling of its pool.
+fn check_tables(
+    nodes: &[u8],
+    pool: &[u8],
+    count: u32,
+    patch_count: u32,
+) -> Result<(), DocumentError> {
+    let mut first_uses: u32 = 0;
+    for index in 0..count {
+        let record = record_of(nodes, index);
+        for slot in 0..crate::STATE_COMBINATIONS {
+            let entry = u16_at(record, OFF_TABLE + slot * 2);
+            if entry == crate::NO_PATCH {
+                continue;
+            }
+            if u32::from(entry) >= patch_count {
+                return Err(DocumentError::PatchOutOfPool { index, entry });
+            }
+            if u32::from(entry) == first_uses {
+                first_uses += 1;
+            } else if u32::from(entry) > first_uses {
+                return Err(DocumentError::PoolNotCanonical {
+                    expected: first_uses,
+                    found: u32::from(entry),
+                });
+            }
+            let patch = patch_of(pool, u32::from(entry));
+            let declared =
+                patch.get(OFF_PATCH_FLAGS).copied().unwrap_or(0) & PATCH_TOUCHES_LAYOUT != 0;
+            let truth = crate::state::moves_geometry(&style_in(record), &style_in(patch));
+            if declared != truth {
+                return Err(DocumentError::WrongPatchFlag { index, entry });
+            }
+        }
+    }
+    if first_uses != patch_count {
+        return Err(DocumentError::PoolNotCanonical {
+            expected: first_uses,
+            found: patch_count,
+        });
+    }
+    Ok(())
+}
+
+/// Decode the style block a node record and a pooled patch share —
+/// the same fields at the same offsets, past their different first
+/// words. The enum bytes were validated by read; the defaults here
+/// are the unreachable arms of that proof, not a second decoder.
+fn style_in(record: &[u8]) -> Style {
+    let flags = record.get(OFF_SIZE_FLAGS).copied().unwrap_or(0);
+    let size = |flag: u8, offset: usize| {
+        if flags & flag == 0 {
+            Size::Auto
+        } else {
+            Size::Px(fixed_in(record, offset))
+        }
+    };
+    let edges = |offset: usize| Edges {
+        left: fixed_in(record, offset),
+        right: fixed_in(record, offset + 8),
+        top: fixed_in(record, offset + 16),
+        bottom: fixed_in(record, offset + 24),
+    };
+    let direction = if record.get(OFF_DIRECTION).copied().unwrap_or(0) == 1 {
+        Direction::Column
+    } else {
+        Direction::Row
+    };
+    let realign = |value: u8| align_of(0, "validated", value).unwrap_or(Align::Start);
+    let mut background = [0u8; 4];
+    if let Some(bytes) = record.get(OFF_BACKGROUND..OFF_BACKGROUND + 4) {
+        background.copy_from_slice(bytes);
+    }
+    Style {
+        direction,
+        width: size(FLAG_WIDTH_PX, OFF_WIDTH),
+        height: size(FLAG_HEIGHT_PX, OFF_HEIGHT),
+        margin: edges(OFF_MARGIN),
+        padding: edges(OFF_PADDING),
+        gap: fixed_in(record, OFF_GAP),
+        grow: u32_at(record, OFF_GROW).unwrap_or(0),
+        justify: realign(record.get(OFF_JUSTIFY).copied().unwrap_or(0)),
+        align_cross: realign(record.get(OFF_ALIGN_CROSS).copied().unwrap_or(0)),
+        background,
+    }
+}
+
+/// Encode a style into a record's shared style block, leaving the
+/// record's first word — parent, or patch flags — to the caller.
+fn encode_style(record: &mut [u8], style: &Style) {
+    record[OFF_DIRECTION] = match style.direction {
+        Direction::Row => 0,
+        Direction::Column => 1,
+    };
+    let align_byte = |align: Align| match align {
+        Align::Start => 0,
+        Align::Center => 1,
+        Align::End => 2,
+    };
+    record[OFF_JUSTIFY] = align_byte(style.justify);
+    record[OFF_ALIGN_CROSS] = align_byte(style.align_cross);
+    let mut flags = 0;
+    if let Size::Px(width) = style.width {
+        flags |= FLAG_WIDTH_PX;
+        record[OFF_WIDTH..OFF_WIDTH + 8].copy_from_slice(&width.to_bits().to_le_bytes());
+    }
+    if let Size::Px(height) = style.height {
+        flags |= FLAG_HEIGHT_PX;
+        record[OFF_HEIGHT..OFF_HEIGHT + 8].copy_from_slice(&height.to_bits().to_le_bytes());
+    }
+    record[OFF_SIZE_FLAGS] = flags;
+    for (offset, value) in [(OFF_MARGIN, style.margin), (OFF_PADDING, style.padding)] {
+        for (nth, bits) in [value.left, value.right, value.top, value.bottom]
+            .into_iter()
+            .enumerate()
+        {
+            let at = offset + nth * 8;
+            record[at..at + 8].copy_from_slice(&bits.to_bits().to_le_bytes());
+        }
+    }
+    record[OFF_GAP..OFF_GAP + 8].copy_from_slice(&style.gap.to_bits().to_le_bytes());
+    record[OFF_GROW..OFF_GROW + 4].copy_from_slice(&style.grow.to_le_bytes());
+    record[OFF_BACKGROUND..OFF_BACKGROUND + 4].copy_from_slice(&style.background);
+}
+
 /// Serialize a live tree into document bytes: the inverse of
 /// [`Document::read`] + [`Document::tree`], used by tests as the
 /// round-trip oracle and by tooling as the writer's backend. Walks
@@ -491,9 +854,10 @@ fn record_of(nodes: &[u8], index: u32) -> &[u8] {
 ///
 /// # Panics
 ///
-/// When the tree exceeds [`MAX_NODES`] — a document the reader would
-/// refuse must not be minted silently, and the writer is the place
-/// that says so.
+/// When the tree exceeds [`MAX_NODES`], or its tables reference more
+/// than [`MAX_PATCHES`] distinct patches — a document the reader
+/// would refuse must not be minted silently, and the writer is the
+/// place that says so.
 #[must_use]
 pub fn capture(ui: &Ui) -> Vec<u8> {
     assert!(
@@ -501,11 +865,6 @@ pub fn capture(ui: &Ui) -> Vec<u8> {
         "a {}-node tree exceeds the document ceiling of {MAX_NODES}",
         ui.live()
     );
-    let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&VERSION.to_le_bytes());
-    out.extend_from_slice(&ui.live().to_le_bytes());
-
     // Depth-first in sibling order: children push reversed so the
     // stack pops them forward — the presenter's walk, and the order
     // the forward-parent rule wants.
@@ -521,45 +880,60 @@ pub fn capture(ui: &Ui) -> Vec<u8> {
         stack[before..].reverse();
     }
 
+    // The pool, renumbered into first-use order over that walk: the
+    // canonical form admits one spelling, and this is where it is
+    // spelled. Unreferenced entries in the live pool simply never
+    // earn a number — capture carries no dead freight.
+    let mut renumber: Vec<u16> = vec![crate::NO_PATCH; ui.patches.len()];
+    let mut used: Vec<u16> = Vec::new();
+    for (node, _) in &order {
+        let table = ui.states[node.index() as usize].table;
+        for entry in table {
+            if entry != crate::NO_PATCH
+                && usize::from(entry) < renumber.len()
+                && renumber[usize::from(entry)] == crate::NO_PATCH
+            {
+                renumber[usize::from(entry)] = u16::try_from(used.len()).unwrap_or(crate::NO_PATCH);
+                used.push(entry);
+            }
+        }
+    }
+    assert!(
+        used.len() <= MAX_PATCHES as usize,
+        "the referenced pool exceeds the ceiling"
+    );
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&ui.live().to_le_bytes());
+    out.extend_from_slice(&u32::try_from(used.len()).unwrap_or(0).to_le_bytes());
+
     for (node, parent) in order {
-        let style = ui.style(node).unwrap_or_default();
+        let index = node.index() as usize;
+        // The base, not whatever patch happens to be worn: a document
+        // is authored state, and dress is derived at runtime.
+        let style = ui.states[index].base;
         let mut record = [0u8; NODE_BYTES];
         record[OFF_PARENT..OFF_PARENT + 4].copy_from_slice(&parent.to_le_bytes());
-        record[OFF_DIRECTION] = match style.direction {
-            Direction::Row => 0,
-            Direction::Column => 1,
-        };
-        let align_byte = |align: Align| match align {
-            Align::Start => 0,
-            Align::Center => 1,
-            Align::End => 2,
-        };
-        record[OFF_JUSTIFY] = align_byte(style.justify);
-        record[OFF_ALIGN_CROSS] = align_byte(style.align_cross);
-        let mut flags = 0;
-        if let Size::Px(width) = style.width {
-            flags |= FLAG_WIDTH_PX;
-            record[OFF_WIDTH..OFF_WIDTH + 8].copy_from_slice(&width.to_bits().to_le_bytes());
+        encode_style(&mut record, &style);
+        for (slot, entry) in ui.states[index].table.into_iter().enumerate() {
+            let renumbered = if entry != crate::NO_PATCH && usize::from(entry) < renumber.len() {
+                renumber[usize::from(entry)]
+            } else {
+                crate::NO_PATCH
+            };
+            let at = OFF_TABLE + slot * 2;
+            record[at..at + 2].copy_from_slice(&renumbered.to_le_bytes());
         }
-        if let Size::Px(height) = style.height {
-            flags |= FLAG_HEIGHT_PX;
-            record[OFF_HEIGHT..OFF_HEIGHT + 8].copy_from_slice(&height.to_bits().to_le_bytes());
-        }
-        record[OFF_SIZE_FLAGS] = flags;
-        let mut edges = |offset: usize, value: Edges| {
-            for (nth, bits) in [value.left, value.right, value.top, value.bottom]
-                .into_iter()
-                .enumerate()
-            {
-                let at = offset + nth * 8;
-                record[at..at + 8].copy_from_slice(&bits.to_bits().to_le_bytes());
-            }
-        };
-        edges(OFF_MARGIN, style.margin);
-        edges(OFF_PADDING, style.padding);
-        record[OFF_GAP..OFF_GAP + 8].copy_from_slice(&style.gap.to_bits().to_le_bytes());
-        record[OFF_GROW..OFF_GROW + 4].copy_from_slice(&style.grow.to_le_bytes());
-        record[OFF_BACKGROUND..OFF_BACKGROUND + 4].copy_from_slice(&style.background);
+        out.extend_from_slice(&record);
+    }
+
+    for entry in used {
+        let patch = &ui.patches[usize::from(entry)];
+        let mut record = [0u8; PATCH_BYTES];
+        record[OFF_PATCH_FLAGS] = u8::from(patch.touches_layout) * PATCH_TOUCHES_LAYOUT;
+        encode_style(&mut record, &patch.style);
         out.extend_from_slice(&record);
     }
     out
@@ -678,11 +1052,11 @@ mod tests {
         );
 
         let mut bad = good.clone();
-        bad[8..12].copy_from_slice(&2u32.to_le_bytes());
+        bad[8..12].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(
             Document::read(&bad).err(),
-            Some(DocumentError::UnknownVersion { found: 2 }),
-            "a future version is refused, not skipped"
+            Some(DocumentError::UnknownVersion { found: 1 }),
+            "yesterday's version is refused like any stranger"
         );
 
         let mut bad = good[..HEADER_BYTES].to_vec();
@@ -822,20 +1196,38 @@ mod tests {
         bytes.extend_from_slice(&MAGIC);
         bytes.extend_from_slice(&VERSION.to_le_bytes());
         bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        // An empty table wears the base for every combination: all
+        // sentinel bytes, which are 0xFF throughout.
         let mut root = [0u8; NODE_BYTES];
+        root[OFF_TABLE..].fill(0xFF);
         root[..4].copy_from_slice(&NO_PARENT.to_le_bytes());
         root[OFF_DIRECTION] = 1;
         root[OFF_BACKGROUND..OFF_BACKGROUND + 4].copy_from_slice(&[9, 8, 7, 255]);
         bytes.extend_from_slice(&root);
         let mut child = [0u8; NODE_BYTES];
+        child[OFF_TABLE..].fill(0xFF);
         child[..4].copy_from_slice(&0u32.to_le_bytes());
         child[OFF_SIZE_FLAGS] = FLAG_WIDTH_PX;
         child[OFF_WIDTH..OFF_WIDTH + 8]
             .copy_from_slice(&Fixed::from_int(31).to_bits().to_le_bytes());
         child[OFF_GROW..OFF_GROW + 4].copy_from_slice(&2u32.to_le_bytes());
+        // The child wears a hover patch: table entry for the hover
+        // bit alone names pool index zero, hand-encoded.
+        child[OFF_TABLE + 2..OFF_TABLE + 4].copy_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&child);
+        // The pooled patch: colour-only, so the flags byte stays
+        // clear, and the style block mirrors the child's geometry.
+        let mut patch = [0u8; PATCH_BYTES];
+        patch[OFF_SIZE_FLAGS] = FLAG_WIDTH_PX;
+        patch[OFF_WIDTH..OFF_WIDTH + 8]
+            .copy_from_slice(&Fixed::from_int(31).to_bits().to_le_bytes());
+        patch[OFF_GROW..OFF_GROW + 4].copy_from_slice(&2u32.to_le_bytes());
+        patch[OFF_BACKGROUND..OFF_BACKGROUND + 4].copy_from_slice(&[1, 2, 3, 255]);
+        bytes.extend_from_slice(&patch);
 
         let document = Document::read(&bytes).expect("hand-built canonical bytes read");
+        assert_eq!(document.patch_count(), 1);
         assert_eq!(
             capture(&document.tree()),
             bytes,
@@ -857,6 +1249,186 @@ mod tests {
             let _ = ui.insert(root);
         }
         let _ = capture(&ui);
+    }
+
+    /// A dressed tree — pool loaded, tables set — survives the whole
+    /// circle: capture, read, instantiate, capture again, with the
+    /// pool renumbered into first-use order and unreferenced entries
+    /// shed along the way.
+    #[test]
+    fn a_dressed_tree_round_trips_canonically() {
+        let mut ui = menu_shaped();
+        // Full resolved styles over the wide leaf's base — the shape
+        // the compiler mints and the reader verifies flags against.
+        let wide_base = Style {
+            width: Size::Px(Fixed::from_int(64)),
+            height: Size::Px(Fixed::from_int(16)),
+            ..Style::default()
+        };
+        let hover = crate::StatePatch {
+            style: Style {
+                background: [90, 90, 90, 255],
+                ..wide_base
+            },
+            touches_layout: false,
+        };
+        let grown = crate::StatePatch {
+            style: Style {
+                width: Size::Px(Fixed::from_int(70)),
+                ..wide_base
+            },
+            touches_layout: true,
+        };
+        // Three entries: the middle one never referenced, so capture
+        // must shed it and renumber the third.
+        assert!(ui.set_patch_pool(vec![grown, hover, hover]));
+        let row = ui.children(ui.root()).next().expect("the row");
+        let wide = ui.children(row).next().expect("the wide leaf");
+        let mut table = [crate::NO_PATCH; crate::STATE_COMBINATIONS];
+        table[usize::from(crate::STATE_HOVER)] = 2;
+        table[usize::from(crate::STATE_PRESSED)] = 0;
+        assert!(ui.set_state_table(wide, table));
+
+        let bytes = capture(&ui);
+        let document = Document::read(&bytes).expect("a dressed capture reads");
+        assert_eq!(document.patch_count(), 2, "the dead entry was shed");
+        let hover_slot = document
+            .state_table(2)
+            .expect("the wide leaf is record two")[usize::from(crate::STATE_HOVER)];
+        assert_eq!(
+            document
+                .patch(u32::from(hover_slot))
+                .expect("in pool")
+                .style
+                .background,
+            [90, 90, 90, 255],
+            "the hover patch survived renumbering"
+        );
+        assert_eq!(
+            capture(&document.tree()),
+            bytes,
+            "the dressed round trip is the identity"
+        );
+        assert!(
+            document.patch(document.patch_count()).is_none(),
+            "the pool declines past its end"
+        );
+        assert!(
+            document.state_table(document.len()).is_none(),
+            "the tables decline past the records"
+        );
+    }
+
+    /// Each patch-section refusal, by name, one edit from legal.
+    #[test]
+    fn every_patch_refusal_names_what_it_saw() {
+        let mut ui = menu_shaped();
+        let row = ui.children(ui.root()).next().expect("the row");
+        let row_base = ui.base_style(row).expect("live");
+        assert!(ui.set_patch_pool(vec![crate::StatePatch {
+            style: Style {
+                background: [90, 90, 90, 255],
+                ..row_base
+            },
+            touches_layout: false,
+        }]));
+        let mut table = [crate::NO_PATCH; crate::STATE_COMBINATIONS];
+        table[usize::from(crate::STATE_HOVER)] = 0;
+        assert!(ui.set_state_table(row, table));
+        let good = capture(&ui);
+        let patch_start = good.len() - PATCH_BYTES;
+
+        let mut bad = good.clone();
+        bad[16..20].copy_from_slice(&(MAX_PATCHES + 1).to_le_bytes());
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::TooManyPatches {
+                count: MAX_PATCHES + 1
+            }),
+            "past the patch ceiling"
+        );
+
+        let mut bad = good.clone();
+        bad[patch_start + OFF_PATCH_FLAGS] = 2;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::BadPatch {
+                index: 0,
+                field: "patch flags",
+                value: 2
+            }),
+            "an unknown patch flag"
+        );
+
+        let mut bad = good.clone();
+        bad[patch_start + 2] = 9;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::BadPatch {
+                index: 0,
+                field: "padding",
+                value: 9
+            }),
+            "padding must be zero"
+        );
+
+        let mut bad = good.clone();
+        bad[patch_start + OFF_DIRECTION] = 5;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::BadPatch {
+                index: 0,
+                field: "direction",
+                value: 5
+            }),
+            "a patch enum out of range"
+        );
+
+        let mut bad = good.clone();
+        bad[patch_start + OFF_WIDTH] = 1;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::UnsetPatchBits {
+                index: 0,
+                field: "width bits"
+            }),
+            "dead width bits in a patch"
+        );
+
+        // The row is record one; its hover entry points at the pool's
+        // only patch. Pointing it past the pool refuses by name.
+        let row_table = HEADER_BYTES + NODE_BYTES + OFF_TABLE;
+        let hover_at = row_table + usize::from(crate::STATE_HOVER) * 2;
+        let mut bad = good.clone();
+        bad[hover_at..hover_at + 2].copy_from_slice(&7u16.to_le_bytes());
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::PatchOutOfPool { index: 1, entry: 7 }),
+            "a table entry outside the pool"
+        );
+
+        // Lying about geometry refuses: the patch is colour-only, so
+        // raising its layout flag disagrees with the base it dresses.
+        let mut bad = good.clone();
+        bad[patch_start + OFF_PATCH_FLAGS] = 1;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::WrongPatchFlag { index: 1, entry: 0 }),
+            "a layout flag that lies"
+        );
+
+        // Dropping the only reference leaves the pool unreferenced:
+        // canonical blobs carry no dead freight.
+        let mut bad = good.clone();
+        bad[hover_at..hover_at + 2].copy_from_slice(&crate::NO_PATCH.to_le_bytes());
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::PoolNotCanonical {
+                expected: 0,
+                found: 1
+            }),
+            "an unreferenced pool entry"
+        );
     }
 
     /// Bounds before read: every truncation of a valid document is an
@@ -930,6 +1502,37 @@ mod tests {
                     field: "width bits",
                 },
                 "width bits",
+            ),
+            (DocumentError::TooManyPatches { count: 5000 }, "5000"),
+            (
+                DocumentError::BadPatch {
+                    index: 1,
+                    field: "padding",
+                    value: 9,
+                },
+                "padding",
+            ),
+            (
+                DocumentError::UnsetPatchBits {
+                    index: 0,
+                    field: "height bits",
+                },
+                "height bits",
+            ),
+            (
+                DocumentError::PatchOutOfPool { index: 4, entry: 9 },
+                "outside the pool",
+            ),
+            (
+                DocumentError::PoolNotCanonical {
+                    expected: 2,
+                    found: 5,
+                },
+                "first-use",
+            ),
+            (
+                DocumentError::WrongPatchFlag { index: 3, entry: 1 },
+                "layout flag",
             ),
         ];
         for (error, needle) in cases {

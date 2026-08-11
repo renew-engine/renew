@@ -1,5 +1,0 @@
-column bg=#0a141eff {
-    row margin=2// a comment
-row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a comment
-row w=0 h=2 margin=(1 2 3 4) pad=1 a ;gin=2// a comment
-row }

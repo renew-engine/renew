@@ -1,0 +1,22 @@
+column gap=8 justify=center align=end pad=(12 12 5 5) grow=3 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=3// a com(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2//A a fy=center align2 5 5) grow=3 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a mmepad=(12 12 5 5) grow==8 justify=center align=end pad=(13 12 5 5) grow=3 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2//A a commepad=(12c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    rowmargin=2// a comment
+row w=0 h=2g=}

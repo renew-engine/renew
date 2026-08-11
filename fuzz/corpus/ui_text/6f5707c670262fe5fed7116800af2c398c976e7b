@@ -1,0 +1,6 @@
+row {
+    node w=80 h=20 bg=#0a0a0a {
+        hover {h=565656 }
+       pressed { w=05050 }
+    }
+}

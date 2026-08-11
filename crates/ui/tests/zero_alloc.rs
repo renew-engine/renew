@@ -11,7 +11,9 @@
 use renew_fixed::Fixed;
 use renew_frame::StateHash;
 use renew_memory::{CountingAllocator, counters};
-use renew_ui::{Size, Style, Ui, UiEvent, UiLimits};
+use renew_ui::{
+    NO_PATCH, STATE_COMBINATIONS, STATE_HOVER, Size, StatePatch, Style, Ui, UiEvent, UiLimits,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -129,4 +131,62 @@ fn the_steady_state_allocates_nothing() {
         }
     });
     verdict.expect("the digest stays heap-silent");
+}
+
+#[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "allocation counting is invalid under instrumented allocators"
+)]
+fn wearing_state_patches_allocates_nothing() {
+    // Load-time allocation happens out here: the tree, the pool, the
+    // table. The measured window is the per-event refresh — hover
+    // flips swapping worn styles — which must stay as heap-silent as
+    // bare interaction. Asserted moving so the window cannot pass by
+    // wearing nothing.
+    let mut ui = Ui::new(UiLimits { nodes: 8 });
+    let root = ui.root();
+    let wide = ui.insert(root).expect("room");
+    ui.set_style(
+        wide,
+        Style {
+            width: Size::Px(Fixed::from_int(20)),
+            height: Size::Px(Fixed::from_int(10)),
+            ..Style::default()
+        },
+    );
+    assert!(ui.set_patch_pool(vec![StatePatch {
+        style: Style {
+            width: Size::Px(Fixed::from_int(20)),
+            height: Size::Px(Fixed::from_int(10)),
+            background: [9, 9, 9, 255],
+            ..Style::default()
+        },
+        touches_layout: false,
+    }]));
+    let mut table = [NO_PATCH; STATE_COMBINATIONS];
+    for (bits, entry) in table.iter_mut().enumerate() {
+        if u8::try_from(bits).unwrap_or(0) & STATE_HOVER != 0 {
+            *entry = 0;
+        }
+    }
+    assert!(ui.set_state_table(wide, table));
+    ui.solve(Fixed::from_int(640), Fixed::from_int(360));
+    let verdict = counters::quiet_window(5, || {
+        for _ in 0..8 {
+            ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+            assert_eq!(
+                ui.style(wide).expect("live").background,
+                [9, 9, 9, 255],
+                "the hover patch must really be worn"
+            );
+            ui.handle(UiEvent::PointerMoved { x: 600, y: 300 });
+            assert_ne!(
+                ui.style(wide).expect("live").background,
+                [9, 9, 9, 255],
+                "leaving must really shed it"
+            );
+        }
+    });
+    verdict.expect("wearing state patches stays heap-silent");
 }

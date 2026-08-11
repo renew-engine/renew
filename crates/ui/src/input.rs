@@ -119,6 +119,10 @@ impl Ui {
                 self.interaction.pressed = None;
             }
         }
+        // Bits may have moved for the old holders and the new alike:
+        // re-derive them and swap patches where they changed. One
+        // lookup per candidate, no matcher, no allocation.
+        self.refresh_states();
     }
 
     /// The queued decisions, drained oldest first. The queue holds as
@@ -177,6 +181,12 @@ impl Ui {
     ///   ids in order, and the decision fold above records that
     ///   sequence — so two states with equal digests hand their hosts
     ///   the same drained decisions.
+    /// - *Worn state patches*: derived from the absorbed pointer and
+    ///   press/focus state applied over the excluded geometry and
+    ///   authored tables — like geometry, dress reaches this digest
+    ///   only by changing a decision. Two *identically authored*
+    ///   states with equal digests wear the same patches; authoring
+    ///   is excluded here exactly as styles are.
     #[must_use]
     pub fn absorb(&self, hash: StateHash) -> StateHash {
         let hash = hash
@@ -195,7 +205,7 @@ impl Ui {
     /// Paint order is document order — parents under children, earlier
     /// siblings under later ones — so the test starts at the root and
     /// repeatedly descends into the *last* child containing the point.
-    fn hit_test(&self, x: i32, y: i32) -> Option<NodeId> {
+    pub(crate) fn hit_test(&self, x: i32, y: i32) -> Option<NodeId> {
         if !self.contains(0, x, y) {
             return None;
         }

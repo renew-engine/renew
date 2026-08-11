@@ -48,6 +48,7 @@
 pub mod document;
 mod input;
 mod layout;
+pub mod state;
 pub mod text;
 
 pub use document::{Document, DocumentError};
@@ -58,6 +59,10 @@ use layout::{LayoutSlot, Scratch, Solve};
 /// Re-exported because the API speaks it: rectangles, styles, and the
 /// solver's whole vocabulary are in this arithmetic.
 pub use renew_fixed::Fixed;
+pub use state::{
+    NO_PATCH, STATE_COMBINATIONS, STATE_DISABLED, STATE_FOCUS, STATE_HOVER, STATE_PRESSED,
+    StatePatch,
+};
 
 /// Nothing here: the marker every slot uses for "no neighbour". One
 /// value, not an `Option<u32>`, so a slot stays eight words no matter
@@ -185,6 +190,20 @@ pub struct Ui {
     interaction: Interaction,
     /// Decisions waiting for the host, capacity fixed with the arena.
     outputs: Vec<UiOutput>,
+    /// Per-slot state styling: combination tables, bases, and what is
+    /// currently worn.
+    pub(crate) states: Vec<state::StateSlot>,
+    /// The shared patch pool every table indexes into. Loaded whole,
+    /// before tables; empty until a document or host provides one.
+    pub(crate) patches: Vec<state::StatePatch>,
+    /// Slots wearing nonzero state bits right now — at most the hover
+    /// target, the pressed node, and the focus holder. Sized at
+    /// construction so the per-event refresh allocates nothing.
+    stated: Vec<u32>,
+    /// How many times [`Self::solve`] actually walked, as opposed to
+    /// returning on the clean early-out. The exact-damage claim is an
+    /// assertion against this counter, not prose.
+    layout_passes: u64,
     /// Head of the free list, threaded through `next_sibling`.
     free: u32,
     live: u32,
@@ -223,6 +242,12 @@ impl Ui {
             solved_for: (Fixed::ZERO, Fixed::ZERO),
             interaction: Interaction::default(),
             outputs: Vec::with_capacity(capacity as usize),
+            states: vec![state::StateSlot::default(); capacity as usize],
+            patches: Vec::new(),
+            // Hover, pressed, focus: three bit-holders at most, with
+            // one spare so a push can never be the first allocation.
+            stated: Vec::with_capacity(4),
+            layout_passes: 0,
             free,
             live: 1,
             limits: UiLimits { nodes: capacity },
@@ -281,6 +306,7 @@ impl Ui {
         self.link_last(parent_index, index);
         self.live += 1;
         self.layout[index as usize] = LayoutSlot::default();
+        self.states[index as usize] = state::StateSlot::default();
         self.dirty = true;
         Ok(NodeId { index, generation })
     }
@@ -328,13 +354,182 @@ impl Ui {
     /// re-solving; setting the same style again does too, and the
     /// solve it provokes is idempotent, so the cost is a no-op walk
     /// rather than a wrong picture.
+    ///
+    /// This authors the **base** style. While a state patch is worn
+    /// (see [`Self::set_state_table`]) the node keeps wearing it —
+    /// patches are complete resolved styles — and the new base shows
+    /// when the patch comes off.
     pub fn set_style(&mut self, node: NodeId, style: Style) -> bool {
         let Some(index) = self.slot_of(node) else {
             return false;
         };
-        self.layout[index as usize].style = style;
+        self.states[index as usize].base = style;
+        if self.states[index as usize].applied == state::NO_PATCH {
+            self.layout[index as usize].style = style;
+        }
         self.dirty = true;
         true
+    }
+
+    /// Load the shared patch pool every state table indexes into.
+    /// Answers whether it landed: `false` when the pool is too large
+    /// for a table entry to address. Loading replaces the whole pool
+    /// and clears every table with it — a table indexes one pool, and
+    /// letting it survive a swap would let an entry point past or
+    /// into the wrong one. Pools load before tables, at document-load
+    /// time, never mid-interaction.
+    pub fn set_patch_pool(&mut self, pool: Vec<StatePatch>) -> bool {
+        if pool.len() >= usize::from(state::NO_PATCH) {
+            return false;
+        }
+        for index in 0..self.states.len() {
+            if self.states[index].applied != state::NO_PATCH {
+                self.layout[index].style = self.states[index].base;
+                self.dirty = true;
+            }
+            let base = self.states[index].base;
+            self.states[index] = state::StateSlot {
+                base,
+                ..state::StateSlot::default()
+            };
+        }
+        self.stated.clear();
+        self.patches = pool;
+        true
+    }
+
+    /// Give `node` its state table: one patch index per combination of
+    /// the four state bits, [`NO_PATCH`] wearing the base. Answers
+    /// whether it landed: `false` for a stale id or any entry past the
+    /// loaded pool. The node's current state bits apply immediately.
+    pub fn set_state_table(&mut self, node: NodeId, table: [u16; STATE_COMBINATIONS]) -> bool {
+        let Some(index) = self.slot_of(node) else {
+            return false;
+        };
+        let in_pool =
+            |entry: u16| entry == state::NO_PATCH || usize::from(entry) < self.patches.len();
+        if !table.iter().copied().all(in_pool) {
+            return false;
+        }
+        self.states[index as usize].table = table;
+        let bits = self.states[index as usize].bits;
+        self.wear(index, bits);
+        true
+    }
+
+    /// How many times [`Self::solve`] actually walked the tree, as
+    /// opposed to returning on the clean early-out. The exact-damage
+    /// promise — a colour-only state flip re-solves nothing — is an
+    /// assertion against this counter.
+    #[must_use]
+    pub fn layout_passes(&self) -> u64 {
+        self.layout_passes
+    }
+
+    /// The base style [`Self::set_style`] authored for `node` — what
+    /// shows when no patch is worn; `None` for stale ids. Writers and
+    /// serializers want this, never the worn effective style: a
+    /// document is authored state, and dress is derived at runtime.
+    #[must_use]
+    pub fn base_style(&self, node: NodeId) -> Option<Style> {
+        let index = self.slot_of(node)?;
+        Some(self.states[index as usize].base)
+    }
+
+    /// The state table `node` carries; `None` for stale ids. All
+    /// [`NO_PATCH`] when none was set.
+    #[must_use]
+    pub fn state_table(&self, node: NodeId) -> Option<[u16; STATE_COMBINATIONS]> {
+        let index = self.slot_of(node)?;
+        Some(self.states[index as usize].table)
+    }
+
+    /// The loaded patch pool, whole — empty until a document or host
+    /// provides one.
+    #[must_use]
+    pub fn patch_pool(&self) -> &[StatePatch] {
+        &self.patches
+    }
+
+    /// Re-derive the state bits of every node that can hold any, and
+    /// swap patches where they changed. Called by [`Self::handle`]
+    /// after each event; allocation-free — the candidate set is at
+    /// most the hover target, the pressed node, and the focus holder,
+    /// plus whoever wore bits before.
+    pub(crate) fn refresh_states(&mut self) {
+        // Whoever wore bits last time starts at zero unless re-earned.
+        while let Some(index) = self.stated.pop() {
+            let bits = self.state_bits_of(index);
+            self.wear(index, bits);
+        }
+        let (x, y) = self.interaction.pointer;
+        let hover = self.hit_test(x, y);
+        for candidate in [hover, self.interaction.pressed, self.interaction.focus] {
+            if let Some(node) = candidate
+                && let Some(index) = self.slot_of(node)
+            {
+                let bits = self.state_bits_of(index);
+                self.wear(index, bits);
+                if bits != 0 && !self.stated.contains(&index) {
+                    self.stated.push(index);
+                }
+            }
+        }
+    }
+
+    /// Reset one slot's state styling as it is freed, so a dead slot
+    /// never keeps worn dress: the later `stated` pop becomes a clean
+    /// no-op instead of a spurious layout pass.
+    pub(crate) fn reset_state_slot(&mut self, index: u32) {
+        self.states[index as usize] = state::StateSlot::default();
+    }
+
+    /// The four bits as they stand for one slot.
+    fn state_bits_of(&self, index: u32) -> u8 {
+        let (x, y) = self.interaction.pointer;
+        let id = NodeId {
+            index,
+            generation: self.slots[index as usize].generation,
+        };
+        let mut bits = 0;
+        if self.hit_test(x, y) == Some(id) {
+            bits |= STATE_HOVER;
+        }
+        if self.interaction.pressed == Some(id) {
+            bits |= STATE_PRESSED;
+        }
+        if self.interaction.focus == Some(id) {
+            bits |= STATE_FOCUS;
+        }
+        bits
+    }
+
+    /// Wear whatever the table holds for `bits`, if that differs from
+    /// what is worn: one lookup, one swap, and layout dirtied only
+    /// when either side of the swap moves geometry.
+    fn wear(&mut self, index: u32, bits: u8) {
+        let slot = &self.states[index as usize];
+        let next = slot.table[usize::from(bits) % STATE_COMBINATIONS];
+        let worn = slot.applied;
+        if next == worn {
+            self.states[index as usize].bits = bits;
+            return;
+        }
+        let moves = state::StateSlot::touches_layout(worn, &self.patches)
+            || state::StateSlot::touches_layout(next, &self.patches);
+        // The base fallback holds even if a table ever outlived its
+        // pool: the swap-clears-tables rule above makes that
+        // unreachable, and wearing the base is the fail-closed answer
+        // if it ever bent — never an index past the pool.
+        self.layout[index as usize].style = self
+            .patches
+            .get(usize::from(next))
+            .map_or(self.states[index as usize].base, |patch| patch.style);
+        self.states[index as usize].applied = next;
+        self.states[index as usize].bits = bits;
+        if moves {
+            self.dirty = true;
+        }
     }
 
     /// The style `node` currently holds; `None` for stale ids.
@@ -361,6 +556,7 @@ impl Ui {
         }
         .run(viewport_width, viewport_height);
         self.dirty = false;
+        self.layout_passes += 1;
         self.solved_for = (viewport_width, viewport_height);
     }
 
@@ -444,6 +640,10 @@ impl Ui {
                 pending = child;
                 child = next;
             }
+            // A dead slot wears nothing: the reset keeps the later
+            // `stated` pop a clean no-op instead of a spurious layout
+            // pass shedding a ghost patch.
+            self.reset_state_slot(current);
             // Free the slot: bump the generation, thread the free
             // list. Wrapping spelled for the overflow lint's sake only
             // — a 64-bit recycle counter cannot wrap in a physical run.
