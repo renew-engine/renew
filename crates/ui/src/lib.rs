@@ -374,8 +374,10 @@ impl Ui {
     /// Load the shared patch pool every state table indexes into.
     /// Answers whether it landed: `false` when the pool is too large
     /// for a table entry to address. Loading replaces the whole pool
-    /// and strips every worn patch back to base — pools load before
-    /// tables, at document-load time, never mid-interaction.
+    /// and clears every table with it — a table indexes one pool, and
+    /// letting it survive a swap would let an entry point past or
+    /// into the wrong one. Pools load before tables, at document-load
+    /// time, never mid-interaction.
     pub fn set_patch_pool(&mut self, pool: Vec<StatePatch>) -> bool {
         if pool.len() >= usize::from(state::NO_PATCH) {
             return false;
@@ -383,10 +385,13 @@ impl Ui {
         for index in 0..self.states.len() {
             if self.states[index].applied != state::NO_PATCH {
                 self.layout[index].style = self.states[index].base;
-                self.states[index].applied = state::NO_PATCH;
-                self.states[index].bits = 0;
                 self.dirty = true;
             }
+            let base = self.states[index].base;
+            self.states[index] = state::StateSlot {
+                base,
+                ..state::StateSlot::default()
+            };
         }
         self.stated.clear();
         self.patches = pool;
@@ -472,6 +477,13 @@ impl Ui {
         }
     }
 
+    /// Reset one slot's state styling as it is freed, so a dead slot
+    /// never keeps worn dress: the later `stated` pop becomes a clean
+    /// no-op instead of a spurious layout pass.
+    pub(crate) fn reset_state_slot(&mut self, index: u32) {
+        self.states[index as usize] = state::StateSlot::default();
+    }
+
     /// The four bits as they stand for one slot.
     fn state_bits_of(&self, index: u32) -> u8 {
         let (x, y) = self.interaction.pointer;
@@ -505,11 +517,14 @@ impl Ui {
         }
         let moves = state::StateSlot::touches_layout(worn, &self.patches)
             || state::StateSlot::touches_layout(next, &self.patches);
-        self.layout[index as usize].style = if next == state::NO_PATCH {
-            self.states[index as usize].base
-        } else {
-            self.patches[usize::from(next)].style
-        };
+        // The base fallback holds even if a table ever outlived its
+        // pool: the swap-clears-tables rule above makes that
+        // unreachable, and wearing the base is the fail-closed answer
+        // if it ever bent — never an index past the pool.
+        self.layout[index as usize].style = self
+            .patches
+            .get(usize::from(next))
+            .map_or(self.states[index as usize].base, |patch| patch.style);
         self.states[index as usize].applied = next;
         self.states[index as usize].bits = bits;
         if moves {
@@ -625,6 +640,10 @@ impl Ui {
                 pending = child;
                 child = next;
             }
+            // A dead slot wears nothing: the reset keeps the later
+            // `stated` pop a clean no-op instead of a spurious layout
+            // pass shedding a ghost patch.
+            self.reset_state_slot(current);
             // Free the slot: bump the generation, thread the free
             // list. Wrapping spelled for the overflow lint's sake only
             // — a 64-bit recycle counter cannot wrap in a physical run.

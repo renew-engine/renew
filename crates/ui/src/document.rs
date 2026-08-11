@@ -198,6 +198,16 @@ pub enum DocumentError {
         /// The entry it carried.
         entry: u16,
     },
+    /// A pooled patch whose layout flag lies about the reference: the
+    /// flag must equal whether the patch's style moves geometry
+    /// relative to the referencing node's base — the runtime trusts
+    /// it in the frame loop, so the reader proves it at the door.
+    WrongPatchFlag {
+        /// Which record's table made the reference.
+        index: u32,
+        /// The pooled patch whose flag disagrees.
+        entry: u16,
+    },
     /// The pool is not in canonical first-use order, or holds entries
     /// no table references: scanning every table entry in document
     /// order, each patch index must first appear exactly when the
@@ -265,6 +275,12 @@ impl core::fmt::Display for DocumentError {
                 write!(
                     out,
                     "record {index} names patch {entry}, which is outside the pool"
+                )
+            }
+            Self::WrongPatchFlag { index, entry } => {
+                write!(
+                    out,
+                    "patch {entry}'s layout flag disagrees with record {index}'s base"
                 )
             }
             Self::PoolNotCanonical { expected, found } => {
@@ -405,7 +421,7 @@ impl<'a> Document<'a> {
 
         check_records(nodes, count)?;
         check_patches(pool, patch_count)?;
-        check_tables(nodes, count, patch_count)?;
+        check_tables(nodes, pool, count, patch_count)?;
 
         Ok(Self {
             nodes,
@@ -696,11 +712,20 @@ fn check_patches(pool: &[u8], patch_count: u32) -> Result<(), DocumentError> {
     Ok(())
 }
 
-/// The tables, in one scan that proves three things at once: every
-/// entry lands inside the pool, the pool sits in first-use order, and
-/// no pooled patch goes unreferenced — a canonical blob carries no
-/// dead freight and admits exactly one spelling of its pool.
-fn check_tables(nodes: &[u8], count: u32, patch_count: u32) -> Result<(), DocumentError> {
+/// The tables, in one scan that proves four things at once: every
+/// entry lands inside the pool, the pool sits in first-use order, no
+/// pooled patch goes unreferenced, and every referenced patch's
+/// layout flag tells the truth about the referencing node's base —
+/// the runtime trusts that flag in the frame loop, so the reader
+/// proves it at the door rather than letting a crafted blob skip
+/// re-solves it needed. A canonical blob carries no dead freight and
+/// admits exactly one spelling of its pool.
+fn check_tables(
+    nodes: &[u8],
+    pool: &[u8],
+    count: u32,
+    patch_count: u32,
+) -> Result<(), DocumentError> {
     let mut first_uses: u32 = 0;
     for index in 0..count {
         let record = record_of(nodes, index);
@@ -719,6 +744,13 @@ fn check_tables(nodes: &[u8], count: u32, patch_count: u32) -> Result<(), Docume
                     expected: first_uses,
                     found: u32::from(entry),
                 });
+            }
+            let patch = patch_of(pool, u32::from(entry));
+            let declared =
+                patch.get(OFF_PATCH_FLAGS).copied().unwrap_or(0) & PATCH_TOUCHES_LAYOUT != 0;
+            let truth = crate::state::moves_geometry(&style_in(record), &style_in(patch));
+            if declared != truth {
+                return Err(DocumentError::WrongPatchFlag { index, entry });
             }
         }
     }
@@ -1226,17 +1258,24 @@ mod tests {
     #[test]
     fn a_dressed_tree_round_trips_canonically() {
         let mut ui = menu_shaped();
+        // Full resolved styles over the wide leaf's base — the shape
+        // the compiler mints and the reader verifies flags against.
+        let wide_base = Style {
+            width: Size::Px(Fixed::from_int(64)),
+            height: Size::Px(Fixed::from_int(16)),
+            ..Style::default()
+        };
         let hover = crate::StatePatch {
             style: Style {
                 background: [90, 90, 90, 255],
-                ..Style::default()
+                ..wide_base
             },
             touches_layout: false,
         };
         let grown = crate::StatePatch {
             style: Style {
                 width: Size::Px(Fixed::from_int(70)),
-                ..Style::default()
+                ..wide_base
             },
             touches_layout: true,
         };
@@ -1284,11 +1323,15 @@ mod tests {
     #[test]
     fn every_patch_refusal_names_what_it_saw() {
         let mut ui = menu_shaped();
+        let row = ui.children(ui.root()).next().expect("the row");
+        let row_base = ui.base_style(row).expect("live");
         assert!(ui.set_patch_pool(vec![crate::StatePatch {
-            style: Style::default(),
+            style: Style {
+                background: [90, 90, 90, 255],
+                ..row_base
+            },
             touches_layout: false,
         }]));
-        let row = ui.children(ui.root()).next().expect("the row");
         let mut table = [crate::NO_PATCH; crate::STATE_COMBINATIONS];
         table[usize::from(crate::STATE_HOVER)] = 0;
         assert!(ui.set_state_table(row, table));
@@ -1362,6 +1405,16 @@ mod tests {
             Document::read(&bad).err(),
             Some(DocumentError::PatchOutOfPool { index: 1, entry: 7 }),
             "a table entry outside the pool"
+        );
+
+        // Lying about geometry refuses: the patch is colour-only, so
+        // raising its layout flag disagrees with the base it dresses.
+        let mut bad = good.clone();
+        bad[patch_start + OFF_PATCH_FLAGS] = 1;
+        assert_eq!(
+            Document::read(&bad).err(),
+            Some(DocumentError::WrongPatchFlag { index: 1, entry: 0 }),
+            "a layout flag that lies"
         );
 
         // Dropping the only reference leaves the pool unreferenced:
@@ -1476,6 +1529,10 @@ mod tests {
                     found: 5,
                 },
                 "first-use",
+            ),
+            (
+                DocumentError::WrongPatchFlag { index: 3, entry: 1 },
+                "layout flag",
             ),
         ];
         for (error, needle) in cases {

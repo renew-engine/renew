@@ -14,10 +14,14 @@
 //! under the pointer, pressed and focus are the interaction state the
 //! tree already tracks, and disabled is reserved — the bit exists in
 //! every table so the format never bumps for it, and nothing sets it
-//! yet. Because every bit derives from state the digest already
-//! covers (the pointer and the decision fold) or deliberately
-//! excludes (hover), applied patches add nothing to [`crate::Ui::absorb`]:
-//! two trees with equal digests wear the same patches.
+//! yet. Bits refresh per event: between a solve that moves geometry
+//! and the next event, worn dress can lag the pointer, exactly as the
+//! freshly-computed hover answer does not. Because every bit derives
+//! from state the digest already covers (the pointer and the decision
+//! fold) or deliberately excludes (hover and geometry), applied
+//! patches add nothing to [`crate::Ui::absorb`]: two identically
+//! authored trees with equal digests wear the same patches, and like
+//! geometry, dress reaches the digest only by changing a decision.
 
 use crate::layout::Style;
 
@@ -83,6 +87,23 @@ impl StateSlot {
     pub fn touches_layout(patch: u16, pool: &[StatePatch]) -> bool {
         usize::from(patch) < pool.len() && pool[usize::from(patch)].touches_layout
     }
+}
+
+/// Whether two styles differ anywhere layout can see — everything but
+/// the background. The one definition the compiler stamps flags with
+/// and the blob reader verifies them against, so the two cannot
+/// disagree about what geometry is.
+#[must_use]
+pub fn moves_geometry(base: &Style, resolved: &Style) -> bool {
+    base.direction != resolved.direction
+        || base.width != resolved.width
+        || base.height != resolved.height
+        || base.margin != resolved.margin
+        || base.padding != resolved.padding
+        || base.gap != resolved.gap
+        || base.grow != resolved.grow
+        || base.justify != resolved.justify
+        || base.align_cross != resolved.align_cross
 }
 
 #[cfg(test)]
@@ -266,6 +287,52 @@ mod tests {
         assert_eq!(ui.style(button).expect("live").background, HOVER_BG);
         assert!(ui.set_patch_pool(Vec::new()));
         assert_eq!(ui.style(button).expect("live").background, BASE_BG);
+    }
+
+    /// Reloading a smaller pool cannot strand a table into it: the
+    /// swap clears every table, so the once-hoverable button wears
+    /// its base and nothing indexes past the new pool — the sequence
+    /// that would otherwise panic in the frame loop.
+    #[test]
+    fn a_smaller_pool_cannot_be_indexed_by_an_old_table() {
+        let (mut ui, button) = hoverable();
+        // Point away first, then shrink the pool under the old table.
+        ui.handle(UiEvent::PointerMoved { x: 90, y: 90 });
+        assert!(ui.set_patch_pool(vec![StatePatch {
+            style: Style::default(),
+            touches_layout: false,
+        }]));
+        // The old table would have worn entry 1 here; the swap
+        // cleared it, so pointing at the button wears the base.
+        ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+        assert_eq!(
+            ui.style(button).expect("live").background,
+            BASE_BG,
+            "a cleared table wears the base, never a stale index"
+        );
+    }
+
+    /// Removing a node that is wearing dress leaves no ghost: the
+    /// dead slot is reset as it is freed, and the event after the
+    /// removal provokes no spurious layout walk shedding it.
+    #[test]
+    fn removing_a_worn_node_leaves_no_ghost() {
+        let (mut ui, button) = hoverable();
+        ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+        ui.handle(UiEvent::PointerPressed);
+        assert_eq!(ui.style(button).expect("live").background, PRESS_BG);
+        assert!(ui.remove(button));
+        ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+        let walked = ui.layout_passes();
+        // The next event pops the dead slot; a ghost patch would
+        // dirty layout here and the counter would move.
+        ui.handle(UiEvent::PointerMoved { x: 6, y: 6 });
+        ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+        assert_eq!(
+            ui.layout_passes(),
+            walked,
+            "a freed slot must not shed a ghost patch into a layout walk"
+        );
     }
 
     /// The digest does not see dress: hover flips wearing a patch

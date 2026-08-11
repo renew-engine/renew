@@ -222,7 +222,7 @@ fn resolve_variants(
                 continue;
             }
             let patch = StatePatch {
-                touches_layout: moves_geometry(&parsed.style, &resolved),
+                touches_layout: renew_ui::state::moves_geometry(&parsed.style, &resolved),
                 style: resolved,
             };
             let key = format!("{patch:?}");
@@ -266,21 +266,6 @@ fn resolve_variants(
     Ok(())
 }
 
-/// Whether two styles differ anywhere layout can see — everything but
-/// the background. The compiler computes this once so the runtime
-/// never compares styles in the frame loop.
-fn moves_geometry(base: &Style, resolved: &Style) -> bool {
-    base.direction != resolved.direction
-        || base.width != resolved.width
-        || base.height != resolved.height
-        || base.margin != resolved.margin
-        || base.padding != resolved.padding
-        || base.gap != resolved.gap
-        || base.grow != resolved.grow
-        || base.justify != resolved.justify
-        || base.align_cross != resolved.align_cross
-}
-
 /// Print a live tree in the grammar, one element per line — the
 /// compiler's inverse **on trees the grammar can spell**: non-negative
 /// whole-pixel styles within the value ceiling, nesting within the
@@ -321,8 +306,12 @@ fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
     // each block is the field difference between the base and that
     // one state's resolved style. Compiler-shaped tables derive their
     // multi-state entries from exactly these blocks, so the text this
-    // prints re-resolves to the same tables — the inverse holds on
-    // what the grammar can spell, as everywhere in this module.
+    // prints re-resolves to the same tables — with one named seam: a
+    // block that only masks an earlier state's field back to the base
+    // resolves to nothing on its own, cannot be seen from here, and
+    // is lost; the emitted text then resolves the masked combination
+    // differently. Re-authoring from resolved tables recovers what
+    // the tables show, not what an authoring hand cancelled out.
     let table = ui
         .state_table(node)
         .unwrap_or([NO_PATCH; STATE_COMBINATIONS]);
@@ -1034,6 +1023,43 @@ column gap=2 {
         let refused =
             compile("row {\n    hover { node }\n}\n").expect_err("a child inside a block");
         assert!(refused.message.contains("attributes only"));
+    }
+
+    /// The emit seam, pinned: a block that only masks an earlier
+    /// state's field back to the base resolves to nothing on its own
+    /// and cannot be reconstructed — the emitted text re-resolves the
+    /// masked combination from what the tables show. Both compiles
+    /// are valid; the bytes differ exactly there, and this test is
+    /// the record that the seam is known, named, and bounded.
+    #[test]
+    fn a_masking_block_is_lost_to_emit_and_the_seam_is_bounded() {
+        let source = "\
+node w=30 bg=#101010 {
+    focus { bg=#303030 }
+    hover { bg=#101010 }
+}
+";
+        let first = compile(source).expect("masking is legal to author");
+        let document = renew_ui::Document::read(&first.bytes).expect("reads");
+        // The masking hover block resolves to the base alone, so the
+        // single-state hover entry is absent — nothing for emit to
+        // reconstruct the block from.
+        let table = document.state_table(0).expect("the root");
+        assert_eq!(
+            table[usize::from(renew_ui::STATE_HOVER)],
+            renew_ui::NO_PATCH
+        );
+        // focus|hover: the mask lands the combination back on base.
+        assert_eq!(
+            table[usize::from(renew_ui::STATE_FOCUS | renew_ui::STATE_HOVER)],
+            renew_ui::NO_PATCH
+        );
+        let text = emit(&document.tree());
+        let second = compile(&text).expect("emitted text is legal");
+        assert_ne!(
+            second.bytes, first.bytes,
+            "the lost mask re-resolves focus|hover to the focus patch"
+        );
     }
 
     /// The pool budget is a diagnostic, not a panic: a document that

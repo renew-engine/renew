@@ -181,10 +181,12 @@ impl Ui {
     ///   ids in order, and the decision fold above records that
     ///   sequence — so two states with equal digests hand their hosts
     ///   the same drained decisions.
-    /// - *Worn state patches*: fully derived from the pointer and the
-    ///   press/focus state this digest already covers (hover excluded
-    ///   deliberately, as above) applied to authored tables — two
-    ///   states with equal digests wear the same patches.
+    /// - *Worn state patches*: derived from the absorbed pointer and
+    ///   press/focus state applied over the excluded geometry and
+    ///   authored tables — like geometry, dress reaches this digest
+    ///   only by changing a decision. Two *identically authored*
+    ///   states with equal digests wear the same patches; authoring
+    ///   is excluded here exactly as styles are.
     #[must_use]
     pub fn absorb(&self, hash: StateHash) -> StateHash {
         let hash = hash
