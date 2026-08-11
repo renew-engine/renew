@@ -505,6 +505,12 @@ mod tests {
         assert_eq!(ui.parent(gone), None);
         assert_eq!(ui.children(gone).count(), 0);
         assert!(!ui.remove(gone), "a second removal is a miss too");
+        assert!(
+            !ui.set_style(gone, Style::default()),
+            "styling a stale id is a miss, not a landing"
+        );
+        assert_eq!(ui.style(gone), None);
+        assert_eq!(ui.rect(gone), None);
     }
 
     /// Removing a node takes its whole subtree, stales every id into
