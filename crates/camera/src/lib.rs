@@ -201,6 +201,87 @@ impl Projection {
     }
 }
 
+/// An orthographic projection under the same engine conventions — a
+/// box of view space mapped to clip space with no perspective divide.
+///
+/// **A light's projection, first and foremost.** A sun does not
+/// foreshorten: every ray arrives parallel, so the box that a shadow
+/// map covers is exactly this shape. It follows the crate contract to
+/// the letter — y negated, z REVERSED into `[0, 1]` — because a depth
+/// image rendered under one convention and compared under another is
+/// the plausible-wrong-picture failure the contract exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Orthographic {
+    /// Half the box's width: view-space x in `[-half_width,
+    /// half_width]` maps to clip `[-1, 1]`.
+    pub half_width: f32,
+    /// Half the box's height, mapping like the width (then negated
+    /// with the rest of clip y).
+    pub half_height: f32,
+    /// Nearest visible distance, mapping to one under reversed depth.
+    pub near: f32,
+    /// Furthest visible distance, mapping to zero.
+    pub far: f32,
+}
+
+impl Orthographic {
+    /// A box `2 * half_width` across and `2 * half_height` tall,
+    /// seeing from `near` to `far`.
+    #[must_use]
+    pub fn new(half_width: f32, half_height: f32, near: f32, far: f32) -> Self {
+        Self {
+            half_width,
+            half_height,
+            near,
+            far,
+        }
+    }
+
+    /// The projection matrix: y negated because screen y grows
+    /// downward, z mapped REVERSED into `[0, 1]`, and `w` stays one —
+    /// no divide, because parallel rays have no vanishing point.
+    ///
+    /// Derivation: `ndc(z) = A z + B` with `ndc(near) = 1` and
+    /// `ndc(far) = 0` gives `A = -1 / (far - near)` and
+    /// `B = far / (far - near)`.
+    #[must_use]
+    pub fn matrix(&self) -> Mat4 {
+        let range = self.far - self.near;
+        Mat4::from_cols(
+            Vec4::new(1.0 / self.half_width, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, -1.0 / self.half_height, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, -1.0 / range, 0.0),
+            Vec4::new(0.0, 0.0, self.far / range, 1.0),
+        )
+    }
+}
+
+/// A viewpoint and an orthographic projection: what a directional
+/// light needs to render a shadow map, in [`Camera`]'s shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightCamera {
+    pub view: View,
+    pub projection: Orthographic,
+}
+
+impl LightCamera {
+    /// The view-projection matrix.
+    #[must_use]
+    pub fn view_projection(&self) -> Mat4 {
+        self.projection.matrix() * self.view.matrix()
+    }
+
+    /// The four columns, in the column-major order a GPU-facing pack
+    /// type takes — [`Camera::columns`]'s boundary shape.
+    #[must_use]
+    pub fn columns(&self) -> [[f32; 4]; 4] {
+        let matrix = self.view_projection();
+        matrix
+            .cols
+            .map(|column| [column.x, column.y, column.z, column.w])
+    }
+}
+
 /// A viewpoint and a projection: everything a draw needs from a camera.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -244,6 +325,50 @@ pub fn aspect_of(width: u32, height: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// The orthographic contract, corner by corner: the box's corners
+    /// land on clip corners with y negated, near maps to one and far
+    /// to zero (REVERSED), and w stays one so nothing divides.
+    #[test]
+    fn the_orthographic_box_maps_to_clip_under_the_conventions() {
+        let ortho = super::Orthographic::new(4.0, 2.0, 1.0, 9.0);
+        let matrix = ortho.matrix();
+        let corner = matrix.transform(super::Vec4::new(4.0, 2.0, 1.0, 1.0));
+        assert!((corner.x - 1.0).abs() < 1e-6, "{}", corner.x);
+        assert!((corner.y + 1.0).abs() < 1e-6, "y negated: {}", corner.y);
+        assert!((corner.z - 1.0).abs() < 1e-6, "near is one: {}", corner.z);
+        assert!((corner.w - 1.0).abs() < 1e-6, "no divide: {}", corner.w);
+        let far_corner = matrix.transform(super::Vec4::new(-4.0, -2.0, 9.0, 1.0));
+        assert!((far_corner.x + 1.0).abs() < 1e-6, "{}", far_corner.x);
+        assert!((far_corner.y - 1.0).abs() < 1e-6, "{}", far_corner.y);
+        assert!(far_corner.z.abs() < 1e-6, "far is zero: {}", far_corner.z);
+        // Midway in z is midway in clip: the mapping is linear, unlike
+        // the perspective's hyperbola.
+        let mid = matrix.transform(super::Vec4::new(0.0, 0.0, 5.0, 1.0));
+        assert!((mid.z - 0.5).abs() < 1e-6, "{}", mid.z);
+    }
+
+    /// The light camera composes exactly as the perspective camera
+    /// does: projection times view, columns in the same order.
+    #[test]
+    fn the_light_camera_composes_like_the_camera() {
+        let light = super::LightCamera {
+            view: super::View::look_at(
+                super::Vec3::new(0.0, 10.0, 0.0),
+                super::Vec3::new(0.0, 0.0, 0.0),
+            ),
+            projection: super::Orthographic::new(8.0, 8.0, 0.5, 20.0),
+        };
+        let composed = light.projection.matrix() * light.view.matrix();
+        let columns = light.columns();
+        for (index, column) in composed.cols.iter().enumerate() {
+            // Bit equality, deliberately: `columns` MOVES the values,
+            // it never does arithmetic on them, so exactness is the
+            // claim — the clear-value test's own reasoning.
+            let moved = [column.x, column.y, column.z, column.w].map(f32::to_bits);
+            assert_eq!(columns[index].map(f32::to_bits), moved, "column {index}");
+        }
+    }
+
     use super::*;
     use std::num::NonZeroU64;
 

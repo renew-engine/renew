@@ -477,6 +477,18 @@ moved their hand could not be compared, and these pictures are committed.
 
 ## Drawing it
 
+Every world-space picture — and the windowed game itself — is lit by
+the arena's lamp: an orthographic light hung just under the ceiling,
+tilted so every cast shadow falls the same visible way. A lamp rather
+than a sun, because this arena is a closed box: the world's shell has
+a roof, and a sun outside it would put the entire interior inside its
+own roof's shadow — one uniform dimming, which is no picture at all.
+The lamp's shadow map deliberately excludes the ceiling (a fixture
+does not cast the shadow of its own housing), so blocks, walls and
+whatever a player builds all cast, and the roof never does. The light
+is a constant of the arena's corners: the same world always casts the
+same shadows, and these pictures stay reproducible byte for byte.
+
 ![The arena, drawn isometrically: the floor and two inner walls, with the mound at the centre](arena.png)
 
 `cube --render arena.png` draws the world through the 3D renderer and

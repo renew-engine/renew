@@ -15,8 +15,8 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer,
-    TexturedMeshRenderer, attachment, pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, ShadowMatrices,
+    ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, attachment, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -800,6 +800,126 @@ fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error:
     );
 
     drop(target);
+    drop(renderer);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The shadow dims exactly what the light cannot see.** One frame:
+/// a depth-only caster pass draws a white floor and a nearer blocker
+/// into the map from a light shifted half a screen sideways, then the
+/// camera draws both. In the light's frame the blocker covers a strip
+/// of floor the CAMERA still sees plainly — so that strip must read
+/// darker than the open floor beside it, by the pipeline's own
+/// dimming, while a frame whose caster pass is empty lights both
+/// strips alike. Same-frame determinism rides along: both frames are
+/// drawn twice and compared byte for byte.
+#[test]
+fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+
+    // The floor spans the whole target at depth 0.3; the blocker is a
+    // nearer strip over clip x in [-0.25, 0.25]. The light SHEARS x by
+    // half the depth (a translation would keep its rays parallel to
+    // the camera's, hiding every cast directly behind its caster): a
+    // ray through the blocker at depth 0.8 lands on the floor at depth
+    // 0.3 shifted +0.25 in x, so the cast strip is x in [0, 0.5] —
+    // half of it in the camera's plain view beside the blocker.
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.3, [1.0, 1.0, 1.0, 1.0]);
+    scene.quad(
+        [
+            [-0.25, -1.0, 0.8],
+            [0.25, -1.0, 0.8],
+            [0.25, 1.0, 0.8],
+            [-0.25, 1.0, 0.8],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let mut light_columns = IDENTITY;
+    light_columns[2][0] = 0.5;
+    let camera = Camera::from_columns(light_columns);
+    let matrices = ShadowMatrices::from_columns(IDENTITY, light_columns);
+
+    let renderer = ShadowedCameraRenderer::new(
+        &device,
+        TargetFormat::Rgba8Unorm,
+        texture_extent,
+        &white,
+        256,
+    )?;
+    let mesh = renderer.upload(&device, &scene)?;
+
+    // In the shadowed strip's middle and in the open floor at the
+    // mirror position: same floor, same texel, same fade — the only
+    // difference the shadow term.
+    let shadowed_x = 11 * SIZE / 16; // clip x = 0.375: cast strip, beside the blocker
+    let open_x = SIZE / 4; // clip x = -0.5: open floor
+    let mut draw = |cast: bool| -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+        let run = |target: &mut renew_rhi::OffscreenTarget|
+        -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let casting_items = [renderer.caster_item(&mesh, &camera)];
+            let empty: [renew_rhi::Item; 0] = [];
+            let shadow = if cast {
+                renderer.shadow_pass(&casting_items)
+            } else {
+                renderer.shadow_pass(&empty)
+            };
+            let items = [renderer.item(&mesh, &matrices)];
+            let passes = [shadow, pass(&clear, &items)];
+            target.render(&RenderDesc::new(&passes))?;
+            let mut pixels = vec![0u8; target.byte_len()];
+            target.read_back_into(&mut pixels);
+            Ok(pixels)
+        };
+        let mut target = device.create_offscreen_target(extent)?;
+        let first = run(&mut target)?;
+        let second = run(&mut target)?;
+        Ok((first, second))
+    };
+
+    let (cast_first, cast_second) = draw(true)?;
+    assert_eq!(
+        cast_first, cast_second,
+        "the same shadowed frame twice diverged"
+    );
+    let (open_first, open_second) = draw(false)?;
+    assert_eq!(
+        open_first, open_second,
+        "the same open frame twice diverged"
+    );
+
+    let y = SIZE / 2;
+    let shadowed = at(&cast_first, shadowed_x, y);
+    let lit_beside = at(&cast_first, open_x, y);
+    let unshadowed = at(&open_first, shadowed_x, y);
+    // The strip is dimmed, not black: well below its lit mirror image,
+    // well above zero.
+    assert!(
+        u32::from(shadowed[0]) * 10 < u32::from(lit_beside[0]) * 8,
+        "the shadowed strip {shadowed:?} should be darker than the open floor {lit_beside:?}"
+    );
+    assert!(shadowed[0] > 20, "a shadow is a dimming, got {shadowed:?}");
+    // With an empty caster the same pixel reads like the open floor:
+    // what dimmed it was the map's contents, nothing else.
+    assert_eq!(
+        unshadowed, lit_beside,
+        "an empty map must light the strip exactly like the open floor"
+    );
+
+    drop(mesh);
     drop(renderer);
     assert_no_validation_errors(&device);
     Ok(())

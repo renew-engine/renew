@@ -53,7 +53,7 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, TexturedCameraRenderer, attachment, pass,
+    Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, attachment, pass,
 };
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
@@ -253,7 +253,17 @@ struct CubeApp {
 struct Gpu {
     device: Device,
     target: WindowTarget,
-    renderer: TexturedCameraRenderer,
+    renderer: ShadowedCameraRenderer,
+    /// The sun's view-projection, packed for the caster's push and
+    /// kept as columns for the lit block — a constant of the arena,
+    /// computed once at bring-up because neither the sun nor the
+    /// arena's bounds ever move.
+    light: RenderCamera,
+    light_columns: [[f32; 4]; 4],
+    /// The caster's own mesh: the world minus the roof — the lamp's
+    /// map must not hold its own fixture's ceiling. Rebuilt with the
+    /// world mesh, from the same edits.
+    caster_mesh: Mesh,
     /// The world's geometry, uploaded once and redrawn from every angle.
     ///
     /// **This is what putting the matrix on the GPU bought.** The mesh is
@@ -493,7 +503,7 @@ impl CubeApp {
         // The atlas is generated, so building the renderer is where it
         // is uploaded. One renderer, one atlas: every block in this world
         // samples the same sheet.
-        let renderer = TexturedCameraRenderer::new(
+        let renderer = ShadowedCameraRenderer::new(
             &device,
             target.format(),
             Extent {
@@ -501,14 +511,25 @@ impl CubeApp {
                 height: crate::atlas::HEIGHT,
             },
             &crate::atlas::pixels(),
+            crate::render::SHADOW_MAP_SIZE,
         )
         .map_err(|error| format!("building the camera pipeline: {error}"))?;
+        let grid = self.world.grid();
+        let light_columns = crate::camera::sun_light(
+            crate::render::low_corner(grid),
+            crate::render::high_corner(grid),
+        )
+        .columns();
+        let light = RenderCamera::from_columns(light_columns);
         let mesh = renderer
             .upload(
                 &device,
                 &crate::render::build_world_space(self.world.grid(), self.aim_cell()),
             )
             .map_err(|error| format!("uploading the world's geometry: {error}"))?;
+        let caster_mesh = renderer
+            .upload(&device, &crate::render::casting_scene(self.world.grid()))
+            .map_err(|error| format!("uploading the caster's geometry: {error}"))?;
         let overlay = MeshRenderer::new(&device, target.format())
             .map_err(|error| format!("building the overlay pipeline: {error}"))?;
         let crosshair_aspect = aspect_of(size);
@@ -533,7 +554,10 @@ impl CubeApp {
             device,
             target,
             renderer,
+            light,
+            light_columns,
             mesh,
+            caster_mesh,
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
             overlay,
@@ -580,6 +604,14 @@ impl CubeApp {
             gpu.mesh = mesh;
             gpu.built_at = edits;
             gpu.aimed_at = aimed;
+            // The caster follows the same edits; a refused rebuild
+            // keeps the old shadows for a frame rather than none.
+            if let Ok(caster) = gpu.renderer.upload(
+                &gpu.device,
+                &crate::render::casting_scene(self.world.grid()),
+            ) {
+                gpu.caster_mesh = caster;
+            }
         }
 
         // A resize changes what "square" means, so the arms are rebuilt
@@ -596,7 +628,7 @@ impl CubeApp {
             gpu.crosshair_aspect = wanted;
         }
 
-        let packed = RenderCamera::from_columns(camera.columns());
+        let packed = ShadowMatrices::from_columns(camera.columns(), gpu.light_columns);
         let color = [attachment(SKY)];
         // The frame's particles, packed into the scratch sized at
         // bring-up — a burst costs the steady-state loop no allocation.
@@ -610,6 +642,10 @@ impl CubeApp {
             [up.x, up.y, up.z],
         );
         let world = gpu.renderer.item(&gpu.mesh, &packed);
+        // The caster pass leads every frame: the same world mesh as the
+        // light sees it, depth only, into the map the lit item samples.
+        let casting = [gpu.renderer.caster_item(&gpu.caster_mesh, &gpu.light)];
+        let shadow = gpu.renderer.shadow_pass(&casting);
 
         // **The outcome is the recovery signal, not noise.** `render`
         // never rebuilds a swapchain on its own; a target whose surface
@@ -640,11 +676,11 @@ impl CubeApp {
                 gpu.sprinkler.item(&gpu.instances, live, &push),
                 gpu.overlay.item(&gpu.crosshair),
             ];
-            let passes = [pass(&color, &items)];
+            let passes = [shadow, pass(&color, &items)];
             gpu.target.render(&RenderDesc::new(&passes))
         } else {
             let items = [world, gpu.overlay.item(&gpu.crosshair)];
-            let passes = [pass(&color, &items)];
+            let passes = [shadow, pass(&color, &items)];
             gpu.target.render(&RenderDesc::new(&passes))
         };
         self.record_present(&outcome);

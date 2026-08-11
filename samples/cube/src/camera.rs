@@ -12,7 +12,7 @@
 // import path; the type is the engine's now.
 pub use renew_camera::Camera;
 
-use renew_camera::{Projection, View};
+use renew_camera::{LightCamera, Orthographic, Projection, View};
 use renew_math::Vec3;
 use renew_sample_cube_world::Cube;
 
@@ -41,6 +41,53 @@ pub fn player_eye_view(world: &Cube) -> View {
     let eye = to_world(world.eye());
     let look = to_world(world.look());
     View::look_at(eye, eye + look)
+}
+
+/// The arena's lamp: an orthographic light hung just under the
+/// ceiling, tilted off-centre so every cast shadow falls the same
+/// visible way.
+///
+/// **A lamp, not a sun, because this arena is a closed box.** The
+/// world's shell has a ceiling; a sun outside it would put the entire
+/// interior in its own roof's shadow — one uniform dimming, which is
+/// no picture at all. Hanging the light inside, with the ceiling
+/// behind its near plane, means the roof never casts while every
+/// block and wall does.
+///
+/// **Fixed, because a shadow is evidence too.** A light that moved
+/// would make every picture a function of when it was taken; this one
+/// is a constant of the arena's corners, so the same world always
+/// casts the same shadows and the committed renders stay reproducible.
+#[must_use]
+pub fn sun_light(low: [f32; 3], high: [f32; 3]) -> LightCamera {
+    let low = Vec3::new(low[0], low[1], low[2]);
+    let high = Vec3::new(high[0], high[1], high[2]);
+    let centre = (low + high) * 0.5;
+    // Off-centre by fixed fractions of the room, so shadows lean
+    // toward +x/+z instead of pooling under their casters; just under
+    // the ceiling's inner face (the shell's top layer ends half a unit
+    // below `high`, and the lamp hangs a little below that).
+    let eye = Vec3::new(
+        centre.x + (high.x - centre.x) * 0.38,
+        high.y - 1.6,
+        centre.z + (high.z - centre.z) * 0.26,
+    );
+    let floor_centre = Vec3::new(centre.x, low.y, centre.z);
+    // The box: half the room's diagonal on both axes covers every
+    // interior cell from the tilted eye, with slack — geometry on the
+    // exact edge of the map casts badly, and texels are cheap.
+    let half = (high - low).length() * 0.6;
+    LightCamera {
+        view: View::look_at(eye, floor_centre),
+        projection: Orthographic::new(
+            half,
+            half,
+            // The near plane sits just past the lamp, which is what
+            // keeps the ceiling above it out of the map entirely.
+            0.2,
+            (high - low).length() + 2.0,
+        ),
+    }
 }
 
 /// A viewpoint given outright, for looking at the world from outside it.

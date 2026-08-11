@@ -506,6 +506,178 @@ impl core::fmt::Debug for MeshRenderer {
     }
 }
 
+/// Both matrices a shadowed draw pushes: the camera's, then the
+/// light's, in one 128-byte block — exactly the guaranteed push
+/// ceiling, packed like [`Camera`] twice over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowMatrices {
+    bytes: [u8; 128],
+}
+
+impl ShadowMatrices {
+    /// Pack the camera's columns, then the light's.
+    #[must_use]
+    pub fn from_columns(camera: [[f32; 4]; 4], light: [[f32; 4]; 4]) -> Self {
+        let mut bytes = [0u8; 128];
+        let mut at = 0;
+        for columns in [camera, light] {
+            for column in columns {
+                for value in column {
+                    bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+                    at += 4;
+                }
+            }
+        }
+        Self { bytes }
+    }
+
+    /// The packed bytes, exactly the shadowed pipeline's declared
+    /// push-constant range.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// The shadowed pipelines' push-constant range: two column-major
+/// matrices, and the length [`ShadowMatrices::bytes`] always is.
+const SHADOW_PUSH_BYTES: u32 = 128;
+
+// Drift between the declared range and the pack type is a compile
+// error, not a record-time panic in a device-requiring test.
+const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowMatrices>());
+
+/// Draws a world with a shadow: a depth-only caster pass renders the
+/// scene from the light into a depth image, and the lit pipeline
+/// samples that map (and the atlas) to dim what the light cannot see.
+///
+/// **One type owns the whole story** — the map, the caster, the lit
+/// pipeline, and both bindings — because they only mean anything
+/// together: a caster without the lit pass renders depth nobody reads,
+/// and the lit pipeline without the caster samples undefined pixels
+/// (which the frame contract refuses by name). The caster reuses the
+/// camera mesh vertex stage through a depth-only pipeline; no shadow
+/// shader exists for it, deliberately.
+///
+/// The frame shape this type serves:
+///
+/// 1. [`Self::shadow_pass`] with [`Self::caster_item`]s — the world
+///    from the light, depth only;
+/// 2. a surface pass whose [`Self::item`]s draw the same world through
+///    the camera, dimmed where the map recorded something nearer.
+pub struct ShadowedCameraRenderer {
+    caster: RenderPipeline,
+    lit: RenderPipeline,
+    shadow_map: renew_rhi::RenderImage,
+    atlas_binding: renew_rhi::Binding,
+    shadow_binding: renew_rhi::Binding,
+}
+
+impl ShadowedCameraRenderer {
+    /// Build the map at `shadow_size` texels square, both pipelines,
+    /// and the bindings, uploading `pixels` as the atlas.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::new`], plus a refusal to create
+    /// the shadow map — an adapter whose depth format cannot be
+    /// sampled refuses at creation, by the rendering crate's own
+    /// pre-check.
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+        shadow_size: u32,
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let atlas_binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
+        let shadow_map = device
+            .create_render_image(&renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Depth,
+                renew_rhi::Extent {
+                    width: shadow_size,
+                    height: shadow_size,
+                },
+            ))
+            .map_err(Render3dError::Texture)?;
+        let shadow_binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Image(&shadow_map),
+            &sampler,
+        ))?;
+        let caster = device.create_pipeline(
+            &PipelineDesc::depth_mesh(builtin::MESH_CAMERA_VS_SPV, LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        let lit = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA_SHADOW, format, LAYOUT)
+                .push_constant_size(SHADOW_PUSH_BYTES)
+                .sampled_bindings(2)
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        Ok(Self {
+            caster,
+            lit,
+            shadow_map,
+            atlas_binding,
+            shadow_binding,
+        })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw — world-space
+    /// positions, as [`CameraRenderer::upload`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The caster's draw: `mesh` as the LIGHT sees it, depth only.
+    /// `light` packs the light's view-projection, exactly as a camera
+    /// packs its own — it is one.
+    #[must_use]
+    pub fn caster_item<'a>(&'a self, mesh: &'a Mesh, light: &'a Camera) -> Item<'a> {
+        Item::new(&self.caster).mesh(mesh).push_data(light.bytes())
+    }
+
+    /// The depth pass that fills the shadow map with `items`, cleared
+    /// to the reversed-Z far plane and stored for the lit pass to
+    /// sample. Place it before the surface pass that draws the world.
+    #[must_use]
+    pub fn shadow_pass<'a>(&'a self, items: &'a [Item<'a>]) -> Pass<'a> {
+        Pass::render_to(
+            &self.shadow_map,
+            Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Store),
+            items,
+        )
+    }
+
+    /// The lit draw: `mesh` through the camera, dimmed by the map.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, matrices: &'a ShadowMatrices) -> Item<'a> {
+        Item::new(&self.lit)
+            .mesh(mesh)
+            .push_data(matrices.bytes())
+            .bindings(&[&self.atlas_binding, &self.shadow_binding])
+    }
+}
+
+impl core::fmt::Debug for ShadowedCameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ShadowedCameraRenderer")
+            .finish_non_exhaustive()
+    }
+}
+
 /// The colour attachment a 3D frame renders into: cleared to `clear`,
 /// stored.
 #[must_use]

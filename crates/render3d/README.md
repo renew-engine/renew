@@ -18,6 +18,18 @@ mesh comes out, and a draw item goes into a frame the caller composes.
 - `Camera` — the pack type. Four column-major `[f32; 4]` columns in,
   sixty-four bytes out; whoever owns a camera owns the maths that built
   it, and what crosses this boundary is bytes with a stated order.
+- `ShadowedCameraRenderer` / `ShadowMatrices` — the world-space half
+  with a shadow. One type owns the whole story: a depth render image
+  (the map), a depth-only caster pipeline that draws the scene from
+  the light with no fragment stage at all, the lit pipeline sampling
+  the atlas at slot 0 and the map at slot 1, and both bindings. A
+  frame leads with `shadow_pass` (`caster_item`s pushing the light's
+  sixty-four bytes — a light IS a camera), then draws `item`s pushing
+  both matrices as one 128-byte `ShadowMatrices` block. The shadow
+  test is reversed-Z like everything else: the map holds the depth
+  nearest the light, and a fragment is lit exactly when its own light
+  depth reaches it within a constant bias — constant because the
+  light is orthographic, which makes light depth linear.
 - `attachment` / `depth_attachment` / `pass` — the frame pieces. `pass`
   always attaches depth; the parts stay public for frames it does not
   fit.

@@ -11,8 +11,8 @@
 //! all three are pure and tested without a device.
 
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, Scene, TexturedCameraRenderer, TexturedMeshRenderer,
-    attachment, pass,
+    Camera as RenderCamera, MeshRenderer, Scene, ShadowMatrices, ShadowedCameraRenderer,
+    TexturedMeshRenderer, attachment, pass,
 };
 use renew_rhi::{Color, Device, DeviceDesc, Extent, RenderDesc, TargetFormat, Validation};
 use renew_sample_cube_world::grid::{Cell, Grid};
@@ -53,6 +53,12 @@ impl std::error::Error for RenderError {}
 /// frame would be margin. Small enough that the committed file stays a
 /// couple of kilobytes, large enough that a block is several pixels.
 pub const SIZE: u32 = 512;
+
+/// The shadow map's side, in texels. Four texels per world unit over
+/// this arena's diagonal — enough that a block's shadow has a clean
+/// edge at the committed render's size, cheap enough that the map
+/// costs four megabytes.
+pub const SHADOW_MAP_SIZE: u32 = 1024;
 
 /// The background. Not black and not any face colour, so a gap in the
 /// geometry reads as a gap rather than as a shadowed surface.
@@ -274,7 +280,15 @@ pub(crate) fn draw_through(
     overlay: Option<&Scene>,
     dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
-    draw_scene(&build_world_space(grid, aimed), camera, overlay, dust)
+    let light = crate::camera::sun_light(low_corner(grid), high_corner(grid));
+    draw_scene(
+        &build_world_space(grid, aimed),
+        &casting_scene(grid),
+        camera,
+        &light,
+        overlay,
+        dust,
+    )
 }
 
 /// Draw an already-built scene through `camera`.
@@ -284,7 +298,9 @@ pub(crate) fn draw_through(
 /// As [`draw_through`].
 pub(crate) fn draw_scene(
     scene: &Scene,
+    caster: &Scene,
     camera: &crate::camera::Camera,
+    light: &renew_camera::LightCamera,
     overlay: Option<&Scene>,
     dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
@@ -305,9 +321,11 @@ pub(crate) fn draw_scene(
     let mut target = device
         .create_offscreen_target(extent)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    // The textured camera path: the atlas is generated, so building the
-    // renderer is where it is uploaded.
-    let renderer = TexturedCameraRenderer::new(
+    // The shadowed camera path — the same pipeline the window draws
+    // with, because a still that lit the world differently would be a
+    // picture of a world this sample does not render. The atlas is
+    // generated, so building the renderer is where it is uploaded.
+    let renderer = ShadowedCameraRenderer::new(
         &device,
         TargetFormat::Rgba8Unorm,
         Extent {
@@ -315,12 +333,20 @@ pub(crate) fn draw_scene(
             height: crate::atlas::HEIGHT,
         },
         &crate::atlas::pixels(),
+        SHADOW_MAP_SIZE,
     )
     .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
         .upload(&device, scene)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let packed = RenderCamera::from_columns(camera.columns());
+    // The caster's own mesh: the same world minus the roof — see
+    // `casting_scene` for why the lamp's map must not hold its own
+    // fixture's ceiling.
+    let caster_mesh = renderer
+        .upload(&device, caster)
+        .map_err(|error| RenderError::Refused(error.to_string()))?;
+    let light_packed = RenderCamera::from_columns(light.columns());
+    let packed = ShadowMatrices::from_columns(camera.columns(), light.columns());
 
     // The overlay, if there is one: geometry that is already clip space
     // and so needs the pipeline that does not transform. Built here
@@ -392,7 +418,10 @@ pub(crate) fn draw_scene(
     if let Some((plain, mesh)) = over.as_ref() {
         items.push(plain.item(mesh));
     }
-    let passes = [pass(&color, &items)];
+    // The caster pass leads: the world's depth as the sun sees it,
+    // into the map the world item samples.
+    let casting = [renderer.caster_item(&caster_mesh, &light_packed)];
+    let passes = [renderer.shadow_pass(&casting), pass(&color, &items)];
     target
         .render(&RenderDesc::new(&passes))
         .map_err(|error| RenderError::Refused(error.to_string()))?;
@@ -428,7 +457,30 @@ pub fn to_png_through(
 /// silently wrong for any other, framing a box that no longer matches
 /// what is drawn. A cell spans one unit centred on its integer, so the
 /// world starts half a unit below the lowest cell.
-fn low_corner(grid: &Grid) -> [f32; 3] {
+/// The world as the lamp's shadow map sees it: every solid except
+/// the ceiling layer.
+///
+/// **The roof is the fixture's own housing.** The lamp hangs just
+/// under it, and a tilted interior light sees the far reaches of its
+/// own ceiling IN FRONT of itself — which would record the roof as
+/// the nearest surface over half the map and put half the floor in
+/// its "shadow". Excluding the top layer from the caster is the
+/// standard shape of the fix, and it is honest: nothing under a roof
+/// expects the roof's shadow from the lamp bolted to it.
+pub(crate) fn casting_scene(grid: &Grid) -> Scene {
+    let (width, height, depth) = grid.size();
+    let min = grid.min();
+    let mut roofless = Grid::new(min, (width, height, depth));
+    let top = min.y + height - 1;
+    for (cell, block) in grid.solids() {
+        if cell.y < top {
+            roofless.set(cell, block);
+        }
+    }
+    build_world_space(&roofless, None)
+}
+
+pub(crate) fn low_corner(grid: &Grid) -> [f32; 3] {
     let min = grid.min();
     [
         world_edge(min.x, -1),
@@ -438,7 +490,7 @@ fn low_corner(grid: &Grid) -> [f32; 3] {
 }
 
 /// The world-space corner above every cell in `grid`.
-fn high_corner(grid: &Grid) -> [f32; 3] {
+pub(crate) fn high_corner(grid: &Grid) -> [f32; 3] {
     let min = grid.min();
     let (x, y, z) = grid.size();
     [
