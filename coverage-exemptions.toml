@@ -128,3 +128,8 @@ reason = "A test double's required method that cannot be called: its argument bo
 file = "crates/core/platform/src/window.rs"
 lines = [404, 405, 406, 407, 408, 409, 410, 411, 412, 413]
 reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run."
+
+[[exempt]]
+file = "crates/ui/src/bin/ui_digest.rs"
+lines = [33, 34, 41, 42]
+reason = "The scenario binary's two refusal arms: the argument guard (a drifted pinned-run row must fail loudly rather than run a different scenario under the same name) and the impossible-construction arm (reachable only if a four-insert scenario overflows a sixteen-node limit; a vacuous zero digest must never reach the comparison). Each is two lines - a message and a nonzero exit - and an exiting process does not reliably flush its coverage counters, so exercising them under the instrumented lane would hinge on an exit-path implementation detail rather than prove anything. The happy path is executed by the lane's own run of the binary."

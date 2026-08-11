@@ -157,10 +157,7 @@ fn run() -> Option<(u64, usize, u64)> {
 /// The lane witness wants what the gameplay digest deliberately
 /// excludes: a one-raw-unit solver divergence must be visible here.
 fn fold_geometry(ui: &Ui, mut hash: StateHash, nodes: &[renew_ui::NodeId]) -> StateHash {
-    for &node in nodes {
-        let Some(rect) = ui.rect(node) else {
-            continue;
-        };
+    for rect in nodes.iter().filter_map(|&node| ui.rect(node)) {
         for part in [rect.x, rect.y, rect.width, rect.height] {
             hash = hash.absorb_u64(part.to_bits().cast_unsigned());
         }
