@@ -1,0 +1,17 @@
+row {
+ row {
+ node w=999} 
+  node w=99999 row {
+    node w=9999column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2 justify=end bg=#0a141eff {
+    node w=9999} 
+  node w=99999 row { node w=9999
+} 
+  node w=999998 row {
+    node w=9999
+} 
+  node w=99999 row {
+    node w=8 justify=center align=end bg=#0a141edf {
+    row margin=1 justify=end bg=#0a141eff {
+    rowe w=9de w=9999
+}

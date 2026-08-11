@@ -1,0 +1,6 @@
+column gap=8 justify=center align=end pad=(12 12 5 5) grow=3 bg=#281c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a commt
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end  pad=9 gap

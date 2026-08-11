@@ -1,0 +1,52 @@
+column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4)gap=1// a 16=
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=2//eff {
+    row margin=2// a cccccccccccccczccccccccccccccccccccoa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0  pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// ff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a 16=
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=2//eff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// ff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a 16=
+        node
+ column gap=8 justify=center align=end bg=#1a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=2// a coa commer align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=2//eff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0  pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// ff h=2 margin=(1 2 3  {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a 16=
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=2//eff {
+    row margin=2// a  gap=0// mment
+row w=0  pad=9 gap=0// mment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// ff {
+    row maroin=2// a coa comment
+row margin=(1 2 3 4) pad=gap=1// a =16
+         pad=9 gap=1// a =16
+      node
+ bg=}
+}
+bg=}
+}

@@ -24,6 +24,7 @@ commands:
   modules    list every module with its maturity, from the manifests
   asset-pack  build an asset pack from a directory of files
   asset-inspect  list an asset pack's entries, optionally verifying them
+  ui-compile  compile a text document into the binary form the engine loads
   determinism  emit this target's simulation digests, or compare several targets'
   doctor     check the development environment
 
@@ -34,7 +35,10 @@ options:
   --output <path>   (record only, required) the trace file to write
   --input <path>    (replay only, required) the trace file to read
   --pack <path>     (asset-pack, asset-inspect; required) the pack file
-  --from <dir>      (asset-pack only, required) the directory to pack
+  --from <path>     (asset-pack, ui-compile; required) the directory to
+                    pack, or the text document to compile
+  --out <path>      (ui-compile only, required) where the compiled document
+                    is written
   --verify          (asset-inspect only) check each entry against its digest
   --emit <path>     (determinism only) write this target's digests here
   --compare <path>  (determinism only, repeatable) a target report to compare

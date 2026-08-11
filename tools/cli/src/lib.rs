@@ -12,4 +12,5 @@ pub mod json;
 pub mod plan;
 pub mod samples;
 pub mod structure;
+pub mod ui_compile;
 pub mod workspace;

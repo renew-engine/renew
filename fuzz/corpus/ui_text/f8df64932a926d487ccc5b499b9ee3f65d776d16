@@ -1,0 +1,6 @@
+column gap=8 justify=center align=end bg=#0a141eff {
+    row bg=#141c34e6 {
+        node w=64 h=16
+        node
+ bg=}
+}

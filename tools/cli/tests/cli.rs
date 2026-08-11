@@ -1757,3 +1757,188 @@ fn the_readme_shows_the_usage_text_the_binary_prints() -> std::io::Result<()> {
     );
     Ok(())
 }
+
+/// A tiny legal document for the compile tests, and its node count.
+const COMPILABLE: (&str, &str) = ("column gap=2 {\n    node w=8 h=4 bg=#102030\n}\n", "2");
+
+/// `ui-compile` end to end: the blob lands where --out says, the
+/// runtime reader accepts it, and the human line reports the counts.
+#[test]
+fn ui_compile_writes_a_blob_the_runtime_reads() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile")?;
+    let source = directory.join("menu.ui");
+    let blob = directory.join("menu.uib");
+    fs::write(&source, COMPILABLE.0)?;
+
+    let output = run(&[
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "compile must succeed: {output:?}");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("compiled 2 nodes"),
+        "the human line reports the node count: {printed:?}"
+    );
+
+    let bytes = fs::read(&blob)?;
+    let document =
+        renew_ui::Document::read(&bytes).expect("the compiled blob must read back as a document");
+    assert_eq!(document.len(), 2);
+    Ok(())
+}
+
+/// The success envelope: schema-versioned, the command named, empty
+/// errors, and the payload counts present.
+#[test]
+fn ui_compile_json_emits_a_schema_versioned_document() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-json")?;
+    let source = directory.join("menu.ui");
+    let blob = directory.join("menu.uib");
+    fs::write(&source, COMPILABLE.0)?;
+
+    let output = run(&[
+        "--json",
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success());
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.starts_with("{\"schema_version\":1,\"command\":\"ui-compile\""),
+        "the envelope leads with its schema: {document:?}"
+    );
+    for field in [
+        "\"status\":\"ok\"",
+        "\"exit_code\":0",
+        "\"errors\":[]",
+        "\"nodes\":2",
+        "\"bytes\":",
+        "\"out\":",
+    ] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    Ok(())
+}
+
+/// The error envelope: the same shape, with the grammar's diagnostic
+/// carried as structured line/column/message fields.
+#[test]
+fn ui_compile_json_carries_the_diagnostic_fields() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-bad")?;
+    let source = directory.join("bad.ui");
+    let blob = directory.join("bad.uib");
+    fs::write(&source, "column {\n    panel\n}\n")?;
+
+    let output = run(&[
+        "--json",
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "a grammar refusal is a failed run"
+    );
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(document.starts_with("{\"schema_version\":1,\"command\":\"ui-compile\""));
+    for field in [
+        "\"status\":\"error\"",
+        "\"exit_code\":1",
+        "\"line\":2",
+        "\"column\":",
+        "\"message\":",
+    ] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    assert!(
+        !blob.exists(),
+        "a refused compile must not leave a partial blob"
+    );
+    Ok(())
+}
+
+/// An unwritable output is the same plain failure: the compile
+/// succeeded, the write did not, and the message names the path.
+#[test]
+fn ui_compile_reports_an_unwritable_output() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-unwritable")?;
+    let source = directory.join("menu.ui");
+    let blob = directory.join("no-such-directory").join("menu.uib");
+    fs::write(&source, COMPILABLE.0)?;
+
+    let output = run(&[
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let printed = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        printed.contains("cannot write"),
+        "the failure names the write: {printed:?}"
+    );
+    Ok(())
+}
+
+/// Without --json the diagnostic is one human line on stderr, led by
+/// the file the way compilers lead.
+#[test]
+fn ui_compile_prints_a_human_diagnostic() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-human")?;
+    let source = directory.join("bad.ui");
+    let blob = directory.join("bad.uib");
+    fs::write(
+        &source, "panel
+",
+    )?;
+
+    let output = run(&[
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let printed = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        printed.contains("1:1:") && printed.contains("row, column, or node"),
+        "the human line carries the place and the expectation: {printed:?}"
+    );
+    Ok(())
+}
+
+/// An unreadable input is a plain failure with an empty errors array:
+/// there is no line to point at in a file that never opened.
+#[test]
+fn ui_compile_json_reports_an_unreadable_input() -> std::io::Result<()> {
+    let directory = scratch_directory("ui-compile-absent")?;
+    let source = directory.join("absent.ui");
+    let blob = directory.join("absent.uib");
+
+    let output = run(&[
+        "--json",
+        "ui-compile",
+        "--from",
+        &source.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let document = String::from_utf8_lossy(&output.stdout);
+    for field in ["\"status\":\"error\"", "\"errors\":[]", "cannot read"] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    Ok(())
+}

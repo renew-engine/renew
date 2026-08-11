@@ -20,11 +20,12 @@ pub enum Command {
     Record,
     Replay,
     Determinism,
+    UiCompile,
 }
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Configure,
         Self::Build,
         Self::Test,
@@ -38,6 +39,7 @@ impl Command {
         Self::Modules,
         Self::AssetPack,
         Self::AssetInspect,
+        Self::UiCompile,
         Self::Determinism,
         Self::Doctor,
     ];
@@ -61,6 +63,7 @@ impl Command {
             Self::Record => "record",
             Self::Replay => "replay",
             Self::Determinism => "determinism",
+            Self::UiCompile => "ui-compile",
         }
     }
 
@@ -108,6 +111,7 @@ impl Command {
             Self::Determinism => {
                 "emit this target's simulation digests, or compare several targets'"
             }
+            Self::UiCompile => "compile a text document into the binary form the engine loads",
         }
     }
 
@@ -142,9 +146,13 @@ pub struct Invocation {
     /// Both asset subcommands (parse enforces, and requires): the pack
     /// file to write, or to read.
     pub pack: Option<String>,
-    /// `asset-pack` only (parse enforces, and requires): the directory
-    /// whose files become the pack's entries.
+    /// `asset-pack` and `ui-compile` (parse enforces, and requires):
+    /// the directory whose files become the pack's entries, or the
+    /// text document to compile.
     pub from: Option<String>,
+    /// `ui-compile` only (parse enforces, and requires): where the
+    /// compiled document is written.
+    pub out: Option<String>,
     /// `asset-inspect` only (parse enforces): also check every payload
     /// against its recorded digest. Off by default because it reads every
     /// byte, where listing reads only the table.
@@ -278,6 +286,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut trace: Option<(&'static str, String)> = None;
     let mut pack: Option<String> = None;
     let mut from: Option<String> = None;
+    let mut out: Option<String> = None;
     let mut verify = false;
     let mut compare: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
@@ -354,6 +363,10 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--pack"))?;
                 pack = Some(path.clone());
             }
+            "--out" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--out"))?;
+                out = Some(path.clone());
+            }
             "--from" => {
                 let path = rest.next().ok_or(ParseError::MissingValue("--from"))?;
                 from = Some(path.clone());
@@ -394,7 +407,13 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         sample.as_deref(),
         &features,
     )?;
-    check_asset_combination(command, pack.as_deref(), from.as_deref(), verify)?;
+    check_file_combination(
+        command,
+        pack.as_deref(),
+        from.as_deref(),
+        out.as_deref(),
+        verify,
+    )?;
     check_determinism_mode(command, emit.as_deref(), &compare)?;
 
     match command {
@@ -408,6 +427,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             trace: trace.map(|(_, path)| path),
             pack,
             from,
+            out,
             verify,
             compare,
             emit,
@@ -475,26 +495,31 @@ fn check_determinism_mode(
 
 /// The asset subcommands' own flag rules.
 ///
-/// Separate from [`check_combination`] rather than three more parameters
-/// on it: that function already carries five, and a sixth and seventh
-/// would make the one thing it is good at — reading as a list of rules —
-/// stop being true.
-fn check_asset_combination(
+/// Separate from [`check_combination`] rather than more parameters on
+/// it: that function already carries five, and the four file flags
+/// here would make the one thing it is good at — reading as a list of
+/// rules — stop being true.
+fn check_file_combination(
     command: Option<Command>,
     pack: Option<&str>,
     from: Option<&str>,
+    out: Option<&str>,
     verify: bool,
 ) -> Result<(), ParseError> {
     let is_pack = command == Some(Command::AssetPack);
     let is_inspect = command == Some(Command::AssetInspect);
+    let is_compile = command == Some(Command::UiCompile);
 
     // Stray flags first, matching the order the other rules use: a flag
     // on the wrong subcommand is as unexpected as any other argument.
     if pack.is_some() && !(is_pack || is_inspect) {
         return Err(ParseError::UnexpectedArgument("--pack".to_string()));
     }
-    if from.is_some() && !is_pack {
+    if from.is_some() && !(is_pack || is_compile) {
         return Err(ParseError::UnexpectedArgument("--from".to_string()));
+    }
+    if out.is_some() && !is_compile {
+        return Err(ParseError::UnexpectedArgument("--out".to_string()));
     }
     if verify && !is_inspect {
         return Err(ParseError::UnexpectedArgument("--verify".to_string()));
@@ -516,6 +541,18 @@ fn check_asset_combination(
         return Err(ParseError::MissingOption {
             command: "asset-pack",
             option: "--from",
+        });
+    }
+    if is_compile && from.is_none() {
+        return Err(ParseError::MissingOption {
+            command: "ui-compile",
+            option: "--from",
+        });
+    }
+    if is_compile && out.is_none() {
+        return Err(ParseError::MissingOption {
+            command: "ui-compile",
+            option: "--out",
         });
     }
     Ok(())
@@ -621,7 +658,10 @@ pub fn usage() -> String {
         "  --output <path>   (record only, required) the trace file to write\n",
         "  --input <path>    (replay only, required) the trace file to read\n",
         "  --pack <path>     (asset-pack, asset-inspect; required) the pack file\n",
-        "  --from <dir>      (asset-pack only, required) the directory to pack\n",
+        "  --from <path>     (asset-pack, ui-compile; required) the directory to\n",
+        "                    pack, or the text document to compile\n",
+        "  --out <path>      (ui-compile only, required) where the compiled document\n",
+        "                    is written\n",
         "  --verify          (asset-inspect only) check each entry against its digest\n",
         "  --emit <path>     (determinism only) write this target's digests here\n",
         "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
@@ -667,6 +707,7 @@ mod tests {
             trace: None,
             pack: None,
             from: None,
+            out: None,
             verify: false,
             compare: Vec::new(),
             emit: None,
@@ -710,6 +751,14 @@ mod tests {
                     Invocation {
                         from: Some("assets".to_string()),
                         pack: Some("out.rpk".to_string()),
+                        ..plain(command)
+                    },
+                ),
+                Command::UiCompile => (
+                    vec![name, "--from", "menu.ui", "--out", "menu.uib"],
+                    Invocation {
+                        from: Some("menu.ui".to_string()),
+                        out: Some("menu.uib".to_string()),
                         ..plain(command)
                     },
                 ),
@@ -1026,6 +1075,48 @@ mod tests {
                 Err(ParseError::UnexpectedArgument(flag.to_string()))
             );
         }
+    }
+
+    /// `--out` anywhere ui-compile is not: within the file-flag rules
+    /// strays answer before missing flags, so even asset-pack hears
+    /// about the `--out` it typed rather than the `--pack` it did not.
+    /// Sample-taking subcommands answer from their own earlier rules
+    /// first, which is why they are not looped here.
+    #[test]
+    fn the_out_flag_on_another_subcommand_is_rejected() {
+        for command in [
+            Command::Check,
+            Command::Modules,
+            Command::Lint,
+            Command::AssetPack,
+        ] {
+            let name = command.name();
+            assert_eq!(
+                parse(&arguments(&[name, "--out", "menu.uib"])),
+                Err(ParseError::UnexpectedArgument("--out".to_string())),
+                "`{name} --out` must be rejected"
+            );
+        }
+    }
+
+    /// ui-compile without either of its two paths names the one that
+    /// is missing — input first, matching the rule order.
+    #[test]
+    fn ui_compile_without_its_paths_is_rejected() {
+        assert_eq!(
+            parse(&arguments(&["ui-compile", "--out", "menu.uib"])),
+            Err(ParseError::MissingOption {
+                command: "ui-compile",
+                option: "--from",
+            })
+        );
+        assert_eq!(
+            parse(&arguments(&["ui-compile", "--from", "menu.ui"])),
+            Err(ParseError::MissingOption {
+                command: "ui-compile",
+                option: "--out",
+            })
+        );
     }
 
     #[test]
