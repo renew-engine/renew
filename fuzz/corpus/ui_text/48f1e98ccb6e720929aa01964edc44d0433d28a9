@@ -1,0 +1,20 @@
+column gap=8 justify=center align=end pad=(12 12 5 5) grow=6 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2//A a commepadw=3 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4)     column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1// a =16
+        node
+ column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2//A a commepad=(12 12 5=16
+        node
+ column gap=8
+        node
+ column gap=8141eff {
+    row margin=2//A a commepad=(8 justify=centeig

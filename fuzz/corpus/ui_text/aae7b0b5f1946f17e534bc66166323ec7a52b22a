@@ -1,0 +1,7 @@
+column grow=3 bg=#282c34e6 {
+       column gap=8 justify=center align=end bg=#1a141eff {
+    row margin=2// awsorwgin=(1 2 3 4 =1// a =16
+      
+ column gap=8 justify=center align=end bg=#0a141eff {
+    }
+}

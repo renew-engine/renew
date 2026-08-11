@@ -1,0 +1,17 @@
+row {
+     node w=80 h=20 bg=#0a0a0a {
+        hover { bg=#565656 }
+        pressed { w=88 bg=#505050 }
+    }
+   node w=80 h=20 row {
+     node w=800       hover { bg=#112592 }
+        pressed { w=44 bg=#505050 }
+    }      hover { bg=#169064 }
+     pressed { w=47 bg=#505050 }
+
+   node w=40 h=20 bg=#0a0a0a {
+        hover { bg=#565656 }
+        pressed { w=#50bg=#0apa0a {
+        }
+
+}

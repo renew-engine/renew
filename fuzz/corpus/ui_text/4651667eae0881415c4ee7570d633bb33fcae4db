@@ -1,0 +1,6 @@
+row {
+    node  bg=#0a0a0a
+    node w=215  node       node w=12 h=8 {
+        hover { bg=#282828 }
+       }
+}

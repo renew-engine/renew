@@ -1,5 +1,0 @@
-column gap=8 justify=center align=end bg=#0a141eff {
-    row margin=2 justify=end bg=#0a141eff{
-    row margin=2 row margin=2 pad= 12 12e
-    }
-}

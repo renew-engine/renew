@@ -421,6 +421,31 @@ impl Ui {
         self.layout_passes
     }
 
+    /// The base style [`Self::set_style`] authored for `node` — what
+    /// shows when no patch is worn; `None` for stale ids. Writers and
+    /// serializers want this, never the worn effective style: a
+    /// document is authored state, and dress is derived at runtime.
+    #[must_use]
+    pub fn base_style(&self, node: NodeId) -> Option<Style> {
+        let index = self.slot_of(node)?;
+        Some(self.states[index as usize].base)
+    }
+
+    /// The state table `node` carries; `None` for stale ids. All
+    /// [`NO_PATCH`] when none was set.
+    #[must_use]
+    pub fn state_table(&self, node: NodeId) -> Option<[u16; STATE_COMBINATIONS]> {
+        let index = self.slot_of(node)?;
+        Some(self.states[index as usize].table)
+    }
+
+    /// The loaded patch pool, whole — empty until a document or host
+    /// provides one.
+    #[must_use]
+    pub fn patch_pool(&self) -> &[StatePatch] {
+        &self.patches
+    }
+
     /// Re-derive the state bits of every node that can hold any, and
     /// swap patches where they changed. Called by [`Self::handle`]
     /// after each event; allocation-free — the candidate set is at

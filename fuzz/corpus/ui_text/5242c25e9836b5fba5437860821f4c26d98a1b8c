@@ -1,6 +1,0 @@
-column gap=8 bg=#0a141eff {
-    row margin=2 pad=(12 12 5 5) grow=3 bg=#282c34row margin=2 w=64 h=16
-        node
-  bg=#0a141eff {
-    row margin=2 pad=(12 12 5 5) grow=3 bg=#282c34row mar}
-}

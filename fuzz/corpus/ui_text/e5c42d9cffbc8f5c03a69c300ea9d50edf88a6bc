@@ -1,0 +1,7 @@
+column gap=8 justify=center align=end bg=#0a141eff {
+    row margin=2// a coa comment
+row margin=(1 2 3 4) pad=9 gap=1// mment
+row  h=2 margin=(1 2 3 4) pad=9 gap=1//ify1eff {
+    row margin=2// a comment
+row w=0 h=2 margin=(1 2 3 4) pad=9 gap=1/ 6         p
+}

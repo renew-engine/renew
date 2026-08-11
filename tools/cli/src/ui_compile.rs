@@ -23,8 +23,11 @@
 //! column, and what would have been legal — because a document author
 //! reads diagnostics, not source code.
 
-use renew_ui::document::{MAX_NODES, capture};
-use renew_ui::{Align, Direction, Edges, Fixed, Size, Style, Ui, UiLimits};
+use renew_ui::document::{MAX_NODES, MAX_PATCHES, capture};
+use renew_ui::{
+    Align, Direction, Edges, Fixed, NO_PATCH, STATE_COMBINATIONS, STATE_DISABLED, STATE_FOCUS,
+    STATE_HOVER, STATE_PRESSED, Size, StatePatch, Style, Ui, UiLimits,
+};
 
 /// Where and why a source text is not a document.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,11 +64,75 @@ const MAX_DEPTH: usize = 64;
 /// every arithmetic path trivially in range.
 const MAX_VALUE: i64 = 1_000_000;
 
+/// The attributes one spelling carried, each optional: an element's
+/// own list overlays the defaults, a variant block's overlays the
+/// resolved base. Setting is the only move — a block cannot unset.
+#[derive(Clone, Copy, Default)]
+struct Partial {
+    width: Option<Size>,
+    height: Option<Size>,
+    margin: Option<Edges>,
+    padding: Option<Edges>,
+    gap: Option<Fixed>,
+    grow: Option<u32>,
+    justify: Option<Align>,
+    align_cross: Option<Align>,
+    background: Option<[u8; 4]>,
+}
+
+impl Partial {
+    /// Write every set field over `style`, leaving the rest alone.
+    fn overlay(&self, style: &mut Style) {
+        if let Some(width) = self.width {
+            style.width = width;
+        }
+        if let Some(height) = self.height {
+            style.height = height;
+        }
+        if let Some(margin) = self.margin {
+            style.margin = margin;
+        }
+        if let Some(padding) = self.padding {
+            style.padding = padding;
+        }
+        if let Some(gap) = self.gap {
+            style.gap = gap;
+        }
+        if let Some(grow) = self.grow {
+            style.grow = grow;
+        }
+        if let Some(justify) = self.justify {
+            style.justify = justify;
+        }
+        if let Some(align_cross) = self.align_cross {
+            style.align_cross = align_cross;
+        }
+        if let Some(background) = self.background {
+            style.background = background;
+        }
+    }
+}
+
+/// The four variant slots, in the order blocks apply when several
+/// states are active at once: focus first, disabled last — later
+/// overrides earlier, per field. The order is the grammar's fixed
+/// precedence, documented here and nowhere at runtime: the compiler
+/// resolves it away.
+const VARIANTS: [(&str, u8); 4] = [
+    ("focus", STATE_FOCUS),
+    ("hover", STATE_HOVER),
+    ("pressed", STATE_PRESSED),
+    ("disabled", STATE_DISABLED),
+];
+
 /// One parsed element, in preorder — the order the canonical blob
 /// wants, produced by the walk itself.
 struct Parsed {
     parent: Option<u32>,
     style: Style,
+    /// Variant blocks by [`VARIANTS`] position; `None` where the
+    /// element carried no block for that state.
+    variants: [Option<Partial>; 4],
 }
 
 /// Compile source text into the canonical document blob.
@@ -111,10 +178,107 @@ pub fn compile(source: &str) -> Result<Compiled, Diagnostic> {
         count,
         "a parsed document must build every element"
     );
+
+    resolve_variants(&nodes, &ids, &mut ui)?;
+
     Ok(Compiled {
         bytes: capture(&ui),
         nodes: count,
     })
+}
+
+/// Resolve every element's variant blocks into the pool and tables:
+/// for each of the sixteen state combinations, overlay the active
+/// blocks in the grammar's fixed precedence onto the base, skip the
+/// combinations that land back on it, and deduplicate what remains.
+/// The cascade dies here; the runtime inherits lookups.
+fn resolve_variants(
+    nodes: &[Parsed],
+    ids: &[renew_ui::NodeId],
+    ui: &mut Ui,
+) -> Result<(), Diagnostic> {
+    let mut pool: Vec<StatePatch> = Vec::new();
+    // Deduplication key: the patch's debug spelling. Deterministic,
+    // and honest about being a tooling-side convenience — the pool
+    // ceiling keeps the map's size bounded.
+    let mut known: std::collections::BTreeMap<String, u16> = std::collections::BTreeMap::new();
+    let mut tables: Vec<(usize, [u16; STATE_COMBINATIONS])> = Vec::new();
+
+    for (at, parsed) in nodes.iter().enumerate() {
+        if parsed.variants.iter().all(Option::is_none) {
+            continue;
+        }
+        let mut table = [NO_PATCH; STATE_COMBINATIONS];
+        for (bits, entry) in table.iter_mut().enumerate().skip(1) {
+            let mut resolved = parsed.style;
+            for (slot, &(_, bit)) in VARIANTS.iter().enumerate() {
+                if bits & usize::from(bit) != 0
+                    && let Some(partial) = &parsed.variants[slot]
+                {
+                    partial.overlay(&mut resolved);
+                }
+            }
+            if resolved == parsed.style {
+                continue;
+            }
+            let patch = StatePatch {
+                touches_layout: moves_geometry(&parsed.style, &resolved),
+                style: resolved,
+            };
+            let key = format!("{patch:?}");
+            let index = if let Some(&found) = known.get(&key) {
+                found
+            } else {
+                if pool.len() >= MAX_PATCHES as usize {
+                    return Err(Diagnostic {
+                        line: 1,
+                        column: 1,
+                        message: format!(
+                            "the document resolves more than {MAX_PATCHES} distinct state \
+                             styles — a whole-document budget, not one place's fault"
+                        ),
+                    });
+                }
+                let minted = u16::try_from(pool.len()).unwrap_or(NO_PATCH);
+                pool.push(patch);
+                known.insert(key, minted);
+                minted
+            };
+            *entry = index;
+        }
+        if table.iter().any(|&entry| entry != NO_PATCH) {
+            tables.push((at, table));
+        }
+    }
+
+    if !pool.is_empty() {
+        // The pool passed its ceiling and every entry is freshly
+        // minted below it; the loads cannot refuse, and a refusal
+        // would be that argument broken, said loudly.
+        assert!(ui.set_patch_pool(pool), "a bounded pool must load");
+        for (at, table) in tables {
+            assert!(
+                ui.set_state_table(ids[at], table),
+                "a minted table must land"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether two styles differ anywhere layout can see — everything but
+/// the background. The compiler computes this once so the runtime
+/// never compares styles in the frame loop.
+fn moves_geometry(base: &Style, resolved: &Style) -> bool {
+    base.direction != resolved.direction
+        || base.width != resolved.width
+        || base.height != resolved.height
+        || base.margin != resolved.margin
+        || base.padding != resolved.padding
+        || base.gap != resolved.gap
+        || base.grow != resolved.grow
+        || base.justify != resolved.justify
+        || base.align_cross != resolved.align_cross
 }
 
 /// Print a live tree in the grammar, one element per line — the
@@ -135,7 +299,7 @@ pub fn emit(ui: &Ui) -> String {
 
 fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
     use core::fmt::Write as _;
-    let style = ui.style(node).unwrap_or_default();
+    let style = ui.base_style(node).unwrap_or_default();
     let pad = "    ".repeat(depth);
     let children: Vec<_> = ui.children(node).collect();
     let element = match style.direction {
@@ -144,15 +308,74 @@ fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
         Direction::Column => "column",
     };
     let _ = write!(out, "{pad}{element}");
+    write_attrs(
+        out,
+        &style,
+        &Style {
+            direction: style.direction,
+            ..Style::default()
+        },
+    );
+
+    // Variant blocks come back from the single-state table entries:
+    // each block is the field difference between the base and that
+    // one state's resolved style. Compiler-shaped tables derive their
+    // multi-state entries from exactly these blocks, so the text this
+    // prints re-resolves to the same tables — the inverse holds on
+    // what the grammar can spell, as everywhere in this module.
+    let table = ui
+        .state_table(node)
+        .unwrap_or([NO_PATCH; STATE_COMBINATIONS]);
+    let pool = ui.patch_pool();
+    let mut blocks: Vec<(&str, Style)> = Vec::new();
+    for &(state, bit) in &VARIANTS {
+        let entry = table[usize::from(bit)];
+        if entry != NO_PATCH
+            && let Some(patch) = pool.get(usize::from(entry))
+        {
+            blocks.push((state, patch.style));
+        }
+    }
+
+    if children.is_empty() && blocks.is_empty() {
+        out.push('\n');
+        return;
+    }
+    out.push_str(" {\n");
+    let inner = "    ".repeat(depth + 1);
+    for (state, resolved) in blocks {
+        let _ = write!(out, "{inner}{state}");
+        out.push_str(" {");
+        write_attrs(out, &resolved, &style);
+        out.push_str(" }\n");
+    }
+    for child in children {
+        emit_node(ui, child, depth + 1, out);
+    }
+    let _ = writeln!(out, "{pad}}}");
+}
+
+/// Print every attribute of `style` that differs from `against`, in
+/// the grammar's spelling — the one writer both the element line and
+/// the variant blocks use.
+fn write_attrs(out: &mut String, style: &Style, against: &Style) {
+    use core::fmt::Write as _;
     let px = |value: Fixed| value.trunc_int();
-    if let Size::Px(width) = style.width {
+    if style.width != against.width
+        && let Size::Px(width) = style.width
+    {
         let _ = write!(out, " w={}", px(width));
     }
-    if let Size::Px(height) = style.height {
+    if style.height != against.height
+        && let Size::Px(height) = style.height
+    {
         let _ = write!(out, " h={}", px(height));
     }
-    for (name, edges) in [("margin", style.margin), ("pad", style.padding)] {
-        if edges != Edges::default() {
+    for (name, edges, reference) in [
+        ("margin", style.margin, against.margin),
+        ("pad", style.padding, against.padding),
+    ] {
+        if edges != reference {
             let (l, r, t, b) = (
                 px(edges.left),
                 px(edges.right),
@@ -166,34 +389,25 @@ fn emit_node(ui: &Ui, node: renew_ui::NodeId, depth: usize, out: &mut String) {
             }
         }
     }
-    if style.gap != Fixed::ZERO {
+    if style.gap != against.gap {
         let _ = write!(out, " gap={}", px(style.gap));
     }
-    if style.grow != 0 {
+    if style.grow != against.grow {
         let _ = write!(out, " grow={}", style.grow);
     }
-    if style.justify != Align::Start {
+    if style.justify != against.justify {
         let _ = write!(out, " justify={}", align_word(style.justify));
     }
-    if style.align_cross != Align::Start {
+    if style.align_cross != against.align_cross {
         let _ = write!(out, " align={}", align_word(style.align_cross));
     }
-    if style.background != [0, 0, 0, 0] {
+    if style.background != against.background {
         let [r, g, b, a] = style.background;
         if a == 0xFF {
             let _ = write!(out, " bg=#{r:02x}{g:02x}{b:02x}");
         } else {
             let _ = write!(out, " bg=#{r:02x}{g:02x}{b:02x}{a:02x}");
         }
-    }
-    if children.is_empty() {
-        out.push('\n');
-    } else {
-        out.push_str(" {\n");
-        for child in children {
-            emit_node(ui, child, depth + 1, out);
-        }
-        let _ = writeln!(out, "{pad}}}");
     }
 }
 
@@ -347,16 +561,20 @@ fn parse_element(
             });
         }
     };
-    let style = parse_attributes(scanner, direction)?;
+    let mut style = Style {
+        direction,
+        ..Style::default()
+    };
+    parse_attributes(scanner)?.overlay(&mut style);
     let own = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
-    nodes.push(Parsed { parent, style });
+    nodes.push(Parsed {
+        parent,
+        style,
+        variants: [None; 4],
+    });
 
     scanner.skip_trivia();
     if scanner.peek() == Some('{') {
-        if name == "node" {
-            return Err(scanner
-                .refuse("node is a leaf; row and column are the elements that hold children"));
-        }
         scanner.bump();
         loop {
             scanner.skip_trivia();
@@ -366,23 +584,60 @@ fn parse_element(
                     break;
                 }
                 None => {
-                    return Err(scanner.refuse("expected a child element or a closing brace"));
+                    return Err(scanner
+                        .refuse("expected a child element, a variant block, or a closing brace"));
                 }
-                Some(_) => parse_element(scanner, Some(own), depth + 1, nodes)?,
+                Some(_) => {
+                    // A state name followed by a brace opens a variant
+                    // block; anything else is a child element. The
+                    // clone-ahead keeps the scanner untouched until
+                    // the word and its brace are both seen.
+                    let mut lookahead = Scanner {
+                        rest: scanner.rest.clone(),
+                        line: scanner.line,
+                        column: scanner.column,
+                    };
+                    let word = lookahead.ident();
+                    lookahead.skip_trivia();
+                    let variant = VARIANTS.iter().position(|&(state, _)| state == word);
+                    if let Some(slot) = variant
+                        && lookahead.peek() == Some('{')
+                    {
+                        if nodes[own as usize].variants[slot].is_some() {
+                            return Err(
+                                scanner.refuse(format!("a second {word} block on one element"))
+                            );
+                        }
+                        *scanner = lookahead;
+                        scanner.bump();
+                        let partial = parse_attributes(scanner)?;
+                        scanner.skip_trivia();
+                        if scanner.peek() != Some('}') {
+                            return Err(scanner.refuse(format!(
+                                "a {word} block holds attributes only, then its closing brace"
+                            )));
+                        }
+                        scanner.bump();
+                        nodes[own as usize].variants[slot] = Some(partial);
+                    } else if name == "node" {
+                        return Err(scanner.refuse(
+                            "node is a leaf; row and column are the elements that hold children",
+                        ));
+                    } else {
+                        parse_element(scanner, Some(own), depth + 1, nodes)?;
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-/// The `name=value` pairs before an element's braces. Each attribute
-/// may appear once; an unknown name lists the known ones.
-fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<Style, Diagnostic> {
-    let mut style = Style {
-        direction,
-        ..Style::default()
-    };
-    let mut seen: Vec<&'static str> = Vec::new();
+/// The `name=value` pairs before an element's braces — or inside a
+/// variant block. Each attribute may appear once; an unknown name
+/// lists the known ones.
+fn parse_attributes(scanner: &mut Scanner<'_>) -> Result<Partial, Diagnostic> {
+    let mut partial = Partial::default();
     loop {
         scanner.skip_trivia();
         // An identifier here is an attribute only when `=` follows;
@@ -397,7 +652,7 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
         };
         let name = lookahead.ident();
         if name.is_empty() || lookahead.peek() != Some('=') {
-            return Ok(style);
+            return Ok(partial);
         }
         *scanner = lookahead;
         scanner.bump();
@@ -424,23 +679,33 @@ fn parse_attributes(scanner: &mut Scanner<'_>, direction: Direction) -> Result<S
                 })
         };
         let attribute = known(&name)?;
-        if seen.contains(&attribute) {
+        let taken = match attribute {
+            "w" => partial.width.is_some(),
+            "h" => partial.height.is_some(),
+            "gap" => partial.gap.is_some(),
+            "grow" => partial.grow.is_some(),
+            "margin" => partial.margin.is_some(),
+            "pad" => partial.padding.is_some(),
+            "justify" => partial.justify.is_some(),
+            "align" => partial.align_cross.is_some(),
+            _ => partial.background.is_some(),
+        };
+        if taken {
             return Err(at_name(format!("{attribute} appears twice on one element")));
         }
-        seen.push(attribute);
 
         match attribute {
-            "w" => style.width = Size::Px(fixed_px(scanner.integer("w")?)),
-            "h" => style.height = Size::Px(fixed_px(scanner.integer("h")?)),
-            "gap" => style.gap = fixed_px(scanner.integer("gap")?),
+            "w" => partial.width = Some(Size::Px(fixed_px(scanner.integer("w")?))),
+            "h" => partial.height = Some(Size::Px(fixed_px(scanner.integer("h")?))),
+            "gap" => partial.gap = Some(fixed_px(scanner.integer("gap")?)),
             "grow" => {
-                style.grow = u32::try_from(scanner.integer("grow")?).unwrap_or(0);
+                partial.grow = Some(u32::try_from(scanner.integer("grow")?).unwrap_or(0));
             }
-            "margin" => style.margin = parse_edges(scanner, "margin")?,
-            "pad" => style.padding = parse_edges(scanner, "pad")?,
-            "justify" => style.justify = parse_align(scanner, "justify")?,
-            "align" => style.align_cross = parse_align(scanner, "align")?,
-            _ => style.background = parse_color(scanner)?,
+            "margin" => partial.margin = Some(parse_edges(scanner, "margin")?),
+            "pad" => partial.padding = Some(parse_edges(scanner, "pad")?),
+            "justify" => partial.justify = Some(parse_align(scanner, "justify")?),
+            "align" => partial.align_cross = Some(parse_align(scanner, "align")?),
+            _ => partial.background = Some(parse_color(scanner)?),
         }
     }
 }
@@ -674,6 +939,101 @@ column gap=8 justify=center align=end bg=#0a141eff {
             let compiled = compile(&text).expect("emitted text is legal");
             proptest::prop_assert_eq!(compiled.bytes, capture(&ui));
         }
+    }
+
+    /// A document with variant blocks compiles into tables and a
+    /// pool the runtime reader hands back: single states resolve to
+    /// their blocks, combined states resolve by precedence, identical
+    /// resolutions share one pooled patch, and a colour-only block
+    /// leaves the layout flag down while a size block raises it.
+    #[test]
+    fn variant_blocks_resolve_into_the_tables() {
+        let source = "\
+row {
+    node w=40 h=20 bg=#0a0a0a {
+        hover { bg=#282828 }
+        pressed { w=44 bg=#505050 }
+    }
+    node w=40 h=20 bg=#0a0a0a {
+        hover { bg=#282828 }
+    }
+}
+";
+        let compiled = compile(source).expect("variants are legal");
+        let document = renew_ui::Document::read(&compiled.bytes).expect("reads back");
+        // Two distinct resolutions: the shared hover colour and the
+        // pressed size+colour — the second node's hover deduplicates
+        // onto the first's.
+        assert_eq!(document.patch_count(), 2);
+        let table = document.state_table(1).expect("the first leaf");
+        let hover = table[usize::from(renew_ui::STATE_HOVER)];
+        let pressed = table[usize::from(renew_ui::STATE_PRESSED)];
+        let both = table[usize::from(renew_ui::STATE_HOVER | renew_ui::STATE_PRESSED)];
+        assert_ne!(hover, renew_ui::NO_PATCH);
+        assert_ne!(pressed, renew_ui::NO_PATCH);
+        let hover_patch = document.patch(u32::from(hover)).expect("pooled");
+        assert_eq!(hover_patch.style.background, [0x28, 0x28, 0x28, 0xFF]);
+        assert!(!hover_patch.touches_layout, "a colour block moves nothing");
+        let pressed_patch = document.patch(u32::from(pressed)).expect("pooled");
+        assert_eq!(pressed_patch.style.background, [0x50, 0x50, 0x50, 0xFF]);
+        assert!(pressed_patch.touches_layout, "a width block moves geometry");
+        // hover+pressed: pressed's fields override hover's where both
+        // set one, and pressed sets both of hover's — so the combined
+        // state deduplicates onto the pressed patch itself.
+        assert_eq!(both, pressed, "precedence resolved at compile time");
+        let second = document.state_table(2).expect("the second leaf");
+        assert_eq!(
+            second[usize::from(renew_ui::STATE_HOVER)],
+            hover,
+            "identical resolutions share one pooled patch"
+        );
+    }
+
+    /// The dressed inverse: text with variant blocks, compiled, read,
+    /// instantiated, emitted, and compiled again lands on the same
+    /// canonical bytes.
+    #[test]
+    fn a_dressed_document_survives_emit_and_return() {
+        let source = "\
+column gap=2 {
+    node w=30 bg=#101010 {
+        hover { bg=#303030 }
+        pressed { w=34 }
+    }
+}
+";
+        let first = compile(source).expect("legal");
+        let tree = renew_ui::Document::read(&first.bytes)
+            .expect("reads")
+            .tree();
+        let text = emit(&tree);
+        let second = compile(&text).expect("emitted text is legal");
+        assert_eq!(
+            second.bytes, first.bytes,
+            "the dressed round trip is the identity:\n{text}"
+        );
+    }
+
+    /// A node may hold variant blocks — the leaf rule bars children,
+    /// not dress — and a child inside it still refuses by name.
+    #[test]
+    fn a_node_holds_variants_but_never_children() {
+        assert!(compile("node { hover { bg=#111111 } }\n").is_ok());
+        let refused =
+            compile("node { hover { bg=#111111 }\n    node\n}\n").expect_err("a child under node");
+        assert!(refused.message.contains("node is a leaf"));
+    }
+
+    /// Variant refusals: a duplicate block, and a block that tries to
+    /// hold a child.
+    #[test]
+    fn variant_blocks_refuse_duplicates_and_children() {
+        let refused = compile("row {\n    hover { bg=#111111 }\n    hover { bg=#222222 }\n}\n")
+            .expect_err("two hover blocks");
+        assert!(refused.message.contains("second hover block"));
+        let refused =
+            compile("row {\n    hover { node }\n}\n").expect_err("a child inside a block");
+        assert!(refused.message.contains("attributes only"));
     }
 
     /// Each refusal points at its place and says what was expected.
