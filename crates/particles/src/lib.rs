@@ -162,6 +162,15 @@ impl ParticleSystem {
         }
     }
 
+    /// The pool and instance-buffer size fixed at creation — what a
+    /// caller sizing a scratch or a renderer for this pool needs, so
+    /// it can size from the pool it was handed rather than guessing
+    /// at the effect that built it.
+    #[must_use]
+    pub fn capacity(&self) -> u32 {
+        self.desc.capacity
+    }
+
     /// How many particles are alive.
     #[must_use]
     pub fn live(&self) -> u32 {

@@ -13,6 +13,8 @@
 
 #[cfg(feature = "render")]
 pub mod atlas;
+#[cfg(feature = "render")]
+pub mod burst;
 pub mod camera;
 #[cfg(feature = "render")]
 pub mod crosshair;
@@ -465,21 +467,49 @@ pub fn arena() -> Grid {
 /// one.** The grid is edited as the script runs — blocks are broken and placed
 /// — so a drawing made from `arena()` would show the world as it started
 /// rather than as it ended, which is the one thing a picture of it is for.
-#[must_use]
-pub fn run_world(options: &Options) -> Cube {
+/// The world every scripted run starts from: the same start, the same
+/// opening look — down and forward, so `build` has something to dig
+/// at. One constructor, because two copies of these literals drifting
+/// apart would let a report and a picture describe different runs
+/// while claiming one.
+fn scripted_world() -> Cube {
     let start = Vec3::new(Fixed::ZERO, Fixed::from_int(4), Fixed::ZERO);
     let mut world = Cube::new(Tuning::default(), arena(), start);
-    // Looking down and forward, so `build` has something to dig at.
     world.look_at(Vec3::new(
         Fixed::ONE,
         Fixed::from_int(-1),
         Fixed::from_ratio(1, 2),
     ));
+    world
+}
+
+#[must_use]
+pub fn run_world(options: &Options) -> Cube {
+    let mut world = scripted_world();
 
     for tick in 0..options.ticks {
         world.step(options.script.intent(tick));
     }
     world
+}
+
+/// Run a script with a particle pool riding along: every break bursts,
+/// every tick steps the dust, so a still of a digging script shows the
+/// same breaks its report counts. The world is exactly [`run_world`]'s
+/// — same constructor, same steps — and the pool watches from outside,
+/// so the digest never learns it exists.
+#[cfg(feature = "render")]
+#[must_use]
+pub fn run_world_with_breaks(options: &Options) -> (Cube, renew_particles::ParticleSystem) {
+    let mut world = scripted_world();
+    let mut pool = burst::pool();
+    for tick in 0..options.ticks {
+        let watched = burst::watch(&world);
+        world.step(options.script.intent(tick));
+        burst::settle(&mut pool, &world, watched);
+        pool.step(burst::DT);
+    }
+    (world, pool)
 }
 
 /// Run a script and answer.
@@ -650,7 +680,16 @@ fn aimed(world: &Cube) -> Option<renew_sample_cube_world::Cell> {
 /// A refusal from the renderer, or the message a build without the
 /// feature answers with.
 #[cfg(feature = "render")]
-fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), String> {
+fn render_to(
+    world: &Cube,
+    dust: Option<&renew_particles::ParticleSystem>,
+    view: View,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    // Dust only where a run could have raised any: the perspective
+    // views. The isometric plan is a diagram of the world, and dust in
+    // a diagram would be noise claiming to be data.
+    let dust = dust.filter(|pool| pool.live() > 0);
     match view {
         View::Isometric => render::to_png(world.grid(), path),
         View::Player => {
@@ -662,11 +701,18 @@ fn render_to(world: &Cube, view: View, path: &std::path::Path) -> Result<(), Str
             // pictures *of* the world rather than from inside it, and a
             // crosshair in one would mark a spot nobody is aiming at.
             let overlay = crosshair::scene(1.0);
-            render::to_png_through(world.grid(), &camera, path, aimed(world), Some(&overlay))
+            render::to_png_through(
+                world.grid(),
+                &camera,
+                path,
+                aimed(world),
+                Some(&overlay),
+                dust,
+            )
         }
         View::Free { eye, target } => {
             let camera = camera::free_view(eye, target, 1.0);
-            render::to_png_through(world.grid(), &camera, path, aimed(world), None)
+            render::to_png_through(world.grid(), &camera, path, aimed(world), None, dust)
         }
     }
     .map_err(|error| error.to_string())
@@ -793,6 +839,20 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
             }
         };
     }
+    // When a picture is wanted, one run with the pool watching feeds
+    // the report AND the picture — the pool observes, never touches,
+    // and a test pins the watched digest equal to the unwatched one.
+    // Without a picture the pool would observe for nobody, so the
+    // plain run is kept.
+    #[cfg(feature = "render")]
+    let (world, dust) = match options.render {
+        Some(_) => {
+            let (world, dust) = run_world_with_breaks(&options);
+            (world, Some(dust))
+        }
+        None => (run_world(&options), None),
+    };
+    #[cfg(not(feature = "render"))]
     let world = run_world(&options);
     let report = report_of(options.script, &world);
     if options.json {
@@ -806,7 +866,16 @@ pub fn run_cli<I: IntoIterator<Item = String>>(arguments: I) -> u8 {
             println!("{}", elevation_text(&world));
         }
         if let Some(path) = &options.render
-            && let Err(error) = render_to(&world, options.view, path)
+            && let Err(error) = {
+                #[cfg(feature = "render")]
+                {
+                    render_to(&world, dust.as_ref(), options.view, path)
+                }
+                #[cfg(not(feature = "render"))]
+                {
+                    render_to(&world, options.view, path)
+                }
+            }
         {
             eprintln!("usage: {error}");
             return 2;

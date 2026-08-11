@@ -24,7 +24,7 @@ path = "src/main.rs"
 # carries no graphics crate at all, which is what lets the build matrix
 # prove this sample builds with the renderer removed.
 [features]
-render = ["dep:renew-rhi", "dep:renew-render3d", "dep:renew-png"]
+render = ["dep:renew-rhi", "dep:renew-render3d", "dep:renew-png", "dep:renew-particles"]
 # Play it: a window, a keyboard, and the camera on the player's head.
 # Requires `render` structurally rather than by prose -- a window with
 # nothing drawn in it is not a thing this game does.
@@ -45,6 +45,7 @@ renew-sample-cube-world = { path = "world" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-render3d = { path = "../../crates/render3d", optional = true }
 renew-png = { path = "../../crates/png", optional = true }
+renew-particles = { path = "../../crates/particles", features = ["render"], optional = true }
 renew-event = { path = "../../crates/core/event", optional = true }
 # The window plays against a wall clock, and a simulation stepped once
 # per redraw would run at the panel's refresh rate rather than its own.

@@ -262,12 +262,13 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-replay $sel
           cargo build $sel
           cargo test $sel
-      # The particle pool: arithmetic over the seeded generator, no
-      # consumer yet — the renderer half and the game that bursts on a
-      # broken block both arrive later, and each grows this list.
+      # The particle pool: arithmetic over the seeded generator. Its
+      # one consumer is the voxel game, which bursts dust on a broken
+      # block behind its render feature — excluded with it, as the
+      # removability rule asks of dependents.
       - name: Build and test without the particle pool
         run: |
-          sel="--workspace --exclude renew-particles"
+          sel="--workspace --exclude renew-particles --exclude renew-sample-cube"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-particles $sel
           cargo build $sel
           cargo test $sel
