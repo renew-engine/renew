@@ -132,12 +132,12 @@ impl UiPresenter {
             .push((ui.root(), [f32::MIN, f32::MIN, f32::MAX, f32::MAX]));
         while let Some((node, inherited)) = self.stack.pop() {
             let index = node.index();
-            let Some(rect) = ui.rect(node) else {
-                continue;
-            };
-            let Some(style) = ui.style(node) else {
-                continue;
-            };
+            // Both answers are Some for every id this walk can hold —
+            // the tree only hands out live children — and the defaults
+            // are the no-op answer if that invariant ever bent: a zero
+            // rectangle draws nothing.
+            let rect = ui.rect(node).unwrap_or_default();
+            let style = ui.style(node).unwrap_or_default();
             let rect = [
                 to_f32(rect.x),
                 to_f32(rect.y),
@@ -343,10 +343,22 @@ mod tests {
         }
     }
 
+    /// A presenter smaller than its tree refuses by name, not by a
+    /// bare slice index.
+    #[test]
+    #[should_panic(expected = "the presenter must be sized for the tree")]
+    fn a_undersized_presenter_refuses_by_name() {
+        let ui = Ui::new(UiLimits { nodes: 8 });
+        let mut presenter = UiPresenter::new(4);
+        presenter.advance(&ui);
+    }
+
     /// A solved tree captures into quads at its solved places, in
-    /// paint order, with transparent nodes (the unstyled root) absent.
+    /// paint order, with transparent nodes (the unstyled root) absent —
+    /// and one frame can never need more than twice the capacity.
     #[test]
     fn a_capture_draws_what_was_solved() {
+        assert_eq!(UiPresenter::new(8).max_quads(), 16);
         let mut ui = Ui::new(UiLimits { nodes: 8 });
         let root = ui.root();
         let first = ui.insert(root).expect("room");
