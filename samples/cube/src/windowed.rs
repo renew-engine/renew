@@ -53,7 +53,7 @@ use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, TexturedCameraRenderer, attachment, pass,
+    Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, attachment, pass,
 };
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, Mesh, PresentOutcome, RenderDesc, Validation,
@@ -253,7 +253,24 @@ struct CubeApp {
 struct Gpu {
     device: Device,
     target: WindowTarget,
-    renderer: TexturedCameraRenderer,
+    renderer: ShadowedCameraRenderer,
+    /// The sun's view-projection, packed for the caster's push and
+    /// kept as columns for the lit block — a constant of the arena,
+    /// computed once at bring-up because neither the sun nor the
+    /// arena's bounds ever move.
+    light: RenderCamera,
+    light_columns: [[f32; 4]; 4],
+    /// Which edit count the caster mesh was built from. Its own
+    /// counter rather than sharing the world mesh's: the caster is a
+    /// function of the blocks ALONE (`casting_scene` never sees the
+    /// aim), so rebuilding it when the player merely turns would remesh
+    /// the whole arena into byte-identical geometry — and tracking it
+    /// separately is also what lets a refused upload be re-asked on the
+    /// next frame instead of being skipped for that world state.
+    cast_at: (u32, u32),
+    /// The caster's own mesh: the world minus the roof, which is what
+    /// lets a sun light a closed box. Rebuilt when the blocks change.
+    caster_mesh: Mesh,
     /// The world's geometry, uploaded once and redrawn from every angle.
     ///
     /// **This is what putting the matrix on the GPU bought.** The mesh is
@@ -493,7 +510,7 @@ impl CubeApp {
         // The atlas is generated, so building the renderer is where it
         // is uploaded. One renderer, one atlas: every block in this world
         // samples the same sheet.
-        let renderer = TexturedCameraRenderer::new(
+        let renderer = ShadowedCameraRenderer::new(
             &device,
             target.format(),
             Extent {
@@ -501,14 +518,25 @@ impl CubeApp {
                 height: crate::atlas::HEIGHT,
             },
             &crate::atlas::pixels(),
+            crate::render::SHADOW_MAP_SIZE,
         )
         .map_err(|error| format!("building the camera pipeline: {error}"))?;
+        let grid = self.world.grid();
+        let light_columns = crate::camera::sun_light(
+            crate::render::low_corner(grid),
+            crate::render::high_corner(grid),
+        )
+        .columns();
+        let light = RenderCamera::from_columns(light_columns);
         let mesh = renderer
             .upload(
                 &device,
                 &crate::render::build_world_space(self.world.grid(), self.aim_cell()),
             )
             .map_err(|error| format!("uploading the world's geometry: {error}"))?;
+        let caster_mesh = renderer
+            .upload(&device, &crate::render::casting_scene(self.world.grid()))
+            .map_err(|error| format!("uploading the caster's geometry: {error}"))?;
         let overlay = MeshRenderer::new(&device, target.format())
             .map_err(|error| format!("building the overlay pipeline: {error}"))?;
         let crosshair_aspect = aspect_of(size);
@@ -533,7 +561,11 @@ impl CubeApp {
             device,
             target,
             renderer,
+            light,
+            light_columns,
             mesh,
+            caster_mesh,
+            cast_at: self.world.edits(),
             built_at: self.world.edits(),
             aimed_at: self.aim_cell(),
             overlay,
@@ -582,6 +614,22 @@ impl CubeApp {
             gpu.aimed_at = aimed;
         }
 
+        // The caster is rebuilt when the BLOCKS change, which is not
+        // the same event as the world mesh's: that one also rebuilds
+        // when the aim moves, and the aim is invisible to the shadow.
+        // A refused upload leaves `cast_at` behind, so the next frame
+        // asks again rather than shadowing a world that no longer
+        // exists for as long as the player stands still.
+        if gpu.cast_at != edits
+            && let Ok(caster) = gpu.renderer.upload(
+                &gpu.device,
+                &crate::render::casting_scene(self.world.grid()),
+            )
+        {
+            gpu.caster_mesh = caster;
+            gpu.cast_at = edits;
+        }
+
         // A resize changes what "square" means, so the arms are rebuilt
         // rather than left with the old window's stretch. Two quads: not
         // a cost worth caching around. A refused rebuild keeps the arms
@@ -596,7 +644,7 @@ impl CubeApp {
             gpu.crosshair_aspect = wanted;
         }
 
-        let packed = RenderCamera::from_columns(camera.columns());
+        let packed = ShadowMatrices::from_columns(camera.columns(), gpu.light_columns);
         let color = [attachment(SKY)];
         // The frame's particles, packed into the scratch sized at
         // bring-up — a burst costs the steady-state loop no allocation.
@@ -610,6 +658,10 @@ impl CubeApp {
             [up.x, up.y, up.z],
         );
         let world = gpu.renderer.item(&gpu.mesh, &packed);
+        // The caster pass leads every frame: the same world mesh as the
+        // light sees it, depth only, into the map the lit item samples.
+        let casting = [gpu.renderer.caster_item(&gpu.caster_mesh, &gpu.light)];
+        let shadow = gpu.renderer.shadow_pass(&casting);
 
         // **The outcome is the recovery signal, not noise.** `render`
         // never rebuilds a swapchain on its own; a target whose surface
@@ -640,11 +692,11 @@ impl CubeApp {
                 gpu.sprinkler.item(&gpu.instances, live, &push),
                 gpu.overlay.item(&gpu.crosshair),
             ];
-            let passes = [pass(&color, &items)];
+            let passes = [shadow, pass(&color, &items)];
             gpu.target.render(&RenderDesc::new(&passes))
         } else {
             let items = [world, gpu.overlay.item(&gpu.crosshair)];
-            let passes = [pass(&color, &items)];
+            let passes = [shadow, pass(&color, &items)];
             gpu.target.render(&RenderDesc::new(&passes))
         };
         self.record_present(&outcome);

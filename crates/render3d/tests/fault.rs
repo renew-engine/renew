@@ -24,8 +24,8 @@
 #![allow(unsafe_code)]
 
 use renew_render3d::{
-    CameraRenderer, MeshRenderer, Render3dError, Scene, TexturedCameraRenderer,
-    TexturedMeshRenderer,
+    CameraRenderer, MeshRenderer, Render3dError, Scene, ShadowedCameraRenderer,
+    TexturedCameraRenderer, TexturedMeshRenderer,
 };
 use renew_rhi::{Device, DeviceDesc, DeviceError, Extent, TargetError, TargetFormat, Validation};
 
@@ -256,6 +256,50 @@ fn textured_constructors_report_their_own_failures() {
         }
         drop(device);
     }
+
+    // R8 and R9 — the shadowed constructor builds TWO pipelines, and
+    // each one's refusal must surface rather than being swallowed by
+    // the other's success. The ordinal is what separates them: the
+    // caster is created first, the lit pipeline second, so failing the
+    // first occurrence proves the caster's unwind and failing the
+    // second proves the lit one's. A constructor that built them in
+    // the other order, or that ignored the first result, would pass
+    // one of these and fail the other.
+    for (label, ordinal) in [("R8", 1u32), ("R9", 2)] {
+        arm(&format!(
+            "vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY@{ordinal}"
+        ));
+        let device = new_device().expect("the device should come up with only a pipeline armed");
+        match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE, 64) {
+            Err(error @ Render3dError::Pipeline(_)) => {
+                assert!(
+                    error.to_string().starts_with("building the mesh pipeline:"),
+                    "{label}: Display lost its context: {error}"
+                );
+            }
+            other => panic!(
+                "{label}: expected pipeline {ordinal} to fail into the Pipeline arm, got {other:?}"
+            ),
+        }
+        drop(device);
+    }
+
+    // R10 — the shadow map itself is refused. The map is a render
+    // image, not a texture, and its own failure must not be reported
+    // as one: a reader sent to "creating the texture" would go looking
+    // at the atlas, which is fine.
+    arm("vkCreateImage=ERROR_OUT_OF_HOST_MEMORY@2");
+    let device = new_device().expect("device for R10");
+    match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE, 64) {
+        Err(error @ Render3dError::Texture(_)) => {
+            assert!(
+                error.to_string().starts_with("creating the texture:"),
+                "R10: Display lost its context: {error}"
+            );
+        }
+        other => panic!("R10: expected the shadow map's failure to surface, got {other:?}"),
+    }
+    drop(device);
 
     // R7 — the image itself is refused. Its own arm, because it happens
     // before any scene exists, and reporting it as a geometry upload

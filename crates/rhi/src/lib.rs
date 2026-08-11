@@ -166,6 +166,34 @@ pub mod builtin {
         fragment: MESH_CAMERA_TEXTURED_FS_SPV,
     };
 
+    /// Vertex stage SPIR-V for the shadowed camera mesh path: two
+    /// matrices in one 128-byte push block, light-space position out.
+    pub static MESH_CAMERA_SHADOW_VS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_shadow.vert.spv");
+    /// Fragment stage SPIR-V sampling the atlas at set 0 and the
+    /// shadow map at set 1, dimming where the light recorded nearer.
+    pub static MESH_CAMERA_SHADOW_FS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_shadow.frag.spv");
+
+    /// The shadowed camera mesh pair: [`MESH_CAMERA_TEXTURED`] plus a
+    /// shadow term. World-space positions, colours and coordinates per
+    /// vertex; the camera's AND the light's matrices as one 128-byte
+    /// push block (exactly [`MAX_PUSH_CONSTANT_BYTES`], camera first);
+    /// the atlas at sampled slot 0 and a depth-kinded render image —
+    /// the shadow map a depth-only pass rendered this frame — at
+    /// slot 1. Fade constants identical to the textured pair's: two
+    /// pipelines drawing one world must fade alike or the seam shows.
+    ///
+    /// The CASTER that fills the shadow map is [`MESH_CAMERA`]'s
+    /// vertex stage through a depth-only pipeline — no new shader,
+    /// its colour output simply has no consumer.
+    ///
+    /// [`MAX_PUSH_CONSTANT_BYTES`]: crate::MAX_PUSH_CONSTANT_BYTES
+    pub const MESH_CAMERA_SHADOW: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_SHADOW_VS_SPV,
+        fragment: MESH_CAMERA_SHADOW_FS_SPV,
+    };
+
     /// Vertex stage SPIR-V for a full-target textured quad.
     pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
     /// Fragment stage SPIR-V sampling set 0, binding 0.

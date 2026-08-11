@@ -14,6 +14,12 @@ for maturity, dependencies and core status.
 - `Projection` — a perspective under the engine conventions.
 - `Camera` — the pair, with `view_projection()` and the `columns()`
   boundary shape a GPU-facing pack type consumes.
+- `Orthographic` — a box of view space mapped to clip space with no
+  perspective divide, under the same conventions. A directional
+  light's projection: a sun does not foreshorten, so the region a
+  shadow map covers is exactly this shape.
+- `LightCamera` — `Camera`'s shape for a light: a `View` and an
+  `Orthographic`, with the same `view_projection()` and `columns()`.
 - `aspect_of` — width over height with a degenerate-extent fallback, so
   no infinity ever reaches a projection.
 

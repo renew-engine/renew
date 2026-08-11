@@ -13,8 +13,10 @@
 //!   one that refuses.
 //! - **An adapter with no depth format is refused by name**, before
 //!   anything is created, carrying the format chain that was tried.
-//! - **Positions are clip space.** There is no camera here; a caller
-//!   drawing a world transforms on its own side until one exists.
+//! - **Positions are clip space on the mesh paths, world space on the
+//!   camera ones.** Which it is follows from the renderer: the plain
+//!   pair takes geometry already projected, the camera pair takes a
+//!   matrix per draw and projects on the GPU.
 //! - **Target-agnostic.** [`MeshRenderer::item`] returns the rendering
 //!   crate's own draw item and [`attachment`] the matching colour
 //!   attachment; the caller composes the frame on its own stack and
@@ -41,7 +43,7 @@ mod gpu;
 mod scene;
 
 pub use gpu::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, TexturedCameraRenderer,
-    TexturedMeshRenderer, attachment, depth_attachment, pass,
+    Camera, CameraRenderer, MeshRenderer, Render3dError, ShadowMatrices, ShadowedCameraRenderer,
+    TexturedCameraRenderer, TexturedMeshRenderer, attachment, depth_attachment, pass,
 };
 pub use scene::Scene;

@@ -330,3 +330,34 @@ Target: SPIR-V 1.0
 ```
 
 784 bytes, the exact blob `builtin` embeds.
+
+## mesh_camera_shadow.vert and .frag - compiled 2026-08-11
+
+The shadowed camera mesh pair: the textured pair's stages plus a
+shadow term. The vertex stage carries TWO matrices in one 128-byte
+push block (the camera's and the light's — exactly the guaranteed push
+ceiling) and hands the fragment stage the vertex's light-space
+position; the fragment stage samples the atlas at set 0 and the shadow
+map at set 1, compares its own light depth against the map's under
+reversed-Z with a constant bias (linear light depth — the light is
+orthographic), and dims where something nearer was recorded. Fade
+constants identical to the textured pair's, because two pipelines
+drawing one world must fade alike. Version output observed again
+rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_shadow.vert -o mesh_camera_shadow.vert.spv
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+1484 bytes and 2148 bytes, the exact blobs `builtin` embeds. The
+shadow CASTER needs no new shader: a depth-only pipeline reuses
+`mesh_camera.vert` unchanged — its colour output simply has no
+consumer.

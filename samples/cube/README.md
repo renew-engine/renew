@@ -166,8 +166,9 @@ first, so a mesher that agreed with itself rather than with the arithmetic
 would fail.
 
 Faces are shaded by direction -- brightest up, dimmest down, the two
-horizontal axes distinguished. Nothing lights the scene in v0, so a world
-drawn in one colour per block type reads as a single silhouette with an
+horizontal axes distinguished. No light shades a face by which way it
+points (the sun casts shadows and does nothing else), so a world drawn
+in one colour per block type reads as a single silhouette with an
 outline; varying the colour by which way a face points is the cheapest
 thing that makes an edge visible, and it is free at runtime because the
 colour is baked into the vertex. A block type with no colour of its own
@@ -476,6 +477,29 @@ command line, not mouse deltas: a picture that depended on how somebody
 moved their hand could not be compared, and these pictures are committed.
 
 ## Drawing it
+
+Every world-space picture — and the windowed game itself — is lit by
+the arena's sun: a fixed directional light, tilted so every cast
+shadow leans the same way. The arena is a closed box, so the one thing
+that makes this work is that **the roof does not cast**: the shadow
+map is built from the world minus its ceiling layer, and the sun
+shines in as though the roof were glass. The walls, the mound and
+anything a player builds all cast onto the floor.
+
+The light's box is fitted to the arena's bounding sphere rather than
+to its corners, which is not fussiness: a frustum that clips a caster
+does not merely lose that shadow, it draws the clip plane itself as a
+straight shadow edge across the floor that no geometry explains. A
+test walks all eight corners through the light's matrix and fails if
+any of them leaves the box. The sun is a constant of those corners, so
+the same world always casts the same shadows and these pictures stay
+reproducible byte for byte.
+
+The map is a single 2048-texel depth image sampled once per fragment,
+with no filtering: clean at block scale, and still stepped where the
+light grazes a surface. The size was chosen by comparing pictures —
+half of it stepped visibly in `digging.png` — and filtering rather
+than a bigger map is what would fix the rest.
 
 ![The arena, drawn isometrically: the floor and two inner walls, with the mound at the centre](arena.png)
 
