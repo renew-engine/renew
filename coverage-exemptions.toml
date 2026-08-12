@@ -71,7 +71,7 @@ reason = "The width guards on the pack's own header fields. Reaching one needs m
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [680]
+lines = [684]
 reason = "The unreachable arm of the walk's surface-depth barrier: a depth-carrying surface pass on a depthless target was already refused by the DepthUnsupported check before recording began, so the walk cannot hand this site a depth use with no depth image. The arm exists so the guaranteed-Some is stated without a banned expect; driving it would require breaking the refusal it stands behind."
 
 [[exempt]]
@@ -91,17 +91,17 @@ reason = "The format-feature pre-check's refusal: every measuring lane's adapter
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [383]
+lines = [387]
 reason = "The depthless-adapter arm of target creation: no depth image is built when the adapter refused the whole depth format chain. The pinned software rasterizer offers D32_SFLOAT, the format query is a void call no fault layer can mutate, and the device suite's probe asserts a format exists wherever the strict lane runs — so the arm is reachable only on hardware the lanes do not have. Its logic is one None."
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [509, 510, 511]
+lines = [513, 514, 515]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter. Same unreachability as the creation arm above: every measuring lane's adapter offers a depth format, and the query that decides it cannot be faulted. The error construction is driven by the display test in the error module; the branch condition's false side runs on every depth-carrying frame."
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [1102, 1103, 1104]
+lines = [1133, 1134, 1135]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
@@ -156,5 +156,5 @@ reason = "The scenario binary's two refusal arms: the argument guard (a drifted 
 
 [[exempt]]
 file = "samples/glide/src/windowed.rs"
-lines = [407, 408, 409, 410, 411, 412, 413]
+lines = [412, 413, 414, 415, 416, 417, 418]
 reason = "The menu-open half of the draw: the presenter's snapshots advanced and emitted, and a label placed per button. The lane's windowed run is keyboardless under a virtual display, so nothing there ever opens the menu, and no test reaches draw at all - drawing needs the bring-up's live target. Everything the block decides is covered without it: the advance/emit pair by the presentation crate's own tests, the placement arithmetic by a unit test on label_origin (the block's only computation), and the routing, pausing, restarting and rescaling behind it by constructed-event tests on the seam. Deliberately narrow: the is_open check the frame evaluates every draw is measured and not exempt."

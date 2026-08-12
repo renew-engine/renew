@@ -29,6 +29,65 @@ use renew_rhi::{
 };
 
 /// The one color attachment these frames render into: cleared, stored.
+/// The format every offscreen target in this file is created with.
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
+
+/// The bytes an offscreen frame stores for an authored texel.
+///
+/// A texture's bytes are values, sampled exactly as stored, so a texel of
+/// `b` arrives at the shader as `b / 255`. The offscreen attachment then
+/// encodes on write, so what lands is not `b` — it is whatever that light
+/// encodes to. Derived rather than restated, so the expectation says which
+/// of those two it is and follows the format if it ever moves again.
+/// Assert a rendered pixel matches a *computed* expectation, allowing the
+/// one code the two encoders may disagree by.
+///
+/// **Not a loosening of the golden gate, and the difference matters.** A
+/// committed golden compares this adapter's bytes against this adapter's
+/// bytes, so it stays exact and one code of drift there is a regression.
+/// This compares bytes the *hardware* encoded against bytes
+/// `renew_rhi::srgb` encoded — two implementations of the same transfer
+/// function. Vulkan does not require them to agree bit for bit, and
+/// measured on the pinned software rasterizer they do not: a texel of 10
+/// lands one code apart from what the table computes.
+///
+/// Under UNORM the conversion was `round(255 x v)` and any two
+/// implementations agreed trivially, which is why an exact assertion
+/// stood for as long as it did. It was never sound; the old format hid
+/// that it was comparing two encoders at all.
+fn assert_within_one_code(found: &[u8], computed: &[u8], what: &str) {
+    assert_eq!(found.len(), computed.len(), "{what}: lengths differ");
+    for (channel, (&f, &c)) in found.iter().zip(computed.iter()).enumerate() {
+        let drift = i16::from(f) - i16::from(c);
+        assert!(
+            drift.abs() <= 1,
+            "{what}: channel {channel} is {f} against a computed {c}, \
+             which is {drift} codes apart rather than at most one"
+        );
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect"
+)]
+fn stored(authored: &[u8]) -> Vec<u8> {
+    authored
+        .iter()
+        .enumerate()
+        .map(|(channel, &byte)| {
+            let value = f32::from(byte) / 255.0;
+            if channel % 4 == 3 {
+                // Alpha is not colour and the transfer function does not
+                // touch it; the attachment stores it linearly either way.
+                byte
+            } else {
+                TARGET.stores(value).expect("a colour target stores colour")
+            }
+        })
+        .collect()
+}
+
 fn clear(color: Color) -> [Attachment; 1] {
     [Attachment::new(
         LoadOp::Clear(ClearValue::Color(color)),
@@ -115,13 +174,21 @@ fn clear_is_byte_exact_everywhere() {
         })
         .expect("offscreen target");
     // 51/255, 102/255, 153/255: unambiguous UNORM conversions.
-    let color = clear(Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0));
+    let color = clear(Color::new(
+        renew_rhi::srgb::decode(51),
+        renew_rhi::srgb::decode(102),
+        renew_rhi::srgb::decode(153),
+        1.0,
+    ));
     target
         .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
         .expect("clear render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
+    // The authored bytes themselves. The clear hands over the light behind
+    // them and the attachment encodes it back, so the round trip is exact
+    // and the expectation is the value that was chosen — no derivation.
     let expected = [51u8, 102, 153, 255];
     for (index, pixel) in pixels.chunks_exact(4).enumerate() {
         assert_eq!(
@@ -159,7 +226,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
     // and the default are the same bytes.
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm).blend(Blend::Opaque),
+            &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Srgb).blend(Blend::Opaque),
         )
         .expect("triangle pipeline");
     let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
@@ -376,7 +443,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         .expect("binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
     let mut target = device
@@ -402,7 +469,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
             // Clip space runs top-to-bottom in y and the atlas's first
             // row is its top row, so neither axis flips.
             let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
-            let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+            let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
             let offset = ((y * SIZE + x) as usize) * 4;
             assert_eq!(
                 &pixels[offset..offset + 4],
@@ -429,10 +496,10 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         .render(&RenderDesc::new(&passes))
         .expect("render after the caller dropped its handles");
     target.read_back_into(&mut pixels);
-    let texel = &ATLAS[..4];
+    let texel = stored(&ATLAS[..4]);
     assert_eq!(
         &pixels[..4],
-        texel,
+        texel.as_slice(),
         "the second draw must sample the same texels as the first"
     );
 
@@ -470,10 +537,10 @@ fn two_textures_share_one_pipeline() {
     /// The texel a target pixel samples, and which atlas it reads under
     /// the given slot order — the CPU statement of the fragment stage's
     /// midline split.
-    fn expected(atlases: [&[u8; 16]; 2], x: u32, y: u32) -> &[u8] {
+    fn expected(atlases: [&[u8; 16]; 2], x: u32, y: u32) -> Vec<u8> {
         let atlas = atlases[usize::from(x >= SIZE / 2)];
         let texel = (((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE) as usize;
-        &atlas[texel * 4..texel * 4 + 4]
+        stored(&atlas[texel * 4..texel * 4 + 4])
     }
 
     let Some(device) = device_or_skip().expect("device bring-up") else {
@@ -512,8 +579,7 @@ fn two_textures_share_one_pipeline() {
         .expect("right binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED_PAIR, TargetFormat::Rgba8Unorm)
-                .sampled_bindings(2),
+            &PipelineDesc::new(builtin::TEXTURED_PAIR, TargetFormat::Rgba8Srgb).sampled_bindings(2),
         )
         .expect("two-slot pipeline");
     let mut target = device
@@ -540,12 +606,14 @@ fn two_textures_share_one_pipeline() {
         for y in 0..SIZE {
             for x in 0..SIZE {
                 let offset = ((y * SIZE + x) as usize) * 4;
-                assert_eq!(
+                assert_within_one_code(
                     &pixels[offset..offset + 4],
-                    expected(atlases, x, y),
-                    "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
-                    atlases.map(|atlas| atlas[0]),
-                    device.adapter()
+                    expected(atlases, x, y).as_slice(),
+                    &format!(
+                        "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
+                        atlases.map(|atlas| atlas[0]),
+                        device.adapter()
+                    ),
                 );
             }
         }
@@ -634,9 +702,18 @@ fn a_rendered_image_samples_back_byte_exact() {
     let image_binding = device
         .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
         .expect("image binding");
-    let pipeline = device
+    // Two pipelines for one shader, because the two targets no longer
+    // agree: a colour render image stores what was written, the offscreen
+    // target encodes on write. One pipeline served both while both were
+    // UNORM; now the format each pass draws into has to be named.
+    let into_image_pipeline = device
         .create_pipeline(
             &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("render-image pipeline");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
     let mut target = device
@@ -651,7 +728,7 @@ fn a_rendered_image_samples_back_byte_exact() {
         StoreOp::Store,
     );
     let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
-    let into_image = [Item::new(&pipeline).bindings(&[&atlas_binding])];
+    let into_image = [Item::new(&into_image_pipeline).bindings(&[&atlas_binding])];
     // Two sampling items: the second mention of an already-sampled
     // image must recognise the transition already happened, not emit
     // it twice — identical draws, so the pixels also prove it.
@@ -680,7 +757,7 @@ fn a_rendered_image_samples_back_byte_exact() {
         for y in 0..SIZE {
             for x in 0..SIZE {
                 let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
-                let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+                let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
                 let offset = ((y * SIZE + x) as usize) * 4;
                 assert_eq!(
                     &pixels[offset..offset + 4],
@@ -783,7 +860,7 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
         .expect("depth-only pipeline");
     let reader = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("reader pipeline");
     let vertices = left_half_quad(QUAD_DEPTH);
@@ -823,7 +900,8 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
             // Depth samples as (D, 0, 0, 1); UNORM8 conversion of 0.25
             // is 64, of the far clear 0.
             let expected: [u8; 4] = if x < SIZE / 2 {
-                [64, 0, 0, 255]
+                <[u8; 4]>::try_from(stored(&[64, 0, 0, 255]).as_slice())
+                    .expect("four channels in, four out")
             } else {
                 [0, 0, 0, 255]
             };
@@ -883,7 +961,7 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
@@ -996,7 +1074,7 @@ fn depth_test_keeps_the_near_quad_in_either_draw_order() -> Result<(), Box<dyn s
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_DEPTH_LAYOUT)
             .depth_state(DepthState::read_write()),
     )?;
@@ -1156,7 +1234,7 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
     };
     let mut target = device.create_offscreen_target(extent)?;
     let with_depth = device.depth_format_name().is_some();
-    let mut desc = PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+    let mut desc = PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Srgb)
         .instance_input(builtin::INSTANCED_DEPTH_LAYOUT);
     if with_depth {
         desc = desc.depth_state(DepthState::read_write());
@@ -1283,7 +1361,7 @@ fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn 
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(&PipelineDesc::mesh(
         builtin::MESH,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         builtin::MESH_LAYOUT,
     ))?;
 
@@ -1427,12 +1505,8 @@ fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::mesh(
-            builtin::MESH,
-            TargetFormat::Rgba8Unorm,
-            builtin::MESH_LAYOUT,
-        )
-        .instance_input(builtin::INSTANCED_LAYOUT),
+        &PipelineDesc::mesh(builtin::MESH, TargetFormat::Rgba8Srgb, builtin::MESH_LAYOUT)
+            .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let mut vertices = Vec::new();
     for corner in [
@@ -1489,7 +1563,7 @@ fn oversized_frame_data_is_a_retained_contract_check() -> Result<(), Box<dyn std
         height: 16,
     })?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(8, renew_rhi::BufferUsage::PerFrame)?;

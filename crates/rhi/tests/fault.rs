@@ -174,11 +174,11 @@ fn binding_desc<'a>(texture: &'a Texture, sampler: &'a Sampler) -> BindingDesc<'
 }
 
 fn sampled_desc() -> PipelineDesc<'static> {
-    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1)
+    PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1)
 }
 
 fn pipeline_desc() -> PipelineDesc<'static> {
-    PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm)
+    PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Srgb)
 }
 
 /// A scenario failure, carrying its own name.
@@ -1465,7 +1465,7 @@ fn every_driver_failure_ladder_behaves() {
         verdicts.push(teardown_case("E7 teardown/validation-report", |device| {
             match device.create_pipeline(&PipelineDesc::new(
                 Shaders::new(&IMPLAUSIBLE_SPIRV, builtin::TRIANGLE_FS_SPV, 3),
-                TargetFormat::Rgba8Unorm,
+                TargetFormat::Rgba8Srgb,
             )) {
                 Err(PipelineError::Creation { .. }) => {}
                 Err(other) => return Err(wrong("", "Creation(vkCreateShaderModule)", &other)),
@@ -1540,7 +1540,7 @@ fn every_driver_failure_ladder_behaves() {
                 .map_err(|error| format!("F2: target: {error}"))?;
             let instanced = device
                 .create_pipeline(
-                    &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+                    &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
                         .instance_input(builtin::INSTANCED_LAYOUT),
                 )
                 .map_err(|error| format!("F2: instanced pipeline: {error}"))?;

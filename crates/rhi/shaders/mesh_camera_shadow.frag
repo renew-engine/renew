@@ -29,7 +29,7 @@ layout(location = 0) out vec4 out_colour;
 // See mesh_camera_textured.frag; identical, because two pipelines
 // drawing one world must fade alike or the seam shows.
 const float MAX_FADE = 0.72;
-const vec3 HORIZON = vec3(0.09, 0.10, 0.13);
+const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
 
 // How much surface survives in shadow. Well above zero: a shadow is a
 // dimming of a lit world, not a hole in it.

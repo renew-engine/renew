@@ -223,9 +223,11 @@ fn build(
 ) -> Result<OffscreenTarget, TargetError> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
-        // offscreen target's format is a static fact of this module.
-        .format(vk::Format::R8G8B8A8_UNORM)
+        // TargetFormat::Rgba8Srgb's one Vulkan spelling — the offscreen
+        // target's format is a static fact of this module, and the pipeline
+        // assertion further down is what keeps it one fact rather than two
+        // that can drift into a draw the validation layer rejects.
+        .format(vk::Format::R8G8B8A8_SRGB)
         .extent(vk::Extent3D {
             width: extent.width,
             height: extent.height,
@@ -282,9 +284,11 @@ fn build(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
-        // offscreen target's format is a static fact of this module.
-        .format(vk::Format::R8G8B8A8_UNORM)
+        // TargetFormat::Rgba8Srgb's one Vulkan spelling — the offscreen
+        // target's format is a static fact of this module, and the pipeline
+        // assertion further down is what keeps it one fact rather than two
+        // that can drift into a draw the validation layer rejects.
+        .format(vk::Format::R8G8B8A8_SRGB)
         .subresource_range(color_range());
     // SAFETY: image live and bound.
     let view = unsafe {
@@ -446,7 +450,7 @@ impl OffscreenTarget {
     /// [`read_back_into`](Self::read_back_into).
     ///
     /// Every item's pipeline must come from this target's device and
-    /// target [`TargetFormat::Rgba8Unorm`] — contract violations,
+    /// target [`TargetFormat::Rgba8Srgb`] — contract violations,
     /// checked in dev builds.
     ///
     /// # Panics
@@ -521,8 +525,8 @@ impl OffscreenTarget {
                 // in the contract; the surface's own format is this
                 // target's to assert.
                 debug_assert!(
-                    !surface_pass || item.pipeline.format == TargetFormat::Rgba8Unorm,
-                    "pipeline targets {:?}, offscreen is Rgba8Unorm",
+                    !surface_pass || item.pipeline.format == TargetFormat::Rgba8Srgb,
+                    "pipeline targets {:?}, offscreen is Rgba8Srgb",
                     item.pipeline.format
                 );
             }

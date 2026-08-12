@@ -40,7 +40,7 @@ const float MAX_FADE = 0.72;
 // What distance fades toward. The same colour the samples clear to, so
 // the fade reads as depth rather than as a grey wash — a fade toward some
 // other colour would look like haze sitting in front of the backdrop.
-const vec3 HORIZON = vec3(0.09, 0.10, 0.13);
+const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
 
 void main() {
     out_colour = vec4(

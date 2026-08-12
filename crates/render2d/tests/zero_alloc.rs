@@ -29,15 +29,20 @@ const WANDER: [f32; 4] = [24.0, 28.0, 32.0, 36.0];
 /// The colour this file clears to, named once so the expectation below can
 /// be derived from it rather than restating its bytes.
 const CLEAR: Color = Color {
-    r: 51.0 / 255.0,
-    g: 102.0 / 255.0,
-    b: 153.0 / 255.0,
+    // The light behind the authored bytes 51, 102, 153. The
+    // attachment encodes on write, so handing it these stores the
+    // authored bytes back and the picture is the one that was chosen.
+    // Passing byte/255 would encode a value that is already encoded,
+    // which lifts every pixel -- measured at 51 landing on 124.
+    r: renew_rhi::srgb::decode(51),
+    g: renew_rhi::srgb::decode(102),
+    b: renew_rhi::srgb::decode(153),
     a: 1.0,
 };
 
 /// The format this file's target is created with, named once so the
 /// expectation below follows it rather than restating it.
-const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
 /// The clear's exact bytes, derived from the format rather than written
 /// down; the conversion is unambiguous by choice of channel values, so any

@@ -33,9 +33,14 @@ use renew_rhi::{
 const SIZE: u32 = 64;
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions.
 const CLEAR: Color = Color {
-    r: 51.0 / 255.0,
-    g: 102.0 / 255.0,
-    b: 153.0 / 255.0,
+    // The light behind the authored bytes 51, 102, 153. The
+    // attachment encodes on write, so handing it these stores the
+    // authored bytes back and the picture is the one that was chosen.
+    // Passing byte/255 would encode a value that is already encoded,
+    // which lifts every pixel -- measured at 51 landing on 124.
+    r: renew_rhi::srgb::decode(51),
+    g: renew_rhi::srgb::decode(102),
+    b: renew_rhi::srgb::decode(153),
     a: 1.0,
 };
 /// The format every target in this file is created with.
@@ -44,7 +49,7 @@ const CLEAR: Color = Color {
 /// working space changes, this constant moves and every byte derived from
 /// it follows — rather than a scatter of literals each of which is wrong
 /// in the same way and none of which says why.
-const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
 /// What the attachment stores for the clear above.
 ///
@@ -69,9 +74,15 @@ fn clear_bytes() -> [u8; 4] {
 }
 
 /// The 4×4 test atlas, four 2×2 solid regions: opaque red, opaque
-/// green, opaque blue, and half-alpha red — premultiplied, as every
-/// byte handed to the renderer must be (128 ≈ 0.5·255 in both the
-/// color and alpha channels).
+/// green, opaque blue, and half-alpha red — **authored, straight
+/// alpha**, as every byte handed to the renderer now is. The half-alpha
+/// red is full red at half coverage; the shader does the multiply.
+///
+/// **The mid-tone is deliberate.** Opaque red, green and blue are all 0s
+/// and 255s, and those are the two values every transfer function fixes —
+/// a fixture built only from them cannot test a decode at all, which is
+/// exactly how this golden watched an entire colour change go past
+/// without noticing anything.
 const ATLAS_EXTENT: Extent = Extent {
     width: 4,
     height: 4,
@@ -109,7 +120,7 @@ fn atlas_bytes() -> Vec<u8> {
                 (true, true) => [255, 0, 0, 255],
                 (false, true) => [0, 255, 0, 255],
                 (true, false) => [0, 0, 255, 255],
-                (false, false) => [128, 0, 0, 128],
+                (false, false) => [255, 0, 0, 128],
             };
             bytes.extend_from_slice(&texel);
         }
@@ -356,7 +367,7 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
     assert_ne!(over_clear, clear_bytes(), "half-alpha sprite left no trace");
     assert_ne!(
         over_clear,
-        [128, 0, 0, 128],
+        [255, 0, 0, 128],
         "half-alpha replaced instead of blending"
     );
     assert_eq!(

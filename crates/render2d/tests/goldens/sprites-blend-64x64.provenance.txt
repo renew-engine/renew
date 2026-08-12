@@ -1,5 +1,5 @@
 sprites-blend-64x64.rgba — RGBA8, tightly packed, row-major, 64x64
-fnv1a-64 of the pixel bytes: 0xecf5da1c71c19aa5
+fnv1a-64 of the pixel bytes: 0x963cfdfcd32c4525
 rendered by: llvmpipe (LLVM 18.1.3, 256 bits) (kind SoftwareRasterizer, vendor 0x10005, device 0x0000, driver 109056003)
 shaders: crates/render2d/shaders (see its compile record)
 ritual: the test never writes the canonical file above — it writes

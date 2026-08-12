@@ -338,12 +338,19 @@ fn lerp4(from: [f32; 4], to: [f32; 4], alpha: Alpha) -> [f32; 4] {
 ///
 /// The two spellings agree exactly at alpha 255, which is why an opaque
 /// test cannot tell them apart.
+/// **The colour channels are decoded, the alpha is not.** A background is
+/// authored by choosing bytes that look right, so those bytes are
+/// display-encoded and their light is what shading and blending need.
+/// Alpha is coverage rather than light, and the transfer function has no
+/// business touching it — which is also why the premultiply happens after
+/// the decode: multiplying an encoded value by alpha and decoding the
+/// product is not the same number, and it is the wrong one.
 fn tint_of(background: [u8; 4]) -> [f32; 4] {
     let alpha = f32::from(background[3]) / 255.0;
     [
-        f32::from(background[0]) / 255.0 * alpha,
-        f32::from(background[1]) / 255.0 * alpha,
-        f32::from(background[2]) / 255.0 * alpha,
+        renew_rhi::srgb::decode(background[0]) * alpha,
+        renew_rhi::srgb::decode(background[1]) * alpha,
+        renew_rhi::srgb::decode(background[2]) * alpha,
         alpha,
     ]
 }
@@ -426,7 +433,15 @@ mod tests {
         assert_eq!(quads.len(), 2, "two coloured nodes, no transparent root");
         assert_eq!((quads[0].x, quads[0].width), (0.0, 20.0));
         assert_eq!((quads[1].x, quads[1].width), (20.0, 30.0));
-        assert_eq!(quads[0].tint, [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]);
+        assert_eq!(
+            quads[0].tint,
+            [
+                renew_rhi::srgb::decode(255),
+                renew_rhi::srgb::decode(128),
+                renew_rhi::srgb::decode(64),
+                1.0
+            ]
+        );
     }
 
     /// The blend moves a surviving node between its two captures: at
@@ -498,7 +513,7 @@ mod tests {
         let quads: Vec<Quad> = presenter.frame(Alpha::ZERO).collect();
         assert_eq!(quads.len(), 1, "one panel");
         let alpha = 230.0 / 255.0;
-        let expect = |channel: u8| (f32::from(channel) / 255.0 * alpha).to_bits();
+        let expect = |channel: u8| (renew_rhi::srgb::decode(channel) * alpha).to_bits();
         assert_eq!(
             quads[0].tint[0].to_bits(),
             expect(0x28),
@@ -515,7 +530,7 @@ mod tests {
         // fails against it rather than merely differing from it.
         assert_ne!(
             quads[0].tint[0].to_bits(),
-            (f32::from(0x28u8) / 255.0).to_bits(),
+            renew_rhi::srgb::decode(0x28).to_bits(),
             "this is the unscaled value the bug produced"
         );
     }
@@ -543,7 +558,7 @@ mod tests {
         let quads: Vec<Quad> = presenter.frame(Alpha::ZERO).collect();
         assert_eq!(
             quads[0].tint[0].to_bits(),
-            (f32::from(0x28u8) / 255.0).to_bits()
+            renew_rhi::srgb::decode(0x28).to_bits()
         );
         assert_eq!(quads[0].tint[3].to_bits(), 1.0f32.to_bits());
     }

@@ -267,7 +267,7 @@ impl TexturedMeshRenderer {
         pixels: &[u8],
     ) -> Result<Self, Render3dError> {
         let texture = device
-            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
             .map_err(Render3dError::Texture)?;
         let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
         let binding = device.create_binding(&renew_rhi::BindingDesc::new(
@@ -350,7 +350,7 @@ impl TexturedCameraRenderer {
         pixels: &[u8],
     ) -> Result<Self, Render3dError> {
         let texture = device
-            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
             .map_err(Render3dError::Texture)?;
         // A sampler is part of building the pipeline, and the existing
         // arm already says so; only the image itself is a texture
@@ -602,7 +602,7 @@ impl ShadowedCameraRenderer {
         shadow_size: u32,
     ) -> Result<Self, Render3dError> {
         let texture = device
-            .create_texture(&renew_rhi::TextureDesc::new(extent, pixels))
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
             .map_err(Render3dError::Texture)?;
         let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
         let atlas_binding = device.create_binding(&renew_rhi::BindingDesc::new(

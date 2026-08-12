@@ -89,7 +89,7 @@ pub use vk::pipeline::{
 pub use vk::render_image::{RenderImage, RenderImageDesc, RenderImageKind};
 #[cfg(feature = "present")]
 pub use vk::swapchain::{PresentOutcome, WindowTarget};
-pub use vk::texture::{Texture, TextureDesc};
+pub use vk::texture::{Texture, TextureContent, TextureDesc};
 
 /// The embedded v0 shaders. Most of them draw from `gl_VertexIndex` and
 /// write their own vertex list, so each is bundled with the vertex count
@@ -117,7 +117,7 @@ pub mod builtin {
     /// Linear, not sRGB — the same space the shader mixes in and the
     /// same one [`Color`](crate::Color) carries. The test beside this
     /// module reads the shader source and fails if the two disagree.
-    pub const HORIZON: [f32; 3] = [0.09, 0.10, 0.13];
+    pub const HORIZON: [f32; 3] = [0.008_568_126, 0.010_329_823, 0.015_208_514];
 
     /// Vertex stage SPIR-V for the plain mesh path with a texture.
     pub static MESH_TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/mesh_textured.vert.spv");

@@ -283,7 +283,7 @@ impl Device {
             return Err(fail(
                 self,
                 TargetError::PresentUnsupported {
-                    reason: "no 8-bit UNORM sRGB surface format",
+                    reason: "no 8-bit sRGB surface format",
                 },
             ));
         };
@@ -1406,7 +1406,7 @@ impl WindowTarget {
 fn choose_surface_format(
     formats: &[vk::SurfaceFormatKHR],
 ) -> Option<(vk::SurfaceFormatKHR, TargetFormat)> {
-    let chosen = [vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
+    let chosen = [vk::Format::B8G8R8A8_SRGB, vk::Format::R8G8B8A8_SRGB]
         .into_iter()
         .find_map(|want| {
             formats
@@ -1414,8 +1414,8 @@ fn choose_surface_format(
                 .find(|f| f.format == want && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
         })?;
     let format = match chosen.format {
-        vk::Format::R8G8B8A8_UNORM => TargetFormat::Rgba8Unorm,
-        _ => TargetFormat::Bgra8Unorm,
+        vk::Format::R8G8B8A8_SRGB => TargetFormat::Rgba8Srgb,
+        _ => TargetFormat::Bgra8Srgb,
     };
     Some((*chosen, format))
 }
@@ -1486,12 +1486,12 @@ mod tests {
     #[test]
     fn bgra_wins_when_a_surface_offers_both() {
         let formats = [
-            offered(vk::Format::R8G8B8A8_UNORM, SRGB),
-            offered(vk::Format::B8G8R8A8_UNORM, SRGB),
+            offered(vk::Format::R8G8B8A8_SRGB, SRGB),
+            offered(vk::Format::B8G8R8A8_SRGB, SRGB),
         ];
         let (chosen, format) = choose_surface_format(&formats).expect("both are acceptable");
-        assert_eq!(chosen.format, vk::Format::B8G8R8A8_UNORM);
-        assert_eq!(format, TargetFormat::Bgra8Unorm);
+        assert_eq!(chosen.format, vk::Format::B8G8R8A8_SRGB);
+        assert_eq!(format, TargetFormat::Bgra8Srgb);
     }
 
     #[test]
@@ -1499,12 +1499,36 @@ mod tests {
         // Reachable on real hardware, not on every machine: proving it
         // through a driver would only prove what this machine reports.
         let formats = [
+            offered(vk::Format::B8G8R8A8_UNORM, SRGB),
             offered(vk::Format::R8G8B8A8_SRGB, SRGB),
-            offered(vk::Format::R8G8B8A8_UNORM, SRGB),
         ];
         let (chosen, format) = choose_surface_format(&formats).expect("rgba is acceptable");
-        assert_eq!(chosen.format, vk::Format::R8G8B8A8_UNORM);
-        assert_eq!(format, TargetFormat::Rgba8Unorm);
+        assert_eq!(chosen.format, vk::Format::R8G8B8A8_SRGB);
+        assert_eq!(format, TargetFormat::Rgba8Srgb);
+    }
+
+    /// A surface offering only formats that store what was written is
+    /// refused rather than accepted and drawn into wrongly.
+    ///
+    /// **The refusal is the whole fallback story, and it is deliberate.**
+    /// The alternative — take the UNORM surface and apply the transfer
+    /// function in the shader — needs a second variant of every shader
+    /// that reaches a surface, selected at pipeline creation. That is a
+    /// permutation mechanism, and building a bespoke one here would mean
+    /// writing a path that no machine available to test it can reach:
+    /// the only hardware that takes the fallback is hardware without an
+    /// sRGB surface, and any machine that can run the check has one.
+    ///
+    /// An unexercised path is the failure this repository has paid for
+    /// most often, so this refuses in terms until the permutation
+    /// compiler exists to make the variant cheap and testable.
+    #[test]
+    fn a_surface_offering_no_srgb_format_is_refused() {
+        let formats = [
+            offered(vk::Format::B8G8R8A8_UNORM, SRGB),
+            offered(vk::Format::R8G8B8A8_UNORM, SRGB),
+        ];
+        assert!(choose_surface_format(&formats).is_none());
     }
 
     #[test]

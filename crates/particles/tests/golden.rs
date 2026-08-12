@@ -16,6 +16,14 @@ use renew_rhi::{
     RenderDesc, StoreOp, TargetFormat, Validation,
 };
 
+/// The instance colour, as the light behind bytes 64, 128 and 32.
+const AUTHORED: [f32; 4] = [
+    renew_rhi::srgb::decode(64),
+    renew_rhi::srgb::decode(128),
+    renew_rhi::srgb::decode(32),
+    1.0,
+];
+
 fn strict() -> bool {
     std::env::var_os("RENEW_GOLDEN").is_some_and(|v| v == "1")
 }
@@ -38,10 +46,6 @@ fn device_or_skip() -> Result<Option<Device>, DeviceError> {
 /// of the picture answers with exactly the instance's colour, the
 /// corner stays the clear, and the same frame twice is the same bytes.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one oracle narrative: the pool, the draw, the readback, the refusals read top to bottom"
-)]
 fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::Error>> {
     const SIZE: u32 = 64;
     let Some(device) = device_or_skip()? else {
@@ -70,10 +74,13 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
         gravity: [0.0, 0.0, 0.0],
         drag_per_step: 1.0,
         size: (1.0, 1.0),
-        color: (
-            [64.0 / 255.0, 128.0 / 255.0, 32.0 / 255.0, 1.0],
-            [64.0 / 255.0, 128.0 / 255.0, 32.0 / 255.0, 1.0],
-        ),
+        // The light those authored bytes stand for, not the bytes over
+        // 255. A particle colour is chosen by looking at it, so it is
+        // display-encoded; the attachment encodes on write, so handing it
+        // the decoded light is what stores the byte back unchanged. The
+        // expectation below is still the authored value, which is the
+        // point of decoding here rather than restating it there.
+        color: (AUTHORED, AUTHORED),
         tile: [0.0, 0.0, 1.0, 1.0],
     };
     let mut system = ParticleSystem::new(
@@ -91,7 +98,7 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
     let white = [255u8; 16];
     let renderer = ParticleRenderer::new(
         &device,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         Extent {
             width: 2,
             height: 2,
