@@ -46,6 +46,17 @@ jobs:
             echo "Author is a bot; the agreement does not apply."
             exit 0
           fi
+          # CLA.md names the Owner as a person, so this does too. Deriving it
+          # from `author_association` alone is not reliable: an organisation
+          # member whose membership is private reports as CONTRIBUTOR, which
+          # is how the Owner failed their own check the first time this ran.
+          OWNER_LOGIN=CagdasErturk
+
+          echo "author=$AUTHOR association=$ASSOCIATION"
+          if [ "$AUTHOR" = "$OWNER_LOGIN" ]; then
+            echo "Author is the Owner; there is no agreement to make with oneself."
+            exit 0
+          fi
           case "$ASSOCIATION" in
             OWNER|MEMBER)
               echo "Author is $ASSOCIATION of this repository; treated as the Owner."
