@@ -91,7 +91,7 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
     let white = [255u8; 16];
     let renderer = ParticleRenderer::new(
         &device,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         Extent {
             width: 2,
             height: 2,

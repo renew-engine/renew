@@ -57,7 +57,7 @@ fn build(
             &atlas,
         ),
         canvas,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         capacity,
     )
 }

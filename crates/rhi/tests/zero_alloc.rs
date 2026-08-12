@@ -119,7 +119,7 @@ fn steady_state_frames_allocate_nothing() {
         .expect("image binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
     // The frame under measurement carries per-frame bytes: a gate that
@@ -297,7 +297,7 @@ fn mesh_fixture(
 ) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Mesh), Box<dyn std::error::Error>> {
     let pipeline = device.create_pipeline(&PipelineDesc::mesh(
         builtin::MESH,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         builtin::MESH_LAYOUT,
     ))?;
     let mut vertices = Vec::new();
@@ -338,7 +338,7 @@ fn camera_fixture(
     let pipeline = device.create_pipeline(
         &PipelineDesc::mesh(
             builtin::MESH_CAMERA,
-            TargetFormat::Rgba8Unorm,
+            TargetFormat::Rgba8Srgb,
             builtin::MESH_LAYOUT,
         )
         .push_constant_size(64),
@@ -361,7 +361,7 @@ fn instanced_fixture(
     device: &Device,
 ) -> Result<(renew_rhi::RenderPipeline, renew_rhi::Buffer, [u8; 24]), Box<dyn std::error::Error>> {
     let instanced = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(64, BufferUsage::PerFrame)?;

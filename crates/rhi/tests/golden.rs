@@ -159,7 +159,7 @@ fn triangle_matches_structure_and_the_committed_golden() {
     // and the default are the same bytes.
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Unorm).blend(Blend::Opaque),
+            &PipelineDesc::new(builtin::TRIANGLE, TargetFormat::Rgba8Srgb).blend(Blend::Opaque),
         )
         .expect("triangle pipeline");
     let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
@@ -376,7 +376,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         .expect("binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
     let mut target = device
@@ -512,8 +512,7 @@ fn two_textures_share_one_pipeline() {
         .expect("right binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED_PAIR, TargetFormat::Rgba8Unorm)
-                .sampled_bindings(2),
+            &PipelineDesc::new(builtin::TEXTURED_PAIR, TargetFormat::Rgba8Srgb).sampled_bindings(2),
         )
         .expect("two-slot pipeline");
     let mut target = device
@@ -636,7 +635,7 @@ fn a_rendered_image_samples_back_byte_exact() {
         .expect("image binding");
     let pipeline = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
     let mut target = device
@@ -783,7 +782,7 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
         .expect("depth-only pipeline");
     let reader = device
         .create_pipeline(
-            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("reader pipeline");
     let vertices = left_half_quad(QUAD_DEPTH);
@@ -883,7 +882,7 @@ fn instanced_quads_draw_this_frames_bytes() -> Result<(), Box<dyn std::error::Er
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(64, renew_rhi::BufferUsage::PerFrame)?;
@@ -996,7 +995,7 @@ fn depth_test_keeps_the_near_quad_in_either_draw_order() -> Result<(), Box<dyn s
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_DEPTH_LAYOUT)
             .depth_state(DepthState::read_write()),
     )?;
@@ -1156,7 +1155,7 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
     };
     let mut target = device.create_offscreen_target(extent)?;
     let with_depth = device.depth_format_name().is_some();
-    let mut desc = PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Unorm)
+    let mut desc = PipelineDesc::new(builtin::INSTANCED_DEPTH, TargetFormat::Rgba8Srgb)
         .instance_input(builtin::INSTANCED_DEPTH_LAYOUT);
     if with_depth {
         desc = desc.depth_state(DepthState::read_write());
@@ -1283,7 +1282,7 @@ fn an_indexed_mesh_draws_the_triangles_its_indices_name() -> Result<(), Box<dyn 
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(&PipelineDesc::mesh(
         builtin::MESH,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         builtin::MESH_LAYOUT,
     ))?;
 
@@ -1427,12 +1426,8 @@ fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
     };
     let mut target = device.create_offscreen_target(extent)?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::mesh(
-            builtin::MESH,
-            TargetFormat::Rgba8Unorm,
-            builtin::MESH_LAYOUT,
-        )
-        .instance_input(builtin::INSTANCED_LAYOUT),
+        &PipelineDesc::mesh(builtin::MESH, TargetFormat::Rgba8Srgb, builtin::MESH_LAYOUT)
+            .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let mut vertices = Vec::new();
     for corner in [
@@ -1489,7 +1484,7 @@ fn oversized_frame_data_is_a_retained_contract_check() -> Result<(), Box<dyn std
         height: 16,
     })?;
     let pipeline = device.create_pipeline(
-        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Unorm)
+        &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
             .instance_input(builtin::INSTANCED_LAYOUT),
     )?;
     let buffer = device.create_buffer(8, renew_rhi::BufferUsage::PerFrame)?;

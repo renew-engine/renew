@@ -116,7 +116,7 @@ fn the_steady_state_shadowed_frame_allocates_nothing() {
     // that exists to run these — there a skip is the failure.
     let renderer = match ShadowedCameraRenderer::new(
         &device,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         texture_extent,
         &white,
         SHADOW_MAP,

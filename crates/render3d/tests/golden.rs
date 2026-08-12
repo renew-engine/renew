@@ -160,7 +160,7 @@ fn a_quad_covers_the_target_in_its_own_colour() -> Result<(), Box<dyn std::error
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
 
     let mut scene = Scene::new();
     full_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
@@ -211,7 +211,7 @@ fn the_nearer_quad_wins_in_either_push_order() -> Result<(), Box<dyn std::error:
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let near = [0.0, 0.0, 1.0, 1.0];
     let far = [1.0, 0.0, 0.0, 1.0];
 
@@ -266,7 +266,7 @@ fn at_equal_depth_the_later_push_wins() -> Result<(), Box<dyn std::error::Error>
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let red = [1.0, 0.0, 0.0, 1.0];
     let blue = [0.0, 0.0, 1.0, 1.0];
 
@@ -309,7 +309,7 @@ fn one_mesh_may_be_drawn_by_several_items() -> Result<(), Box<dyn std::error::Er
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let mut scene = Scene::new();
     full_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
     let mesh = renderer.upload(&device, &scene)?;
@@ -338,7 +338,7 @@ fn an_empty_scene_is_refused_rather_than_fatal() -> Result<(), Box<dyn std::erro
     let Some(device) = device_or_skip()? else {
         return Ok(());
     };
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let scene = Scene::new();
     let refused = renderer.upload(&device, &scene);
     assert!(
@@ -361,7 +361,7 @@ fn the_renderer_names_itself_without_leaking_a_handle() -> Result<(), Box<dyn st
     let Some(device) = device_or_skip()? else {
         return Ok(());
     };
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let shown = format!("{renderer:?}");
     assert!(shown.contains("MeshRenderer"), "got: {shown}");
     assert!(
@@ -393,7 +393,7 @@ fn an_identity_camera_covers_what_the_mesh_path_covers() -> Result<(), Box<dyn s
     half_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
 
     let mut plain_target = device.create_offscreen_target(extent)?;
-    let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let plain_mesh = plain.upload(&device, &scene)?;
     let plain_items = [plain.item(&plain_mesh)];
     plain_target.render(&RenderDesc::new(&[pass(&clear, &plain_items)]))?;
@@ -401,7 +401,7 @@ fn an_identity_camera_covers_what_the_mesh_path_covers() -> Result<(), Box<dyn s
     plain_target.read_back_into(&mut plain_pixels);
 
     let mut camera_target = device.create_offscreen_target(extent)?;
-    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let camera_mesh = through.upload(&device, &scene)?;
     let camera = Camera::from_columns(IDENTITY);
     let camera_items = [through.item(&camera_mesh, &camera)];
@@ -456,7 +456,7 @@ fn a_translation_moves_the_picture_rather_than_bending_it() -> Result<(), Box<dy
         height: SIZE,
     };
     let mut target = device.create_offscreen_target(extent)?;
-    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
 
     let mut scene = Scene::new();
     half_quad(&mut scene, 0.5, [0.0, 1.0, 0.0, 1.0]);
@@ -507,7 +507,7 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
         width: SIZE,
         height: SIZE,
     };
-    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
 
     // Columns of a matrix whose last row is (0, 0, 1, 0): w becomes z.
@@ -563,7 +563,7 @@ fn the_camera_path_refuses_an_empty_scene_too() -> Result<(), Box<dyn std::error
     let Some(device) = device_or_skip()? else {
         return Ok(());
     };
-    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let refused = through.upload(&device, &Scene::new());
     assert!(
         matches!(refused, Err(Render3dError::EmptyScene)),
@@ -579,7 +579,7 @@ fn the_camera_renderer_names_itself_without_leaking_a_handle()
     let Some(device) = device_or_skip()? else {
         return Ok(());
     };
-    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Unorm)?;
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
     let shown = format!("{through:?}");
     assert!(shown.contains("CameraRenderer"), "got: {shown}");
     assert!(
@@ -623,7 +623,7 @@ fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::e
         let mut target = device.create_offscreen_target(extent)?;
         let renderer = TexturedCameraRenderer::new(
             &device,
-            TargetFormat::Rgba8Unorm,
+            TargetFormat::Rgba8Srgb,
             texture_extent,
             &solid(colour),
         )?;
@@ -676,7 +676,7 @@ fn the_vertex_colour_tints_the_texture() -> Result<(), Box<dyn std::error::Error
     for tint in [1.0f32, 0.4] {
         let mut target = device.create_offscreen_target(extent)?;
         let renderer =
-            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &white)?;
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
         let mut scene = Scene::new();
         full_quad(&mut scene, 0.5, [tint, tint, tint, 1.0]);
         let mesh = renderer.upload(&device, &scene)?;
@@ -718,7 +718,7 @@ fn the_textured_renderers_name_themselves_without_leaking_a_handle()
     };
     let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
 
-    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, extent, &white)?;
     let shown = format!("{through:?}");
     assert!(shown.contains("TexturedCameraRenderer"), "got: {shown}");
     assert!(
@@ -726,7 +726,7 @@ fn the_textured_renderers_name_themselves_without_leaking_a_handle()
         "the omission should be visible: {shown}"
     );
 
-    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Srgb, extent, &white)?;
     let shown = format!("{plain:?}");
     assert!(shown.contains("TexturedMeshRenderer"), "got: {shown}");
     assert!(
@@ -749,13 +749,13 @@ fn the_textured_paths_refuse_an_empty_scene() -> Result<(), Box<dyn std::error::
     };
     let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
 
-    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let through = TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, extent, &white)?;
     assert!(matches!(
         through.upload(&device, &Scene::new()),
         Err(Render3dError::EmptyScene)
     ));
 
-    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, extent, &white)?;
+    let plain = TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Srgb, extent, &white)?;
     assert!(matches!(
         plain.upload(&device, &Scene::new()),
         Err(Render3dError::EmptyScene)
@@ -782,7 +782,7 @@ fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error:
     let blue: Vec<u8> = [30u8, 30, 220, 255].repeat(4);
     let mut target = device.create_offscreen_target(extent)?;
     let renderer =
-        TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, texture_extent, &blue)?;
+        TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &blue)?;
     let mut scene = Scene::new();
     full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
     let mesh = renderer.upload(&device, &scene)?;
@@ -863,7 +863,7 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
 
     let renderer = ShadowedCameraRenderer::new(
         &device,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         texture_extent,
         &white,
         256,

@@ -140,7 +140,7 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
         device,
         &AtlasDesc::new(ATLAS_EXTENT, &atlas),
         canvas,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         capacity,
     )
     .map_err(|error| error.to_string())?;

@@ -112,7 +112,7 @@ fn every_creation_arm_reports_its_own_failure() {
     // exactly why the depth refusal is translated rather than detected.
     arm("vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R1");
-    match MeshRenderer::new(&device, TargetFormat::Rgba8Unorm) {
+    match MeshRenderer::new(&device, TargetFormat::Rgba8Srgb) {
         Err(error @ Render3dError::Pipeline(_)) => {
             assert!(
                 error.to_string().starts_with("building the mesh pipeline:"),
@@ -128,7 +128,7 @@ fn every_creation_arm_reports_its_own_failure() {
     // not share an arm.
     arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R2");
-    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
+    let renderer = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
         .expect("R2: the pipeline is not the armed call");
     match renderer.upload(&device, &one_quad()) {
         Err(error @ Render3dError::Upload(_)) => {
@@ -148,7 +148,7 @@ fn every_creation_arm_reports_its_own_failure() {
     // mesh pipeline would pass R1 and draw the wrong thing.
     arm("vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R3");
-    match CameraRenderer::new(&device, TargetFormat::Rgba8Unorm) {
+    match CameraRenderer::new(&device, TargetFormat::Rgba8Srgb) {
         Err(error @ Render3dError::Pipeline(_)) => {
             assert!(
                 error.to_string().starts_with("building the mesh pipeline:"),
@@ -172,7 +172,7 @@ fn every_creation_arm_reports_its_own_failure() {
     // constructor simply never makes the call.
     arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R4");
-    match CameraRenderer::new(&device, TargetFormat::Rgba8Unorm) {
+    match CameraRenderer::new(&device, TargetFormat::Rgba8Srgb) {
         Ok(renderer) => drop(renderer),
         Err(error) => panic!(
             "R4: the camera constructor owns no buffer, so a buffer fault must not reach \
@@ -218,7 +218,7 @@ fn textured_constructors_report_their_own_failures() {
     let camera: Build = |device| {
         TexturedCameraRenderer::new(
             device,
-            TargetFormat::Rgba8Unorm,
+            TargetFormat::Rgba8Srgb,
             Extent {
                 width: 2,
                 height: 2,
@@ -230,7 +230,7 @@ fn textured_constructors_report_their_own_failures() {
     let plain: Build = |device| {
         TexturedMeshRenderer::new(
             device,
-            TargetFormat::Rgba8Unorm,
+            TargetFormat::Rgba8Srgb,
             Extent {
                 width: 2,
                 height: 2,
@@ -270,7 +270,7 @@ fn textured_constructors_report_their_own_failures() {
             "vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY@{ordinal}"
         ));
         let device = new_device().expect("the device should come up with only a pipeline armed");
-        match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE, 64) {
+        match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, small, &WHITE, 64) {
             Err(error @ Render3dError::Pipeline(_)) => {
                 assert!(
                     error.to_string().starts_with("building the mesh pipeline:"),
@@ -290,7 +290,7 @@ fn textured_constructors_report_their_own_failures() {
     // at the atlas, which is fine.
     arm("vkCreateImage=ERROR_OUT_OF_HOST_MEMORY@2");
     let device = new_device().expect("device for R10");
-    match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE, 64) {
+    match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, small, &WHITE, 64) {
         Err(error @ Render3dError::Texture(_)) => {
             assert!(
                 error.to_string().starts_with("creating the texture:"),
@@ -306,7 +306,7 @@ fn textured_constructors_report_their_own_failures() {
     // would send a reader to look at something nobody has offered.
     arm("vkCreateImage=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R7");
-    match TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Unorm, small, &WHITE) {
+    match TexturedMeshRenderer::new(&device, TargetFormat::Rgba8Srgb, small, &WHITE) {
         Err(error @ Render3dError::Texture(_)) => {
             assert!(
                 error.to_string().starts_with("creating the texture:"),

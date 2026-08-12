@@ -34,7 +34,7 @@ const CLEAR: Color = Color {
 /// working space changes, this constant moves and every byte derived from
 /// it follows — rather than a scatter of literals each of which is wrong
 /// in the same way and none of which says why.
-const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
 /// What the attachment stores for the clear above.
 ///

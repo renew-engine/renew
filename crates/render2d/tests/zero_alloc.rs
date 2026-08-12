@@ -37,7 +37,7 @@ const CLEAR: Color = Color {
 
 /// The format this file's target is created with, named once so the
 /// expectation below follows it rather than restating it.
-const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
 /// The clear's exact bytes, derived from the format rather than written
 /// down; the conversion is unambiguous by choice of channel values, so any
