@@ -439,6 +439,20 @@ impl Volume {
     /// chunk written a thousand times appears once, at its most recent
     /// change — which is why a consumer can drive work directly from this
     /// without collecting into a set first.
+    ///
+    /// # Two things it cannot do for you
+    ///
+    /// **A mark from another volume is undetectable** unless it happens to
+    /// be larger than this volume's generation. Marks are positions in one
+    /// volume's history and mean nothing in another's; a consumer holding
+    /// several volumes holds a mark per volume, and the type system is not
+    /// what stops it confusing them.
+    ///
+    /// **Reading borrows the volume**, so a consumer that writes while
+    /// walking its own change list has to collect first. That is a
+    /// consequence worth having rather than a limitation to route around:
+    /// writes made during the walk would appear in the feed being walked,
+    /// and a consumer feeding itself is a loop with no stated end.
     #[must_use]
     pub fn changed_since(&self, mark: u64) -> Option<ChangedChunks<'_>> {
         if mark > self.generation {
