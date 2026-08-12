@@ -39,6 +39,34 @@ const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 /// encodes on write, so what lands is not `b` — it is whatever that light
 /// encodes to. Derived rather than restated, so the expectation says which
 /// of those two it is and follows the format if it ever moves again.
+/// Assert a rendered pixel matches a *computed* expectation, allowing the
+/// one code the two encoders may disagree by.
+///
+/// **Not a loosening of the golden gate, and the difference matters.** A
+/// committed golden compares this adapter's bytes against this adapter's
+/// bytes, so it stays exact and one code of drift there is a regression.
+/// This compares bytes the *hardware* encoded against bytes
+/// `renew_rhi::srgb` encoded — two implementations of the same transfer
+/// function. Vulkan does not require them to agree bit for bit, and
+/// measured on the pinned software rasterizer they do not: a texel of 10
+/// lands one code apart from what the table computes.
+///
+/// Under UNORM the conversion was `round(255 x v)` and any two
+/// implementations agreed trivially, which is why an exact assertion
+/// stood for as long as it did. It was never sound; the old format hid
+/// that it was comparing two encoders at all.
+fn assert_within_one_code(found: &[u8], computed: &[u8], what: &str) {
+    assert_eq!(found.len(), computed.len(), "{what}: lengths differ");
+    for (channel, (&f, &c)) in found.iter().zip(computed.iter()).enumerate() {
+        let drift = i16::from(f) - i16::from(c);
+        assert!(
+            drift.abs() <= 1,
+            "{what}: channel {channel} is {f} against a computed {c}, \
+             which is {drift} codes apart rather than at most one"
+        );
+    }
+}
+
 #[allow(
     clippy::expect_used,
     reason = "a colour target that stores no colour is the defect"
@@ -570,12 +598,14 @@ fn two_textures_share_one_pipeline() {
         for y in 0..SIZE {
             for x in 0..SIZE {
                 let offset = ((y * SIZE + x) as usize) * 4;
-                assert_eq!(
+                assert_within_one_code(
                     &pixels[offset..offset + 4],
                     expected(atlases, x, y).as_slice(),
-                    "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
-                    atlases.map(|atlas| atlas[0]),
-                    device.adapter()
+                    &format!(
+                        "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
+                        atlases.map(|atlas| atlas[0]),
+                        device.adapter()
+                    ),
                 );
             }
         }
