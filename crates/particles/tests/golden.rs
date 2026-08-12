@@ -46,10 +46,6 @@ fn device_or_skip() -> Result<Option<Device>, DeviceError> {
 /// of the picture answers with exactly the instance's colour, the
 /// corner stays the clear, and the same frame twice is the same bytes.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one oracle narrative: the pool, the draw, the readback, the refusals read top to bottom"
-)]
 fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::Error>> {
     const SIZE: u32 = 64;
     let Some(device) = device_or_skip()? else {
