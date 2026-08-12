@@ -68,6 +68,7 @@
 mod config;
 mod error;
 mod spirv;
+pub mod srgb;
 mod vk;
 
 pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation};
