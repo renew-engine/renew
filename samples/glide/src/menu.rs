@@ -109,7 +109,7 @@ impl Menu {
             self.open = !self.open;
             // A press left dangling across a toggle must not pair
             // with a release from a later episode: park the pointer
-            // outside the tree and release, which the tree treats as
+            // outside the widget tree and release, which the tree treats as
             // an abandoned press — no activation, nothing pending.
             self.ui.handle(UiEvent::PointerMoved { x: -1, y: -1 });
             self.ui.handle(UiEvent::PointerReleased);

@@ -123,6 +123,7 @@ fn the_steady_state_costs_the_heap_nothing_except_the_ordered_mutable_walk() {
     assert!(
         verdict.is_err(),
         "the ordered mutable walk no longer allocates — if that is deliberate, this \
-         expectation and the debt entry behind it are both out of date"
+         expectation is the stale half and should become an assertion that it \
+         stays free rather than one that it is not"
     );
 }

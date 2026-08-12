@@ -30,8 +30,8 @@ proptest = "1.11"
 renew-memory = { path = "../core/memory" }
 
 # The switch the scheduled sanitizer workflow flips: allocation counting
-# is invalid under instrumented allocators. It returns with the gate that
-# needs it, which is what the debt entry said it was waiting for.
+# is invalid under instrumented allocators. Declared here ahead of the gate
+# that needs it, so the workflow's crate list and this manifest agree.
 [features]
 sanitized = []
 

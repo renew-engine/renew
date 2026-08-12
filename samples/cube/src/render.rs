@@ -66,7 +66,7 @@ pub const SIZE: u32 = 512;
 /// across the floor in `digging.png` carried a step visible at the
 /// committed size, and doubling the side halved it. It still steps
 /// where the light grazes a surface — one unfiltered tap decides
-/// every edge (DEBT-0067) — but at block scale the edges read clean.
+/// every edge — but at block scale the edges read clean.
 /// The map costs sixteen megabytes of device memory.
 pub const SHADOW_MAP_SIZE: u32 = 2048;
 
