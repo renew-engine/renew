@@ -123,7 +123,7 @@ jobs:
         # and once for the hello_triangle sample. Neither was caught by a
         # gate. To check it by hand:
         #   grep -rl '^sanitized = ' --include=Cargo.toml .
-        run: cargo +nightly test --workspace --lib --bins --tests --features renew-audio/sanitized,renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized,renew-render2d/sanitized,renew-particles/sanitized,renew-rng/sanitized,renew-frame/sanitized,renew-sample-hello-triangle/sanitized,renew-sample-glide-world/sanitized,renew-cli/sanitized,renew-ui/sanitized,renew-ui-render/sanitized,renew-snapshot/sanitized -Zbuild-std --target ${{ matrix.target }}
+        run: cargo +nightly test --workspace --lib --bins --tests --features renew-audio/sanitized,renew-diag/sanitized,renew-memory/sanitized,renew-bench/sanitized,renew-jobs/sanitized,renew-rhi/sanitized,renew-render2d/sanitized,renew-render3d/sanitized,renew-particles/sanitized,renew-rng/sanitized,renew-frame/sanitized,renew-sample-hello-triangle/sanitized,renew-sample-glide-world/sanitized,renew-cli/sanitized,renew-ui/sanitized,renew-ui-render/sanitized,renew-snapshot/sanitized -Zbuild-std --target ${{ matrix.target }}
       # The jobs crate's long stress tier is #[ignore]d in ordinary runs;
       # under the sanitizers it runs in full — the interleaving depth is
       # the point of this job.

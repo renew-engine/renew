@@ -26,6 +26,14 @@ renew-rhi = { path = "../rhi", default-features = false }
 # examples. The same version the sibling crate pins.
 [dev-dependencies]
 proptest = "1.11"
+# The counting allocator behind the steady-state gate.
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators. It returns with the gate that
+# needs it, which is what the debt entry said it was waiting for.
+[features]
+sanitized = []
 
 [lints]
 workspace = true
