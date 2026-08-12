@@ -40,7 +40,7 @@ mod volume;
 
 pub use pick::{MAX_PICK_STEPS, Pick};
 pub use sweep::Hit;
-pub use volume::{CHUNK, CHUNK_CELLS, Volume};
+pub use volume::{CHUNK, CHUNK_CELLS, ChangedChunks, Volume};
 
 use renew_fixed::{Fixed, Vec3};
 

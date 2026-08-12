@@ -51,6 +51,24 @@ pub struct Volume {
     /// read without being consumed: each consumer remembers the value it
     /// last acted on and compares.
     versions: Vec<u32>,
+    /// How many chunk-changing writes this volume has ever seen.
+    ///
+    /// The mark a consumer holds. Sixty-four bits at one write per
+    /// nanosecond is centuries, so unlike the per-chunk counters this one
+    /// is never allowed to wrap: the arithmetic below subtracts marks, and
+    /// a wrapped subtraction would silently report "nothing changed".
+    generation: u64,
+    /// A ring of chunk indices, one per change, oldest overwritten first.
+    ///
+    /// Length is fixed at construction and is the capacity; the entry for
+    /// change number `n` lives at `(n - 1) % capacity`.
+    log: Vec<u32>,
+    /// The generation at which each chunk last changed.
+    ///
+    /// This is what lets the ring be read without repeats: an entry is
+    /// yielded only when it is that chunk's most recent change, so a
+    /// thousand writes into one chunk report it once.
+    last_changed: Vec<u64>,
     /// How many cells hold something.
     solid: usize,
 }
@@ -109,6 +127,16 @@ impl Volume {
             cells: vec![Voxel::EMPTY; count.checked_mul(CHUNK_CELLS)?],
             hashes: vec![0; count],
             versions: vec![0; count],
+            generation: 0,
+            // One slot per chunk, which is a bound that scales the right
+            // way rather than a number picked out of the air. Falling off
+            // the end of the ring means more changes have happened than
+            // there are chunks, and at that point "every chunk" is both a
+            // cheap answer and very nearly a true one. A small volume
+            // overflows easily and is trivial to rescan; a large one gets
+            // a large ring, which is where the scan actually hurt.
+            log: vec![0; count],
+            last_changed: vec![0; count],
             solid: 0,
         })
     }
@@ -245,6 +273,7 @@ impl Volume {
             // and then looked.
             *version = version.wrapping_add(1);
         }
+        self.record(chunk);
 
         match (previous.is_empty(), voxel.is_empty()) {
             (true, false) => self.solid += 1,
@@ -349,6 +378,81 @@ impl Volume {
         &self.versions
     }
 
+    /// Note that a chunk changed. The only writer of the change feed.
+    fn record(&mut self, chunk: usize) {
+        let capacity = self.log.len();
+        if capacity == 0 {
+            return;
+        }
+        self.generation += 1;
+        // Both indices are in range by construction: the slot is a
+        // remainder of the length, and `chunk` came from an index this
+        // volume computed. The `if let`s say so without an assertion in
+        // the hot path of every write.
+        if let Some(entry) =
+            slot_of(self.generation, capacity).and_then(|slot| self.log.get_mut(slot))
+        {
+            *entry = u32_of(chunk);
+        }
+        if let Some(when) = self.last_changed.get_mut(chunk) {
+            *when = self.generation;
+        }
+    }
+
+    /// How many chunk-changing writes this volume has seen.
+    ///
+    /// The mark to hold on to and hand back to [`Volume::changed_since`].
+    /// Comparing two of these is the cheapest question a consumer can ask:
+    /// **equal means nothing anywhere has changed**, which for a world at
+    /// rest is the answer every frame and costs one comparison rather than
+    /// one per chunk.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The chunks that changed since `mark`, each named at most once.
+    ///
+    /// Returns nothing — meaning **treat every chunk as changed** — when
+    /// the mark is too old to answer from the ring, or when it is from the
+    /// future and so cannot have come from this volume. Both are honest
+    /// refusals rather than errors: a consumer that falls behind re-does
+    /// its work over the whole volume, which is what it would have done
+    /// anyway without a feed.
+    ///
+    /// # Why this exists beside the per-chunk versions
+    ///
+    /// [`Volume::chunk_versions`] answers *how much* each chunk changed,
+    /// and answering "which changed" from it costs a comparison per chunk
+    /// whether or not anything happened. That scan is the entire cost of a
+    /// settled world, and it grows with the world rather than with the
+    /// change. This answers the same question in time proportional to what
+    /// actually moved.
+    ///
+    /// The versions stay, because they answer a question this cannot: a
+    /// consumer that has been away longer than the ring, or that wants to
+    /// compare against a snapshot rather than a moment, still needs them.
+    ///
+    /// # Order, and repeats
+    ///
+    /// Chunks come out in the order they last changed, oldest first. A
+    /// chunk written a thousand times appears once, at its most recent
+    /// change — which is why a consumer can drive work directly from this
+    /// without collecting into a set first.
+    #[must_use]
+    pub fn changed_since(&self, mark: u64) -> Option<ChangedChunks<'_>> {
+        if mark > self.generation {
+            return None;
+        }
+        if self.generation - mark > self.log.len() as u64 {
+            return None;
+        }
+        Some(ChangedChunks {
+            volume: self,
+            next: mark,
+        })
+    }
+
     /// Which chunk a cell belongs to, or nothing if it lies outside.
     ///
     /// The unit consumers work in: a change is reported per chunk, so
@@ -444,6 +548,66 @@ impl Volume {
 /// the deny-list forbids.
 fn usize_of(value: i32) -> usize {
     usize::try_from(value.max(0)).unwrap_or(0)
+}
+
+/// A chunk index narrowed for storage in the change ring.
+///
+/// Every chunk index is below [`MAX_CHUNKS`], which is far inside `u32`,
+/// so the saturation is unreachable and exists only to keep the cast
+/// total.
+fn u32_of(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Where change number `generation` sits in a ring of `capacity` slots.
+///
+/// Both conversions are exact and neither is written as a cast. The
+/// length widens to `u64` without loss, and the remainder is below the
+/// capacity and so narrows back the same way — but "provably exact" is
+/// what every truncation bug was believed to be, and this crate's
+/// deny-list is what makes the belief unnecessary. Nothing (rather than
+/// zero) for a ring with no slots, which also keeps the modulus off a
+/// divisor that could be zero.
+fn slot_of(generation: u64, capacity: usize) -> Option<usize> {
+    let capacity = u64::try_from(capacity).ok()?;
+    let position = generation.checked_sub(1)?.checked_rem(capacity)?;
+    usize::try_from(position).ok()
+}
+
+/// The chunks that changed since a mark, oldest change first.
+///
+/// Each chunk appears at most once, at its most recent change. Yielded
+/// lazily by walking the ring: an entry that is no longer its chunk's
+/// latest is a superseded write and is skipped, which is what removes the
+/// repeats without a set to collect into.
+#[derive(Clone, Debug)]
+pub struct ChangedChunks<'a> {
+    volume: &'a Volume,
+    /// The last generation already reported. The next candidate is the
+    /// change after this one.
+    next: u64,
+}
+
+impl Iterator for ChangedChunks<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        let capacity = self.volume.log.len();
+        while self.next < self.volume.generation {
+            self.next += 1;
+            let generation = self.next;
+            let slot = slot_of(generation, capacity)?;
+            let chunk = *self.volume.log.get(slot)? as usize;
+            // Only the chunk's most recent change reports it. An earlier
+            // entry for the same chunk is a write that has since been
+            // superseded, and reporting it again would hand the consumer
+            // the same work twice.
+            if self.volume.last_changed.get(chunk) == Some(&generation) {
+                return Some(chunk);
+            }
+        }
+        None
+    }
 }
 
 /// One cell's contribution to its chunk's hash.
@@ -793,5 +957,195 @@ mod tests {
             !v.set(top.offset(1, 0, 0), STONE),
             "and one past it must not"
         );
+    }
+
+    /// Chunks reported since a mark, collected in the order they came.
+    fn since(v: &Volume, mark: u64) -> Option<Vec<usize>> {
+        v.changed_since(mark).map(Iterator::collect)
+    }
+
+    #[test]
+    fn a_volume_nobody_has_written_to_reports_nothing() {
+        let v = volume();
+        assert_eq!(v.generation(), 0);
+        assert_eq!(since(&v, 0), Some(vec![]));
+    }
+
+    #[test]
+    fn a_write_that_changed_nothing_does_not_advance_the_mark() {
+        // The three ways to write without changing a cell: outside the
+        // volume, and the value that is already there — twice, once when
+        // that value is empty and once when it is not. None may cost a
+        // consumer a re-mesh, which is the whole point of the feed.
+        let mut v = volume();
+        v.set(Cell::new(1, 1, 1), STONE);
+        let mark = v.generation();
+
+        assert!(!v.set(Cell::new(-5, 0, 0), STONE), "outside");
+        assert!(!v.set(Cell::new(1, 1, 1), STONE), "already stone");
+        assert!(!v.set(Cell::new(2, 2, 2), Voxel::EMPTY), "already empty");
+
+        assert_eq!(v.generation(), mark);
+        assert_eq!(since(&v, mark), Some(vec![]));
+    }
+
+    #[test]
+    fn only_the_chunks_that_changed_are_reported() {
+        let mut v = volume();
+        let mark = v.generation();
+        let far = Cell::new(CHUNK + 1, 1, 1);
+        v.set(Cell::new(1, 1, 1), STONE);
+        v.set(far, SAND);
+
+        let reported = since(&v, mark).expect("the mark is fresh");
+        assert_eq!(
+            reported,
+            vec![
+                v.chunk_of(Cell::new(1, 1, 1)).expect("inside"),
+                v.chunk_of(far).expect("inside"),
+            ],
+            "in the order they changed, and nothing else"
+        );
+    }
+
+    #[test]
+    fn a_chunk_written_many_times_is_reported_once() {
+        // The property that lets a consumer drive work straight from the
+        // feed. Without it an automaton that touched one chunk a thousand
+        // times would hand the mesher a thousand identical jobs.
+        let mut v = volume();
+        let mark = v.generation();
+        for x in 0..8 {
+            v.set(Cell::new(x, 0, 0), STONE);
+        }
+        let chunk = v.chunk_of(Cell::new(0, 0, 0)).expect("inside");
+        assert_eq!(since(&v, mark), Some(vec![chunk]));
+        assert_eq!(v.generation(), 8, "though every write was counted");
+    }
+
+    #[test]
+    fn a_chunk_reported_once_is_reported_again_when_it_changes_again() {
+        // The mirror of the test above, and the failure it guards is
+        // worse: a dedup that remembered "already told you" rather than
+        // "this is the latest" would silently stop reporting a chunk that
+        // keeps changing.
+        let mut v = volume();
+        let chunk = v.chunk_of(Cell::new(0, 0, 0)).expect("inside");
+        let first = v.generation();
+        v.set(Cell::new(0, 0, 0), STONE);
+        assert_eq!(since(&v, first), Some(vec![chunk]));
+
+        let second = v.generation();
+        v.set(Cell::new(1, 0, 0), STONE);
+        assert_eq!(since(&v, second), Some(vec![chunk]));
+        assert_eq!(
+            since(&v, first),
+            Some(vec![chunk]),
+            "and the older mark still names it exactly once"
+        );
+    }
+
+    #[test]
+    fn two_consumers_read_the_same_feed_without_disturbing_each_other() {
+        // The reason this is a mark rather than a dirty flag. A flag has
+        // to be cleared by whoever read it, and the first reader would
+        // hide the change from the second.
+        let mut v = volume();
+        let mesher = v.generation();
+        v.set(Cell::new(1, 1, 1), STONE);
+        let automaton = v.generation();
+        v.set(Cell::new(CHUNK + 1, 1, 1), SAND);
+
+        let near = v.chunk_of(Cell::new(1, 1, 1)).expect("inside");
+        let far = v.chunk_of(Cell::new(CHUNK + 1, 1, 1)).expect("inside");
+        assert_eq!(
+            since(&v, mesher),
+            Some(vec![near, far]),
+            "the one who has been away longer sees both"
+        );
+        assert_eq!(
+            since(&v, automaton),
+            Some(vec![far]),
+            "and reading it did not consume anything"
+        );
+    }
+
+    #[test]
+    fn a_mark_older_than_the_ring_asks_for_everything() {
+        // Overflow is not an error; it is the feed saying the answer is no
+        // longer cheaper than a rescan. The refusal must be reported
+        // rather than answered wrongly, because answering with whatever
+        // survived in the ring would silently lose chunks.
+        let mut v = Volume::new(Cell::new(0, 0, 0), (CHUNK, CHUNK, CHUNK)).expect("one chunk");
+        assert_eq!(v.chunk_count(), 1, "so the ring holds exactly one change");
+        let mark = v.generation();
+        v.set(Cell::new(0, 0, 0), STONE);
+        assert!(
+            since(&v, mark).is_some(),
+            "one change still fits the ring exactly"
+        );
+        v.set(Cell::new(1, 0, 0), STONE);
+        assert_eq!(since(&v, mark), None, "two do not");
+        assert!(
+            since(&v, v.generation()).is_some(),
+            "but a fresh mark is always answerable"
+        );
+    }
+
+    #[test]
+    fn a_mark_from_the_future_is_refused_rather_than_answered() {
+        // It cannot have come from this volume. Subtracting it would
+        // underflow, and the tempting reading — "nothing has changed
+        // since a moment that has not happened" — is the one answer
+        // guaranteed to be wrong for the consumer that got here by
+        // holding a mark from a different volume.
+        let v = volume();
+        assert_eq!(since(&v, 1), None);
+        assert_eq!(since(&v, u64::MAX), None);
+    }
+
+    #[test]
+    fn the_feed_agrees_with_the_versions_it_exists_to_replace() {
+        // The independent check: whatever the ring says changed must be
+        // exactly the set the per-chunk version scan finds. This is what
+        // would catch a ring index that drifted from the generation.
+        let mut v = volume();
+        let before: Vec<u32> = v.chunk_versions().to_vec();
+        let mark = v.generation();
+
+        v.set(Cell::new(1, 1, 1), STONE);
+        v.set(Cell::new(CHUNK + 1, 1, 1), SAND);
+        v.set(Cell::new(1, CHUNK + 1, 1), STONE);
+        v.set(Cell::new(1, 1, 1), SAND);
+
+        let mut from_feed: Vec<usize> = since(&v, mark).expect("fresh");
+        from_feed.sort_unstable();
+        let from_versions: Vec<usize> = v
+            .chunk_versions()
+            .iter()
+            .zip(&before)
+            .enumerate()
+            .filter_map(|(chunk, (now, then))| (now != then).then_some(chunk))
+            .collect();
+        assert_eq!(from_feed, from_versions);
+        assert_eq!(from_feed.len(), 3, "and it is not vacuously empty");
+    }
+
+    #[test]
+    fn the_generation_is_not_in_the_digest() {
+        // Bookkeeping, not content. Two volumes holding the same cells
+        // must digest the same however many writes it took to get there,
+        // or a replay that reached the same world by a different route
+        // would report a divergence that is not one.
+        let mut direct = volume();
+        direct.set(Cell::new(2, 2, 2), STONE);
+
+        let mut roundabout = volume();
+        roundabout.set(Cell::new(2, 2, 2), SAND);
+        roundabout.set(Cell::new(2, 2, 2), Voxel::EMPTY);
+        roundabout.set(Cell::new(2, 2, 2), STONE);
+
+        assert_ne!(direct.generation(), roundabout.generation());
+        assert_eq!(direct.digest(), roundabout.digest());
     }
 }

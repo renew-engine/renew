@@ -15,9 +15,12 @@ The storage and the queries a voxel world is actually asked:
   answering which cell and which face;
 - **sweep** — move a box until the lattice stops it, answering when, where
   and against what;
-- **what changed** — a version per chunk, so a mesher, a stepper and a
-  saver can each act on changes without agreeing with one another about
-  when to forget.
+- **what changed** — asked two ways, because there are two questions. A
+  version per chunk answers *how much* each one moved. A change feed
+  answers *which* ones moved since a mark, in time proportional to the
+  changes rather than to the world. Neither is consumed by reading, so a
+  mesher, a stepper and a saver each keep their own place without agreeing
+  with one another about when to forget.
 
 ## What it deliberately does not know
 
@@ -36,7 +39,7 @@ would let a body walk off it and fall for ever with no way to tell that
 from a hole; one that answered "solid" would trap it at the boundary with
 no explanation.
 
-## The two decisions worth knowing before you use it
+## The three decisions worth knowing before you use it
 
 **Cells are centred on integers.** Cell zero spans −0.5 to +0.5, so every
 cell's half-extent is exactly one half and the arithmetic stays exact. A
@@ -51,6 +54,16 @@ the hash exactly. An empty chunk hashes to zero — **the converse does not
 hold** and must not be relied on: the hash is an exclusive-or of 64-bit
 terms, so populated chunks hashing to zero exist and can be constructed.
 Ask [`Volume::solid_count`] whether anything is there.
+
+**The change feed refuses rather than lies.** [`Volume::changed_since`]
+answers from a ring holding one entry per chunk. A consumer that has been
+away longer than the ring gets nothing back, meaning *treat every chunk as
+changed* — never a partial answer, because a partial answer silently loses
+chunks and the consumer has no way to tell. The bound scales the way it
+should: a small volume overflows easily and costs nothing to rescan, while
+a large one — where the scan is what hurt — gets a proportionally large
+ring. Each chunk is named at most once however many times it was written,
+so the feed can drive work directly without collecting into a set first.
 
 ## Determinism
 
