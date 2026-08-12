@@ -61,16 +61,17 @@ body{
   font:16px/1.72 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   -webkit-font-smoothing:antialiased;
 }
-.wrap{max-width:40rem;margin:0 auto;padding:0 1.5rem}
+.wrap{max-width:42rem;margin:0 auto;padding:0 1.5rem}
 a{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
 a:hover{color:var(--muted)}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 code,pre{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
-code{background:var(--code-bg);padding:.12em .38em;border-radius:2px;font-size:.9em}
+code{background:var(--code-bg);padding:.12em .38em;border-radius:2px;font-size:.9em;
+  overflow-wrap:anywhere}
 pre{background:var(--code-bg);padding:1.15rem 1.35rem;border-radius:2px;overflow-x:auto;
-    border:1px solid var(--rule);font-size:.8125rem;line-height:1.6;margin:0 auto 1.75rem;
-    max-width:32rem;text-align:left}
-pre code{background:none;padding:0;font-size:1em}
+    border:1px solid var(--rule);font-size:.8125rem;line-height:1.6;
+    margin:0 0 1.75rem;text-align:left}
+pre code{background:none;padding:0;font-size:1em;overflow-wrap:normal}
 
 nav.top{border-bottom:1px solid var(--rule);padding:1.5rem 0;text-align:center}
 nav.top a{font-size:.75rem;font-family:ui-monospace,Menlo,Consolas,monospace;
@@ -87,8 +88,8 @@ h2{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8125rem;letter-s
    margin:3.5rem 0 1.5rem;text-align:center}
 p{margin:0 0 1.35rem}
 .standfirst{font-size:1.0625rem;color:var(--muted);margin-bottom:3rem;text-align:center}
-blockquote{margin:0 auto 1.75rem;padding:1.35rem 1.5rem;background:var(--surface);
-  border:1px solid var(--rule);border-radius:2px;font-size:1rem;max-width:34rem}
+blockquote{margin:0 0 1.75rem;padding:1.35rem 1.5rem;background:var(--surface);
+  border:1px solid var(--rule);border-radius:2px;font-size:1rem}
 blockquote p:last-child{margin:0}
 blockquote cite{display:block;margin-top:.85rem;font-style:normal;font-size:.75rem;
   color:var(--faint);text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace;
