@@ -38,7 +38,35 @@ const CLEAR: Color = Color {
     b: 153.0 / 255.0,
     a: 1.0,
 };
-const CLEAR_BYTES: [u8; 4] = [51, 102, 153, 255];
+/// The format every target in this file is created with.
+///
+/// Named once so the expectations below can be a function of it. When the
+/// working space changes, this constant moves and every byte derived from
+/// it follows — rather than a scatter of literals each of which is wrong
+/// in the same way and none of which says why.
+const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+
+/// What the attachment stores for the clear above.
+///
+/// Derived rather than written down. Under UNORM this is exactly
+/// `[51, 102, 153, 255]`, which is what it always was — an authored byte
+/// survives `round(255 x b/255)` unchanged. The point is what happens when
+/// the format changes: these bytes follow it, and the corner assertions
+/// that read them do not panic before the golden bootstrap path can write
+/// a candidate.
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect"
+)]
+fn clear_bytes() -> [u8; 4] {
+    let channel = |value: f32| TARGET.stores(value).expect("a color target stores color");
+    [
+        channel(CLEAR.r),
+        channel(CLEAR.g),
+        channel(CLEAR.b),
+        channel(CLEAR.a),
+    ]
+}
 
 /// The 4×4 test atlas, four 2×2 solid regions: opaque red, opaque
 /// green, opaque blue, and half-alpha red — premultiplied, as every
@@ -164,7 +192,7 @@ fn renderer(device: &Device, atlas: &[u8], max_sprites: u32) -> Result<SpriteRen
         device,
         &AtlasDesc::new(ATLAS_EXTENT, atlas),
         canvas,
-        TargetFormat::Rgba8Unorm,
+        TARGET,
         capacity,
     )
     .map_err(|error| error.to_string())
@@ -232,7 +260,7 @@ fn opaque_sprites_match_the_computed_image_exactly() {
     // fill promises: clear, then each sprite's rectangle in push order.
     let mut expected = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for _ in 0..SIZE * SIZE {
-        expected.extend_from_slice(&CLEAR_BYTES);
+        expected.extend_from_slice(&clear_bytes());
     }
     paint(&mut expected, 8, 8, 16, 16, [255, 0, 0, 255]);
     paint(&mut expected, 32, 8, 16, 16, [0, 255, 0, 255]);
@@ -322,10 +350,10 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
         ]
     };
     for (x, y) in [(0, 0), (SIZE - 1, 0), (0, SIZE - 1), (SIZE - 1, SIZE - 1)] {
-        assert_eq!(pixel_at(x, y), CLEAR_BYTES, "corner ({x},{y}) not clear");
+        assert_eq!(pixel_at(x, y), clear_bytes(), "corner ({x},{y}) not clear");
     }
     let over_clear = pixel_at(36, 36); // half-red over clear only
-    assert_ne!(over_clear, CLEAR_BYTES, "half-alpha sprite left no trace");
+    assert_ne!(over_clear, clear_bytes(), "half-alpha sprite left no trace");
     assert_ne!(
         over_clear,
         [128, 0, 0, 128],

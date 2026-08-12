@@ -28,7 +28,34 @@ const CLEAR: Color = Color {
     b: 153.0 / 255.0,
     a: 1.0,
 };
-const CLEAR_BYTES: [u8; 4] = [51, 102, 153, 255];
+/// The format every target in this file is created with.
+///
+/// Named once so the expectations below can be a function of it. When the
+/// working space changes, this constant moves and every byte derived from
+/// it follows — rather than a scatter of literals each of which is wrong
+/// in the same way and none of which says why.
+const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+
+/// What the attachment stores for the clear above.
+///
+/// Derived rather than written down. Under UNORM this is exactly
+/// `[51, 102, 153, 255]`, which is what it always was — an authored byte
+/// survives `round(255 x b/255)` unchanged. The point is what happens when
+/// the format changes: these bytes follow it, and the assertions that read
+/// them do not fail before a golden bootstrap path can write a candidate.
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect"
+)]
+fn clear_bytes() -> [u8; 4] {
+    let channel = |value: f32| TARGET.stores(value).expect("a color target stores color");
+    [
+        channel(CLEAR.r),
+        channel(CLEAR.g),
+        channel(CLEAR.b),
+        channel(CLEAR.a),
+    ]
+}
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 
@@ -120,7 +147,7 @@ fn a_presented_tree_lands_in_computed_pixels() {
             &atlas::pixels(),
         ),
         canvas,
-        TargetFormat::Rgba8Unorm,
+        TARGET,
         capacity,
     )
     .expect("sprite renderer");
@@ -143,7 +170,7 @@ fn a_presented_tree_lands_in_computed_pixels() {
 
     let mut expected = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for _ in 0..SIZE * SIZE {
-        expected.extend_from_slice(&CLEAR_BYTES);
+        expected.extend_from_slice(&clear_bytes());
     }
     // Painted from the rectangles the solver itself answers, so the
     // oracle and the picture share one source of truth; the corner
@@ -216,7 +243,7 @@ fn text_lands_inside_its_measured_box() {
             &atlas::pixels(),
         ),
         canvas,
-        TargetFormat::Rgba8Unorm,
+        TARGET,
         capacity,
     )
     .expect("sprite renderer");
@@ -248,7 +275,7 @@ fn text_lands_inside_its_measured_box() {
     let mut inked = 0u32;
     for y in 4..4 + line_height {
         for x in 4..4 + width {
-            if texel(x, y) != CLEAR_BYTES {
+            if texel(x, y) != clear_bytes() {
                 inked += 1;
             }
         }
@@ -271,7 +298,7 @@ fn text_lands_inside_its_measured_box() {
             if !inside {
                 assert_eq!(
                     texel(x, y),
-                    CLEAR_BYTES,
+                    clear_bytes(),
                     "ink outside the measured box at ({x}, {y}) — measurement and picture disagree"
                 );
             }

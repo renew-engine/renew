@@ -26,9 +26,35 @@ const SIZE: u32 = 64;
 /// from a fixed table, so the packed bytes differ frame to frame and
 /// the copy path cannot be skipped by a caching driver.
 const WANDER: [f32; 4] = [24.0, 28.0, 32.0, 36.0];
-/// The clear's exact bytes; the conversion is unambiguous by choice of
-/// channel values, so any adapter must land on them.
-const CLEAR_BYTES: [u8; 4] = [51, 102, 153, 255];
+/// The colour this file clears to, named once so the expectation below can
+/// be derived from it rather than restating its bytes.
+const CLEAR: Color = Color {
+    r: 51.0 / 255.0,
+    g: 102.0 / 255.0,
+    b: 153.0 / 255.0,
+    a: 1.0,
+};
+
+/// The format this file's target is created with, named once so the
+/// expectation below follows it rather than restating it.
+const TARGET: TargetFormat = TargetFormat::Rgba8Unorm;
+
+/// The clear's exact bytes, derived from the format rather than written
+/// down; the conversion is unambiguous by choice of channel values, so any
+/// adapter must land on them.
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect"
+)]
+fn clear_bytes() -> [u8; 4] {
+    let channel = |value: f32| TARGET.stores(value).expect("a color target stores color");
+    [
+        channel(CLEAR.r),
+        channel(CLEAR.g),
+        channel(CLEAR.b),
+        channel(CLEAR.a),
+    ]
+}
 const RED: Region = Region {
     x: 0,
     y: 0,
@@ -88,7 +114,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
             &atlas,
         ),
         Canvas::new(SIZE, SIZE).expect("nonzero canvas"),
-        TargetFormat::Rgba8Unorm,
+        TARGET,
         core::num::NonZeroU32::new(16).expect("nonzero capacity"),
     )
     .expect("sprite renderer");
@@ -100,7 +126,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
         .expect("offscreen target");
     // 51/255, 102/255, 153/255: unambiguous UNORM conversions, so the
     // liveness checks below can demand exact bytes on any adapter.
-    let clear = Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0);
+    let clear = CLEAR;
     let mut pixels = vec![0u8; target.byte_len()];
 
     // The premise assertions the vacuity lesson requires. The fixed red
@@ -138,7 +164,7 @@ fn steady_state_fill_and_render_allocates_nothing() {
         );
         assert_eq!(
             pixel_at(pixels, 20, 44),
-            CLEAR_BYTES,
+            clear_bytes(),
             "{when}: a pixel every wander position leaves clear is not clear"
         );
     };
