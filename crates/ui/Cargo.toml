@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["ui", "layout", "gamedev", "retained-mode", "engine"]
+categories = ["gui", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The simulation-side widget tree, its Q47.16 flex-subset layout solver, its integer-only interaction surface, and the versioned document blob trees are read from: generationally addressed nodes solved into pixel rectangles behind a dirty flag, hit-tested for hover/press/focus decisions that fold into the engine state fingerprint."
@@ -21,10 +24,10 @@ workspace = true
 [dependencies]
 # The layout solver's arithmetic: Q47.16, saturating, bit-identical on
 # every target — the crate simulation numbers are written in.
-renew-fixed = { path = "../fixed" }
+renew-fixed = { version = "0.1.0", path = "../fixed" }
 # The digest the tree's decisions fold into — the same explicit-order
 # fingerprint every simulation state answers with.
-renew-frame = { path = "../frame" }
+renew-frame = { version = "0.1.0", path = "../frame" }
 
 # Property tests for the tree's invariants — the containers row of the
 # testing table — and the engine's counting allocator for the

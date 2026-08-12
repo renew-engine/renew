@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["jobs", "thread-pool", "parallel", "gamedev", "engine"]
+categories = ["concurrency", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Fixed-size worker pool with blocking chunk-granular parallel-for; all engine parallelism routes through it."
@@ -24,8 +27,8 @@ sanitized = []
 # default-features = false: this crate needs only the thread seam, and
 # pulling platform defaults here would compile the windowing stack into
 # every headless consumer of the job pool (feature unification).
-renew-platform = { path = "../core/platform", default-features = false }
-renew-diag = { path = "../core/diag" }
+renew-platform = { version = "0.1.0", path = "../core/platform", default-features = false }
+renew-diag = { version = "0.1.0", path = "../core/diag" }
 
 [dev-dependencies]
 renew-memory = { path = "../core/memory" }

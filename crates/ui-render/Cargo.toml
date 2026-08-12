@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["ui", "rendering", "gamedev", "sprites", "engine"]
+categories = ["rendering", "gui"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The presentation half of the UI: snapshot pairs of the solved widget tree, blended at display rate by the ratified interpolation factor, clipped to ancestor boxes on the CPU, and emitted as premultiplied sprites through the 2D renderer from one generated atlas."
@@ -21,13 +24,13 @@ workspace = true
 [dependencies]
 # The tree being presented: rectangles, styles, and the (slot,
 # generation) identity the snapshot pair is keyed by.
-renew-ui = { path = "../ui" }
+renew-ui = { version = "0.1.0", path = "../ui" }
 # The display-rate half: the interpolation factor and float vectors —
 # the crate a simulation is forbidden from reaching, which is exactly
 # why the presenter may.
-renew-math = { path = "../core/math" }
+renew-math = { version = "0.1.0", path = "../core/math" }
 # The emission surface: sprites over one atlas, one buffer, one item.
-renew-render2d = { path = "../render2d" }
+renew-render2d = { version = "0.1.0", path = "../render2d" }
 
 # The golden oracle needs a device; the counting allocator gates the
 # steady state; property tests drive the clipper.

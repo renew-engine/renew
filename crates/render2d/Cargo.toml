@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "2d", "sprites", "rendering", "vulkan"]
+categories = ["rendering", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Batched 2D sprites over the rendering crate: one atlas, one pipeline, one instanced draw per frame."
@@ -20,8 +23,8 @@ simulation = false
 # windowing crates into every consumer's graph. The math crate carries
 # the ortho and UV maps.
 [dependencies]
-renew-math = { path = "../core/math" }
-renew-rhi = { path = "../rhi", default-features = false }
+renew-math = { version = "0.1.0", path = "../core/math" }
+renew-rhi = { version = "0.1.0", path = "../rhi", default-features = false }
 
 [dev-dependencies]
 renew-memory = { path = "../core/memory" }

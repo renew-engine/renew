@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["ecs", "gamedev", "entity-component", "deterministic", "engine"]
+categories = ["game-development", "data-structures"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Entity handles with generations, and sparse-set component storage whose iteration order is defined by slot rather than by insertion history."

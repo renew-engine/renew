@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "3d", "mesh", "rendering", "vulkan"]
+categories = ["rendering", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Indexed 3D geometry over the rendering crate: mesh pipelines with and without a camera or a texture, depth-tested, indexed draws in submission order."
@@ -19,7 +22,7 @@ simulation = false
 # geometry and describes draws, it never presents, and taking the default
 # would drag windowing crates into every consumer's graph.
 [dependencies]
-renew-rhi = { path = "../rhi", default-features = false }
+renew-rhi = { version = "0.1.0", path = "../rhi", default-features = false }
 
 # `Scene` is index-and-offset arithmetic over a byte container, which is
 # the row in the testing table that asks for properties rather than

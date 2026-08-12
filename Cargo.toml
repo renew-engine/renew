@@ -12,6 +12,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/renew-engine/renew"
+homepage = "https://renew-engine.github.io/renew/"
 rust-version = "1.97"
 
 [workspace.lints.rust]

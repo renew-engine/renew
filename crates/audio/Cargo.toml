@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "audio", "mixer", "wav", "engine"]
+categories = ["multimedia::audio", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Sound as arithmetic: a fixed-voice mixer with no steady-state allocation, a command ring a game thread can push into while an audio thread drains it, and a WAV reader that validates every field before it is used. Carrying the samples to a device belongs to the platform crate."

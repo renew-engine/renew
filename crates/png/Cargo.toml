@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["png", "encoding", "image", "gamedev", "no-std"]
+categories = ["multimedia::images", "encoding"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "PNG encoding with no dependencies: RGBA pixels in, the bytes of a file out. It never touches the filesystem."
