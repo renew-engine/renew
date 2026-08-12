@@ -484,7 +484,7 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
     (
         "D2 no-surface-formats",
         "no-surface-formats",
-        QuirkShape::NeverPresentable("no 8-bit UNORM sRGB surface format"),
+        QuirkShape::NeverPresentable("no 8-bit sRGB surface format"),
     ),
     (
         "D3 acquire-out-of-range-index",
