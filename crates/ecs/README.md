@@ -30,7 +30,7 @@ consequence of the layout.
   tight, and `Store::iter_unordered` exists for systems that genuinely do
   not care about order — its name is the warning.
 - **Nothing here reads a clock, opens a file, or spawns a thread**, and
-  the crate's [clippy.toml](clippy.toml) rejects all three at lint time.
+  the crate's [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/ecs/clippy.toml) rejects all three at lint time.
   `HashMap` is banned for the same reason: its hasher is seeded per
   process, so iterating one would make the order differ every run.
 
@@ -88,7 +88,7 @@ sorted whatever the churn.
 
 `bootstrap`. Storage and handles are settled; everything above them —
 systems, scheduling, a type map — is not. The `[package.metadata.renew]`
-table in [Cargo.toml](Cargo.toml) is authoritative for maturity.
+table in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/ecs/Cargo.toml) is authoritative for maturity.
 
 ## Key decisions
 

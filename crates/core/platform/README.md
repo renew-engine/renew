@@ -99,7 +99,7 @@ workspace build against, and breaking them is avoided; surfaces still
 grow when a consumer needs them (streaming I/O arrives with the asset
 pipeline; dynamic-library loading stays deferred until something loads
 one) — examples and a performance narrative are still to come. The
-`[package.metadata.renew]` table in [Cargo.toml](Cargo.toml) is
+`[package.metadata.renew]` table in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/core/platform/Cargo.toml) is
 authoritative for maturity and manifest metadata. This crate contains
 no `unsafe` code.
 

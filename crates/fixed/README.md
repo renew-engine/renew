@@ -4,7 +4,7 @@ Fixed-point arithmetic for simulation code whose output has to reproduce
 bit-for-bit on every target.
 
 **Status: `bootstrap`.** Interface churn expected. See
-[`Cargo.toml`](Cargo.toml) for the machine-readable manifest — maturity,
+[`Cargo.toml`](https://github.com/renew-engine/renew/blob/main/crates/fixed/Cargo.toml) for the machine-readable manifest — maturity,
 dependencies and core status live there, not here.
 
 ## Why this exists
