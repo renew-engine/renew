@@ -835,3 +835,164 @@ fn collect_rust_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String
     }
     Ok(())
 }
+
+/// Engine crates, as cargo sees them: workspace members named `renew-*`
+/// that are neither samples nor tools.
+fn engine_crates(root: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("run cargo metadata: {e}"))?;
+    let text = String::from_utf8(output.stdout).map_err(|e| format!("metadata utf8: {e}"))?;
+    let Value::Object(root_object) =
+        json::parse(&text).map_err(|e| format!("metadata json: {e}"))?
+    else {
+        return Err("metadata is not an object".into());
+    };
+    let Some((_, Value::Array(packages))) = root_object.iter().find(|(key, _)| key == "packages")
+    else {
+        return Err("metadata has no packages array".into());
+    };
+    let mut names = Vec::new();
+    for package in packages {
+        let Value::Object(fields) = package else {
+            continue;
+        };
+        let Some((_, Value::String(name))) = fields.iter().find(|(key, _)| key == "name") else {
+            continue;
+        };
+        let engine = name.starts_with("renew-")
+            && !name.starts_with("renew-sample-")
+            && name != "renew-cli"
+            && name != "renew-bench";
+        if engine {
+            names.push(name.clone());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[test]
+fn the_readme_counts_what_the_workspace_actually_holds() {
+    // The front page states three numbers a reader is invited to trust:
+    // how many removability configurations CI runs, which one builds the
+    // minimal core, and how many engine crates there are. The first of
+    // those is the row the repository nominates as its evidence for I12,
+    // an INVARIANT — its entire function is to let a session audit the
+    // invariant without reading the workflow.
+    //
+    // All three had drifted, and one had drifted twice: a crate landed in
+    // #217 without a table row and nothing said so, which is exactly the
+    // failure mode this file exists to distrust — a document that keeps
+    // reading plausibly while measuring nothing.
+    let root = workspace_root();
+
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect("read the CI workflow");
+    let cells = workflow
+        .lines()
+        .filter(|line| line.contains("sel=\"--workspace --exclude"))
+        .count();
+
+    let crates = engine_crates(&root).expect("list the engine crates");
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read the README");
+
+    // Written out, because the README writes them out.
+    let spelled = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "twenty-one",
+        "twenty-two",
+        "twenty-three",
+        "twenty-four",
+        "twenty-five",
+        "twenty-six",
+        "twenty-seven",
+        "twenty-eight",
+        "twenty-nine",
+        "thirty",
+        "thirty-one",
+        "thirty-two",
+        "thirty-three",
+        "thirty-four",
+        "thirty-five",
+    ];
+    let word = |n: usize| -> String {
+        spelled
+            .get(n)
+            .map_or_else(|| n.to_string(), |s| (*s).to_owned())
+    };
+    let capitalised = |n: usize| -> String {
+        let w = word(n);
+        let mut chars = w.chars();
+        chars.next().map_or(w.clone(), |first| {
+            first.to_uppercase().collect::<String>() + chars.as_str()
+        })
+    };
+
+    let mut wrong = Vec::new();
+    let cell_phrase = format!("*one crate at a time*: {}", word(cells));
+    if !readme.contains(&cell_phrase) {
+        wrong.push(format!(
+            "the README does not say there are {cells} removability configurations \
+             (expected the phrase {cell_phrase:?})"
+        ));
+    }
+    let core_phrase = format!("A {} builds the minimal core alone", ordinal(cells + 1));
+    if !readme.contains(&core_phrase) {
+        wrong.push(format!(
+            "the minimal-core cell is step {} of the removability job \
+             (expected the phrase {core_phrase:?})",
+            cells + 1
+        ));
+    }
+    let count_phrase = format!("{} engine crates", capitalised(crates.len()));
+    if !readme.contains(&count_phrase) {
+        wrong.push(format!(
+            "cargo reports {} engine crates (expected the phrase {count_phrase:?})",
+            crates.len()
+        ));
+    }
+    for name in &crates {
+        if !readme.contains(&format!("**`{name}`**")) {
+            wrong.push(format!("{name} has no row in the README's module table"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The ordinal the README spells, for the cell that follows the removals.
+fn ordinal(n: usize) -> String {
+    match n {
+        21 => "twenty-first".to_owned(),
+        22 => "twenty-second".to_owned(),
+        23 => "twenty-third".to_owned(),
+        24 => "twenty-fourth".to_owned(),
+        25 => "twenty-fifth".to_owned(),
+        26 => "twenty-sixth".to_owned(),
+        27 => "twenty-seventh".to_owned(),
+        28 => "twenty-eighth".to_owned(),
+        other => format!("{other}th"),
+    }
+}

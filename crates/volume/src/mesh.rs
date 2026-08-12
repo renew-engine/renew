@@ -127,7 +127,16 @@ pub fn faces(volume: &Volume, beyond: Beyond) -> Vec<Quad> {
 /// changed chunk too, or it leaves faces behind inside solid rock.
 ///
 /// Appends to `quads` rather than returning, so a caller re-meshing many
-/// chunks keeps one buffer instead of one allocation per chunk.
+/// chunks keeps one output buffer instead of one per chunk.
+///
+/// **That is the output allocation only, and the distinction matters to
+/// anyone with an allocation gate around their frame.** The mask this
+/// walks is still allocated per side, so a call costs six allocations
+/// however many chunks share the buffer. A consumer driving this from the
+/// change feed — re-meshing each changed chunk and its neighbours — pays
+/// six times that count per frame. Handing the mask in as caller-owned
+/// scratch is the fix and is deliberately not done here: it changes the
+/// signature for every caller to serve one, and no caller has yet asked.
 pub fn chunk_faces(volume: &Volume, chunk: usize, beyond: Beyond, quads: &mut Vec<Quad>) {
     let Some(origin) = volume.chunk_origin(chunk) else {
         return;

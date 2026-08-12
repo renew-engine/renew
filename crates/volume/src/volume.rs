@@ -335,12 +335,30 @@ impl Volume {
 
     /// The whole volume in one value.
     ///
-    /// Folds the origin and the extent first, then every chunk hash in
+    /// Folds the origin, then **both** extents, then every chunk hash in
     /// ascending chunk index. **The shape is part of the digest**: without
     /// it, a volume of two chunks along x and one of two along y hash the
     /// same when their single occupied cells sit at the same offset, and
     /// so do two volumes whose contents differ only by where their origins
     /// are — neither of which shares a single cell with the other.
+    ///
+    /// # Both extents, because this crate has two
+    ///
+    /// The extent in chunks is what was allocated; the extent in cells is
+    /// what is addressable, and the two differ because a volume sized in
+    /// cells does not round up. Folding only the first was a real defect
+    /// and not a tidiness one: sizes 33 to 48 all allocate three chunks
+    /// along an axis, so a volume of 41 cells and one of 48 digested the
+    /// same while disagreeing about which cells exist. They answer `get`
+    /// differently, accept different writes, and — with no write at all —
+    /// mesh differently, because the mesher walks the addressable extent
+    /// and asks about the neighbour past its end. Two worlds no future
+    /// write can ever make diverge, reported identical. 41 by 12 by 41 is
+    /// the engine's own voxel sample, not a contrived size.
+    ///
+    /// Named here rather than silently correct because I3 requires a
+    /// digest to say what it leaves out: it leaves out
+    /// [`Volume::generation`], which is bookkeeping and has its own test.
     #[must_use]
     pub fn digest(&self) -> u64 {
         let mut accumulator: u64 = 0xcbf2_9ce4_8422_2325;
@@ -354,6 +372,9 @@ impl Volume {
         fold(u64::from(self.chunks.0.cast_unsigned()));
         fold(u64::from(self.chunks.1.cast_unsigned()));
         fold(u64::from(self.chunks.2.cast_unsigned()));
+        fold(u64::from(self.size.0.cast_unsigned()));
+        fold(u64::from(self.size.1.cast_unsigned()));
+        fold(u64::from(self.size.2.cast_unsigned()));
         for hash in &self.hashes {
             fold(*hash);
         }
@@ -803,6 +824,35 @@ mod tests {
             wide.digest(),
             tall.digest(),
             "the extent is part of what a volume is"
+        );
+    }
+
+    #[test]
+    fn two_volumes_that_allocate_alike_and_address_differently_do_not_share_a_digest() {
+        // The case the test above cannot see, because it varies only the
+        // extent in chunks. Sizes 33 through 48 all allocate three chunks
+        // along an axis, so these two are identical in everything the
+        // digest used to fold and disagree about which cells exist.
+        //
+        // 41 by 12 by 41 is the engine's own voxel sample, so this is the
+        // shipped size rather than a constructed one.
+        let ragged = Volume::new(Cell::new(0, 0, 0), (41, 12, 41)).expect("volume");
+        let whole = Volume::new(Cell::new(0, 0, 0), (48, 12, 48)).expect("volume");
+        assert_eq!(
+            ragged.chunks(),
+            whole.chunks(),
+            "the premise: they allocate identically"
+        );
+        assert_ne!(
+            ragged.contains(Cell::new(45, 1, 1)),
+            whole.contains(Cell::new(45, 1, 1)),
+            "and they disagree about which cells exist"
+        );
+        assert_ne!(
+            ragged.digest(),
+            whole.digest(),
+            "so a digest that called them equal would be reporting two \
+             worlds no later write could ever make diverge as one"
         );
     }
 

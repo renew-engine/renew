@@ -44,7 +44,16 @@ fn build() -> Volume {
 /// change that has to be re-recorded and explained.
 ///
 /// Measured 2026-08-12, x86_64-pc-windows-msvc, rustc stable.
-const EXPECTED: u64 = 0xac36_1146_05fe_4e3b;
+///
+/// Re-recorded 2026-08-13, same machine and toolchain, for a deliberate
+/// format change: the digest now folds the extent in **cells** alongside
+/// the extent in chunks. It folded only the second, so a volume of 41
+/// cells and one of 48 — which allocate the same three chunks — digested
+/// identically while disagreeing about which cells exist. The previous
+/// value was `0xac36_1146_05fe_4e3b`; it is kept here because a reader
+/// finding it in an older log should be able to tell a format change from
+/// a regression.
+const EXPECTED: u64 = 0xcf8f_1cdf_53ca_f9b5;
 
 #[test]
 fn the_same_writes_produce_the_same_digest_every_run() {

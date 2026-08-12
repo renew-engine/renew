@@ -4,7 +4,13 @@
 //! has no opinion about which ones exist or what any of them does — sand,
 //! stone and wood are the game's vocabulary and live above this, and the
 //! boundary is the whole reason this crate could move upstream one day.
-//! It draws nothing and, after construction, allocates nothing.
+//! It draws nothing, and reading, writing, picking and sweeping allocate
+//! nothing after construction — the four verbs the allocation gate
+//! measures, and the scope every sibling crate states rather than
+//! claiming the whole surface. **Surface extraction is outside that
+//! scope**: [`faces`] and [`chunk_faces`] allocate a mask per side, six
+//! per call. The sentence here used to say the crate allocated nothing at
+//! all, which was true until a mesher arrived beneath it.
 //!
 //! # Why the hashes are maintained on write
 //!
