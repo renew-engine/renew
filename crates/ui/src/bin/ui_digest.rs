@@ -13,7 +13,7 @@
 //! solver (mixed pixel and content sizes, growth, a mid-script restyle
 //! whose re-solve moves a later click onto a different button),
 //! hit-testing (moves across every button, a boundary-exact corner, a
-//! miss outside the tree), and the decision fold (activations, an
+//! miss outside the widget tree), and the decision fold (activations, an
 //! abandoned press, a click on nothing). Unlike the tree's own
 //! `absorb` — whose geometry exclusion serves gameplay gates — this
 //! witness folds the solved rectangles too, to the raw fixed-point
