@@ -1,0 +1,93 @@
+name: CLA
+
+# The agreement in CLA.md is what makes the project's licensing decisions
+# possible at all: section 2 grants the rights, and without a record that a
+# contributor accepted it, their code sits in the tree under no grant but the
+# repository's own licence. That record is a line in a pull request body, and
+# a record no one checks is a record that will eventually be missing.
+#
+# The agreement is given once and covers everything afterwards, so this job
+# accepts either the line on this pull request or the line on an earlier one
+# from the same author.
+#
+# Deliberately `pull_request` rather than `pull_request_target`: this job
+# needs to read pull request bodies and nothing else, and the fork-writable
+# variant would hand a token to a context it has no use for.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  agreement:
+    name: Contributor agreement on record
+    runs-on: ubuntu-latest
+    steps:
+      - name: Look for the agreement on this or an earlier pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          # The Owner is the counterparty to the agreement and does not enter
+          # into it with themselves; bots author no copyrightable work. Both
+          # facts are already in the event payload, so neither costs a call.
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then
+            echo "Author is a bot; the agreement does not apply."
+            exit 0
+          fi
+          case "$ASSOCIATION" in
+            OWNER|MEMBER)
+              echo "Author is $ASSOCIATION of this repository; treated as the Owner."
+              exit 0
+              ;;
+          esac
+
+          # Matched loosely on purpose: the sentence is the consent, and a
+          # contributor should not fail this over capitalisation or a stray
+          # space they cannot see in rendered Markdown.
+          PATTERN='i have read cla\.md and i agree to its terms'
+          normalise() { tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -s ' '; }
+
+          if printf '%s' "$BODY" | normalise | grep -Eq "$PATTERN"; then
+            echo "Agreement found on this pull request."
+            exit 0
+          fi
+
+          echo "Not on this pull request; checking earlier ones by $AUTHOR."
+          earlier=$(gh pr list --repo "$REPO" --author "$AUTHOR" --state all \
+                      --limit 200 --json number,body \
+                      --jq ".[] | select(.number != $NUMBER) | .body" \
+                    | normalise | grep -Ec "$PATTERN" || true)
+
+          if [ "${earlier:-0}" -gt 0 ]; then
+            echo "Agreement found on an earlier pull request; it covers this one."
+            exit 0
+          fi
+
+          cat <<'MSG'
+
+          No contributor agreement is on record for this author.
+
+          Read CLA.md, then add these lines to this pull request's description:
+
+              I have read CLA.md and I agree to its terms.
+              Name: <your full name>
+              Email: <your email>
+              GitHub: @<your username>
+              Date: <YYYY-MM-DD>
+
+          You only do this once. Later pull requests are covered by it, and
+          this check will find the agreement there.
+          MSG
+          exit 1
