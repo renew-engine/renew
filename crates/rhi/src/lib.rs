@@ -377,35 +377,116 @@ pub mod builtin {
 
 #[cfg(test)]
 mod horizon_tests {
-    /// **The constant and the shader that uses it cannot drift.**
-    /// A colour written in two languages is coupled by nothing but the
-    /// hope that whoever edits one greps for the other. Here the shader
-    /// source is the authority and this reads it.
-    #[test]
-    fn the_horizon_constant_matches_the_shader_that_fades_to_it() {
-        let source = include_str!("../shaders/mesh_camera.frag");
+    /// Every shader that declares `HORIZON`, so the test can check all of
+    /// them rather than the one somebody thought of.
+    ///
+    /// **Named here rather than discovered at runtime** because the sources
+    /// are `include_str!`-ed into the binary and a test cannot read the
+    /// directory of a crate it was compiled from. That makes this list the
+    /// weak point, so `every_shader_declaring_horizon_is_on_the_list`
+    /// below holds it against the shaders that actually exist.
+    const HORIZON_SHADERS: [(&str, &str); 3] = [
+        (
+            "mesh_camera.frag",
+            include_str!("../shaders/mesh_camera.frag"),
+        ),
+        (
+            "mesh_camera_shadow.frag",
+            include_str!("../shaders/mesh_camera_shadow.frag"),
+        ),
+        (
+            "mesh_camera_textured.frag",
+            include_str!("../shaders/mesh_camera_textured.frag"),
+        ),
+    ];
+
+    /// Pull the `vec3(...)` components out of a `const vec3 HORIZON` line.
+    fn declared_horizon(name: &str, source: &str) -> Vec<f32> {
         let line = source
             .lines()
             .find(|line| line.starts_with("const vec3 HORIZON"))
-            .expect("mesh_camera.frag must declare `const vec3 HORIZON`");
+            .unwrap_or_else(|| panic!("{name} must declare `const vec3 HORIZON`"));
         let inside = line
             .split_once("vec3(")
             .and_then(|(_, rest)| rest.split_once(')'))
             .map(|(inside, _)| inside)
             .expect("the declaration must be a vec3(...) literal");
-        let found: Vec<f32> = inside
+        inside
             .split(',')
             .map(|part| {
                 part.trim()
                     .parse()
                     .expect("each component must be a float literal")
             })
+            .collect()
+    }
+
+    /// **The constant and the shaders that use it cannot drift.**
+    /// A colour written in two languages is coupled by nothing but the
+    /// hope that whoever edits one greps for the other. Here the shader
+    /// source is the authority and this reads it.
+    ///
+    /// **All three of them.** This checked `mesh_camera.frag` alone while
+    /// two more shaders declared the same constant, so the fade applied to
+    /// shadowed and textured surfaces was coupled to nothing. All three
+    /// agreed, so nothing was wrong — but the next edit to the horizon
+    /// would have changed one, passed, and left two surfaces fading to the
+    /// old colour, which looks like a lighting bug and is a stale copy.
+    #[test]
+    fn the_horizon_constant_matches_every_shader_that_fades_to_it() {
+        for (name, source) in HORIZON_SHADERS {
+            assert_eq!(
+                declared_horizon(name, source),
+                crate::builtin::HORIZON.to_vec(),
+                "{name} disagrees with builtin::HORIZON — the shader is the authority, so the \
+                 constant is what needs changing"
+            );
+        }
+    }
+
+    /// The list above is the thing that can go stale, so it is checked
+    /// against the directory rather than trusted.
+    ///
+    /// A shader added tomorrow that fades to the horizon and is not listed
+    /// would leave the drift check silently narrower than it reads.
+    ///
+    /// The filesystem ban this crate carries is about the *renderer* never
+    /// reading a file while it draws. Reading this crate's own shader
+    /// directory to check a list against it is a different act, at a
+    /// different time, and is named rather than exempted silently.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reading its own crate's sources is not the renderer reading files"
+    )]
+    fn every_shader_declaring_horizon_is_on_the_list() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let mut declaring: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the shader directory is beside the crate")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if path.extension()? != "frag" && path.extension()? != "vert" {
+                    return None;
+                }
+                let source = std::fs::read_to_string(&path).ok()?;
+                source
+                    .lines()
+                    .any(|line| line.starts_with("const vec3 HORIZON"))
+                    .then(|| path.file_name()?.to_str().map(str::to_owned))
+                    .flatten()
+            })
             .collect();
+        declaring.sort();
+
+        let mut listed: Vec<String> = HORIZON_SHADERS
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        listed.sort();
+
         assert_eq!(
-            found,
-            crate::builtin::HORIZON.to_vec(),
-            "`{line}` disagrees with builtin::HORIZON — the shader is the authority, so the \
-             constant is what needs changing"
+            declaring, listed,
+            "the shaders declaring HORIZON and the list the drift check walks have diverged"
         );
     }
 }
