@@ -326,12 +326,25 @@ fn lerp4(from: [f32; 4], to: [f32; 4], alpha: Alpha) -> [f32; 4] {
 }
 
 /// The premultiplied float tint of an integer background.
+///
+/// **Premultiplied means the colour carries its own coverage**, and the
+/// pipeline these quads reach depends on it: sprites blend with a source
+/// factor of one and a destination factor of one-minus-source-alpha, so
+/// the colour is added as it arrives and must already have been scaled.
+/// Handing it straight alpha instead draws a translucent panel brighter
+/// than it should be, by a factor of one over its own alpha — which for
+/// a panel at alpha 230 is about eleven per cent, on every panel, all
+/// the time.
+///
+/// The two spellings agree exactly at alpha 255, which is why an opaque
+/// test cannot tell them apart.
 fn tint_of(background: [u8; 4]) -> [f32; 4] {
+    let alpha = f32::from(background[3]) / 255.0;
     [
-        f32::from(background[0]) / 255.0,
-        f32::from(background[1]) / 255.0,
-        f32::from(background[2]) / 255.0,
-        f32::from(background[3]) / 255.0,
+        f32::from(background[0]) / 255.0 * alpha,
+        f32::from(background[1]) / 255.0 * alpha,
+        f32::from(background[2]) / 255.0 * alpha,
+        alpha,
     ]
 }
 
@@ -452,6 +465,87 @@ mod tests {
             .frame(Alpha::new(1, core::num::NonZeroU64::new(2).expect("two")))
             .collect();
         assert_eq!(midway[0].x, 30.0, "halfway between 10 and 50");
+    }
+
+    /// **A translucent background arrives already carrying its coverage.**
+    ///
+    /// The pipeline these quads reach blends with a source factor of one
+    /// and a destination factor of one-minus-source-alpha, so the colour
+    /// is added as it arrives. A straight-alpha tint therefore draws a
+    /// panel brighter than it should be, by one over its own alpha.
+    ///
+    /// Every other test in this file uses opaque backgrounds — where the
+    /// two spellings agree exactly — which is how this went unnoticed.
+    /// The numbers below are the pause menu's own: `#282c34e6`.
+    #[test]
+    fn a_translucent_background_is_premultiplied_by_its_own_alpha() {
+        let mut ui = Ui::new(UiLimits { nodes: 4 });
+        let root = ui.root();
+        let panel = ui.insert(root).expect("room");
+        ui.set_style(
+            panel,
+            Style {
+                width: px(20),
+                height: px(10),
+                background: [0x28, 0x2c, 0x34, 0xe6],
+                ..Style::default()
+            },
+        );
+        ui.solve(f(100), f(100));
+        let mut presenter = UiPresenter::new(4);
+        presenter.advance(&ui);
+
+        let quads: Vec<Quad> = presenter.frame(Alpha::ZERO).collect();
+        assert_eq!(quads.len(), 1, "one panel");
+        let alpha = 230.0 / 255.0;
+        let expect = |channel: u8| (f32::from(channel) / 255.0 * alpha).to_bits();
+        assert_eq!(
+            quads[0].tint[0].to_bits(),
+            expect(0x28),
+            "red is not scaled by the panel's own coverage"
+        );
+        assert_eq!(quads[0].tint[1].to_bits(), expect(0x2c));
+        assert_eq!(quads[0].tint[2].to_bits(), expect(0x34));
+        assert_eq!(
+            quads[0].tint[3].to_bits(),
+            alpha.to_bits(),
+            "alpha itself is coverage and is never scaled by itself"
+        );
+        // The straight-alpha spelling this replaced, named so the test
+        // fails against it rather than merely differing from it.
+        assert_ne!(
+            quads[0].tint[0].to_bits(),
+            (f32::from(0x28u8) / 255.0).to_bits(),
+            "this is the unscaled value the bug produced"
+        );
+    }
+
+    /// The opaque case both spellings share, kept beside the one that
+    /// separates them so neither can drift alone.
+    #[test]
+    fn an_opaque_background_is_unchanged_by_premultiplying() {
+        let mut ui = Ui::new(UiLimits { nodes: 4 });
+        let root = ui.root();
+        let panel = ui.insert(root).expect("room");
+        ui.set_style(
+            panel,
+            Style {
+                width: px(20),
+                height: px(10),
+                background: [0x28, 0x2c, 0x34, 0xff],
+                ..Style::default()
+            },
+        );
+        ui.solve(f(100), f(100));
+        let mut presenter = UiPresenter::new(4);
+        presenter.advance(&ui);
+
+        let quads: Vec<Quad> = presenter.frame(Alpha::ZERO).collect();
+        assert_eq!(
+            quads[0].tint[0].to_bits(),
+            (f32::from(0x28u8) / 255.0).to_bits()
+        );
+        assert_eq!(quads[0].tint[3].to_bits(), 1.0f32.to_bits());
     }
 
     /// A newborn draws unlerped at its one known tick, and a dying
