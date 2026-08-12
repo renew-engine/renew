@@ -181,7 +181,7 @@ jobs:
       # accumulator, and the bench suite.
       - name: Build and test without the frame loop
         run: |
-          sel="--workspace --exclude renew-frame --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench --exclude renew-cli"
+          sel="--workspace --exclude renew-frame --exclude renew-net --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-chess --exclude renew-sample-chess-rules --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-hello-triangle --exclude renew-sample-input-echo --exclude renew-sample-glide --exclude renew-sample-glide-world --exclude hello-engine --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel

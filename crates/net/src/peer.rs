@@ -96,6 +96,14 @@ impl PeerSet {
         self.0 == 0
     }
 
+    /// The seats in this set that are not in `other`.
+    ///
+    /// What a stall reports: the roster, less whoever has arrived.
+    #[must_use]
+    pub const fn without_all(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// How many seats are in the set.
     ///
     /// `u32` rather than `usize`, and deliberately: no pointer-width value
