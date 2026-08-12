@@ -37,7 +37,7 @@ ash = { version = "=0.38.0", default-features = false, features = [
 ] }
 ash-window = { version = "=0.13.0", optional = true }
 raw-window-handle = { version = "=0.6.2", optional = true }
-renew-diag = { version = "0.1.0", path = "../core/diag" }
+renew-diag = { version = "0.1.1", path = "../core/diag" }
 
 [dev-dependencies]
 renew-memory = { path = "../core/memory" }

@@ -8,7 +8,7 @@ members = ["bench/suite", "crates/asset", "crates/audio", "crates/camera", "crat
     "crates/png", "crates/physics3d", "crates/input", "crates/jobs", "crates/particles", "crates/render2d", "crates/render3d", "crates/replay", "crates/rhi", "crates/rng", "crates/scene", "crates/snapshot", "crates/trace", "crates/ui", "crates/ui-render", "hello-engine", "samples/chess", "samples/chess/rules", "samples/cube", "samples/cube/world", "samples/glide", "samples/leap", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/renew-engine/renew"

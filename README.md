@@ -60,7 +60,7 @@ cargo run --bin hello-engine
 
 ```console
 $ cargo run --bin hello-engine
-hello-engine 0.1.0
+hello-engine 0.1.1
 fixed timestep: 16666667 ns
 frames simulated: 60
 time submitted: 1245000015 ns

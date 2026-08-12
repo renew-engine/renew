@@ -27,8 +27,8 @@ sanitized = []
 # default-features = false: this crate needs only the thread seam, and
 # pulling platform defaults here would compile the windowing stack into
 # every headless consumer of the job pool (feature unification).
-renew-platform = { version = "0.1.0", path = "../core/platform", default-features = false }
-renew-diag = { version = "0.1.0", path = "../core/diag" }
+renew-platform = { version = "0.1.1", path = "../core/platform", default-features = false }
+renew-diag = { version = "0.1.1", path = "../core/diag" }
 
 [dev-dependencies]
 renew-memory = { path = "../core/memory" }
