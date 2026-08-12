@@ -69,7 +69,7 @@ Settled enough to depend on: these surfaces are what other crates in
 this workspace build against, and breaking them is avoided; they still
 grow when a consumer needs them — examples and a performance narrative
 are still to come. The `[package.metadata.renew]` table in
-[Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
+[Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/core/memory/Cargo.toml) is authoritative for maturity and manifest
 metadata. `unsafe` is confined to the allocator internals with the
 invariant stated at every block; the arena is `Copy`-only until a
 consumer needs drop-aware allocation.

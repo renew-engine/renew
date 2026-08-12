@@ -21,8 +21,8 @@ extension_points = []
 simulation = true
 
 [dependencies]
-renew-ecs = { version = "0.1.0", path = "../ecs" }
-renew-fixed = { version = "0.1.0", path = "../fixed" }
+renew-ecs = { version = "0.1.1", path = "../ecs" }
+renew-fixed = { version = "0.1.1", path = "../fixed" }
 
 [dev-dependencies]
 proptest = "1.11"

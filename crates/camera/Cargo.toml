@@ -22,7 +22,7 @@ simulation = false
 # rendering conventions, and the conventions are this crate's own
 # contract rather than a dependency's.
 [dependencies]
-renew-math = { version = "0.1.0", path = "../core/math" }
+renew-math = { version = "0.1.1", path = "../core/math" }
 
 # The projection's monotonicity and range claims are properties over
 # arbitrary points, which is the testing table's row for mathematics.

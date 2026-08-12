@@ -24,7 +24,7 @@ simulation = false
 # which is what mechanically refuses every simulation crate an edge to
 # it.
 [dependencies]
-renew-math = { version = "0.1.0", path = "../core/math" }
+renew-math = { version = "0.1.1", path = "../core/math" }
 
 # The classification is a property over arbitrary (slot, generation,
 # value) sequences, which is the testing table's containers row. The

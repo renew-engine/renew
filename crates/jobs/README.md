@@ -67,9 +67,9 @@ site).
 Early-stage: the surface is exactly a pool plus parallel-for; work
 stealing, job handles, and dependency graphs are deliberately absent
 until a consumer demands them. The `[package.metadata.renew]` table in
-[Cargo.toml](Cargo.toml) is authoritative for maturity and all manifest
+[Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/jobs/Cargo.toml) is authoritative for maturity and all manifest
 metadata. The crate's contract lints live in
-[clippy.toml](clippy.toml): raw thread spawning, clock reads, and
+[clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/jobs/clippy.toml): raw thread spawning, clock reads, and
 filesystem access are rejected at lint time.
 
 ## Key decisions

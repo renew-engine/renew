@@ -22,7 +22,7 @@ simulation = false
 # geometry and describes draws, it never presents, and taking the default
 # would drag windowing crates into every consumer's graph.
 [dependencies]
-renew-rhi = { version = "0.1.0", path = "../rhi", default-features = false }
+renew-rhi = { version = "0.1.1", path = "../rhi", default-features = false }
 
 # `Scene` is index-and-offset arithmetic over a byte container, which is
 # the row in the testing table that asks for properties rather than

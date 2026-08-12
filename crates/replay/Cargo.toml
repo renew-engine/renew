@@ -23,8 +23,8 @@ simulation = true
 # so the structure check refuses it a path to the platform crate — where
 # the text comes from and where it goes is its caller's business.
 [dependencies]
-renew-event = { version = "0.1.0", path = "../core/event" }
-renew-trace = { version = "0.1.0", path = "../trace" }
+renew-event = { version = "0.1.1", path = "../core/event" }
+renew-trace = { version = "0.1.1", path = "../trace" }
 
 [lints]
 workspace = true

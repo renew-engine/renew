@@ -23,8 +23,8 @@ simulation = false
 # windowing crates into every consumer's graph. The math crate carries
 # the ortho and UV maps.
 [dependencies]
-renew-math = { version = "0.1.0", path = "../core/math" }
-renew-rhi = { version = "0.1.0", path = "../rhi", default-features = false }
+renew-math = { version = "0.1.1", path = "../core/math" }
+renew-rhi = { version = "0.1.1", path = "../rhi", default-features = false }
 
 [dev-dependencies]
 renew-memory = { path = "../core/memory" }

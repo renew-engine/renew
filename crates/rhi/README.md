@@ -60,7 +60,7 @@ display server, and the golden-image tests attest the bytes.
   triangle, textured full-target quads over one and two sampled slots,
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in
-  [shaders/](shaders/README.md)).
+  [shaders/](https://github.com/renew-engine/renew/blob/main/crates/rhi/shaders/README.md)).
 - `Binding` — one written descriptor set behind the device's one
   canonical layout (a combined image sampler at binding 0): a texture
   or render image, the sampler that reads it, and shared ownership of
@@ -161,8 +161,8 @@ when a consumer demands it. Mesh memory is
 host-visible rather than device-local, which is a recorded decision with
 a written reopening trigger (a real-GPU frame-time measurement showing
 vertex fetch matters) and not an oversight. The `[package.metadata.renew]` table
-in [Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
-metadata. Contract lints live in [clippy.toml](clippy.toml): thread
+in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/rhi/Cargo.toml) is authoritative for maturity and manifest
+metadata. Contract lints live in [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/rhi/clippy.toml): thread
 spawning, clock reads, and filesystem access are rejected at lint time.
 `unsafe` is confined to `src/vk/`; the safe modules deny it, and every
 site carries a `// SAFETY:` comment (lint-enforced).

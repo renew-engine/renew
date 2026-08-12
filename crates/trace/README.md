@@ -239,11 +239,11 @@ and Miri (no `unsafe` anywhere in the crate).
 ## Status
 
 Early-stage. The `[package.metadata.renew]` table in
-[Cargo.toml](Cargo.toml) is authoritative for maturity and all manifest
+[Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/trace/Cargo.toml) is authoritative for maturity and all manifest
 metadata. `extension_points = []` is honest: no trait, no `dyn`, no
 runtime polymorphism.
 
-The contract lints live in [clippy.toml](clippy.toml): filesystem calls,
+The contract lints live in [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/trace/clippy.toml): filesystem calls,
 file handles, path types, clock reads, thread spawning, environment reads
 and randomly seeded hash containers are all rejected at lint time,
 because *the codec does no I/O* is a property the whole design rests on
