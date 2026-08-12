@@ -30,10 +30,25 @@ use crate::vk::pass::Bindings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TargetFormat {
-    /// The offscreen target's format, and every color render image's.
+    /// Every color render image's format: the bytes a shader wrote,
+    /// stored as it wrote them.
     Rgba8Unorm,
-    /// The common swapchain format on desktop.
+    /// The same channel order desktop surfaces usually offer, storing
+    /// exactly what was written.
     Bgra8Unorm,
+    /// The offscreen target's format, and the surface's wherever one is
+    /// offered: the hardware applies the sRGB transfer function on write,
+    /// so a shader hands over linear light and the attachment stores the
+    /// display-encoded byte.
+    ///
+    /// **This is what makes the working space linear.** Blending,
+    /// interpolation and lighting then happen on linear values, which is
+    /// where those operations mean what their arithmetic says, and the
+    /// encode becomes a property of the storage rather than a step
+    /// somebody has to remember to write.
+    Rgba8Srgb,
+    /// The same, in the channel order desktop surfaces usually offer.
+    Bgra8Srgb,
     /// No color attachment at all: the format of a pipeline that draws
     /// only into a depth-kinded render image. A depth-only pipeline
     /// carries no fragment stage and must declare depth state — both
@@ -48,6 +63,8 @@ impl TargetFormat {
         match self {
             Self::Rgba8Unorm => Some(vk::Format::R8G8B8A8_UNORM),
             Self::Bgra8Unorm => Some(vk::Format::B8G8R8A8_UNORM),
+            Self::Rgba8Srgb => Some(vk::Format::R8G8B8A8_SRGB),
+            Self::Bgra8Srgb => Some(vk::Format::B8G8R8A8_SRGB),
             Self::DepthOnly => None,
         }
     }
@@ -68,9 +85,10 @@ impl TargetFormat {
     ///
     /// A UNORM attachment stores `round(255 x channel)`, which is what
     /// makes an authored byte survive a round trip unchanged. An sRGB
-    /// attachment would apply the transfer function instead — that arm
-    /// arrives with the format, and every caller of this follows it
-    /// without being edited.
+    /// attachment applies the transfer function instead, so a channel of
+    /// linear light lands on the byte a display expects. Callers ask the
+    /// format rather than choosing, which is why flipping one constant in
+    /// a test moves every expectation that test owns.
     ///
     /// Values outside `0..=1` clamp, which is what the hardware does.
     #[must_use]
@@ -92,8 +110,21 @@ impl TargetFormat {
                 )]
                 Some(scaled.round() as u8)
             }
+            Self::Rgba8Srgb | Self::Bgra8Srgb => Some(crate::srgb::encode_u8(channel)),
             Self::DepthOnly => None,
         }
+    }
+
+    /// Whether the hardware applies the transfer function on write.
+    ///
+    /// Exposed so a caller holding an *authored* byte — a colour eyeballed
+    /// as `#336699` rather than measured as light — can ask whether to
+    /// decode it before handing it over. Asking is the supported way to
+    /// find out; matching on the arms is not, because a format added later
+    /// would take the wrong branch of a `matches!` without a word.
+    #[must_use]
+    pub fn encodes(self) -> bool {
+        matches!(self, Self::Rgba8Srgb | Self::Bgra8Srgb)
     }
 }
 

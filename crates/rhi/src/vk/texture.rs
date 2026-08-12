@@ -42,13 +42,56 @@ pub struct TextureDesc<'a> {
     ///
     /// Length must be exactly `extent.width * extent.height * 4`.
     pub rgba8: &'a [u8],
+    /// What those bytes mean, which decides whether sampling decodes them.
+    pub content: TextureContent,
+}
+
+/// What a texture's bytes are, which is not always a colour.
+///
+/// **The distinction is load-bearing in a linear working space.** Shading
+/// multiplies light by reflectance, so a texture that *is* an authored
+/// picture has to be decoded before it takes part; one that is coverage,
+/// a mask, or a composite already premultiplied in the target's own space
+/// must not be. Getting it backwards is not subtle — a decoded mask is
+/// wrong everywhere it is not fully on or fully off, and an undecoded
+/// picture loses roughly half its contrast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureContent {
+    /// Values, sampled exactly as stored: coverage, masks, and composites
+    /// that were premultiplied in the space the target already works in.
+    ///
+    /// Premultiplied colour belongs here rather than under `Colour`, for
+    /// the same reason a premultiplied render target stays UNORM: the
+    /// transfer function is not linear, so applying it to a value that has
+    /// already been multiplied by alpha is not the same as applying it to
+    /// the colour and multiplying afterwards.
+    Values,
+    /// An authored picture: display-encoded bytes somebody chose by
+    /// looking at them. Sampling decodes, so shading sees reflectance.
+    Colour,
 }
 
 impl<'a> TextureDesc<'a> {
-    /// A texture of `extent`, filled from `rgba8`.
+    /// A texture of `extent`, filled from `rgba8`, whose bytes are
+    /// values rather than an authored picture — see [`TextureContent`].
     #[must_use]
     pub fn new(extent: Extent, rgba8: &'a [u8]) -> Self {
-        Self { extent, rgba8 }
+        Self {
+            extent,
+            rgba8,
+            content: TextureContent::Values,
+        }
+    }
+
+    /// The same, for bytes that are an authored picture and must be
+    /// decoded when sampled.
+    #[must_use]
+    pub fn colour(extent: Extent, rgba8: &'a [u8]) -> Self {
+        Self {
+            extent,
+            rgba8,
+            content: TextureContent::Colour,
+        }
     }
 }
 
@@ -353,7 +396,7 @@ fn upload(
 ) -> Result<Texture, TargetError> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(vk_format(desc.content))
         .extent(vk::Extent3D {
             width: desc.extent.width,
             height: desc.extent.height,
@@ -406,7 +449,7 @@ fn upload(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(vk_format(desc.content))
         .subresource_range(color_range());
     // SAFETY: image live and bound.
     let view = unsafe {
@@ -656,6 +699,18 @@ fn upload(
             extent: desc.extent,
         }),
     })
+}
+
+/// The Vulkan format a texture's content asks for.
+///
+/// One function rather than two literals, so the image and the view it is
+/// read through cannot disagree — a mismatch there is not a wrong colour,
+/// it is an invalid object the validation layer rejects.
+fn vk_format(content: TextureContent) -> vk::Format {
+    match content {
+        TextureContent::Values => vk::Format::R8G8B8A8_UNORM,
+        TextureContent::Colour => vk::Format::R8G8B8A8_SRGB,
+    }
 }
 
 #[cfg(test)]

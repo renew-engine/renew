@@ -157,7 +157,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
     let mesh;
     let items = match surface {
         ClipSurface::Flat => {
-            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
+            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = flat
                 .upload(&device, scene)
@@ -167,7 +167,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
         ClipSurface::Textured => {
             textured = TexturedMeshRenderer::new(
                 &device,
-                TargetFormat::Rgba8Unorm,
+                TargetFormat::Rgba8Srgb,
                 Extent {
                     width: crate::atlas::WIDTH,
                     height: crate::atlas::HEIGHT,
@@ -337,7 +337,7 @@ pub(crate) fn draw_scene(
     // generated, so building the renderer is where it is uploaded.
     let renderer = ShadowedCameraRenderer::new(
         &device,
-        TargetFormat::Rgba8Unorm,
+        TargetFormat::Rgba8Srgb,
         Extent {
             width: crate::atlas::WIDTH,
             height: crate::atlas::HEIGHT,
@@ -367,7 +367,7 @@ pub(crate) fn draw_scene(
     // need every reader to work that out again.
     let over = match overlay {
         Some(overlay) if !overlay.is_empty() => {
-            let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Unorm)
+            let plain = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             let uploaded = plain
                 .upload(&device, overlay)
@@ -387,7 +387,7 @@ pub(crate) fn draw_scene(
             let (side, tile) = crate::atlas::particle_pixels();
             let sprinkler = renew_particles::ParticleRenderer::new(
                 &device,
-                TargetFormat::Rgba8Unorm,
+                TargetFormat::Rgba8Srgb,
                 Extent {
                     width: side,
                     height: side,

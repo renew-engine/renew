@@ -30,7 +30,7 @@ const float MAX_FADE = 0.72;
 // What distance fades toward. The same colour the samples clear to, so
 // the fade reads as depth rather than as a grey wash. Identical to the
 // untextured path's: two pipelines drawing one world must agree.
-const vec3 HORIZON = vec3(0.09, 0.10, 0.13);
+const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
 
 void main() {
     vec4 texel = texture(atlas, fragment_uv);

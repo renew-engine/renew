@@ -41,7 +41,7 @@ impl Surface {
         match self {
             // The offscreen target's format is fixed by the renderer;
             // it exposes no accessor because there is nothing to choose.
-            Self::Offscreen(_) => TargetFormat::Rgba8Unorm,
+            Self::Offscreen(_) => TargetFormat::Rgba8Srgb,
             #[cfg(feature = "window")]
             Self::Window(target) => target.format(),
         }
@@ -83,9 +83,20 @@ impl Surface {
 pub fn clear_color(world: &World, alpha: Alpha) -> Color {
     let current = world.clear_rgb8();
     let next = world.next_clear_rgb8();
+    // Decode first, then interpolate. The bytes are authored colours —
+    // somebody chose them by looking — so they are display-encoded, and
+    // the halfway point between two encoded values is not the halfway
+    // point between the two lights they stand for. The attachment encodes
+    // on write, so what it wants handed over is the light.
+    //
+    // At a zero factor this is exactly `decode(from)`, which the
+    // attachment stores back as exactly `from` — so the frame a golden
+    // pins does not move. The frames between two clears do move, and
+    // correctly: that interpolation was never meant to happen in encoded
+    // space.
     let mix = |from: u8, to: u8| {
-        let from = f32::from(from);
-        (from + (f32::from(to) - from) * alpha.get()) / 255.0
+        let from = renew_rhi::srgb::decode(from);
+        from + (renew_rhi::srgb::decode(to) - from) * alpha.get()
     };
     Color::new(
         mix(current[0], next[0]),
