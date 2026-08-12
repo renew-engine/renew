@@ -79,6 +79,29 @@ impl Color {
     pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
+
+    /// An opaque colour written the way it was authored: three
+    /// sRGB-encoded bytes, decoded to the linear values this type holds.
+    ///
+    /// **Prefer this to dividing by 255.** A hex literal picked in an
+    /// image editor is sRGB-encoded, so `k / 255.0` does not produce the
+    /// light that colour stands for — it produces roughly its square
+    /// root, and everything computed from it is wrong by that much.
+    ///
+    /// Alpha is not taken here because alpha is not encoded: coverage is
+    /// already linear, and there is no encoded alpha byte to decode.
+    /// Build a translucent colour with [`Color::new`], decoding each
+    /// colour channel through [`crate::srgb::decode`] and leaving alpha
+    /// as the fraction it already is.
+    #[must_use]
+    pub fn srgb8(rgb: [u8; 3]) -> Self {
+        Self {
+            r: crate::srgb::decode(rgb[0]),
+            g: crate::srgb::decode(rgb[1]),
+            b: crate::srgb::decode(rgb[2]),
+            a: 1.0,
+        }
+    }
 }
 
 #[cfg(test)]
