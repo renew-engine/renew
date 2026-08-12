@@ -23,9 +23,14 @@ use renew_ui_render::{UiPresenter, atlas};
 const SIZE: u32 = 64;
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions.
 const CLEAR: Color = Color {
-    r: 51.0 / 255.0,
-    g: 102.0 / 255.0,
-    b: 153.0 / 255.0,
+    // The light behind the authored bytes 51, 102, 153. The
+    // attachment encodes on write, so handing it these stores the
+    // authored bytes back and the picture is the one that was chosen.
+    // Passing byte/255 would encode a value that is already encoded,
+    // which lifts every pixel -- measured at 51 landing on 124.
+    r: renew_rhi::srgb::decode(51),
+    g: renew_rhi::srgb::decode(102),
+    b: renew_rhi::srgb::decode(153),
     a: 1.0,
 };
 /// The format every target in this file is created with.
