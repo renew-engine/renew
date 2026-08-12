@@ -609,7 +609,7 @@ jobs:
       - name: Mesh-renderer tests on the pinned software rasterizer
         env:
           RENEW_GOLDEN: "1"
-        run: cargo test --package renew-render3d --test golden
+        run: cargo test --package renew-render3d --test golden --test zero_alloc
       # The voxel sample's own picture, drawn through the whole stack on
       # the pinned rasterizer. Not compared against the committed image:
       # that file is drawn on a real GPU and this is a software
