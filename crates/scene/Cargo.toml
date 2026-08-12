@@ -1,0 +1,41 @@
+[package]
+name = "renew-scene"
+description = "Local placements, parenting, and a propagation pass composing them over entity storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Local placements and parent links held as components, and the pass that composes them into world placements, resolving a parent before its children wherever the links form a forest and cutting each loop in exactly one place where they do not."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+# Storage and the number type, and nothing else. Two edges, both
+# deliberate: the pass reads and writes components, and it composes
+# placements in the arithmetic a simulation is allowed to reproduce.
+# Notably absent, and it must stay absent: any edge to the rendering
+# crate. One would make the GPU cell strip the hierarchy, so the
+# engine's own evidence would read "no parenting without a GPU".
+[dependencies]
+renew-ecs = { path = "../ecs" }
+renew-fixed = { path = "../fixed" }
+
+# The propagation is a relation over arbitrary trees, which is the
+# testing table's row for properties rather than examples. The counting
+# allocator holds the steady-state claim.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators.
+[features]
+sanitized = []
+
+[lints]
+workspace = true

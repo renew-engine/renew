@@ -19,12 +19,13 @@
 // necessary and not sufficient, but what it covers it covers with teeth.
 #![deny(clippy::float_arithmetic)]
 
-use renew_ecs::{Entities, Entity};
-use renew_fixed::{Fixed, Vec2};
+use renew_ecs::{Entities, Entity, Store};
+use renew_fixed::{Angle, Fixed, Vec2};
 use renew_frame::StateHash;
 use renew_physics2d::{
     BodyKind, Collider, Filter, Shape, ShapeIndex, SlideEnd, SlideHit, Transform, World,
 };
+use renew_scene::{Global, Local, Parent, Scratch, propagate};
 
 /// What the player is asking for this tick.
 ///
@@ -148,6 +149,35 @@ impl Platform {
     }
 }
 
+/// A platform carried around a turning pivot.
+///
+/// **Where the deck is, is never written down.** A hub sits at `pivot` and
+/// turns by `turn_per_tick`; the deck hangs off it at a fixed `arm` and its
+/// world placement is whatever composing those two gives. That is the whole
+/// reason this exists in a platformer sample rather than a unit test: a deck
+/// that only slid back and forth could be driven by adding two vectors, and
+/// would be evidence for nothing. Rotating the arm is the case addition
+/// cannot express.
+#[derive(Clone, Copy, Debug)]
+pub struct Orbit {
+    /// Centre of the turn, in world space.
+    pub pivot: Vec2,
+    /// Offset from the hub to the deck, measured in the hub's frame.
+    pub arm: Vec2,
+    /// Half-extents of the deck.
+    pub half_extents: Vec2,
+    /// How far the hub turns each tick.
+    pub turn_per_tick: Angle,
+}
+
+/// One built orbit: the two nodes it became, and the rate it turns at.
+#[derive(Clone, Copy, Debug)]
+struct Orbiting {
+    hub: Entity,
+    deck: Entity,
+    turn_per_tick: Angle,
+}
+
 /// Everything the terrain collides with.
 /// How large the character is, measured from its centre.
 ///
@@ -195,6 +225,15 @@ pub struct Leap {
     jump_was_held: bool,
     tick: u64,
     hits: [SlideHit; MAX_SLIDE_HITS],
+    /// The hierarchy behind every moving platform. Three stores and a buffer
+    /// rather than one list of positions, because the positions are the
+    /// *output*: nothing here may be written by hand, or the sample would be
+    /// asserting against numbers it had itself supplied.
+    locals: Store<Local>,
+    parents: Store<Parent>,
+    globals: Store<Global>,
+    scratch: Scratch,
+    orbits: Vec<Orbiting>,
 }
 
 impl Leap {
@@ -250,12 +289,118 @@ impl Leap {
                 normal: Vec2::ZERO,
                 origin: Vec2::ZERO,
             }; MAX_SLIDE_HITS],
+            locals: Store::default(),
+            parents: Store::default(),
+            globals: Store::default(),
+            scratch: Scratch::new(),
+            orbits: Vec::new(),
+        }
+    }
+
+    /// Add a moving platform, and return the entity its deck is.
+    ///
+    /// Additive rather than a fourth argument to [`Leap::new`]: a level with no
+    /// moving parts says so by not calling this, and its digest is byte-for-byte
+    /// what it was before moving platforms existed.
+    ///
+    /// **Construction-only, for the same reason [`Tuning`] is fixed at
+    /// construction.** Calling it mid-run adds a body and changes the digest
+    /// from that tick onward, so two runs of the same input trace would diverge
+    /// on nothing the trace records. Nothing enforces it — a world does not know
+    /// when its caller thinks setup ended — which is why it is written down.
+    pub fn add_orbit(&mut self, orbit: Orbit) -> Entity {
+        let hub = self.entities.spawn();
+        self.locals
+            .insert(hub.index(), Local::new(orbit.pivot, Angle::ZERO));
+
+        let deck = self.entities.spawn();
+        self.locals
+            .insert(deck.index(), Local::new(orbit.arm, Angle::ZERO));
+        self.parents.insert(deck.index(), Parent(hub));
+
+        // The body is created at the origin on purpose. Seeding it with
+        // `pivot + arm` would be the sample writing down an answer it is
+        // supposed to derive, and it would agree with the derivation for
+        // exactly as long as nobody gave the hub a starting angle.
+        self.physics
+            .create_body(deck, BodyKind::Kinematic, Transform::IDENTITY);
+        self.physics.add_shape(
+            deck,
+            Shape::Box {
+                half_extents: orbit.half_extents,
+            },
+            Transform::IDENTITY,
+            Filter::new(TERRAIN_LAYER, CHARACTER_LAYER),
+        );
+
+        self.orbits.push(Orbiting {
+            hub,
+            deck,
+            turn_per_tick: orbit.turn_per_tick,
+        });
+        self.place_decks();
+        deck
+    }
+
+    /// Turn every hub by one tick's worth, then move the decks to wherever
+    /// that puts them.
+    fn advance_orbits(&mut self) {
+        for orbiting in &self.orbits {
+            if let Some(local) = self.locals.get_mut(orbiting.hub.index()) {
+                local.rotation = local.rotation + orbiting.turn_per_tick;
+            }
+        }
+        self.place_decks();
+    }
+
+    /// Compose the hierarchy and hand the result to the physics world.
+    ///
+    /// Every deck transform after construction comes from here — `add_orbit`
+    /// creates the body at the origin and then calls this before returning, so
+    /// no deck is ever observable at a position the hierarchy did not decide.
+    ///
+    /// A deck always has a placement: it is created with a `Local` and a live
+    /// hub and neither is ever removed. That is asserted rather than papered
+    /// over, because the two ways of papering over it disagree — skipping
+    /// `set_transform` leaves the collider at the origin while the digest would
+    /// read the hierarchy, and a deck whose collision and whose reported
+    /// position differ is precisely the bug this whole arrangement prevents.
+    fn place_decks(&mut self) {
+        let counts = propagate(
+            &mut self.scratch,
+            &self.entities,
+            &self.parents,
+            &self.locals,
+            &mut self.globals,
+        );
+        debug_assert_eq!(
+            counts.orphaned + counts.cyclic,
+            0,
+            "a deck hangs off one live hub and nothing else"
+        );
+        for orbiting in &self.orbits {
+            let placed = self.globals.get(orbiting.deck.index()).copied();
+            debug_assert!(placed.is_some(), "every deck keeps its placement");
+            if let Some(placed) = placed {
+                self.physics.set_transform(
+                    orbiting.deck,
+                    Transform {
+                        translation: placed.translation(),
+                        rotation: placed.rotation(),
+                    },
+                );
+            }
         }
     }
 
     /// Advance one tick.
     pub fn step(&mut self, intent: Intent) {
         self.tick += 1;
+
+        // Platforms move first, so the character's sweep this tick meets them
+        // where they now are. Moving them afterwards would let a deck pass
+        // through a character that had already committed to standing still.
+        self.advance_orbits();
 
         // Horizontal velocity is set, not accumulated: a platformer whose
         // character keeps sliding after the key is released feels broken, and
@@ -356,6 +501,40 @@ impl Leap {
         self.footing
     }
 
+    /// Where a deck currently is, for anything drawing the world.
+    ///
+    /// Reads the composed placement rather than the physics body, so a caller
+    /// asking "where is it" and the collision it is about to have cannot
+    /// answer differently.
+    #[must_use]
+    pub fn deck_placement(&self, deck: Entity) -> Option<(Vec2, Angle)> {
+        self.globals
+            .get(deck.index())
+            .map(|placed| (placed.translation(), placed.rotation()))
+    }
+
+    /// Where the collision world thinks a deck is.
+    ///
+    /// The counterpart to [`Leap::deck_placement`], which reads the hierarchy.
+    /// Exposed so a test can hold the two against each other: the same formula
+    /// is written once here and once in the collision crate, and a deck that
+    /// collided somewhere other than where it says it is would be the one
+    /// failure this whole arrangement exists to prevent.
+    #[must_use]
+    pub fn deck_transform(&self, deck: Entity) -> Option<(Vec2, Angle)> {
+        self.physics
+            .transform(deck)
+            .map(|at| (at.translation, at.rotation))
+    }
+
+    /// Every moving deck, in the order it was added.
+    ///
+    /// No `#[must_use]`: the iterator it returns already carries one, and
+    /// doubling it is a lint error rather than extra safety.
+    pub fn decks(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.orbits.iter().map(|orbiting| orbiting.deck)
+    }
+
     /// How many ticks have run.
     #[must_use]
     pub const fn tick(&self) -> u64 {
@@ -364,17 +543,26 @@ impl Leap {
 
     /// A hash over every value that can change future behaviour.
     ///
-    /// **Position, velocity, footing and the jump latch, and nothing else.**
-    /// The platform list cannot change, the tuning is fixed at construction,
-    /// and the entity allocator's internals are not observable — including
-    /// them would make the digest sensitive to things a replay does not
-    /// reproduce. Leaving out something that *does* change behaviour is the
-    /// failure that matters, which is why the jump latch is here: without it
-    /// two worlds with identical positions can diverge on the next tick.
+    /// **Position, velocity, footing, the jump latch, and every moving deck's
+    /// placement — and nothing else.** The static platform list cannot change,
+    /// the tuning is fixed at construction, and the entity allocator's
+    /// internals are not observable; including any of them would make the
+    /// digest sensitive to things a replay does not reproduce. Leaving out
+    /// something that *does* change behaviour is the failure that matters,
+    /// which is why the jump latch is here: without it two worlds with
+    /// identical positions can diverge on the next tick.
+    ///
+    /// **What the deck placements stand in for.** The only mutable state in the
+    /// hierarchy is each hub's rotation, and it is absorbed *directly* rather
+    /// than left to be inferred. It would in fact be recoverable today from the
+    /// deck's composed rotation, because `add_orbit` always gives a deck a zero
+    /// local rotation — but that is an accident of one constructor, and a
+    /// digest resting on it would silently stop covering the hub the day a deck
+    /// gained a rotation of its own.
     #[must_use]
     pub fn digest(&self) -> u64 {
         let position = self.position();
-        StateHash::new()
+        let mut hash = StateHash::new()
             .absorb_u64(self.tick)
             .absorb_u64(position.x.to_bits().cast_unsigned())
             .absorb_u64(position.y.to_bits().cast_unsigned())
@@ -383,11 +571,34 @@ impl Leap {
             .absorb_u32(u32::from(self.footing.grounded))
             .absorb_u32(u32::from(self.footing.against_wall))
             .absorb_u32(self.footing.ticks_airborne)
-            .absorb_u32(u32::from(self.jump_was_held))
-            .finish()
+            .absorb_u32(u32::from(self.jump_was_held));
+
+        // Every hub angle and every deck placement, because a platform
+        // somewhere else next tick is a different world. A level with no moving
+        // parts absorbs nothing here and digests exactly as it did before they
+        // existed, which is what let this arrive without restating a single
+        // recorded hash.
+        for orbiting in &self.orbits {
+            let turned = self
+                .locals
+                .get(orbiting.hub.index())
+                .map_or(Angle::ZERO, |hub| hub.rotation);
+            let placed = self
+                .globals
+                .get(orbiting.deck.index())
+                .copied()
+                .unwrap_or(Global::IDENTITY);
+            hash = hash
+                .absorb_u32(turned.to_bits())
+                .absorb_u64(placed.translation().x.to_bits().cast_unsigned())
+                .absorb_u64(placed.translation().y.to_bits().cast_unsigned())
+                .absorb_u32(placed.rotation().to_bits());
+        }
+        hash.finish()
     }
 
-    /// How many entities the world holds — the character plus its platforms.
+    /// How many entities the world holds — the character, its static platforms,
+    /// and two more for each moving one (a hub and the deck that hangs off it).
     ///
     /// Exposed so a test can hold it flat over a long run: a world that leaked
     /// a slot per tick would still simulate correctly and still digest
