@@ -1156,6 +1156,104 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
     assert_no_validation_errors(&device);
 }
 
+/// The same claim at the depth that can actually break it: **three**
+/// overlapping draws, every one of the six orders, compared byte for
+/// byte.
+///
+/// **Two draws cannot see what this sees, and that is why it exists.**
+/// The pair above proves commutativity, which two terms already settle.
+/// What three terms add is *associativity of the rounding* — each blend
+/// writes a quantised value the next one reads back, so an order that
+/// rounds differently at an intermediate step has somewhere to show it.
+/// On a uniform grid there is nowhere: requantising a UNORM value is
+/// lossless, so every order lands on the same bytes and this passes
+/// exactly. That is a property of the storage format, not of the blend,
+/// and a target whose grid is not uniform would not have it.
+///
+/// So this is written to be the place that notices. The channel values
+/// are deliberately awkward — none a power of two, and their partial
+/// sums land in different parts of any curve a target might apply — so
+/// an intermediate rounding difference is not quietly symmetric.
+#[test]
+fn additive_blending_sums_the_same_bytes_in_all_six_orders() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .blend(renew_rhi::Blend::Additive)
+                .push_constant_size(16),
+        )
+        .expect("additive push-constant pipeline");
+    let push = |channels: [u8; 4]| {
+        let mut bytes = [0u8; 16];
+        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+            slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
+        }
+        bytes
+    };
+    let a = push([37, 61, 13, 11]);
+    let b = push([23, 41, 89, 7]);
+    let c = push([53, 17, 29, 19]);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let mut render = |one: &[u8; 16], two: &[u8; 16], three: &[u8; 16]| {
+        let items = [
+            Item::new(&pipeline).push_data(one),
+            Item::new(&pipeline).push_data(two),
+            Item::new(&pipeline).push_data(three),
+        ];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("additive render");
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        pixels
+    };
+
+    let reference = render(&a, &b, &c);
+    // Orders first, then the premise. Both run, but a target that broke
+    // order-stability should say so in its first line rather than report
+    // a changed sum that reads like an unrelated pixel difference.
+    for (name, pixels) in [
+        ("acb", render(&a, &c, &b)),
+        ("bac", render(&b, &a, &c)),
+        ("bca", render(&b, &c, &a)),
+        ("cab", render(&c, &a, &b)),
+        ("cba", render(&c, &b, &a)),
+    ] {
+        assert_eq!(
+            pixels,
+            reference,
+            "order {name} diverged from abc on adapter {:?}: additive claims byte-stability \
+             under any submission order, and three draws is where an intermediate rounding \
+             difference would first appear",
+            device.adapter()
+        );
+    }
+
+    // The premise, checked after: a frame that stopped drawing would be
+    // uniformly blank in every order and would sail through the loop
+    // above, so the sums anchor it to something real.
+    assert_eq!(
+        &reference[..4],
+        &[113u8, 119, 131, 255],
+        "the three channel sums must land exactly on adapter {:?}",
+        device.adapter()
+    );
+
+    drop(target);
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+}
+
 /// Additive blending is arithmetic, so the oracle is arithmetic: two
 /// full-target draws over a black clear must land exactly on the
 /// channel sums, and — because saturating addition is commutative —
