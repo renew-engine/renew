@@ -774,10 +774,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: golden-candidates
+          # Discovered rather than listed. A hand-written list of the
+          # three crates that have committed goldens today is correct
+          # today and silently wrong the first time a fourth gains one --
+          # its candidates would simply not be uploaded, and the failure
+          # would read as "no candidate produced" rather than as a
+          # missing upload path.
           path: |
-            crates/rhi/tests/goldens/
-            crates/render2d/tests/goldens/
-            samples/glide/tests/goldens/
+            crates/*/tests/goldens/
+            samples/*/tests/goldens/
           if-no-files-found: ignore
       - name: Install a virtual display and the distro software driver
         run: |

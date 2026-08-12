@@ -424,8 +424,15 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
             actual.display()
         );
     }
-    std::fs::write(dir.join("sprites-blend-64x64.provenance.txt"), provenance)
-        .expect("refresh provenance sidecar");
+    // Nothing is written here. A passing comparison writes no file at all —
+    // the sidecar is a committed artifact, and a test that rewrites one on
+    // success has a side effect a test may not have: run the suite on a
+    // machine whose adapter differs and the committed provenance quietly
+    // starts claiming that machine, with the change staged by nobody.
+    //
+    // The sidecar is authored by the bootstrap path above, which runs only
+    // when the canonical image is absent and which fails rather than passing.
+    // That is the one moment a human is already looking.
 }
 
 /// The capacity refusal fires by name — the retained assertion, caught
