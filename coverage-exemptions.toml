@@ -161,5 +161,5 @@ reason = "The menu-open half of the draw: the presenter's snapshots advanced and
 
 [[exempt]]
 file = "crates/volume/src/volume.rs"
-lines = [220, 240]
-reason = "Two restatements of a bound already proved. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup nor the version lookup can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."
+lines = [248, 268]
+reason = "Two restatements of a bound already proved, re-anchored from 220 and 240 by content rather than by arithmetic. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup at 248 nor the version lookup at 268 can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."

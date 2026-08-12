@@ -397,12 +397,15 @@ jobs:
       # The fixed-point arithmetic, and the crates written in it. This
       # cell was a single leaf when it landed, with a comment saying the
       # first crate to depend on it should discover the obligation from
-      # a red lane rather than from nobody. It has now worked twice:
-      # physics arrived, and later the widget tree's layout solver, and
-      # each went red here until the cell named the dependent.
+      # a red lane rather than from nobody. It has now worked three
+      # times: physics arrived, then the widget tree's layout solver,
+      # then the voxel volume, and each went red here until the cell
+      # named the dependent. The volume is a genuine dependent rather
+      # than an accidental one - a cell has a position and a pick walks
+      # a ray, and neither is expressible without the fixed-point type.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
+          sel="--workspace --exclude renew-fixed --exclude renew-volume --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel

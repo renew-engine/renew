@@ -380,10 +380,11 @@ impl Volume {
 
     /// Note that a chunk changed. The only writer of the change feed.
     fn record(&mut self, chunk: usize) {
+        // No guard against a ring with no slots: `slot_of` already answers
+        // nothing for one, and a volume with no chunks has no cell to
+        // write, so this is never reached with an empty ring anyway. A
+        // guard here would be a line nothing can execute.
         let capacity = self.log.len();
-        if capacity == 0 {
-            return;
-        }
         self.generation += 1;
         // Both indices are in range by construction: the slot is a
         // remainder of the length, and `chunk` came from an index this

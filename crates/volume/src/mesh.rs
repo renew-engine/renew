@@ -196,9 +196,10 @@ fn merge_side(
     let depth = axis(size, normal);
     let width = axis(size, first);
     let height = axis(size, second);
-    if depth < 1 || width < 1 || height < 1 {
-        return;
-    }
+    // No guard against a dimension below one: the loops below are exclusive
+    // ranges that simply do not run, and `usize_of` floors the mask at
+    // zero. An early return would be a line nothing can execute, since a
+    // volume clamps every dimension up to one at construction.
     let area = usize_of(width) * usize_of(height);
     let mut mask: Vec<Option<Voxel>> = vec![None; area];
 
@@ -520,6 +521,20 @@ mod tests {
                 assert!(!whole.is_empty(), "and not vacuously");
             }
         }
+    }
+
+    #[test]
+    fn a_chunk_that_does_not_exist_contributes_nothing() {
+        // A consumer driving this from a change feed passes indices it
+        // got from the volume, so this should not happen — but "should
+        // not" is not "cannot", and appending nothing is the only answer
+        // that cannot corrupt a buffer the caller is still filling.
+        let mut v = volume();
+        v.set(Cell::new(1, 1, 1), STONE);
+        let mut quads = vec![];
+        chunk_faces(&v, v.chunk_count(), Beyond::Solid, &mut quads);
+        chunk_faces(&v, usize::MAX, Beyond::Solid, &mut quads);
+        assert!(quads.is_empty());
     }
 
     #[test]
