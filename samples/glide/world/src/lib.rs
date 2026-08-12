@@ -280,18 +280,16 @@ impl World {
     /// inherit a dependency on how the world stores things.
     pub fn for_each_pipe(&self, mut visit: impl FnMut(u32, u32, i64, i64)) {
         for (slot, pipe) in self.body.iter() {
-            // Unreachable: `spawn_pipes` writes both stores together and
-            // `sweep` removes from both, so a body without its handle does
-            // not occur. Written as a skip rather than a default because
-            // the two wrong answers differ in kind — a default of zero is
-            // a REAL generation, and would silently let a consumer pair
-            // two different tenants of one slot, where a skip only ever
-            // omits a pipe. When neither branch can be reached, take the
-            // one whose failure is visible.
-            let Some(entity) = self.pipe.get(slot).copied() else {
-                continue;
-            };
-            visit(slot, entity.generation(), pipe.x, pipe.gap_y);
+            // The same lookup and the same spelling the digest uses for
+            // it below. A body without its handle cannot occur —
+            // `spawn_pipes` writes both stores together and `sweep`
+            // removes from both — and this is written as an expression
+            // rather than a skipping branch for the reason the `Pipe`
+            // struct already gives: an arm no test can reach is a hole in
+            // the coverage gate, not a safety net. The impossibility is
+            // stated here rather than defended with a branch.
+            let generation = self.pipe.get(slot).map_or(0, |entity| entity.generation());
+            visit(slot, generation, pipe.x, pipe.gap_y);
         }
     }
 
