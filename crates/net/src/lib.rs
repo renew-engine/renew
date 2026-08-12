@@ -8,16 +8,21 @@
 //! without ever learning what a button means.
 //!
 //! ```
+//! use core::num::NonZeroU64;
 //! use renew_net::{PeerId, wire};
 //!
 //! let sender = PeerId::new(0).expect("seat zero is always in range");
-//! let header = wire::Header { kind: wire::Kind::Bye, sender, session: 7 };
+//! let session = NonZeroU64::new(7).expect("zero is the pinned illegal session");
+//! let addressing = wire::Addressing { sender, session };
 //!
 //! let mut out = [0u8; renew_net::MAX_DATAGRAM_BYTES];
-//! let len = wire::write_bye(&mut out, header, &wire::ByeBody { tick: 900 });
+//! let len = wire::write_bye(&mut out, addressing, &wire::ByeBody { tick: 900 });
 //!
 //! let read = wire::read(&out[..len]).expect("a datagram this crate wrote");
-//! assert_eq!(read.header, header);
+//! // The kind is the writer's, never the caller's — so the header that
+//! // comes back names the function that was called.
+//! assert_eq!(read.header.kind, wire::Kind::Bye);
+//! assert_eq!(read.header.addressing(), addressing);
 //! ```
 //!
 //! # Contract
@@ -90,14 +95,20 @@ pub const MAX_PEERS: u8 = 8;
 /// multiplying anything by anything*.
 pub const MAX_INPUT_BYTES: u8 = 16;
 
-/// How many past frames every `Inputs` datagram repeats, and therefore
-/// how many consecutive losses of one peer's stream cost nothing.
+/// The most frames one `Inputs` datagram may carry: the newest tick, plus
+/// up to seven older ones repeated behind it.
 ///
-/// This is the whole of the loss story: no acknowledgements, no
-/// retransmit requests, no sequence windows. Seven bytes of tail on a
-/// one-byte input repairs seven consecutive losses with zero round trips,
-/// where a retransmit protocol would spend a round trip recovering data
-/// that has already expired.
+/// **A total, not a tail** — [`wire::read`] bounds the whole run by this
+/// number, and the widest datagram multiplies by it. So the repair it buys
+/// is *seven* consecutive losses of one peer's stream, not eight: the
+/// datagram for tick T carries T−7 through T, and if every datagram from T
+/// through T+7 is lost then tick T is never heard.
+///
+/// This is the whole of the loss story: no acknowledgements, no retransmit
+/// requests, no sequence windows. Seven bytes of tail on a one-byte input
+/// repairs seven consecutive losses with zero round trips, where a
+/// retransmit protocol would spend a round trip recovering data that has
+/// already expired.
 pub const INPUT_REDUNDANCY: u8 = 8;
 
 /// The depth of a peer's input ring, and the ceiling on how far ahead of

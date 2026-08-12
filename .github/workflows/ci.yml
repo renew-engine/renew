@@ -491,7 +491,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-net; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

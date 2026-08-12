@@ -8,9 +8,11 @@
 //! the clearest way to say "this byte, that value" when the subject of
 //! the test is one byte.
 
+use core::num::NonZeroU64;
+
 use renew_net::wire::{
-    BYE_DATAGRAM_BYTES, Body, ByeBody, DIGEST_DATAGRAM_BYTES, DigestBody, HEADER_BYTES,
-    HELLO_DATAGRAM_BYTES, Header, HelloBody, INPUTS_MIN_DATAGRAM_BYTES, Kind, WIRE_VERSION,
+    Addressing, BYE_DATAGRAM_BYTES, Body, ByeBody, DIGEST_DATAGRAM_BYTES, DigestBody, HEADER_BYTES,
+    HELLO_DATAGRAM_BYTES, HelloBody, INPUTS_MIN_DATAGRAM_BYTES, Kind, MAGIC, WIRE_VERSION,
     WireError, WriteError, read, write_bye, write_digest, write_hello, write_inputs,
 };
 use renew_net::{
@@ -43,11 +45,16 @@ fn seat(index: u8) -> PeerId {
     PeerId::new(index).expect("a seat the test chose in range")
 }
 
-fn header(kind: Kind) -> Header {
-    Header {
-        kind,
+const SESSION: u64 = 0x0123_4567_89ab_cdef;
+
+#[allow(
+    clippy::expect_used,
+    reason = "see `seat`: the fixture's own failure is the report"
+)]
+fn addressing() -> Addressing {
+    Addressing {
         sender: seat(1),
-        session: 0x0123_4567_89ab_cdef,
+        session: NonZeroU64::new(SESSION).expect("the fixture's session is not zero"),
     }
 }
 
@@ -64,9 +71,14 @@ fn hello_body() -> HelloBody {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "see `seat`: the fixture's own failure is the report"
+)]
 fn a_hello() -> (Buffer, usize) {
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
-    let len = write_hello(&mut out, header(Kind::Hello), &hello_body());
+    let len = write_hello(&mut out, addressing(), &hello_body())
+        .expect("a body inside every documented range");
     (out, len)
 }
 
@@ -77,15 +89,8 @@ fn a_hello() -> (Buffer, usize) {
 )]
 fn an_inputs() -> (Buffer, usize) {
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
-    let len = write_inputs(
-        &mut out,
-        header(Kind::Inputs),
-        4_000,
-        2,
-        3,
-        &[1, 2, 3, 4, 5, 6],
-    )
-    .expect("arguments inside every ceiling");
+    let len = write_inputs(&mut out, addressing(), 4_000, 3, 2, &[1, 2, 3, 4, 5, 6])
+        .expect("arguments inside every ceiling");
     (out, len)
 }
 
@@ -96,13 +101,13 @@ fn a_digest() -> (Buffer, usize) {
         state_digest: 0xabcd,
         input_digest: 0x1234,
     };
-    let len = write_digest(&mut out, header(Kind::Digest), &body);
+    let len = write_digest(&mut out, addressing(), &body);
     (out, len)
 }
 
 fn a_bye() -> (Buffer, usize) {
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
-    let len = write_bye(&mut out, header(Kind::Bye), &ByeBody { tick: 0x0102_0304 });
+    let len = write_bye(&mut out, addressing(), &ByeBody { tick: 0x0102_0304 });
     (out, len)
 }
 
@@ -122,14 +127,16 @@ fn a_hello_round_trips_to_the_same_bytes() {
     assert_eq!(len, HELLO_DATAGRAM_BYTES);
 
     let datagram = read(&bytes[..len]).expect("a datagram this crate wrote");
-    assert_eq!(datagram.header, header(Kind::Hello));
+    assert_eq!(datagram.header.kind, Kind::Hello);
+    assert_eq!(datagram.header.addressing(), addressing());
     let Body::Hello(body) = datagram.body else {
         panic!("a Hello decoded as something else")
     };
     assert_eq!(body, hello_body());
 
     let mut again = [0u8; MAX_DATAGRAM_BYTES];
-    let again_len = write_hello(&mut again, datagram.header, &body);
+    let again_len = write_hello(&mut again, datagram.header.addressing(), &body)
+        .expect("what the reader accepted, the writer must be able to write");
     assert_eq!((&again[..again_len], again_len), (&bytes[..len], len));
 }
 
@@ -148,7 +155,7 @@ fn a_digest_round_trips_to_the_same_bytes() {
     );
 
     let mut again = [0u8; MAX_DATAGRAM_BYTES];
-    let again_len = write_digest(&mut again, datagram.header, &body);
+    let again_len = write_digest(&mut again, datagram.header.addressing(), &body);
     assert_eq!(&again[..again_len], &bytes[..len]);
 }
 
@@ -164,7 +171,10 @@ fn a_bye_round_trips_to_the_same_bytes() {
     assert_eq!(body.tick, 0x0102_0304);
 
     let mut again = [0u8; MAX_DATAGRAM_BYTES];
-    assert_eq!(write_bye(&mut again, datagram.header, &body), len);
+    assert_eq!(
+        write_bye(&mut again, datagram.header.addressing(), &body),
+        len
+    );
     assert_eq!(&again[..len], &bytes[..len]);
 }
 
@@ -199,10 +209,10 @@ fn an_inputs_run_round_trips_with_every_frame_at_its_own_tick() {
     let mut again = [0u8; MAX_DATAGRAM_BYTES];
     let again_len = write_inputs(
         &mut again,
-        datagram.header,
+        datagram.header.addressing(),
         body.first_tick,
-        body.input_bytes,
         body.count,
+        body.input_bytes,
         body.frames(),
     )
     .expect("what the reader accepted, the writer must be able to write");
@@ -489,38 +499,38 @@ fn a_zero_digest_period_is_refused() {
 #[test]
 fn the_inputs_writer_refuses_every_argument_the_reader_would_reject() {
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
-    let head = header(Kind::Inputs);
+    let head = addressing();
 
     assert_eq!(
-        write_inputs(&mut out, head, 0, 2, 0, &[]),
+        write_inputs(&mut out, head, 0, 0, 2, &[]),
         Err(WriteError::FrameCount {
             saw: 0,
             ceiling: INPUT_REDUNDANCY
         })
     );
     assert_eq!(
-        write_inputs(&mut out, head, 0, 1, INPUT_REDUNDANCY + 1, &[0; 9]),
+        write_inputs(&mut out, head, 0, INPUT_REDUNDANCY + 1, 1, &[0; 9]),
         Err(WriteError::FrameCount {
             saw: INPUT_REDUNDANCY + 1,
             ceiling: INPUT_REDUNDANCY
         })
     );
     assert_eq!(
-        write_inputs(&mut out, head, 0, 0, 1, &[]),
+        write_inputs(&mut out, head, 0, 1, 0, &[]),
         Err(WriteError::InputBytes {
             saw: 0,
             ceiling: MAX_INPUT_BYTES
         })
     );
     assert_eq!(
-        write_inputs(&mut out, head, 0, MAX_INPUT_BYTES + 1, 1, &[0; 17]),
+        write_inputs(&mut out, head, 0, 1, MAX_INPUT_BYTES + 1, &[0; 17]),
         Err(WriteError::InputBytes {
             saw: MAX_INPUT_BYTES + 1,
             ceiling: MAX_INPUT_BYTES
         })
     );
     assert_eq!(
-        write_inputs(&mut out, head, 0, 2, 3, &[0; 5]),
+        write_inputs(&mut out, head, 0, 3, 2, &[0; 5]),
         Err(WriteError::FramesLength {
             saw: 5,
             expected: 6
@@ -528,7 +538,7 @@ fn the_inputs_writer_refuses_every_argument_the_reader_would_reject() {
         "refused rather than truncated: a short write is a second spelling of a shorter fact"
     );
     assert_eq!(
-        write_inputs(&mut out, head, u64::MAX, 1, 2, &[0; 2]),
+        write_inputs(&mut out, head, u64::MAX, 2, 1, &[0; 2]),
         Err(WriteError::TickOverflow {
             first_tick: u64::MAX,
             count: 2
@@ -537,15 +547,112 @@ fn the_inputs_writer_refuses_every_argument_the_reader_would_reject() {
 }
 
 #[test]
+fn the_hello_writer_refuses_every_body_the_reader_would_reject() {
+    // The four ranges read_hello enforces, enforced here too — which is
+    // what makes "a writer cannot mint what the reader would refuse" a
+    // contract rather than an aspiration. Each case is also driven
+    // through `read` to prove the refusal was not merely conservative:
+    // the datagram it declined really would have been declined.
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let head = addressing();
+
+    for count in [0u8, 1, MAX_PEERS + 1] {
+        let body = HelloBody {
+            peer_count: count,
+            ..hello_body()
+        };
+        assert_eq!(
+            write_hello(&mut out, head, &body),
+            Err(WriteError::PeerCount {
+                saw: count,
+                floor: 2,
+                ceiling: MAX_PEERS
+            })
+        );
+    }
+
+    for width in [0u8, MAX_INPUT_BYTES + 1] {
+        let body = HelloBody {
+            input_bytes: width,
+            ..hello_body()
+        };
+        assert_eq!(
+            write_hello(&mut out, head, &body),
+            Err(WriteError::InputBytes {
+                saw: width,
+                ceiling: MAX_INPUT_BYTES
+            })
+        );
+    }
+
+    let past = u8::try_from(INPUT_WINDOW).expect("the window fits a byte today");
+    let body = HelloBody {
+        input_delay: past,
+        ..hello_body()
+    };
+    assert_eq!(
+        write_hello(&mut out, head, &body),
+        Err(WriteError::InputDelay {
+            saw: past,
+            window: INPUT_WINDOW
+        })
+    );
+
+    let body = HelloBody {
+        digest_period: 0,
+        ..hello_body()
+    };
+    assert_eq!(
+        write_hello(&mut out, head, &body),
+        Err(WriteError::DigestPeriodZero)
+    );
+
+    // The boundaries the other way, so the refusals pin a range rather
+    // than only its outside.
+    for body in [
+        HelloBody {
+            peer_count: 2,
+            ..hello_body()
+        },
+        HelloBody {
+            peer_count: MAX_PEERS,
+            ..hello_body()
+        },
+        HelloBody {
+            input_bytes: 1,
+            ..hello_body()
+        },
+        HelloBody {
+            input_bytes: MAX_INPUT_BYTES,
+            ..hello_body()
+        },
+        HelloBody {
+            input_delay: past - 1,
+            ..hello_body()
+        },
+        HelloBody {
+            digest_period: 1,
+            ..hello_body()
+        },
+    ] {
+        let len = write_hello(&mut out, head, &body).expect("a body at its boundary is legal");
+        assert!(
+            read(&out[..len]).is_ok(),
+            "the writer accepted {body:?} and the reader did not"
+        );
+    }
+}
+
+#[test]
 fn the_widest_legal_run_writes_exactly_the_ceiling() {
     let frames = [7u8; (INPUT_REDUNDANCY as usize) * (MAX_INPUT_BYTES as usize)];
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
     let len = write_inputs(
         &mut out,
-        header(Kind::Inputs),
+        addressing(),
         0,
-        MAX_INPUT_BYTES,
         INPUT_REDUNDANCY,
+        MAX_INPUT_BYTES,
         &frames,
     )
     .expect("both ceilings, exactly");
@@ -560,23 +667,175 @@ fn the_widest_legal_run_writes_exactly_the_ceiling() {
 }
 
 #[test]
-fn every_refusal_says_something_a_reader_can_act_on() {
-    // A refusal set whose Display arms are untested is a set that can grow
-    // an arm printing nothing, and nothing would notice.
-    let cases: Vec<WireError> = vec![
-        refusal(&[]),
-        refusal(&[0u8; MAX_DATAGRAM_BYTES + 1]),
-        refusal(&[0u8; HELLO_DATAGRAM_BYTES]),
+fn refusals_display_their_evidence() {
+    // Every arm, not a sample. A refusal set with untested arms is one
+    // that can grow an arm printing nothing, and nothing would notice —
+    // and three of twenty-one is a sample however the comment reads.
+    let wire_errors = vec![
+        WireError::TooShort { len: 15 },
+        WireError::TooLong { len: 157 },
+        WireError::BadMagic { saw: *b"XNWL" },
+        WireError::BadVersion { saw: 2 },
+        WireError::UnknownKind { saw: 9 },
+        WireError::SenderPastCeiling { saw: 8, ceiling: 8 },
+        WireError::SessionZero,
+        WireError::SizeMismatch {
+            kind: Kind::Hello,
+            declared: 56,
+            actual: 57,
+        },
+        WireError::PadNotZero { offset: 52, saw: 1 },
+        WireError::FrameCountZero,
+        WireError::FrameCountPastRedundancy { saw: 9, ceiling: 8 },
+        WireError::InputBytesZero,
+        WireError::InputBytesPastCeiling {
+            saw: 17,
+            ceiling: 16,
+        },
+        WireError::TickOverflow {
+            first_tick: u64::MAX,
+            count: 3,
+        },
+        WireError::PeerCountOutOfRange {
+            saw: 1,
+            floor: 2,
+            ceiling: 8,
+        },
+        WireError::InputDelayPastWindow {
+            saw: 64,
+            window: 64,
+        },
+        WireError::DigestPeriodZero,
     ];
-    for case in cases {
+    let write_errors = vec![
+        WriteError::FrameCount { saw: 9, ceiling: 8 },
+        WriteError::InputBytes {
+            saw: 17,
+            ceiling: 16,
+        },
+        WriteError::FramesLength {
+            saw: 5,
+            expected: 6,
+        },
+        WriteError::TickOverflow {
+            first_tick: u64::MAX,
+            count: 2,
+        },
+        WriteError::PeerCount {
+            saw: 1,
+            floor: 2,
+            ceiling: 8,
+        },
+        WriteError::InputDelay {
+            saw: 64,
+            window: 64,
+        },
+        WriteError::DigestPeriodZero,
+    ];
+
+    // Four refusals name their value in words rather than in digits,
+    // because the value IS zero and "0" would read worse than "zero".
+    // Held to that spelling by name rather than exempted from the rule,
+    // so the rule keeps its teeth for the other nineteen.
+    let spelled_out = |text: &str| assert!(text.contains("zero"), "expected the word: \"{text}\"");
+
+    for case in wire_errors {
         let text = case.to_string();
         assert!(!text.is_empty(), "{case:?} printed nothing");
-        assert!(
-            text.chars().any(|character| character.is_ascii_digit()),
-            "{case:?} printed no number: \"{text}\" — a refusal that names no value teaches a \
-             reader nothing"
-        );
+        match case {
+            WireError::SessionZero
+            | WireError::FrameCountZero
+            | WireError::InputBytesZero
+            | WireError::DigestPeriodZero => spelled_out(&text),
+            _ => assert!(
+                text.chars().any(|character| character.is_ascii_digit()),
+                "{case:?} printed no number: \"{text}\" — a refusal that names no value teaches                  a reader nothing"
+            ),
+        }
     }
+    for case in write_errors {
+        let text = case.to_string();
+        assert!(!text.is_empty(), "{case:?} printed nothing");
+        if matches!(case, WriteError::DigestPeriodZero) {
+            spelled_out(&text);
+        } else {
+            assert!(
+                text.chars().any(|character| character.is_ascii_digit()),
+                "{case:?} printed no number: \"{text}\""
+            );
+        }
+    }
+}
+
+#[test]
+fn every_body_size_is_a_function_of_its_kind() {
+    // The three fixed kinds ignore both counts; only Inputs reads them.
+    assert_eq!(Kind::Hello.body_bytes(0, 0), Some(40));
+    assert_eq!(Kind::Digest.body_bytes(9, 9), Some(24));
+    assert_eq!(Kind::Bye.body_bytes(u8::MAX, u8::MAX), Some(8));
+    assert_eq!(Kind::Inputs.body_bytes(3, 2), Some(18));
+    assert_eq!(
+        Kind::Inputs.body_bytes(u8::MAX, u8::MAX),
+        Some(12 + 255 * 255),
+        "the product is computed in u64, so even the widest pair of bytes fits"
+    );
+}
+
+// ---- the golden: bytes a human typed, from the page a reader reads ----
+
+#[test]
+fn a_hand_built_datagram_writes_back_to_itself() {
+    // Every other assertion in this file is the writer against the
+    // reader, and a writer and a reader that made the SAME mistake are
+    // still exact inverses of each other — the argument the trace codec's
+    // golden already writes down. These bytes were typed from the layout
+    // tables in README.md, not from wire.rs, so they are an independent
+    // referent: a field that moved would have to move on the front page
+    // too before this test agreed with it again.
+    #[rustfmt::skip]
+    let hand_built: [u8; 40] = [
+        // header, 16 bytes
+        b'R', b'N', b'W', b'L',   // magic
+        0x01, 0x00,               // wire version 1, little-endian
+        0x03,                     // kind 3 = Digest
+        0x01,                     // sender: seat 1
+        0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // session 0x0123456789abcdef
+        // Digest body, 24 bytes
+        0x58, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // tick 600
+        0xcd, 0xab, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // state digest 0xabcd
+        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // input digest 0x1234
+    ];
+
+    let datagram = read(&hand_built).expect("bytes typed from the documented layout");
+    assert_eq!(datagram.header.kind, Kind::Digest);
+    assert_eq!(datagram.header.sender.index(), 1);
+    assert_eq!(datagram.header.session.get(), SESSION);
+    let Body::Digest(body) = datagram.body else {
+        panic!("the kind byte says Digest")
+    };
+    assert_eq!(
+        (body.tick, body.state_digest, body.input_digest),
+        (600, 0xabcd, 0x1234)
+    );
+
+    // And the inverse: what the reader accepted, the writer reproduces
+    // byte for byte. This is the half a writer-against-reader round trip
+    // cannot give, because both halves would be wrong together.
+    let mut written = [0u8; MAX_DATAGRAM_BYTES];
+    let len = write_digest(&mut written, datagram.header.addressing(), &body);
+    assert_eq!(&written[..len], &hand_built[..]);
+
+    // The fixture agrees with the constants it was not typed from — which
+    // is what makes a disagreement point at the layout rather than at a
+    // typo in the test.
+    assert_eq!(&hand_built[..4], &MAGIC[..]);
+    assert_eq!(len, DIGEST_DATAGRAM_BYTES);
+    assert_eq!(
+        u16::from_le_bytes([hand_built[4], hand_built[5]]),
+        WIRE_VERSION
+    );
+    assert_eq!(hand_built[6], Kind::Digest.code());
+    assert_eq!(HEADER_BYTES, 16);
 }
 
 // ---- sweeps ----

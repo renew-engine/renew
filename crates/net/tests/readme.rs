@@ -7,20 +7,19 @@
 //! each frame belongs to. If the API moves, this fails; if the example
 //! moves, this must move with it.
 
+use core::num::NonZeroU64;
+
 use renew_net::{MAX_DATAGRAM_BYTES, PeerId, wire};
 
 #[test]
 fn the_front_page_example_compiles_and_says_what_it_claims()
 -> Result<(), Box<dyn core::error::Error>> {
     let sender = PeerId::new(0).ok_or("seat zero is always in range")?;
-    let header = wire::Header {
-        kind: wire::Kind::Inputs,
-        sender,
-        session: 0x51e3,
-    };
+    let session = NonZeroU64::new(0x51e3).ok_or("zero is the pinned illegal session")?;
+    let addressing = wire::Addressing { sender, session };
 
     let mut out = [0u8; MAX_DATAGRAM_BYTES];
-    let len = wire::write_inputs(&mut out, header, 4_000, 1, 3, &[0b0001, 0b0001, 0b0101])?;
+    let len = wire::write_inputs(&mut out, addressing, 4_000, 3, 1, &[0b0001, 0b0001, 0b0101])?;
 
     let wire::Body::Inputs(body) = wire::read(&out[..len])?.body else {
         return Err("an Inputs decoded as something else".into());

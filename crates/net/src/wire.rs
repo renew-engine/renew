@@ -9,6 +9,8 @@
 //! `sender` past the type's ceiling is refused here while a `sender` who
 //! is merely not playing is not.
 
+use core::num::NonZeroU64;
+
 use crate::{
     INPUT_REDUNDANCY, INPUT_WINDOW, MAX_DATAGRAM_BYTES, MAX_INPUT_BYTES, MAX_PEERS, PeerId,
 };
@@ -148,21 +150,53 @@ impl Kind {
     }
 }
 
+/// Who a datagram is from, and which session it belongs to.
+///
+/// **The kind is deliberately not here.** Every writer knows the kind it
+/// writes, so taking one as an argument would let a caller ask
+/// [`write_hello`] for a datagram whose kind byte says `Bye` — a
+/// disagreement between which function was called and what the bytes
+/// claim, minted by a writer and refused by the reader. Splitting the
+/// addressing out makes that unrepresentable rather than merely refused,
+/// which is the difference between a contract and a check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Addressing {
+    /// The claimed sender, written into every kind.
+    ///
+    /// A session refuses any datagram whose sender disagrees with the seat
+    /// its transport attributed the bytes to, which is why this is in the
+    /// header rather than in the three bodies that would otherwise need
+    /// it: a check in one place cannot be forgotten by a reader that only
+    /// looks at a body.
+    pub sender: PeerId,
+    /// Never zero, **by type**.
+    ///
+    /// Zero is the pinned illegal value on the wire, so a zeroed buffer
+    /// that somehow cleared magic and version still dies at the reader.
+    /// Making it `NonZeroU64` here means no writer needs a refusal for it
+    /// and no caller can hold one that would be refused.
+    pub session: NonZeroU64,
+}
+
 /// The sixteen bytes every datagram begins with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
     pub kind: Kind,
-    /// The claimed sender, in every kind.
-    ///
-    /// A session refuses any datagram whose `sender` disagrees with the
-    /// seat its transport attributed the bytes to, which is why the field
-    /// is here rather than in the three bodies that would otherwise need
-    /// it: a check in one place cannot be forgotten by a reader that only
-    /// looks at a body.
+    /// The claimed sender.
     pub sender: PeerId,
-    /// Never zero. Zero is the pinned illegal value, so a zeroed buffer
-    /// that somehow cleared magic and version still dies here.
-    pub session: u64,
+    /// Never zero — the reader proves it, so the type carries the proof.
+    pub session: NonZeroU64,
+}
+
+impl Header {
+    /// The half of this header a writer takes.
+    #[must_use]
+    pub const fn addressing(self) -> Addressing {
+        Addressing {
+            sender: self.sender,
+            session: self.session,
+        }
+    }
 }
 
 /// The parameters a peer claims it is playing under.
@@ -198,7 +232,8 @@ pub struct HelloBody {
 pub struct InputsBody<'a> {
     /// The tick the first frame belongs to.
     pub first_tick: u64,
-    /// How many frames follow. `1..=INPUT_REDUNDANCY`.
+    /// How many frames follow — the whole run, newest last.
+    /// `1..=INPUT_REDUNDANCY`.
     pub count: u8,
     /// How wide each frame is. `1..=MAX_INPUT_BYTES`.
     pub input_bytes: u8,
@@ -484,6 +519,19 @@ pub enum WriteError {
         first_tick: u64,
         count: u8,
     },
+    /// A roster the reader would refuse: below two, or past the ceiling.
+    PeerCount {
+        saw: u8,
+        floor: u8,
+        ceiling: u8,
+    },
+    /// A delay the input window could not buffer.
+    InputDelay {
+        saw: u8,
+        window: u32,
+    },
+    /// Every tick would owe a digest, and the period would divide by zero.
+    DigestPeriodZero,
 }
 
 impl core::fmt::Display for WriteError {
@@ -506,6 +554,22 @@ impl core::fmt::Display for WriteError {
                     out,
                     "{count} frames from tick {first_tick} would leave the tick space"
                 )
+            }
+            Self::PeerCount {
+                saw,
+                floor,
+                ceiling,
+            } => {
+                write!(out, "a roster of {saw} is outside {floor}..={ceiling}")
+            }
+            Self::InputDelay { saw, window } => {
+                write!(
+                    out,
+                    "an input delay of {saw} does not fit a window of {window}"
+                )
+            }
+            Self::DigestPeriodZero => {
+                write!(out, "a digest period of zero would digest every tick")
             }
         }
     }
@@ -559,10 +623,8 @@ pub fn read(bytes: &[u8]) -> Result<Datagram<'_>, WireError> {
         ceiling: MAX_PEERS,
     })?;
 
-    let session = u64_at(bytes, SESSION_AT).ok_or(WireError::TooShort { len })?;
-    if session == 0 {
-        return Err(WireError::SessionZero);
-    }
+    let claimed = u64_at(bytes, SESSION_AT).ok_or(WireError::TooShort { len })?;
+    let session = NonZeroU64::new(claimed).ok_or(WireError::SessionZero)?;
 
     let header = Header {
         kind,
@@ -819,26 +881,56 @@ impl Cursor<'_> {
         }
     }
 
-    fn header(&mut self, header: Header) {
+    /// The kind is the writer's, never the caller's — see [`Addressing`].
+    fn header(&mut self, kind: Kind, addressing: Addressing) {
         self.bytes(&MAGIC);
         self.u16(WIRE_VERSION);
-        self.byte(header.kind.code());
-        self.byte(header.sender.index());
-        self.u64(header.session);
+        self.byte(kind.code());
+        self.byte(addressing.sender.index());
+        self.u64(addressing.session.get());
     }
 }
 
 /// Write a `Hello`, returning the byte count written.
 ///
-/// The writer is the reader's inverse and asserts the same ceilings, so it
-/// cannot mint what the reader would refuse. Every ceiling this one could
-/// violate is enforced by the type of its argument, which is why it
-/// returns no `Result` — the two that are not, [`HelloBody::peer_count`]
-/// and the rest, are the session's to validate before it builds one.
-#[must_use]
-pub fn write_hello(out: &mut [u8; MAX_DATAGRAM_BYTES], header: Header, body: &HelloBody) -> usize {
+/// # Errors
+///
+/// [`WriteError`] for each of the four parameter ranges [`read`] enforces
+/// on a `Hello`. They are checked here rather than left to a caller
+/// because the alternative is a writer that mints a datagram the reader
+/// refuses, which would make this crate's central claim false — and a
+/// claim under a **Contract** heading is intent, so the code moves to meet
+/// it rather than the sentence retreating to meet the code.
+pub fn write_hello(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    body: &HelloBody,
+) -> Result<usize, WriteError> {
+    if !(MIN_PEER_COUNT..=MAX_PEERS).contains(&body.peer_count) {
+        return Err(WriteError::PeerCount {
+            saw: body.peer_count,
+            floor: MIN_PEER_COUNT,
+            ceiling: MAX_PEERS,
+        });
+    }
+    if body.input_bytes == 0 || body.input_bytes > MAX_INPUT_BYTES {
+        return Err(WriteError::InputBytes {
+            saw: body.input_bytes,
+            ceiling: MAX_INPUT_BYTES,
+        });
+    }
+    if u32::from(body.input_delay) >= INPUT_WINDOW {
+        return Err(WriteError::InputDelay {
+            saw: body.input_delay,
+            window: INPUT_WINDOW,
+        });
+    }
+    if body.digest_period == 0 {
+        return Err(WriteError::DigestPeriodZero);
+    }
+
     let mut cursor = Cursor { out, at: 0 };
-    cursor.header(header);
+    cursor.header(Kind::Hello, addressing);
     cursor.u64(body.agreement_digest);
     cursor.u64(body.content);
     cursor.u64(body.rules);
@@ -848,29 +940,40 @@ pub fn write_hello(out: &mut [u8; MAX_DATAGRAM_BYTES], header: Header, body: &He
     cursor.byte(body.input_delay);
     cursor.byte(body.digest_period);
     cursor.zeroes(HELLO_PAD_BYTES);
-    cursor.at
+    Ok(cursor.at)
 }
 
 /// Write a `Digest`, returning the byte count written.
+///
+/// Nothing here can be refused: the kind is this function's, the session
+/// is non-zero by type, and both remaining fields are opaque `u64`s the
+/// reader accepts whatever their value. That is what "enforced in the
+/// argument types where it can be" buys, and it is why this one returns no
+/// `Result` while [`write_hello`] does.
 #[must_use]
 pub fn write_digest(
     out: &mut [u8; MAX_DATAGRAM_BYTES],
-    header: Header,
+    addressing: Addressing,
     body: &DigestBody,
 ) -> usize {
     let mut cursor = Cursor { out, at: 0 };
-    cursor.header(header);
+    cursor.header(Kind::Digest, addressing);
     cursor.u64(body.tick);
     cursor.u64(body.state_digest);
     cursor.u64(body.input_digest);
     cursor.at
 }
 
-/// Write a `Bye`, returning the byte count written.
+/// Write a `Bye`, returning the byte count written. Unrefusable for the
+/// same reason as [`write_digest`].
 #[must_use]
-pub fn write_bye(out: &mut [u8; MAX_DATAGRAM_BYTES], header: Header, body: &ByeBody) -> usize {
+pub fn write_bye(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    body: &ByeBody,
+) -> usize {
     let mut cursor = Cursor { out, at: 0 };
-    cursor.header(header);
+    cursor.header(Kind::Bye, addressing);
     cursor.u64(body.tick);
     cursor.at
 }
@@ -878,7 +981,10 @@ pub fn write_bye(out: &mut [u8; MAX_DATAGRAM_BYTES], header: Header, body: &ByeB
 /// Write an `Inputs` run, returning the byte count written.
 ///
 /// `frames` is exactly `count × input_bytes` bytes, ascending from
-/// `first_tick`.
+/// `first_tick`. **`count` precedes `input_bytes`** — the order the two
+/// bytes appear in on the wire, the order [`InputsBody`] declares them,
+/// and the order [`Kind::body_bytes`] takes them; two `u8`s whose swap no
+/// compiler can catch are worth spelling the same way everywhere.
 ///
 /// # Errors
 ///
@@ -889,10 +995,10 @@ pub fn write_bye(out: &mut [u8; MAX_DATAGRAM_BYTES], header: Header, body: &ByeB
 /// rests on there being no second spelling of anything.
 pub fn write_inputs(
     out: &mut [u8; MAX_DATAGRAM_BYTES],
-    header: Header,
+    addressing: Addressing,
     first_tick: u64,
-    input_bytes: u8,
     count: u8,
+    input_bytes: u8,
     frames: &[u8],
 ) -> Result<usize, WriteError> {
     if count == 0 || count > INPUT_REDUNDANCY {
@@ -924,7 +1030,7 @@ pub fn write_inputs(
     }
 
     let mut cursor = Cursor { out, at: 0 };
-    cursor.header(header);
+    cursor.header(Kind::Inputs, addressing);
     cursor.u64(first_tick);
     cursor.byte(count);
     cursor.byte(input_bytes);

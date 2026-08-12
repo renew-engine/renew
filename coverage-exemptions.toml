@@ -163,3 +163,8 @@ reason = "The menu-open half of the draw: the presenter's snapshots advanced and
 file = "crates/volume/src/volume.rs"
 lines = [248, 268]
 reason = "Two restatements of a bound already proved, re-anchored from 220 and 240 by content rather than by arithmetic. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup at 248 nor the version lookup at 268 can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."
+
+[[exempt]]
+file = "crates/net/src/wire.rs"
+lines = [147]
+reason = "The overflow arm of the Inputs body-size product. Both factors are u8, so the product peaks at 65,025 and cannot leave u64 — no datagram, and no fuzzer, can drive it. The check is written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and this one is reached from a reader parsing hostile bytes. It cannot be folded away either: `Option::and_then` is not callable in a const fn, so the arm has to be spelled out."
