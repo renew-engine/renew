@@ -127,15 +127,16 @@ mod tests {
     }
 
     /// The property the pixel oracle rests on: on a step boundary the
-    /// colour is exactly the world's own channels over 255, with no
-    /// rounding anywhere for the adapter to disagree about.
+    /// colour is exactly the decode of the world's own bytes, which the
+    /// attachment encodes straight back to those bytes. No rounding
+    /// anywhere for the adapter to disagree about.
     #[test]
     fn on_a_step_boundary_the_colour_is_exactly_the_worlds_own() {
         let world = stepped(0, 8);
         assert_eq!(world.clear_rgb8(), [8, 0, 0]);
         assert_eq!(
             clear_color(&world, Alpha::ZERO),
-            Color::new(8.0 / 255.0, 0.0, 0.0, 1.0)
+            Color::new(renew_rhi::srgb::decode(8), 0.0, 0.0, 1.0)
         );
     }
 
@@ -153,8 +154,10 @@ mod tests {
         let alpha = Alpha::new(plan.remainder().get(), plan.timestep().nanos());
         assert!(alpha.get() > 0.49 && alpha.get() < 0.51, "{alpha:?}");
         let colour = clear_color(&world, alpha);
-        let low = 8.0 / 255.0;
-        let high = 9.0 / 255.0;
+        // Between two authored bytes, in the space the attachment stores:
+        // the light of 8 and the light of 9, not the encoded values.
+        let low = renew_rhi::srgb::decode(8);
+        let high = renew_rhi::srgb::decode(9);
         assert!(colour.r > low && colour.r < high, "{colour:?}");
         // The channels the walk has not reached yet stay where they are.
         assert!((colour.g - 0.0).abs() < f32::EPSILON);
