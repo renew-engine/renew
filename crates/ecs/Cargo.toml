@@ -23,6 +23,15 @@ simulation = true
 
 [dev-dependencies]
 proptest = "1.11"
+# The counting allocator behind the steady-state gate. A DEV edge only:
+# the shipping dependency list above stays empty, so the crate is still
+# byte-identical in every removability configuration.
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators.
+[features]
+sanitized = []
 
 [lints]
 workspace = true
