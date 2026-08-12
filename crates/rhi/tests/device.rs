@@ -1376,3 +1376,81 @@ fn zero_capacity_buffer_is_a_retained_contract_check() {
         "a zero-capacity per-frame buffer must refuse, not allocate"
     );
 }
+
+
+/// SPIKE - throwaway branch, never merged, deleted after the lane
+/// reports. Asks the pinned software rasterizer whether it reproduces
+/// the byte divergence an sRGB attachment causes for three overlapping
+/// additive draws. Green here means the lane agrees with the discrete
+/// GPU this was first measured on; red means the finding is
+/// adapter-specific and the record must say so.
+#[test]
+fn zz_lane_three_additive_draws_diverge_under_srgb() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(push_color_shaders(), TargetFormat::Rgba8Unorm)
+                .blend(renew_rhi::Blend::Additive)
+                .push_constant_size(16),
+        )
+        .expect("additive push-constant pipeline");
+    let push = |channels: [u8; 4]| {
+        let mut bytes = [0u8; 16];
+        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+            slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
+        }
+        bytes
+    };
+    let a = push([37, 61, 13, 11]);
+    let b = push([23, 41, 89, 7]);
+    let c = push([53, 17, 29, 19]);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let mut render = |one: &[u8; 16], two: &[u8; 16], three: &[u8; 16]| {
+        let items = [
+            Item::new(&pipeline).push_data(one),
+            Item::new(&pipeline).push_data(two),
+            Item::new(&pipeline).push_data(three),
+        ];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("additive render");
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        pixels
+    };
+    let orders = [
+        ("abc", render(&a, &b, &c)),
+        ("acb", render(&a, &c, &b)),
+        ("bac", render(&b, &a, &c)),
+        ("bca", render(&b, &c, &a)),
+        ("cab", render(&c, &a, &b)),
+        ("cba", render(&c, &b, &a)),
+    ];
+    let reference = &orders[0].1;
+    let divergent: Vec<&str> = orders[1..]
+        .iter()
+        .filter(|(_, pixels)| pixels != reference)
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        !divergent.is_empty(),
+        "LANE RESULT: this adapter shows NO divergence across six orders \
+         (reference pixel {:?}) on adapter {:?} — the earlier finding is adapter-specific",
+        &reference[..4],
+        device.adapter()
+    );
+    panic!(
+        "LANE RESULT: divergent orders {divergent:?}, reference pixel {:?}, adapter {:?}",
+        &reference[..4],
+        device.adapter()
+    );
+}

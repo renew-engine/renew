@@ -225,7 +225,7 @@ fn build(
         .image_type(vk::ImageType::TYPE_2D)
         // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
         // offscreen target's format is a static fact of this module.
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(vk::Format::R8G8B8A8_SRGB)
         .extent(vk::Extent3D {
             width: extent.width,
             height: extent.height,
@@ -284,7 +284,7 @@ fn build(
         .view_type(vk::ImageViewType::TYPE_2D)
         // TargetFormat::Rgba8Unorm's one Vulkan spelling — the
         // offscreen target's format is a static fact of this module.
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(vk::Format::R8G8B8A8_SRGB)
         .subresource_range(color_range());
     // SAFETY: image live and bound.
     let view = unsafe {

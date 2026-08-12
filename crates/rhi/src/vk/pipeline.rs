@@ -46,7 +46,7 @@ impl TargetFormat {
     /// whose color attachment list is empty.
     pub(crate) fn to_vk(self) -> Option<vk::Format> {
         match self {
-            Self::Rgba8Unorm => Some(vk::Format::R8G8B8A8_UNORM),
+            Self::Rgba8Unorm => Some(vk::Format::R8G8B8A8_SRGB),
             Self::Bgra8Unorm => Some(vk::Format::B8G8R8A8_UNORM),
             Self::DepthOnly => None,
         }
