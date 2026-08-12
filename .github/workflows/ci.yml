@@ -418,12 +418,16 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-physics2d $sel
           cargo build $sel
           cargo test $sel
-      # Three-dimensional collision. No consumers yet -- the voxel sandbox
-      # that will drive it is not written -- so the cell is the whole
-      # workspace minus one leaf.
+      # Three-dimensional collision. The comment here used to say "no
+      # consumers yet -- the voxel sandbox that will drive it is not
+      # written". The volume crate is that consumer arriving, and it
+      # reaches only the geometry half: it sweeps a box against its own
+      # cells and has no bodies to name. The half it does not take is
+      # what keeps the entity storage out of a storage crate; the half it
+      # does take is why it is on this list.
       - name: Build and test without three-dimensional collision
         run: |
-          sel="--workspace --exclude renew-physics3d --exclude renew-sample-cube --exclude renew-sample-cube-world"
+          sel="--workspace --exclude renew-physics3d --exclude renew-volume --exclude renew-sample-cube --exclude renew-sample-cube-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-physics3d $sel
           cargo build $sel
           cargo test $sel
