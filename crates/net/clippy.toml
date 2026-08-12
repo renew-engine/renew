@@ -1,0 +1,50 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate is a codec and nothing else: bytes in, a validated view out;
+# a value in, bytes out. It opens nothing, reads no clock, and spawns
+# nothing. The graph half of that promise is the structure check's
+# simulation-closure rule, which denies this crate any path to the
+# platform crate at any depth; this file is the source half, and it
+# exists because a graph rule cannot see a call that needs no dependency
+# to make.
+#
+# `std::net` is deliberately NOT banned here, and the omission is the
+# point. A definition-path ban is exactly one wrapper deep, which is the
+# evasion the graph rule exists to close — and the graph rule already
+# forbids this crate every path to the only crate ADR-0025 permits to
+# spell `std::net` at all. A ban here would read as the defence when it
+# would be the weaker half of one.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a session reads no wall clock; every pacing decision belongs to the driver and arrives as an argument" },
+    { path = "std::time::SystemTime::now", reason = "a session reads no wall clock; every pacing decision belongs to the driver and arrives as an argument" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded until an accepted decision record defines a deterministic parallel-scheduling contract, and this crate is not that record" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem: it takes bytes a caller already holds" },
+    { path = "std::fs::read_to_string", reason = "an unbounded whole-file read of untrusted input belongs at the seam that can refuse an oversized file, which is not here" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem: it returns bytes for a caller to send" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a session is a pure function of its parameters and its inputs; a value read from the environment would make one peer differ from the next with nothing on the wire to explain it" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so any value derived from it differs between runs — unseeded randomness, which simulation code may not contain" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "the same road to the same entropy: it is built from RandomState" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per instance, so iteration order varies between runs; peers are a dense index-keyed array here and always will be" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per instance, so iteration order varies between runs" },
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle, not only the two obvious calls" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle" },
+    { path = "std::path::Path", reason = "this crate takes bytes, never a path: a function that can name a file will eventually open one" },
+    { path = "std::path::PathBuf", reason = "this crate takes bytes, never a path" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
