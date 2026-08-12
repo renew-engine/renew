@@ -158,3 +158,8 @@ reason = "The scenario binary's two refusal arms: the argument guard (a drifted 
 file = "samples/glide/src/windowed.rs"
 lines = [412, 413, 414, 415, 416, 417, 418]
 reason = "The menu-open half of the draw: the presenter's snapshots advanced and emitted, and a label placed per button. The lane's windowed run is keyboardless under a virtual display, so nothing there ever opens the menu, and no test reaches draw at all - drawing needs the bring-up's live target. Everything the block decides is covered without it: the advance/emit pair by the presentation crate's own tests, the placement arithmetic by a unit test on label_origin (the block's only computation), and the routing, pausing, restarting and rescaling behind it by constructed-event tests on the seam. Deliberately narrow: the is_open check the frame evaluates every draw is measured and not exempt."
+
+[[exempt]]
+file = "crates/volume/src/volume.rs"
+lines = [220, 240]
+reason = "Two restatements of a bound already proved. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup nor the version lookup can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."

@@ -185,14 +185,19 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
-      # The voxel volume removed entirely. Nothing in the engine depends
-      # on it yet — the exclude list is the crate alone — and that is
-      # exactly the shape that stops being upward-closed the day the first
-      # sample or bench target reaches it, which is what the sibling cells
-      # above learned one at a time.
+      # The voxel volume removed entirely, and with it the sample whose
+      # grid stands on it and the driver over that sample.
+      #
+      # **This list was the crate alone for exactly one commit.** The note
+      # here said a one-crate exclude is the shape that stops being
+      # upward-closed the day the first sample reaches it — and the same
+      # pull request then made the sample reach it, so the guard caught its
+      # author rather than a successor. That is the fifth time a sibling
+      # cell has learned this, which is why the guard exists rather than a
+      # convention.
       - name: Build and test without the voxel volume
         run: |
-          sel="--workspace --exclude renew-volume"
+          sel="--workspace --exclude renew-volume --exclude renew-sample-cube-world --exclude renew-sample-cube"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-volume $sel
           cargo build $sel
           cargo test $sel

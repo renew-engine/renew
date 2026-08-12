@@ -336,6 +336,53 @@ mod tests {
     }
 
     #[test]
+    fn a_ray_along_each_axis_meets_what_is_in_front_of_it() {
+        // Every axis, both directions. The walk picks the nearest boundary
+        // by comparing three candidates, and a test suite that only ever
+        // fires along x leaves the z arm of that comparison — and the z
+        // step that follows it — never executed. Two lines nothing had
+        // run, in the middle of the hot loop.
+        let mut v = Volume::new(Cell::new(0, 0, 0), (32, 32, 32)).expect("volume");
+        let origin = Cell::new(8, 8, 8);
+        let cases = [
+            (
+                Vec3::new(Fixed::ONE, Fixed::ZERO, Fixed::ZERO),
+                Cell::new(12, 8, 8),
+            ),
+            (
+                Vec3::new(-Fixed::ONE, Fixed::ZERO, Fixed::ZERO),
+                Cell::new(4, 8, 8),
+            ),
+            (
+                Vec3::new(Fixed::ZERO, Fixed::ONE, Fixed::ZERO),
+                Cell::new(8, 12, 8),
+            ),
+            (
+                Vec3::new(Fixed::ZERO, -Fixed::ONE, Fixed::ZERO),
+                Cell::new(8, 4, 8),
+            ),
+            (
+                Vec3::new(Fixed::ZERO, Fixed::ZERO, Fixed::ONE),
+                Cell::new(8, 8, 12),
+            ),
+            (
+                Vec3::new(Fixed::ZERO, Fixed::ZERO, -Fixed::ONE),
+                Cell::new(8, 8, 4),
+            ),
+        ];
+        for (direction, target) in cases {
+            v.set(target, STONE);
+            let hit = v.pick(origin.centre(), direction, reach());
+            assert_eq!(
+                hit.map(|pick| pick.cell),
+                Some(target),
+                "a ray toward {direction:?} missed {target:?}"
+            );
+            v.set(target, Voxel::EMPTY);
+        }
+    }
+
+    #[test]
     fn a_backward_ray_names_the_opposite_face() {
         let mut v = volume();
         v.set(Cell::new(1, 0, 0), STONE);

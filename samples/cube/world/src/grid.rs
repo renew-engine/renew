@@ -211,3 +211,43 @@ impl Grid {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AIR, Cell, Grid, STONE};
+
+    #[test]
+    fn a_grid_with_a_zero_dimension_holds_nothing_and_refuses_everything() {
+        // `new` documents that a zero dimension gives an empty grid rather
+        // than a refusal. The volume underneath cannot express that — it
+        // clamps to one cell — so this grid carries the case itself, and
+        // this is what proves the carrying works rather than compiles.
+        let mut grid = Grid::new(Cell::new(0, 0, 0), (0, 4, 4));
+        assert_eq!(grid.size(), (0, 4, 4));
+        assert_eq!(grid.solid_count(), 0);
+        assert_eq!(grid.get(Cell::new(0, 0, 0)), None);
+        assert!(
+            !grid.set(Cell::new(0, 0, 0), STONE),
+            "an empty grid took a write"
+        );
+        assert!(!grid.on_shell(Cell::new(0, 0, 0)));
+        assert_eq!(grid.solids().count(), 0);
+    }
+
+    #[test]
+    fn a_cell_too_far_from_the_origin_to_subtract_is_outside() {
+        // The bounds check subtracts the origin, and a coordinate at the
+        // far end of the range overflows that subtraction. Answering
+        // "outside" is right; wrapping would place a distant cell inside.
+        let mut grid = Grid::new(Cell::new(1, 1, 1), (4, 4, 4));
+        let far = Cell::new(i32::MIN, i32::MIN, i32::MIN);
+        assert_eq!(grid.get(far), None);
+        assert!(!grid.set(far, STONE));
+        assert!(!grid.on_shell(far));
+        assert_eq!(
+            grid.get(Cell::new(1, 1, 1)),
+            Some(AIR),
+            "the real grid still works"
+        );
+    }
+}

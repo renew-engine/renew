@@ -482,17 +482,21 @@ mod tests {
     /// commutes; if `term` were wrong, or `set` folded the wrong chunk, both
     /// sides would carry the same mistake and agree.
     fn hash_from_scratch(volume: &Volume, chunk: usize) -> u64 {
+        // Read the storage directly rather than through `cell_at` and
+        // `get`: going the long way needed two defensive arms nothing
+        // could ever take, and an unreachable branch in the one helper
+        // that is supposed to be the independent check is the last place
+        // to put something nobody can exercise.
         let mut hash = 0u64;
-        for within in 0..CHUNK_CELLS {
-            let index = chunk * CHUNK_CELLS + within;
-            let Some(cell) = volume.cell_at(index) else {
-                continue;
-            };
-            let Some(voxel) = volume.get(cell) else {
-                continue;
-            };
+        for (within, voxel) in volume
+            .cells
+            .iter()
+            .skip(chunk * CHUNK_CELLS)
+            .take(CHUNK_CELLS)
+            .enumerate()
+        {
             if !voxel.is_empty() {
-                hash ^= term(within, voxel);
+                hash ^= term(within, *voxel);
             }
         }
         hash
@@ -656,6 +660,14 @@ mod tests {
             Some(automaton[0]),
             "one consumer's read hid the change from the other"
         );
+    }
+
+    #[test]
+    fn a_chunk_past_the_end_has_no_origin() {
+        let v = volume();
+        assert!(v.chunk_origin(v.chunk_count() - 1).is_some());
+        assert_eq!(v.chunk_origin(v.chunk_count()), None);
+        assert_eq!(v.chunk_origin(usize::MAX), None);
     }
 
     #[test]
