@@ -7,3 +7,12 @@
 # Corpus entries are byte-exact fuzzer inputs: any eol conversion would
 # change the bytes coverage was measured on. Never text.
 fuzz/corpus/** -text
+
+# Compiled shaders are byte-exact build outputs, committed beside their
+# GLSL so a clean clone needs no shader toolchain. Every pipeline compares
+# them by content, and the review rule is that a blob change without its
+# source change is a reject - so a checkout that rewrote a byte would
+# break the comparison, not merely annoy it. Git detects these as binary
+# today; this says so, because the two rules above are here for the same
+# reason and were each added after the auto-detection was trusted once.
+*.spv -text
