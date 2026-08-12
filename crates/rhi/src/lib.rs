@@ -329,8 +329,15 @@ pub mod builtin {
     };
 
     /// The per-vertex layout [`MESH`] consumes: clip-space position,
-    /// then colour. Packs to 28 bytes, which is the stride every mesh
-    /// drawn by that pipeline must carry.
+    /// then colour, then a texture coordinate. Packs to **36 bytes**,
+    /// which is the stride every mesh drawn by that pipeline must carry.
+    ///
+    /// The coordinate is carried even though this pipeline never samples
+    /// anything, and `mesh.vert` says why at the declaration: the record
+    /// is shared with the paths that do sample, and a pipeline describes
+    /// the whole record rather than the part one shader happens to read.
+    /// An attribute a shader ignores is legal; a record the pipeline
+    /// mis-describes is not.
     pub const MESH_LAYOUT: &[crate::VertexAttribute] = &[
         crate::VertexAttribute::Vec3,
         crate::VertexAttribute::Vec4,
