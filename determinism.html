@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Making a simulation reproduce bit-for-bit on three platforms — renew</title>
+<meta name="description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What it actually takes to make a game simulation produce byte-identical state on Windows, Linux and macOS — fixed point, integer time, defined iteration order, and a CI job that compares targets against each other rather than against a constant.">
+<link rel="canonical" href="https://renew-engine.github.io/renew/determinism.html">
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="renew">
+<meta property="og:url" content="https://renew-engine.github.io/renew/determinism.html">
+<meta property="og:title" content="Making a simulation reproduce bit-for-bit on three platforms">
+<meta property="og:description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What cross-platform determinism actually costs.">
+<meta property="og:image" content="https://renew-engine.github.io/renew/renew-banner.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Making a simulation reproduce bit-for-bit on three platforms">
+<meta name="twitter:description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What cross-platform determinism actually costs.">
+<meta name="twitter:image" content="https://renew-engine.github.io/renew/renew-banner.png">
+
+<link rel="icon" href="renew-icon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="renew-icon-512.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Making a simulation reproduce bit-for-bit on three platforms",
+  "description": "What cross-platform bit-determinism costs in practice: fixed-point arithmetic instead of floats, integer time, defined iteration order, and comparing digests across targets rather than against a committed constant.",
+  "url": "https://renew-engine.github.io/renew/determinism.html",
+  "image": "https://renew-engine.github.io/renew/renew-banner.png",
+  "inLanguage": "en",
+  "keywords": "deterministic simulation, fixed point, Q47.16, fixed timestep, lockstep, replay, Rust, game engine, IEEE 754, libm",
+  "about": { "@type": "SoftwareSourceCode", "name": "renew", "codeRepository": "https://github.com/renew-engine/renew" },
+  "author": { "@type": "Organization", "name": "renew-engine", "url": "https://github.com/renew-engine" },
+  "publisher": { "@type": "Organization", "name": "renew-engine", "url": "https://github.com/renew-engine" }
+}
+</script>
+
+<style>
+:root{
+  --bg:#fbfaf8; --fg:#1a1917; --muted:#5e5b55; --rule:#e2ded6;
+  --card:#ffffff; --accent:#9a5b26; --code-bg:#f4f1eb; --shadow:0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141311; --fg:#eceae5; --muted:#a09b91; --rule:#2c2a26;
+    --card:#1c1b18; --accent:#d99a5e; --code-bg:#1f1e1a; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141311; --fg:#eceae5; --muted:#a09b91; --rule:#2c2a26;
+  --card:#1c1b18; --accent:#d99a5e; --code-bg:#1f1e1a; --shadow:none;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.7 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.25rem}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+code,pre{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:.12em .38em;border-radius:4px;font-size:.9em}
+pre{background:var(--code-bg);padding:1rem 1.15rem;border-radius:8px;overflow-x:auto;
+    border:1px solid var(--rule);font-size:.8125rem;line-height:1.6;margin:0 0 1.5rem}
+pre code{background:none;padding:0;font-size:1em}
+
+nav.top{border-bottom:1px solid var(--rule);padding:1.25rem 0}
+nav.top a{font-size:.875rem;text-decoration:none}
+nav.top a:hover{text-decoration:underline}
+
+article{padding:3.5rem 0 2rem}
+.eyebrow{font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 1rem;
+  font-family:ui-monospace,Menlo,Consolas,monospace}
+h1{font-size:2.2rem;line-height:1.15;letter-spacing:-.022em;margin:0 0 1.25rem;text-wrap:balance}
+h2{font-size:1.3rem;letter-spacing:-.012em;margin:3rem 0 .9rem;text-wrap:balance}
+p{margin:0 0 1.25rem}
+.standfirst{font-size:1.15rem;line-height:1.6;color:var(--muted);margin-bottom:2.5rem}
+blockquote{margin:0 0 1.5rem;padding:.25rem 0 .25rem 1.25rem;border-left:3px solid var(--accent);
+  color:var(--fg);font-size:1.0625rem}
+blockquote p:last-child{margin:0}
+blockquote cite{display:block;margin-top:.6rem;font-size:.8125rem;font-style:normal;color:var(--muted)}
+ul{margin:0 0 1.25rem;padding-left:1.25rem}
+li{margin:0 0 .5rem}
+hr{border:0;border-top:1px solid var(--rule);margin:3rem 0}
+.footnote{font-size:.9375rem;color:var(--muted)}
+footer{border-top:1px solid var(--rule);padding:2rem 0 4rem;color:var(--muted);font-size:.875rem}
+footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<nav class="top"><div class="wrap"><a href="./">&larr; renew</a></div></nav>
+
+<article>
+  <div class="wrap">
+    <p class="eyebrow">Engineering</p>
+    <h1>Making a simulation reproduce bit-for-bit on three platforms</h1>
+    <p class="standfirst">
+      Determinism is usually described as a property of the game loop. In practice the loop
+      is the easy part. The hard part is that most of the guarantees you think you have stop
+      precisely where you need them to hold.
+    </p>
+
+    <p>
+      A deterministic simulation is one where the same build, fed the same seed and the same
+      inputs, produces the same state — not approximately, not visually, but byte for byte.
+      Get that and replay, lockstep networking, reproducible bug reports and
+      regression testing all become straightforward. Miss it, and each of those becomes a
+      research project.
+    </p>
+    <p>
+      renew is built around that property, and the interesting part is not the design but
+      the inventory of things that quietly break it.
+    </p>
+
+    <h2>Floating point: the guarantee ends at the operators</h2>
+    <p>
+      The usual advice is that floats are fine because IEEE 754 is a standard. Rust does
+      guarantee IEEE 754 semantics for <code>f32</code> and <code>f64</code> operators. The
+      problem is where that sentence stops:
+    </p>
+    <blockquote>
+      <p>
+        Rust guarantees IEEE 754 semantics for <code>f32</code> and <code>f64</code>
+        <em>operators</em>, and that guarantee stops at the operators: <code>sin</code>,
+        <code>cos</code> and their siblings are the platform's maths library, and are
+        permitted to differ between targets. A simulation that calls them has no
+        cross-target claim to make.
+      </p>
+      <cite>renew-fixed, crate documentation</cite>
+    </blockquote>
+    <p>
+      Addition and multiplication will agree across Windows, Linux and macOS.
+      <code>sin</code> will not necessarily, because it isn't specified by IEEE 754 to the
+      last bit — it's whatever the platform's libm shipped. One transcendental call in a
+      physics step and cross-platform reproducibility is gone, silently, in a way no test
+      on a single machine will ever reveal.
+    </p>
+    <p>
+      So renew's simulation arithmetic isn't floating point at all. It's Q47.16 fixed point
+      in an <code>i64</code>: sixteen fractional bits, giving a resolution of 2⁻¹⁶ over a
+      range of ±2⁴⁷. Integer arithmetic is bit-identical everywhere, with nothing to police.
+      That is the entire argument.
+    </p>
+    <p>
+      Three details matter more than the representation:
+    </p>
+    <ul>
+      <li>
+        <strong>No float appears in any signature the crate exposes.</strong> Converting to
+        a float is a presentation concern, written at the boundary that needs it rather
+        than offered centrally — so each conversion carries its own precision-loss
+        justification instead of one shared helper flattening them all into a reason that
+        fits none of them.
+      </li>
+      <li>
+        <strong>Overflow saturates, in every build profile, and is counted.</strong> It
+        never wraps, and it never differs between debug and release. A simulation that
+        behaves differently under optimisation isn't deterministic in any useful sense.
+      </li>
+      <li>
+        <strong>Float arithmetic is denied at the lint level</strong> inside the crate, not
+        left to code review. The crate exists to make one guarantee; a float operator in it
+        would defeat the only reason it exists.
+      </li>
+    </ul>
+
+    <h2>Time: the loop cannot read a clock</h2>
+    <p>
+      A fixed timestep is standard advice. What's less standard is making it structurally
+      impossible to cheat.
+    </p>
+    <p>
+      renew's frame loop is a passive integer state machine over nanoseconds. It owns no
+      loop, drives no application, knows nothing of rendering or windows, and never reads a
+      clock — it <em>cannot</em>, having no dependency that offers one. Its whole job is a
+      single total function: given the schedule so far and this instant, how many fixed
+      steps are due, how many did the budget refuse, and how far between steps is the
+      renderer. The caller reads the one clock in the program, executes the steps, and
+      renders.
+    </p>
+    <p>
+      That inversion is what makes a headless run a pure function of its timestamp sequence,
+      and therefore comparable across runs, processes and machines. It's also why the
+      engine's proof-of-life binary can drive sixty frames of deliberately uneven frame
+      times and emit the same numbers everywhere:
+    </p>
+<pre><code>$ cargo run --bin hello-engine
+hello-engine 0.1.0
+fixed timestep: 16666667 ns
+frames simulated: 60
+time submitted: 1245000015 ns
+ticks executed: 74
+time pending: 11666657 ns</code></pre>
+
+    <h2>Iteration order, and other invisible state</h2>
+    <p>
+      Two more things leak nondeterminism into a simulation, and both are easy to miss
+      because neither looks like arithmetic.
+    </p>
+    <p>
+      The first is container iteration order. If a system iterates a hash map, the order can
+      depend on insertion history, capacity, or a per-process random seed — and the result
+      is a simulation whose behaviour depends on the history of how entities were spawned
+      and destroyed rather than on their current state. renew's component storage is a
+      sparse set whose iteration order is defined by slot rather than by insertion history,
+      so a query's result never depends on churn.
+    </p>
+    <p>
+      The second is randomness. Anything drawing from thread-local or entropy-seeded
+      generators is out. The engine's generator is PCG32, explicitly seeded, with derived
+      per-domain streams so two subsystems drawing numbers cannot perturb each other by
+      changing how often they draw.
+    </p>
+
+    <h2>The part that is usually done wrong: proving it</h2>
+    <p>
+      This is where most claims of determinism quietly fail, and it has nothing to do with
+      the simulation code.
+    </p>
+    <p>
+      The obvious test is to hash the simulation state after N steps and compare that digest
+      to a constant committed in the repository. That test is worth having — it catches
+      accidental behaviour changes. But it is a <em>regression guard</em>, and it is not, by
+      itself, evidence of anything cross-platform. It only ever proves that this machine
+      still agrees with the machine that recorded the constant.
+    </p>
+    <p>
+      Cross-platform determinism is a claim about targets agreeing <em>with each other</em>,
+      so the only thing that discharges it is running the simulation on every target and
+      comparing those digests against one another. In renew's CI that's two stages: each
+      platform emits its digests as an artifact, and a final job collects them and compares.
+    </p>
+    <p>
+      And that final job has a failure mode worth naming, because it's the kind of thing
+      that makes a green checkmark meaningless:
+    </p>
+    <blockquote>
+      <p>
+        <code>needs</code> on a failed job SKIPS this one, and GitHub reports a skipped
+        required job as neutral rather than failed — which is how a comparison that never
+        ran can read as a comparison that passed.
+      </p>
+      <cite>renew CI, determinism-compare</cite>
+    </blockquote>
+    <p>
+      The job therefore runs unconditionally and turns a missing leg back into an explicit
+      failure, on the principle that a missing target is an untested target, not a passing
+      one. It's a small piece of YAML, and it is the difference between a determinism claim
+      that is checked and one that is merely displayed.
+    </p>
+
+    <h2>What is deliberately outside the guarantee</h2>
+    <p>
+      A determinism claim is only credible if it names what it excludes. In renew the
+      boundary is simulation versus presentation.
+    </p>
+    <p>
+      Cameras, particles and UI rendering all interpolate between simulation ticks at
+      display rate, because smooth motion on a 144 Hz monitor is not something a 60 Hz
+      simulation should be distorted to provide. Those crates are presentation-side and
+      sit outside the digest by design. What's inside is the state that can change future
+      observable behaviour — and the digest names in the source what it leaves out, rather
+      than leaving the reader to infer it.
+    </p>
+    <p>
+      Simulation also runs single-threaded, and will until there's a written contract for
+      deterministic parallel scheduling with fixed partitioning and reduction order. A job
+      system exists and has a deterministic-chunk <code>parallel_for</code>; pointing it at
+      simulation state is a decision that needs its own design, not a performance
+      afterthought.
+    </p>
+
+    <hr>
+
+    <p class="footnote">
+      renew is in early development — pre-0.1, with no module yet at <code>stable</code>
+      maturity, and it is not ready to build a game on. The determinism machinery described
+      here is the part that exists first, because retrofitting it is not realistic. The
+      engine is Apache-2.0 and developed in the open at
+      <a href="https://github.com/renew-engine/renew">github.com/renew-engine/renew</a>.
+    </p>
+  </div>
+</article>
+
+<footer>
+  <div class="wrap">
+    <a href="./">renew</a> &nbsp;·&nbsp;
+    <a href="https://github.com/renew-engine/renew">GitHub</a> &nbsp;·&nbsp;
+    <a href="https://github.com/renew-engine/renew/blob/main/LICENSE">Apache-2.0</a>
+  </div>
+</footer>
+
+</body>
+</html>

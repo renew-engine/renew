@@ -72,6 +72,7 @@ nor to any subscription, licence, or passport renewal service.
 
 ## Links
 
+- Determinism, explained in depth: https://renew-engine.github.io/renew/determinism.html
 - Repository: https://github.com/renew-engine/renew
 - README: https://github.com/renew-engine/renew/blob/main/README.md
 - Contributing guide: https://github.com/renew-engine/renew/blob/main/CONTRIBUTING.md

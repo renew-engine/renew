@@ -125,6 +125,7 @@ footer{padding:2.5rem 0 4rem;text-align:center;color:var(--muted);font-size:.875
       <a href="https://github.com/renew-engine/renew">GitHub</a>
       <a href="https://github.com/renew-engine/renew#quick-start">Quick start</a>
       <a href="https://github.com/renew-engine/renew#modules">Modules</a>
+      <a href="determinism.html">Determinism</a>
       <a href="https://github.com/renew-engine/renew/blob/main/CONTRIBUTING.md">Contributing</a>
       <a href="https://github.com/renew-engine/renew/blob/main/LICENSE">Apache-2.0</a>
     </nav>
@@ -193,6 +194,12 @@ time pending: 11666657 ns</code></pre>
     <p class="note">
       Run it twice. Run it on another machine, or another OS. Every byte is identical — that
       is the property everything else in the engine is built to preserve.
+    </p>
+    <p>
+      <a href="determinism.html">Making a simulation reproduce bit-for-bit on three platforms</a>
+      — what that property costs in practice: why the arithmetic is fixed point rather than
+      floating, why the frame loop cannot read a clock, and why a digest compared against a
+      committed constant proves nothing about a second machine.
     </p>
   </div>
 </section>
