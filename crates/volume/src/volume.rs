@@ -184,6 +184,17 @@ impl Volume {
         self.cells.get(index).copied()
     }
 
+    /// Whether this volume holds the cell at all.
+    ///
+    /// Distinct from [`Volume::get`] returning something, though they agree:
+    /// a caller deciding whether a write will be *accepted* is asking about
+    /// the extent, not about the contents, and saying so reads better than
+    /// reading a cell in order to throw the value away.
+    #[must_use]
+    pub fn contains(&self, cell: Cell) -> bool {
+        self.index_of(cell).is_some()
+    }
+
     /// Whether a cell holds anything. Cells outside are not solid.
     ///
     /// **Outside reads as empty here on purpose**, unlike [`Volume::get`]:
@@ -516,6 +527,17 @@ mod tests {
             assert_eq!(v.chunk_hash(chunk), Some(0), "chunk {chunk}");
         }
         assert_eq!(v.solids().count(), 0);
+    }
+
+    #[test]
+    fn containment_is_about_the_extent_and_not_the_contents() {
+        let mut v = volume();
+        let inside = Cell::new(3, 3, 3);
+        assert!(v.contains(inside), "an empty cell is still a cell");
+        v.set(inside, STONE);
+        assert!(v.contains(inside));
+        assert!(!v.contains(Cell::new(-1, 0, 0)));
+        assert!(!v.contains(v.max().offset(1, 0, 0)));
     }
 
     #[test]

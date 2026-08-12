@@ -1827,6 +1827,7 @@ dependencies = [
  "renew-fixed",
  "renew-frame",
  "renew-physics3d",
+ "renew-volume",
 ]
 
 [[package]]

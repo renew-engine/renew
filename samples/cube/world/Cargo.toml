@@ -20,6 +20,7 @@ extension_points = []
 # depth, and the structure check walks this list to prove it.
 [dependencies]
 renew-fixed = { path = "../../../crates/fixed" }
+renew-volume = { path = "../../../crates/volume" }
 renew-frame = { path = "../../../crates/frame" }
 renew-physics3d = { path = "../../../crates/physics3d" }
 

@@ -1,6 +1,6 @@
 //! The blocks, and where they are.
 
-use renew_fixed::{Fixed, Vec3};
+use renew_volume::Voxel;
 
 /// What occupies one cell.
 ///
@@ -29,86 +29,11 @@ pub const STONE: Block = 1;
 /// with it.
 pub const BRICK: Block = 2;
 
-/// Integer coordinates of one cell.
-///
-/// **Signed, and that is deliberate.** A world that started at zero would need
-/// a translation between where a player is and which cell that is, and the
-/// translation is exactly where an off-by-one lives. Negative coordinates are
-/// ordinary here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Cell {
-    /// East.
-    pub x: i32,
-    /// Up.
-    pub y: i32,
-    /// North.
-    pub z: i32,
-}
-
-impl Cell {
-    /// A cell.
-    #[must_use]
-    pub const fn new(x: i32, y: i32, z: i32) -> Self {
-        Self { x, y, z }
-    }
-
-    /// The centre of this cell in world space.
-    ///
-    /// A cell spans one unit, so cell zero covers −0.5 to +0.5 and its centre
-    /// is the origin. Centring on integers rather than cornering on them means
-    /// a block's half-extent is exactly one half and the arithmetic stays
-    /// exact.
-    #[must_use]
-    pub fn centre(self) -> Vec3 {
-        Vec3::new(
-            Fixed::from_int(self.x),
-            Fixed::from_int(self.y),
-            Fixed::from_int(self.z),
-        )
-    }
-
-    /// This cell offset by whole steps.
-    #[must_use]
-    pub const fn offset(self, x: i32, y: i32, z: i32) -> Self {
-        Self::new(
-            self.x.saturating_add(x),
-            self.y.saturating_add(y),
-            self.z.saturating_add(z),
-        )
-    }
-
-    /// Which cell a world position falls in.
-    ///
-    /// Rounds to nearest, which is what pairs with centring cells on integers.
-    /// A position exactly on a boundary goes to the higher cell, consistently,
-    /// so two players standing on the same seam agree about where they are.
-    #[must_use]
-    pub fn containing(position: Vec3) -> Self {
-        Self::new(
-            round_to_cell(position.x),
-            round_to_cell(position.y),
-            round_to_cell(position.z),
-        )
-    }
-}
-
-/// Round a coordinate to the cell that contains it.
-fn round_to_cell(value: Fixed) -> i32 {
-    // Adding half a unit and truncating toward negative infinity puts the
-    // boundary at the higher cell for both signs — `trunc_int` alone rounds
-    // toward zero, which would split the boundary rule between positive and
-    // negative coordinates.
-    let raised = value + Fixed::from_ratio(1, 2);
-    let floored = raised.to_bits().div_euclid(65536);
-    i32::try_from(floored).unwrap_or(0)
-}
-
-/// Half a block, which is every block's half-extent.
-#[must_use]
-pub fn block_half_extent() -> Vec3 {
-    let half = Fixed::from_ratio(1, 2);
-    Vec3::new(half, half, half)
-}
+// The cell address and the half-extent are the engine's now: a cell is a
+// cell whoever is asking, and two definitions of where one sits is two
+// places for an off-by-one to live. Re-exported rather than re-declared so
+// every consumer of this module keeps one import path.
+pub use renew_volume::{Cell, cell_half_extent as block_half_extent};
 
 /// A finite box of cells.
 ///
@@ -119,7 +44,14 @@ pub fn block_half_extent() -> Vec3 {
 /// which returns nothing outside — so a caller decides.
 #[derive(Clone, Debug)]
 pub struct Grid {
-    blocks: Vec<Block>,
+    /// The engine's chunked volume, holding the blocks.
+    ///
+    /// **Storage only.** The bounds and the iteration order below stay
+    /// here: this grid's `solids` order is part of *its* contract — a
+    /// digest walks it — and the volume walks chunk-major, which is the
+    /// right order for a volume and the wrong one for a hash somebody
+    /// already pinned.
+    volume: Option<renew_volume::Volume>,
     min: Cell,
     size: (i32, i32, i32),
 }
@@ -132,16 +64,17 @@ impl Grid {
     /// what a test that only cares about falling wants.
     #[must_use]
     pub fn new(min: Cell, size: (i32, i32, i32)) -> Self {
-        let count = size
-            .0
-            .max(0)
-            .saturating_mul(size.1.max(0))
-            .saturating_mul(size.2.max(0));
-        Self {
-            blocks: vec![AIR; usize::try_from(count).unwrap_or(0)],
-            min,
-            size: (size.0.max(0), size.1.max(0), size.2.max(0)),
-        }
+        let size = (size.0.max(0), size.1.max(0), size.2.max(0));
+        // A dimension of zero gives a grid with no cells rather than a
+        // refusal, which the volume does not express — it clamps to one.
+        // `None` is that case, and every query below answers as it always
+        // did: outside.
+        let volume = if size.0 == 0 || size.1 == 0 || size.2 == 0 {
+            None
+        } else {
+            renew_volume::Volume::new(min, size)
+        };
+        Self { volume, min, size }
     }
 
     /// The lowest cell this grid holds.
@@ -156,25 +89,26 @@ impl Grid {
         self.size
     }
 
-    fn index(&self, cell: Cell) -> Option<usize> {
-        let (x, y, z) = (
-            cell.x.checked_sub(self.min.x)?,
-            cell.y.checked_sub(self.min.y)?,
-            cell.z.checked_sub(self.min.z)?,
-        );
-        if x < 0 || y < 0 || z < 0 || x >= self.size.0 || y >= self.size.1 || z >= self.size.2 {
-            return None;
-        }
-        let flat = i64::from(x)
-            + i64::from(y) * i64::from(self.size.0)
-            + i64::from(z) * i64::from(self.size.0) * i64::from(self.size.1);
-        usize::try_from(flat).ok()
+    /// Whether a cell is one this grid holds.
+    fn holds(&self, cell: Cell) -> bool {
+        let (Some(x), Some(y), Some(z)) = (
+            cell.x.checked_sub(self.min.x),
+            cell.y.checked_sub(self.min.y),
+            cell.z.checked_sub(self.min.z),
+        ) else {
+            return false;
+        };
+        x >= 0 && y >= 0 && z >= 0 && x < self.size.0 && y < self.size.1 && z < self.size.2
     }
 
     /// What is in a cell, or nothing if it is outside the grid.
     #[must_use]
     pub fn get(&self, cell: Cell) -> Option<Block> {
-        self.blocks.get(self.index(cell)?).copied()
+        let voxel = self.volume.as_ref()?.get(cell)?;
+        // Blocks are a byte and voxels are two; the narrowing cannot lose
+        // anything this grid put there, and anything else reads as air
+        // rather than as an arbitrary block.
+        Some(u8::try_from(voxel.0).unwrap_or(AIR))
     }
 
     /// Whether a cell blocks movement. **Outside the grid is not solid**, so a
@@ -209,12 +143,17 @@ impl Grid {
         if block == AIR && self.on_shell(cell) {
             return false;
         }
-        // `index` already proved the cell is inside, so the slot is there. A
-        // second `None` arm would be a branch nothing could take.
-        let Some(slot) = self.index(cell).and_then(|at| self.blocks.get_mut(at)) else {
+        let Some(volume) = self.volume.as_mut() else {
             return false;
         };
-        *slot = block;
+        // The volume reports whether anything CHANGED; this reports whether
+        // the write was ACCEPTED. Writing stone over stone is a legal write
+        // that changed nothing, and a caller counting broken blocks needs
+        // the second answer, not the first.
+        if !volume.contains(cell) {
+            return false;
+        }
+        volume.set(cell, Voxel(u16::from(block)));
         true
     }
 
@@ -225,7 +164,7 @@ impl Grid {
     #[must_use]
     pub fn on_shell(&self, cell: Cell) -> bool {
         let (width, height, depth) = self.size;
-        if self.index(cell).is_none() {
+        if !self.holds(cell) {
             return false;
         }
         cell.x == self.min.x
@@ -250,7 +189,9 @@ impl Grid {
     /// How many cells hold something.
     #[must_use]
     pub fn solid_count(&self) -> usize {
-        self.blocks.iter().filter(|&&block| block != AIR).count()
+        self.volume
+            .as_ref()
+            .map_or(0, renew_volume::Volume::solid_count)
     }
 
     /// Every cell holding something, in a fixed order.
