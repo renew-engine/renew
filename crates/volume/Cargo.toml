@@ -1,0 +1,41 @@
+[package]
+name = "renew-volume"
+description = "A chunked voxel volume: opaque cell identifiers, a grid-traversal pick, a swept box, and per-chunk hashes maintained on write"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["voxel", "gamedev", "deterministic", "grid", "engine"]
+categories = ["game-development", "data-structures"]
+readme = "README.md"
+homepage.workspace = true
+
+[package.metadata.renew]
+purpose = "Chunked dense storage of opaque voxel identifiers, with a grid-traversal pick, a swept box, and per-chunk running hashes maintained on write so a large volume stays digestible."
+maturity = "bootstrap"
+core = false
+simulation = true
+extension_points = []
+
+# Positions are fixed point, and a swept box is the physics crate's own
+# sweep against one cell at a time — the candidates come from the lattice
+# rather than from a broadphase, which is what a uniform grid makes free.
+[dependencies]
+renew-fixed = { version = "0.1.1", path = "../fixed" }
+renew-physics3d = { version = "0.1.1", path = "../physics3d" }
+
+# Property tests for arbitrary write sequences — the containers row of the
+# testing table — and the counting allocator for the allocation gate, which
+# ships with the crate's first per-frame code rather than after it.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting is
+# invalid under instrumented allocators, so the gate ignores itself there.
+[features]
+sanitized = []
+
+[lints]
+workspace = true

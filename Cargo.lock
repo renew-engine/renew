@@ -1954,6 +1954,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-volume"
+version = "0.1.1"
+dependencies = [
+ "proptest",
+ "renew-fixed",
+ "renew-memory",
+ "renew-physics3d",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

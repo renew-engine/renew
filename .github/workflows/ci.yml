@@ -185,6 +185,17 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
+      # The voxel volume removed entirely. Nothing in the engine depends
+      # on it yet — the exclude list is the crate alone — and that is
+      # exactly the shape that stops being upward-closed the day the first
+      # sample or bench target reaches it, which is what the sibling cells
+      # above learned one at a time.
+      - name: Build and test without the voxel volume
+        run: |
+          sel="--workspace --exclude renew-volume"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-volume $sel
+          cargo build $sel
+          cargo test $sel
       # The generator removed entirely. Nothing in the engine depends on
       # it yet, so the exclude list is short today — but the bench suite
       # reaches it from a bench target, which is exactly the edge that
