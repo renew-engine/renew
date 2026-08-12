@@ -24,13 +24,13 @@ workspace = true
 [dependencies]
 # The tree being presented: rectangles, styles, and the (slot,
 # generation) identity the snapshot pair is keyed by.
-renew-ui = { version = "0.1.0", path = "../ui" }
+renew-ui = { version = "0.1.1", path = "../ui" }
 # The display-rate half: the interpolation factor and float vectors —
 # the crate a simulation is forbidden from reaching, which is exactly
 # why the presenter may.
-renew-math = { version = "0.1.0", path = "../core/math" }
+renew-math = { version = "0.1.1", path = "../core/math" }
 # The emission surface: sprites over one atlas, one buffer, one item.
-renew-render2d = { version = "0.1.0", path = "../render2d" }
+renew-render2d = { version = "0.1.1", path = "../render2d" }
 
 # The golden oracle needs a device; the counting allocator gates the
 # steady state; property tests drive the clipper.

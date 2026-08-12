@@ -22,11 +22,11 @@ simulation = false
 # testable on any machine; the GPU-facing half sits behind the `render`
 # feature with its own dependency below.
 [dependencies]
-renew-rng = { version = "0.1.0", path = "../rng" }
+renew-rng = { version = "0.1.1", path = "../rng" }
 # The GPU half's dependency, behind its feature so the pure half stays
 # device-free and the removability story stays one crate wide: a
 # consumer that only steps pools never compiles a graphics API.
-renew-rhi = { version = "0.1.0", path = "../rhi", default-features = false, optional = true }
+renew-rhi = { version = "0.1.1", path = "../rhi", default-features = false, optional = true }
 
 # Property tests for the pool's bounds and expiry — the containers row
 # of the testing table (the lerp endpoint is a bit-exact unit test

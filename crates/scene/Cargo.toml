@@ -25,8 +25,8 @@ simulation = true
 # crate. One would make the GPU cell strip the hierarchy, so the
 # engine's own evidence would read "no parenting without a GPU".
 [dependencies]
-renew-ecs = { version = "0.1.0", path = "../ecs" }
-renew-fixed = { version = "0.1.0", path = "../fixed" }
+renew-ecs = { version = "0.1.1", path = "../ecs" }
+renew-fixed = { version = "0.1.1", path = "../fixed" }
 
 # The propagation is a relation over arbitrary trees, which is the
 # testing table's row for properties rather than examples. The counting
