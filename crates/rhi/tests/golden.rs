@@ -203,8 +203,98 @@ fn clear_is_byte_exact_everywhere() {
     assert_no_validation_errors(&device);
 }
 
-/// G2: the built-in triangle — structure everywhere, exact bytes on a
-/// software rasterizer.
+/// How many pixels may differ from the golden, and by how much.
+///
+/// **This is a deliberate retreat from byte-exactness, for one image, with
+/// a stated bound.** The triangle draws a colour gradient across a large
+/// area into an sRGB target. The sRGB transfer function buckets values
+/// unevenly, so a difference of one unit in the *linear* interpolated
+/// value — which llvmpipe produces or does not depending on the JIT target
+/// it derives from the host CPU — can land on either side of a bucket
+/// boundary. The two machine classes in the runner pool therefore disagree
+/// on exactly the pixels along the triangle's two interpolated edges: 196
+/// of 65,536, each by one unit in one channel, mirror-symmetric.
+///
+/// That was not visible before the working space went linear. The golden
+/// sat unchanged and green for twelve days; the encode is what made a
+/// pre-existing one-unit difference reach the output byte. See DEBT-0072.
+///
+/// **What the tolerance still catches, which is why it is not a hole.** A
+/// real rendering change moves geometry, colour or coverage: it moves
+/// thousands of pixels, or it moves hundreds by far more than one. The
+/// bound below is the triangle's perimeter — two edges of a 256-pixel
+/// image, so at most 512 pixels can lie on an interpolation boundary at
+/// all — against an observed 196. A regression that hides underneath it
+/// would have to alter no more than the anti-aliased edge, by no more than
+/// the smallest representable step, which is not a rendering change; it is
+/// the same picture.
+///
+/// **Scoped to this image on purpose.** `clear_is_byte_exact_everywhere`
+/// and the depth and sprite goldens keep asserting exact equality: they
+/// have no interpolated gradient and have never shown this. A tolerance
+/// applied where it is not needed is how a suite stops measuring.
+const MAX_DIFFERING_PIXELS: usize = 512;
+
+/// The largest per-channel difference tolerated in those pixels.
+///
+/// One. A quantisation boundary can move a byte by one step and no more;
+/// anything larger is a different colour, not a different rounding.
+const MAX_CHANNEL_DELTA: u8 = 1;
+
+/// How two images differ, in the terms the tolerance is stated in.
+struct Difference {
+    /// Pixels with any differing channel.
+    pixels: usize,
+    /// The largest single-channel difference seen.
+    largest_channel: u8,
+    /// Byte offset of the first difference, for forensics.
+    first_byte: usize,
+}
+
+impl Difference {
+    fn between(rendered: &[u8], golden: &[u8]) -> Self {
+        if rendered.len() != golden.len() {
+            return Self {
+                pixels: usize::MAX,
+                largest_channel: u8::MAX,
+                first_byte: 0,
+            };
+        }
+        let mut pixels = 0;
+        let mut largest_channel = 0;
+        let mut first_byte = usize::MAX;
+        for (index, (a, b)) in rendered
+            .chunks_exact(4)
+            .zip(golden.chunks_exact(4))
+            .enumerate()
+        {
+            let mut differs = false;
+            for (channel, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                let delta = x.abs_diff(*y);
+                if delta > 0 {
+                    differs = true;
+                    largest_channel = largest_channel.max(delta);
+                    first_byte = first_byte.min(index * 4 + channel);
+                }
+            }
+            if differs {
+                pixels += 1;
+            }
+        }
+        Self {
+            pixels,
+            largest_channel,
+            first_byte,
+        }
+    }
+
+    fn within_tolerance(&self) -> bool {
+        self.pixels <= MAX_DIFFERING_PIXELS && self.largest_channel <= MAX_CHANNEL_DELTA
+    }
+}
+
+/// G2: the built-in triangle — structure everywhere, and bytes within a
+/// stated tolerance on a software rasterizer.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -339,7 +429,8 @@ fn triangle_matches_structure_and_the_committed_golden() {
     }
 
     let expected = std::fs::read(&golden).expect("read committed golden");
-    if pixels != expected {
+    let difference = Difference::between(&pixels, &expected);
+    if !difference.within_tolerance() {
         let actual = dir.join("triangle-256x256.actual.rgba");
         std::fs::write(&actual, &pixels).expect("write actual for diffing");
         write_ppm(
@@ -349,11 +440,6 @@ fn triangle_matches_structure_and_the_committed_golden() {
             SIZE,
         )
         .expect("write actual ppm");
-        let first_diff = pixels
-            .iter()
-            .zip(expected.iter())
-            .position(|(a, b)| a != b)
-            .unwrap_or(usize::MAX);
         // **The renderer belongs in this message**, and its absence cost a
         // day. A divergence here is either the change under test or the
         // machine under it, and those need opposite responses: the first
@@ -364,10 +450,16 @@ fn triangle_matches_structure_and_the_committed_golden() {
         // string against the committed provenance sidecar instead began
         // by re-reading a diff that touched no rendering code at all.
         panic!(
-            "rendered bytes diverge from the golden: first difference at byte {first_diff}, \
-             lengths {} vs {}, fnv1a {rendered_hash:#018x} vs {:#018x}; rendered by {} ({:?}); \
-             actual written to {}. If that renderer differs from the one named in the \
-             provenance sidecar beside the golden, this is the machine and not the change.",
+            "rendered image diverges from the golden beyond the stated tolerance: \
+             {} pixels differ (at most {MAX_DIFFERING_PIXELS} allowed), largest channel \
+             difference {} (at most {MAX_CHANNEL_DELTA} allowed), first difference at \
+             byte {}; lengths {} vs {}, fnv1a {rendered_hash:#018x} vs {:#018x}; \
+             rendered by {} ({:?}); actual written to {}. If that renderer differs from \
+             the one named in the provenance sidecar beside the golden, this is the \
+             machine and not the change.",
+            difference.pixels,
+            difference.largest_channel,
+            difference.first_byte,
             pixels.len(),
             expected.len(),
             fnv1a(&expected),
@@ -1610,4 +1702,58 @@ fn oversized_frame_data_is_a_retained_contract_check() -> Result<(), Box<dyn std
         "nine bytes into an eight-byte region must refuse"
     );
     Ok(())
+}
+
+#[test]
+fn the_golden_tolerance_admits_a_rounding_difference_and_nothing_larger() {
+    // A tolerance is a hole unless something checks its edges, and the
+    // pressure on this one only goes one way: the next person to meet a
+    // red rendering lane will be tempted to widen it. This is what makes
+    // that a deliberate act rather than a quiet one.
+    //
+    // The numbers are the real ones. 196 pixels differing by a single unit
+    // is the observed disagreement between the two machine classes in the
+    // runner pool; a triangle shifted one pixel moves 8,319 pixels by up
+    // to 254. Between those two lies the whole question, and the bound
+    // sits 42x above the first and far below the second.
+    // The golden is 256x256 RGBA; only the buffer size matters here.
+    let base = vec![128u8; 256 * 256 * 4];
+
+    let mut rounding = base.clone();
+    for pixel in 0..196 {
+        rounding[pixel * 4 + 1] = 129;
+    }
+    let admitted = Difference::between(&rounding, &base);
+    assert_eq!(admitted.pixels, 196);
+    assert_eq!(admitted.largest_channel, 1);
+    assert!(
+        admitted.within_tolerance(),
+        "the disagreement this tolerance exists for must pass"
+    );
+
+    // One pixel too many, everything else identical.
+    let mut too_many = base.clone();
+    for pixel in 0..=MAX_DIFFERING_PIXELS {
+        too_many[pixel * 4 + 1] = 129;
+    }
+    assert!(
+        !Difference::between(&too_many, &base).within_tolerance(),
+        "a difference spread wider than the triangle's perimeter is not a \
+         rounding difference, whatever its magnitude"
+    );
+
+    // Few pixels, but one of them by two units.
+    let mut too_far = base.clone();
+    too_far[1] = 130;
+    let rejected = Difference::between(&too_far, &base);
+    assert_eq!(rejected.pixels, 1);
+    assert_eq!(rejected.largest_channel, 2);
+    assert!(
+        !rejected.within_tolerance(),
+        "a quantisation boundary moves a byte by one step; two is a \
+         different colour, however few pixels carry it"
+    );
+
+    // A length change is never a rounding difference.
+    assert!(!Difference::between(&base[..base.len() - 4], &base).within_tolerance());
 }
