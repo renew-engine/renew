@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e4bd9a117a83b10ec3e716983bdcc8a66b154a00855475838a52cdb49c7f0ca9 # shrinks to shape = Shape { parents: [None, None], locals: [Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }, Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }] }, seed = 9770274087005721344
+cc 5bb54760c91375947fdcd9e94673bcac3776ed94a9fd09efe7a3dc5a435bfacf # shrinks to shape = Shape { parents: [None, None, None, Some(1)], locals: [Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }, Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }, Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }, Local { translation: Vec2 { x: Fixed(0), y: Fixed(0) }, rotation: Angle(0) }] }, seed = 2598196046998495156

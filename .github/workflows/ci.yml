@@ -244,7 +244,7 @@ jobs:
       # turns forgetting that into a red cell rather than a green one.
       - name: Build and test without the entity storage
         run: |
-          sel="--workspace --exclude renew-ecs --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
+          sel="--workspace --exclude renew-ecs --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-sample-glide-world --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
           cargo build $sel
           cargo test $sel
@@ -295,6 +295,18 @@ jobs:
         run: |
           sel="--workspace --exclude renew-snapshot --exclude renew-sample-glide"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-snapshot $sel
+          cargo build $sel
+          cargo test $sel
+      # Parenting: local placements, and the pass composing them into world
+      # placements. Storage and the number type below it, the platformer its
+      # one consumer — the exclude list is upward-closed by excluding that
+      # game and its binary with it. Two edges must never appear or this cell
+      # hollows out: nothing rendering below it, and nothing above it that a
+      # headless build cannot run.
+      - name: Build and test without the parenting pass
+        run: |
+          sel="--workspace --exclude renew-scene --exclude renew-sample-leap-world --exclude renew-sample-leap"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-scene $sel
           cargo build $sel
           cargo test $sel
       # The widget tree: structure, layout, and interaction over the
@@ -374,7 +386,7 @@ jobs:
       # each went red here until the cell named the dependent.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
+          sel="--workspace --exclude renew-fixed --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel
@@ -441,7 +453,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

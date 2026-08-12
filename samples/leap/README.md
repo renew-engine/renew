@@ -41,7 +41,8 @@ The digest covers the character's position, its velocity, its footing
 and the jump latch — the latch because two characters standing in the
 same place at the same speed still diverge on the next tick if one is
 holding the button and the other is not. It does not cover the level,
-which no script can change.
+which no script can change. A world with moving platforms digests those
+too, but this one has none, so the line above is the whole of it.
 
 `--json` prints the same report as one document instead, carrying a
 `schema_version` from its first release so a consumer can tell a shape
@@ -141,6 +142,38 @@ floor. The floor is finite and there is nothing beneath it, so a
 character that walked off its end would fall with nothing to land on
 — none of the three scripts gets near it, because each is stopped by
 the wall or the ledge long before x = ±40.
+
+## Moving platforms
+
+The world understands one more kind of terrain than this level uses: a
+platform placed by a hierarchy rather than written down. A hub sits
+somewhere and turns; a deck hangs off it at a fixed arm; where the deck
+*is* each tick is whatever composing those two gives. Nothing records a
+deck position anywhere, which is the point — a deck cannot disagree with
+the thing that moves it.
+
+`Leap::add_orbit` builds one. Its placement reaches both the collision
+world and the digest — so two runs of the same input trace place every
+platform identically, and a digest that matched while a platform did not
+would be a contradiction the absorption rules out.
+
+Two limits are worth stating plainly, because both are real and both are
+easy to assume away:
+
+- **A deck's travel does not reach what stands on it.** It is solid, it
+  moves, and a character resting on it keeps touching it while the
+  surface is still underneath — but the motion is not transferred, so
+  the character slides off rather than riding along. It works as terrain
+  that moves; it does not yet work as a lift.
+- **A deck moves without sweeping.** That is the same fact from the
+  other side, and it is not benign: a deck placed *into* a character is
+  depenetrated by that character's next move, which can shift a rider
+  instantly and by any distance. Measured at 1.5 units in a single tick.
+- **The picture cannot draw one.** The view above tests each character
+  cell against an upright box, and a deck carries a rotation. Rather
+  than invent a rule for what a tilted box looks like in a grid of
+  characters, this level simply has no moving platform in it. The
+  capability is exercised by the world's own tests.
 
 ## The scripts
 

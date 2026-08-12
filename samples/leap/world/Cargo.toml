@@ -23,6 +23,7 @@ renew-ecs = { path = "../../../crates/ecs" }
 renew-fixed = { path = "../../../crates/fixed" }
 renew-frame = { path = "../../../crates/frame" }
 renew-physics2d = { path = "../../../crates/physics2d" }
+renew-scene = { path = "../../../crates/scene" }
 
 [lints]
 workspace = true

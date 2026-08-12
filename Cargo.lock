@@ -1900,6 +1900,17 @@ dependencies = [
  "renew-fixed",
  "renew-frame",
  "renew-physics2d",
+ "renew-scene",
+]
+
+[[package]]
+name = "renew-scene"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-ecs",
+ "renew-fixed",
+ "renew-memory",
 ]
 
 [[package]]
