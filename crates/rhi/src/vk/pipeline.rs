@@ -51,6 +51,50 @@ impl TargetFormat {
             Self::DepthOnly => None,
         }
     }
+
+    /// The byte this attachment stores for one float color channel, or
+    /// `None` for a format with no color attachment at all.
+    ///
+    /// **This exists so an expectation can be a function of the format
+    /// rather than a literal beside it.** A test that writes `[51, 102,
+    /// 153, 255]` is asserting two things at once — the value it cleared
+    /// to, and the rule the hardware used to store it — and only the
+    /// first is the test's subject. When the storage rule changes, every
+    /// such literal is wrong, and it is wrong *before* any golden
+    /// bootstrap path runs: the corner assertions panic first, so no
+    /// candidate image is written and a refresh that had already deleted
+    /// its goldens has nothing to replace them with. Deriving the byte
+    /// from the format makes that class of failure impossible to reach.
+    ///
+    /// A UNORM attachment stores `round(255 x channel)`, which is what
+    /// makes an authored byte survive a round trip unchanged. An sRGB
+    /// attachment would apply the transfer function instead — that arm
+    /// arrives with the format, and every caller of this follows it
+    /// without being edited.
+    ///
+    /// Values outside `0..=1` clamp, which is what the hardware does.
+    #[must_use]
+    pub fn stores(self, channel: f32) -> Option<u8> {
+        match self {
+            Self::Rgba8Unorm | Self::Bgra8Unorm => {
+                // NaN clamps to zero rather than propagating: `f32::clamp`
+                // panics on a NaN bound but returns NaN for a NaN input,
+                // and `as u8` would then saturate to zero silently. Saying
+                // so here costs one comparison and removes the surprise.
+                let channel = if channel.is_nan() { 0.0 } else { channel };
+                let scaled = channel.clamp(0.0, 1.0) * 255.0;
+                // `round` then truncate: the cast alone truncates, which
+                // would store 50 for a channel authored as 51/255.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to 0..=255 and rounded on the line above"
+                )]
+                Some(scaled.round() as u8)
+            }
+            Self::DepthOnly => None,
+        }
+    }
 }
 
 /// One vertex attribute, in declaration order.
@@ -1310,6 +1354,66 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store rule, at the values an expectation is built from.
+    ///
+    /// The load-bearing case is the round trip: a channel authored as
+    /// `b / 255` must store back as exactly `b`. Every golden clear in the
+    /// tree is written that way, so if this rounds down instead of to
+    /// nearest, `51 / 255` stores as 50 and each of those tests fails by
+    /// one — which is the shape of failure that reads as a driver
+    /// difference and is not one.
+    #[test]
+    fn a_unorm_target_stores_an_authored_byte_unchanged() {
+        for byte in 0..=255u8 {
+            let channel = f32::from(byte) / 255.0;
+            assert_eq!(
+                TargetFormat::Rgba8Unorm.stores(channel),
+                Some(byte),
+                "channel {channel} came from byte {byte}"
+            );
+        }
+    }
+
+    /// Both colour formats store the same way; only their channel order
+    /// differs, and that is the caller's business rather than this rule's.
+    #[test]
+    fn both_colour_formats_agree_on_the_rule() {
+        for byte in [0u8, 1, 51, 128, 254, 255] {
+            let channel = f32::from(byte) / 255.0;
+            assert_eq!(
+                TargetFormat::Rgba8Unorm.stores(channel),
+                TargetFormat::Bgra8Unorm.stores(channel)
+            );
+        }
+    }
+
+    /// A depth-only target has no colour attachment, so there is no byte
+    /// to name — reported rather than invented.
+    #[test]
+    fn a_depth_only_target_stores_no_colour() {
+        assert_eq!(TargetFormat::DepthOnly.stores(0.5), None);
+    }
+
+    /// Out of range clamps the way the hardware does, and a NaN lands on
+    /// zero rather than propagating into a byte by way of a saturating
+    /// cast nobody wrote down.
+    #[test]
+    fn out_of_range_clamps_and_a_nan_is_zero() {
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(-1.0), Some(0));
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(2.0), Some(255));
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(f32::NAN), Some(0));
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(f32::INFINITY), Some(255));
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(f32::NEG_INFINITY), Some(0));
+    }
+
+    /// Rounding is to nearest, not toward zero: the midpoint between two
+    /// stored bytes must land on the upper one.
+    #[test]
+    fn the_rule_rounds_to_nearest_rather_than_truncating() {
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(0.5 / 255.0), Some(1));
+        assert_eq!(TargetFormat::Rgba8Unorm.stores(0.49 / 255.0), Some(0));
+    }
 
     /// The converters, both arms of each, with no device involved.
     ///
