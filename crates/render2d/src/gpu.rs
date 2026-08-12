@@ -33,33 +33,46 @@ const SPRITE_LAYOUT: &[VertexAttribute] = &[
 /// table declares.
 const SPRITE_VERTEX_COUNT: u32 = 6;
 
-/// The atlas: dimensions and premultiplied pixels, borrowed for the one
+/// The atlas: dimensions and **authored** pixels, borrowed for the one
 /// call that uploads them.
 ///
 /// `#[non_exhaustive]` with a constructor, the descriptor pattern this
-/// tree uses everywhere. The field name carries the obligation:
-/// every texel's color channels are already multiplied by its alpha —
-/// the renderer cannot verify that from bytes, so the type says it
-/// wherever the bytes are handed over.
+/// tree uses everywhere.
+///
+/// # The bytes are authored colour with straight alpha
+///
+/// Display-encoded — the values somebody chose by looking at them — and
+/// **not** premultiplied. The texture is created as sRGB so the hardware
+/// decodes on sample, and the fragment stage multiplies by alpha after
+/// that.
+///
+/// **It used to be the other way round, and the other way round cannot
+/// work.** The transfer function does not commute with the alpha
+/// multiply, so bytes premultiplied before encoding cannot be decoded
+/// correctly by anything — which meant authored sprite colour had nothing
+/// to decode it, and every opaque mid-tone arrived lifted by exactly one
+/// encode. A sample sprite authored `208` drew as `233`.
+///
+/// Coverage atlases are unaffected by the change: white and full alpha are
+/// both fixed points of the transfer curve, so a mask authored as
+/// `(255, 255, 255, a)` and premultiplied in the shader lands on precisely
+/// the values it used to supply itself.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct AtlasDesc<'a> {
     /// Dimensions in texels. Neither may be zero (the rendering crate
     /// asserts it).
     pub extent: Extent,
-    /// Tightly packed RGBA8 rows, top row first, premultiplied.
+    /// Tightly packed RGBA8 rows, top row first, authored, straight alpha.
     /// Length must be exactly `extent.width * extent.height * 4`.
-    pub rgba8_premultiplied: &'a [u8],
+    pub rgba8: &'a [u8],
 }
 
 impl<'a> AtlasDesc<'a> {
-    /// An atlas of `extent` texels backed by `rgba8_premultiplied`.
+    /// An atlas of `extent` texels backed by authored `rgba8`.
     #[must_use]
-    pub fn new(extent: Extent, rgba8_premultiplied: &'a [u8]) -> Self {
-        Self {
-            extent,
-            rgba8_premultiplied,
-        }
+    pub fn new(extent: Extent, rgba8: &'a [u8]) -> Self {
+        Self { extent, rgba8 }
     }
 }
 
@@ -144,8 +157,10 @@ impl SpriteRenderer {
         format: TargetFormat,
         max_sprites: core::num::NonZeroU32,
     ) -> Result<Self, Render2dError> {
-        let texture =
-            device.create_texture(&TextureDesc::new(atlas.extent, atlas.rgba8_premultiplied))?;
+        // `colour`, not `new`: these are authored bytes, so the hardware
+        // decodes them on sample and shading sees reflectance. The
+        // fragment stage premultiplies afterwards.
+        let texture = device.create_texture(&TextureDesc::colour(atlas.extent, atlas.rgba8))?;
         let sampler = device.create_sampler(&SamplerDesc::atlas())?;
         let binding = device.create_binding(&BindingDesc::new(
             BindingSource::Texture(&texture),
