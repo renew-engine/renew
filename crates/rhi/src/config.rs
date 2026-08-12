@@ -108,6 +108,49 @@ impl Color {
 mod tests {
     use super::*;
 
+    /// The authored-colour constructor decodes each channel and leaves
+    /// alpha alone, because alpha was never encoded.
+    #[test]
+    fn an_authored_colour_is_decoded_channel_by_channel() {
+        // The pause menu's panel colour, which is a real constant in this
+        // tree rather than a number invented for a test.
+        let colour = Color::srgb8([0x28, 0x2c, 0x34]);
+        assert_eq!(colour.r.to_bits(), crate::srgb::decode(0x28).to_bits());
+        assert_eq!(colour.g.to_bits(), crate::srgb::decode(0x2c).to_bits());
+        assert_eq!(colour.b.to_bits(), crate::srgb::decode(0x34).to_bits());
+        assert_eq!(
+            colour.a.to_bits(),
+            1.0f32.to_bits(),
+            "opaque by construction"
+        );
+    }
+
+    /// **The difference this constructor exists to make.** Dividing by
+    /// 255 is what the tree did before, and for a mid-grey it is wrong by
+    /// more than a factor of two — so a test that only checked "some
+    /// number in range" would not have noticed the conversion at all.
+    #[test]
+    fn dividing_by_255_is_not_the_same_colour() {
+        let decoded = Color::srgb8([128, 128, 128]);
+        let naive = 128.0 / 255.0;
+        assert!(
+            decoded.r < naive * 0.55,
+            "byte 128 stands for about 21.6% of the light, not {naive}"
+        );
+    }
+
+    /// Black and white are the transfer function's fixed points, so they
+    /// are the two colours that survive any spelling — worth pinning
+    /// because they are also the two most likely to be clear values.
+    #[test]
+    fn the_endpoints_are_the_colours_they_look_like() {
+        let black = Color::srgb8([0, 0, 0]);
+        assert_eq!(black.r.to_bits(), 0.0f32.to_bits());
+        let white = Color::srgb8([255, 255, 255]);
+        assert_eq!(white.r.to_bits(), 1.0f32.to_bits());
+        assert_eq!(white.a.to_bits(), 1.0f32.to_bits());
+    }
+
     #[test]
     fn the_default_device_is_named_and_unvalidated() {
         let desc = DeviceDesc::default();
