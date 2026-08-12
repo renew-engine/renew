@@ -1384,6 +1384,34 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
+    use super::TargetFormat;
+
+    /// Every format answers both questions the type promises.
+    ///
+    /// **One test over every arm rather than one per arm**, because what
+    /// is being pinned is that the set is total: a format added later gets
+    /// a Vulkan format and an honest answer about the transfer function,
+    /// or this fails. `encodes` exists precisely so a caller does not
+    /// `matches!` on the arms itself — a promise worth a test, since it is
+    /// public API that nothing in this tree calls.
+    #[test]
+    fn every_target_format_maps_and_says_whether_it_encodes() {
+        let all = [
+            (TargetFormat::Rgba8Unorm, false),
+            (TargetFormat::Bgra8Unorm, false),
+            (TargetFormat::Rgba8Srgb, true),
+            (TargetFormat::Bgra8Srgb, true),
+        ];
+        for (format, encodes) in all {
+            assert!(format.to_vk().is_some(), "{format:?} has no Vulkan format");
+            assert_eq!(
+                format.encodes(),
+                encodes,
+                "{format:?} disagreed about the transfer function"
+            );
+        }
+    }
+
     use super::*;
 
     /// The store rule, at the values an expectation is built from.
