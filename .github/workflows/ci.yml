@@ -578,23 +578,6 @@ jobs:
     # Pinned runner image: the golden images attest bytes from exactly
     # this stack, and a silent image bump must not be able to move them.
     runs-on: ubuntu-24.04
-    env:
-      # One rasterizer thread, for every golden step in this job.
-      #
-      # llvmpipe splits a frame across threads and takes its thread
-      # count from the core count, which differs between hosted runners.
-      # The interpolation arithmetic follows that tiling, so a pixel
-      # wobbles in its last bits from run to run. Under UNORM the wobble
-      # never crossed a quantisation step. An sRGB target spaces its
-      # steps about thirteen times more finely near black, so it does:
-      # measured at 196 bytes between two runs of this lane, every one
-      # by exactly one code, in the dark end of a gradient.
-      #
-      # Pinning the count removes the source. Widening what the
-      # comparison accepts would have blunted every golden to settle one
-      # gradient, and a committed image that only holds to within a code
-      # stops catching the single-code regressions it exists for.
-      LP_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
