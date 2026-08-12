@@ -1639,6 +1639,7 @@ name = "renew-ecs"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "renew-memory",
 ]
 
 [[package]]
