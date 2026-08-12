@@ -58,4 +58,23 @@ runs:
           echo "VK_ADD_LAYER_PATH=$sdk_root/share/vulkan/explicit_layer.d"
           echo "LD_LIBRARY_PATH=$sdk_root/lib:$mesa_root/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
           echo "LP_NUM_THREADS=4"
+          # Belt and braces, and honestly labelled as such: this pins a
+          # value the driver already picks. In the Mesa build pinned
+          # above, gallivm clamps the width to 256 before reading this
+          # variable, so every runner in the pool is already at 256 and
+          # setting it changes nothing today. It is here so that a future
+          # Mesa lifting that clamp cannot move every golden in the tree
+          # without someone editing this line.
+          #
+          # **It is not a fix for the rendering lane's flake, and an
+          # earlier version of this comment claimed it was.** The claim
+          # was that the pool's CPUs vectorise at different widths. The
+          # refutation was already in the tree: all five golden
+          # provenance sidecars record "256 bits", captured on separate
+          # runs weeks apart. A width that never varied cannot be the
+          # variable. What does still vary across the pool is the JIT's
+          # target CPU and feature set, which llvmpipe takes from the
+          # host and which no vector-width setting reaches - see
+          # DEBT-0072, which holds the evidence and the open question.
+          echo "LP_NATIVE_VECTOR_WIDTH=256"
         } >> "$GITHUB_ENV"
