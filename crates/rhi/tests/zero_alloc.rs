@@ -122,6 +122,14 @@ fn steady_state_frames_allocate_nothing() {
             &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
         )
         .expect("sampled pipeline");
+    // A second pipeline for the same shader: the pass below draws into a
+    // colour render image, which stores what was written, while the
+    // offscreen target encodes on write. One pipeline cannot name both.
+    let into_image_pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("render-image pipeline");
     // The frame under measurement carries per-frame bytes: a gate that
     // measured a byte-free frame would pass vacuously the moment the
     // data path allocated. The copy into the mapped region is the whole
@@ -178,7 +186,7 @@ fn steady_state_frames_allocate_nothing() {
             LoadOp::Clear(ClearValue::Color(clear_color)),
             StoreOp::Store,
         );
-        let into_image = [Item::new(&pipeline).bindings(&[&binding])];
+        let into_image = [Item::new(&into_image_pipeline).bindings(&[&binding])];
         let from_image = [Item::new(&pipeline).bindings(&[&image_binding])];
         let image_passes = [
             Pass::render_to(&render_image, image_ops, &into_image),
@@ -238,7 +246,7 @@ fn steady_state_frames_allocate_nothing() {
                 LoadOp::Clear(ClearValue::Color(clear_color)),
                 StoreOp::Store,
             );
-            let into_image = [Item::new(&pipeline).bindings(&[&binding])];
+            let into_image = [Item::new(&into_image_pipeline).bindings(&[&binding])];
             let from_image = [Item::new(&pipeline).bindings(&[&image_binding])];
             let image_passes = [
                 Pass::render_to(&render_image, image_ops, &into_image),

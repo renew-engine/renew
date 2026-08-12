@@ -29,6 +29,37 @@ use renew_rhi::{
 };
 
 /// The one color attachment these frames render into: cleared, stored.
+/// The format every offscreen target in this file is created with.
+const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
+
+/// The bytes an offscreen frame stores for an authored texel.
+///
+/// A texture's bytes are values, sampled exactly as stored, so a texel of
+/// `b` arrives at the shader as `b / 255`. The offscreen attachment then
+/// encodes on write, so what lands is not `b` — it is whatever that light
+/// encodes to. Derived rather than restated, so the expectation says which
+/// of those two it is and follows the format if it ever moves again.
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect"
+)]
+fn stored(authored: &[u8]) -> Vec<u8> {
+    authored
+        .iter()
+        .enumerate()
+        .map(|(channel, &byte)| {
+            let value = f32::from(byte) / 255.0;
+            if channel % 4 == 3 {
+                // Alpha is not colour and the transfer function does not
+                // touch it; the attachment stores it linearly either way.
+                byte
+            } else {
+                TARGET.stores(value).expect("a colour target stores colour")
+            }
+        })
+        .collect()
+}
+
 fn clear(color: Color) -> [Attachment; 1] {
     [Attachment::new(
         LoadOp::Clear(ClearValue::Color(color)),
@@ -122,7 +153,7 @@ fn clear_is_byte_exact_everywhere() {
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
-    let expected = [51u8, 102, 153, 255];
+    let expected = stored(&[51u8, 102, 153, 255]);
     for (index, pixel) in pixels.chunks_exact(4).enumerate() {
         assert_eq!(
             pixel,
@@ -402,7 +433,7 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
             // Clip space runs top-to-bottom in y and the atlas's first
             // row is its top row, so neither axis flips.
             let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
-            let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+            let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
             let offset = ((y * SIZE + x) as usize) * 4;
             assert_eq!(
                 &pixels[offset..offset + 4],
@@ -429,10 +460,10 @@ fn a_sampled_texture_is_byte_exact_everywhere() {
         .render(&RenderDesc::new(&passes))
         .expect("render after the caller dropped its handles");
     target.read_back_into(&mut pixels);
-    let texel = &ATLAS[..4];
+    let texel = stored(&ATLAS[..4]);
     assert_eq!(
         &pixels[..4],
-        texel,
+        texel.as_slice(),
         "the second draw must sample the same texels as the first"
     );
 
@@ -470,10 +501,10 @@ fn two_textures_share_one_pipeline() {
     /// The texel a target pixel samples, and which atlas it reads under
     /// the given slot order — the CPU statement of the fragment stage's
     /// midline split.
-    fn expected(atlases: [&[u8; 16]; 2], x: u32, y: u32) -> &[u8] {
+    fn expected(atlases: [&[u8; 16]; 2], x: u32, y: u32) -> Vec<u8> {
         let atlas = atlases[usize::from(x >= SIZE / 2)];
         let texel = (((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE) as usize;
-        &atlas[texel * 4..texel * 4 + 4]
+        stored(&atlas[texel * 4..texel * 4 + 4])
     }
 
     let Some(device) = device_or_skip().expect("device bring-up") else {
@@ -541,7 +572,7 @@ fn two_textures_share_one_pipeline() {
                 let offset = ((y * SIZE + x) as usize) * 4;
                 assert_eq!(
                     &pixels[offset..offset + 4],
-                    expected(atlases, x, y),
+                    expected(atlases, x, y).as_slice(),
                     "pixel ({x},{y}) under slot order {:?} on adapter {:?}",
                     atlases.map(|atlas| atlas[0]),
                     device.adapter()
@@ -688,7 +719,7 @@ fn a_rendered_image_samples_back_byte_exact() {
         for y in 0..SIZE {
             for x in 0..SIZE {
                 let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
-                let expected = &ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4];
+                let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
                 let offset = ((y * SIZE + x) as usize) * 4;
                 assert_eq!(
                     &pixels[offset..offset + 4],
@@ -831,7 +862,8 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
             // Depth samples as (D, 0, 0, 1); UNORM8 conversion of 0.25
             // is 64, of the far clear 0.
             let expected: [u8; 4] = if x < SIZE / 2 {
-                [64, 0, 0, 255]
+                <[u8; 4]>::try_from(stored(&[64, 0, 0, 255]).as_slice())
+                    .expect("four channels in, four out")
             } else {
                 [0, 0, 0, 255]
             };
