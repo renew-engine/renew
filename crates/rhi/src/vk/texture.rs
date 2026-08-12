@@ -9,15 +9,20 @@
 //! An animated atlas needs the opposite property and will need a
 //! different type; see the contract on [`Texture`].
 //!
-//! **The format is UNORM, so the bytes handed in are the values
-//! sampled, with no hardware colour conversion on the way.** That is
-//! the only choice a byte-comparing reference image can be written
-//! against today, and it is stated because it is a real constraint
-//! rather than an oversight: an atlas authored in an image editor is
-//! sRGB-encoded, and sampling it as UNORM reads the encoded values as
-//! though they were linear. Giving the descriptor an explicit format,
-//! so such an atlas can be decoded by the hardware on read, belongs
-//! with the wider colour-handling decision and not ahead of it.
+//! **The format follows [`TextureContent`]**: `Values` is UNORM, so the
+//! bytes handed in are the values sampled, and `Colour` is sRGB, so an
+//! authored picture is decoded by the hardware on read and shading sees
+//! reflectance. Which one a texture wants is a question about what its
+//! bytes mean, and getting it wrong is visible rather than subtle — see
+//! the type's own documentation for the argument.
+//!
+//! **One seam is open and worth knowing about before choosing.**
+//! Premultiplied bytes belong under `Values`, because the transfer
+//! function does not commute with the alpha multiply — and that leaves
+//! an atlas that is *both* premultiplied *and* authored with nothing to
+//! decode it. Opaque texels are the visible case: the multiply is the
+//! identity on them, so they are display-encoded values fed to a linear
+//! pipeline, and they come back lifted by exactly one encode.
 
 use std::rc::Rc;
 
