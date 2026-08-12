@@ -16,6 +16,14 @@ use renew_rhi::{
     RenderDesc, StoreOp, TargetFormat, Validation,
 };
 
+/// The instance colour, as the light behind bytes 64, 128 and 32.
+const AUTHORED: [f32; 4] = [
+    renew_rhi::srgb::decode(64),
+    renew_rhi::srgb::decode(128),
+    renew_rhi::srgb::decode(32),
+    1.0,
+];
+
 fn strict() -> bool {
     std::env::var_os("RENEW_GOLDEN").is_some_and(|v| v == "1")
 }
@@ -70,10 +78,13 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
         gravity: [0.0, 0.0, 0.0],
         drag_per_step: 1.0,
         size: (1.0, 1.0),
-        color: (
-            [64.0 / 255.0, 128.0 / 255.0, 32.0 / 255.0, 1.0],
-            [64.0 / 255.0, 128.0 / 255.0, 32.0 / 255.0, 1.0],
-        ),
+        // The light those authored bytes stand for, not the bytes over
+        // 255. A particle colour is chosen by looking at it, so it is
+        // display-encoded; the attachment encodes on write, so handing it
+        // the decoded light is what stores the byte back unchanged. The
+        // expectation below is still the authored value, which is the
+        // point of decoding here rather than restating it there.
+        color: (AUTHORED, AUTHORED),
         tile: [0.0, 0.0, 1.0, 1.0],
     };
     let mut system = ParticleSystem::new(
