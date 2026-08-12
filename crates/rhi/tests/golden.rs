@@ -174,14 +174,22 @@ fn clear_is_byte_exact_everywhere() {
         })
         .expect("offscreen target");
     // 51/255, 102/255, 153/255: unambiguous UNORM conversions.
-    let color = clear(Color::new(51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0));
+    let color = clear(Color::new(
+        renew_rhi::srgb::decode(51),
+        renew_rhi::srgb::decode(102),
+        renew_rhi::srgb::decode(153),
+        1.0,
+    ));
     target
         .render(&RenderDesc::new(&[Pass::new(&color, &[])]))
         .expect("clear render");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
-    let expected = stored(&[51u8, 102, 153, 255]);
+    // The authored bytes themselves. The clear hands over the light behind
+    // them and the attachment encodes it back, so the round trip is exact
+    // and the expectation is the value that was chosen — no derivation.
+    let expected = [51u8, 102, 153, 255];
     for (index, pixel) in pixels.chunks_exact(4).enumerate() {
         assert_eq!(
             pixel,

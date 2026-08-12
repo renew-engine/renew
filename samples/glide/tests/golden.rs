@@ -29,9 +29,9 @@ use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH, World};
 
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions — the sky.
 const SKY: Color = Color {
-    r: 51.0 / 255.0,
-    g: 102.0 / 255.0,
-    b: 153.0 / 255.0,
+    r: renew_rhi::srgb::decode(51),
+    g: renew_rhi::srgb::decode(102),
+    b: renew_rhi::srgb::decode(153),
     a: 1.0,
 };
 const SKY_BYTES: [u8; 4] = [51, 102, 153, 255];
