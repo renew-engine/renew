@@ -24,10 +24,16 @@ pub const WIDTH: u32 = glyphs::STRIP_WIDTH;
 /// Atlas height in texels: the tile row, then the glyph strip.
 pub const HEIGHT: u32 = TILE_ROW + glyphs::LINE_HEIGHT;
 
-/// The atlas bytes, premultiplied RGBA, row-major: the tile row on
-/// top, the baked glyph strip below it — glyph alpha becomes
-/// premultiplied white ink, so a text tint multiplies through the
-/// same way a background tint does.
+/// The atlas bytes, **authored** RGBA with straight alpha, row-major: the
+/// tile row on top, the baked glyph strip below it — glyph alpha becomes
+/// white ink at that coverage, so a text tint multiplies through the same
+/// way a background tint does.
+///
+/// **Straight alpha rather than premultiplied**, since the sprite stage
+/// premultiplies after the hardware decodes. Nothing about the result
+/// moved: white and full alpha are both fixed points of the transfer
+/// curve, so `(255, 255, 255, a)` decoded and then multiplied by `a` is
+/// exactly the `(a, a, a, a)` this used to emit.
 #[must_use]
 pub fn pixels() -> Vec<u8> {
     let mut bytes = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
@@ -57,7 +63,9 @@ pub fn pixels() -> Vec<u8> {
     for y in 0..glyphs::LINE_HEIGHT {
         for x in 0..WIDTH {
             let ink = glyphs::STRIP_ALPHA[(y * glyphs::STRIP_WIDTH + x) as usize];
-            bytes.extend_from_slice(&[ink, ink, ink, ink]);
+            // White at that coverage, straight: the sprite stage does the
+            // multiply. Writing `[ink; 4]` here would premultiply twice.
+            bytes.extend_from_slice(&[255, 255, 255, ink]);
         }
     }
     bytes
@@ -145,7 +153,13 @@ mod tests {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0x2194_d4ce_b511_5281,
+            // Re-pinned when the glyph strip became straight alpha: ink
+            // is now white at the baked coverage rather than white
+            // premultiplied by it, because the sprite stage does the
+            // multiply. The BYTES moved; the picture did not, since white
+            // and full alpha are fixed points of the transfer curve.
+            hash,
+            0x0169_61ff_3e57_0b0a,
             "the atlas bytes moved; if this was a deliberate re-bake, re-pin \
              with the value the failure names"
         );
