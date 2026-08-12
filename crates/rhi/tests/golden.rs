@@ -633,6 +633,15 @@ fn a_rendered_image_samples_back_byte_exact() {
     let image_binding = device
         .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
         .expect("image binding");
+    // Two pipelines for one shader, because the two targets no longer
+    // agree: a colour render image stores what was written, the offscreen
+    // target encodes on write. One pipeline served both while both were
+    // UNORM; now the format each pass draws into has to be named.
+    let into_image_pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("render-image pipeline");
     let pipeline = device
         .create_pipeline(
             &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
@@ -650,7 +659,7 @@ fn a_rendered_image_samples_back_byte_exact() {
         StoreOp::Store,
     );
     let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
-    let into_image = [Item::new(&pipeline).bindings(&[&atlas_binding])];
+    let into_image = [Item::new(&into_image_pipeline).bindings(&[&atlas_binding])];
     // Two sampling items: the second mention of an already-sampled
     // image must recognise the transition already happened, not emit
     // it twice — identical draws, so the pixels also prove it.

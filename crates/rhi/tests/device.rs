@@ -875,8 +875,13 @@ fn malformed_frames_are_refused_by_name() {
         "feedback within one pass",
         &|target| {
             let color = clear(black);
+            // Rgba8Unorm, unlike every other pipeline in this file: this
+            // one draws into a colour render image through `render_to`,
+            // and colour render images store what was written rather than
+            // encoding it. Naming the offscreen target's format here would
+            // trip the format check first and refuse for the wrong reason.
             let sampled_desc =
-                PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1);
+                PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1);
             let feedback = device
                 .create_pipeline(&sampled_desc)
                 .expect("feedback pipeline");
