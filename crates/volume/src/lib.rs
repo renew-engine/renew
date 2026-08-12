@@ -32,7 +32,7 @@
 //! own voxel sample uses: cell zero spans −0.5 to +0.5, so every cell's
 //! half-extent is exactly one half and the arithmetic stays exact.
 
-#![deny(clippy::float_arithmetic)]
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 mod pick;
 mod sweep;

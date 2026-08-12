@@ -137,7 +137,7 @@ mod tests {
     }
 
     fn volume() -> Volume {
-        Volume::new(Cell::new(0, 0, 0), (1, 1, 1)).expect("a small volume is addressable")
+        Volume::new(Cell::new(0, 0, 0), (16, 16, 16)).expect("a small volume is addressable")
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
     fn the_sweep_cannot_tunnel_through_a_thin_wall() {
         // The displacement is far longer than the wall is thick, which is
         // exactly the case a naive end-point test misses.
-        let mut v = Volume::new(Cell::new(0, 0, 0), (2, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(0, 0, 0), (32, 16, 16)).expect("volume");
         v.set(Cell::new(10, 1, 1), STONE);
         let hit = v
             .sweep_box(

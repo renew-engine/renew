@@ -23,7 +23,7 @@ use renew_volume::{Cell, Volume, Voxel};
 // so the refusal arm is unreachable by construction.
 #[allow(clippy::expect_used)]
 fn build() -> Volume {
-    let mut volume = Volume::new(Cell::new(-16, -16, -16), (2, 2, 2)).expect("volume");
+    let mut volume = Volume::new(Cell::new(-16, -16, -16), (32, 32, 32)).expect("volume");
     let mut cursor: i64 = 1;
     for step in 0..512i64 {
         // A cheap, fully-determined walk over the address space — no RNG,
@@ -69,7 +69,7 @@ fn the_order_writes_arrive_in_does_not_change_the_result() {
     // The same final contents reached by replaying them in enumeration
     // order rather than in the order they were written.
     let built = build();
-    let mut replayed = Volume::new(built.origin(), built.chunks()).expect("volume");
+    let mut replayed = Volume::new(built.origin(), built.size()).expect("volume");
     for (cell, voxel) in built.solids() {
         replayed.set(cell, voxel);
     }

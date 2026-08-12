@@ -24,7 +24,7 @@ const OFFSETS: std::ops::Range<i64> = -32_768..32_768;
 
 /// Two chunks on a side, so writes land in several chunks and the
 /// cross-chunk bookkeeping is actually exercised.
-const CHUNKS: (i32, i32, i32) = (2, 2, 2);
+const SIZE: (i32, i32, i32) = (32, 32, 32);
 
 // Test helper (called only from #[test] fns): the tests-only expect
 // allowance covers #[test] fns and not their helpers, so it is extended
@@ -32,7 +32,7 @@ const CHUNKS: (i32, i32, i32) = (2, 2, 2);
 // so the refusal arm is unreachable by construction.
 #[allow(clippy::expect_used)]
 fn fresh() -> Volume {
-    Volume::new(Cell::new(0, 0, 0), CHUNKS).expect("a small volume is addressable")
+    Volume::new(Cell::new(0, 0, 0), SIZE).expect("a small volume is addressable")
 }
 
 /// The span of cell coordinates the volume covers, plus a margin either

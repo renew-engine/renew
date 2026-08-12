@@ -212,7 +212,7 @@ mod tests {
     const STONE: Voxel = Voxel(1);
 
     fn volume() -> Volume {
-        Volume::new(Cell::new(0, 0, 0), (2, 1, 1)).expect("a small volume is addressable")
+        Volume::new(Cell::new(0, 0, 0), (32, 16, 16)).expect("a small volume is addressable")
     }
 
     fn reach() -> Fixed {
@@ -279,7 +279,7 @@ mod tests {
         // The face has to follow the ray's own axis. Reading it off a fixed
         // axis reports the same side for every direction, so a player buried
         // in sand looking at their feet is told they are looking east.
-        let mut v = Volume::new(Cell::new(0, 0, 0), (1, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(0, 0, 0), (16, 16, 16)).expect("volume");
         let inside = Cell::new(3, 3, 4);
         v.set(inside, STONE);
         let cases = [
@@ -359,7 +359,7 @@ mod tests {
         // The contract documents this, and the test is what keeps the
         // documented behaviour and the real behaviour the same thing.
         const { assert!(MAX_PICK_STEPS < 1024, "the cap is the bound, not reach") };
-        let mut v = Volume::new(Cell::new(0, 0, 0), (64, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(0, 0, 0), (1024, 16, 16)).expect("volume");
         let far = i32::try_from(MAX_PICK_STEPS).unwrap_or(i32::MAX) + 44;
         v.set(Cell::new(far, 0, 0), STONE);
         let generous = Fixed::from_int(1000);
@@ -372,7 +372,7 @@ mod tests {
         // The same solid within the cap is found, which proves the previous
         // assertion is about the cap and not about the volume or the reach.
         let near = i32::try_from(MAX_PICK_STEPS).unwrap_or(i32::MAX) - 44;
-        let mut w = Volume::new(Cell::new(0, 0, 0), (64, 1, 1)).expect("volume");
+        let mut w = Volume::new(Cell::new(0, 0, 0), (1024, 16, 16)).expect("volume");
         w.set(Cell::new(near, 0, 0), STONE);
         assert_eq!(
             w.pick(origin, east(), generous).map(|hit| hit.cell),
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn a_diagonal_ray_finds_a_cell_it_actually_passes_through() {
-        let mut v = Volume::new(Cell::new(0, 0, 0), (1, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(0, 0, 0), (16, 16, 16)).expect("volume");
         v.set(Cell::new(4, 4, 0), STONE);
         let diagonal = Vec3::new(Fixed::ONE, Fixed::ONE, Fixed::ZERO);
         let hit = v

@@ -29,7 +29,7 @@ const STONE: Voxel = Voxel(1);
 )]
 fn the_steady_state_allocates_nothing() {
     // Everything that may allocate happens out here, once.
-    let mut volume = Volume::new(Cell::new(0, 0, 0), (2, 2, 2)).expect("volume");
+    let mut volume = Volume::new(Cell::new(0, 0, 0), (32, 32, 32)).expect("volume");
     volume.fill(Cell::new(0, 0, 0), Cell::new(31, 0, 31), STONE);
 
     let half = Vec3::new(

@@ -56,33 +56,45 @@ pub struct Volume {
 }
 
 impl Volume {
-    /// A volume of `chunks` chunks whose lowest cell is `origin`, all empty.
+    /// A volume of `size` **cells** whose lowest cell is `origin`, all
+    /// empty.
     ///
     /// This is the only allocation the type ever performs.
+    ///
+    /// # The extent is in cells, and it is not rounded
+    ///
+    /// Storage is chunked and rounds up; the **addressable extent does
+    /// not**. A volume of 41 cells allocates three chunks and answers
+    /// nothing for the seven cells past the end, exactly as it answers
+    /// nothing for the cell before the start.
+    ///
+    /// That distinction is load-bearing rather than tidy. A consumer's
+    /// world is whatever size its world is, and a volume that quietly
+    /// grew to the next multiple of sixteen would put empty cells where
+    /// the caller believed there was nothing at all — which a mesher
+    /// reads as *air against the outer wall* and draws a face for. The
+    /// symptom is a world that suddenly has an outside.
     ///
     /// # Refusals
     ///
     /// Returns nothing when the request cannot be addressed: more than
-    /// [`MAX_CHUNKS`] chunks, or an extent that would carry the highest
-    /// cell past [`i32::MAX`]. **A refusal rather than a clamp**, because
-    /// a volume quietly smaller than asked for is a world with an invisible
-    /// wall in it, and the caller would find out by walking into one.
-    /// Dimensions below one chunk *are* clamped up, since a volume with no
-    /// cells has no behaviour to offer and every caller would have to check.
+    /// [`MAX_CHUNKS`] chunks of storage, or an extent that would carry the
+    /// highest cell past [`i32::MAX`]. **A refusal rather than a clamp**,
+    /// because a volume quietly smaller than asked for is a world with an
+    /// invisible wall in it, and the caller would find out by walking into
+    /// one. Dimensions below one cell *are* clamped up, since a volume
+    /// with no cells has no behaviour to offer.
     #[must_use]
-    pub fn new(origin: Cell, chunks: (i32, i32, i32)) -> Option<Self> {
-        let chunks = (chunks.0.max(1), chunks.1.max(1), chunks.2.max(1));
+    pub fn new(origin: Cell, size: (i32, i32, i32)) -> Option<Self> {
+        let size = (size.0.max(1), size.1.max(1), size.2.max(1));
+        let in_chunks = |cells: i32| cells.checked_add(CHUNK - 1).map(|sum| sum / CHUNK);
+        let chunks = (in_chunks(size.0)?, in_chunks(size.1)?, in_chunks(size.2)?);
         let count = usize_of(chunks.0)
             .checked_mul(usize_of(chunks.1))?
             .checked_mul(usize_of(chunks.2))?;
         if count > MAX_CHUNKS {
             return None;
         }
-        let size = (
-            chunks.0.checked_mul(CHUNK)?,
-            chunks.1.checked_mul(CHUNK)?,
-            chunks.2.checked_mul(CHUNK)?,
-        );
         // The highest addressable cell has to exist as an `i32`, or the
         // top of the volume is unreachable and `set` silently refuses
         // there forever.
@@ -113,7 +125,8 @@ impl Volume {
         self.chunks
     }
 
-    /// Extent in cells.
+    /// Extent in cells — what the caller asked for, not what was
+    /// allocated.
     #[must_use]
     pub const fn size(&self) -> (i32, i32, i32) {
         self.size
@@ -447,7 +460,7 @@ mod tests {
     const SAND: Voxel = Voxel(2);
 
     fn volume() -> Volume {
-        Volume::new(Cell::new(0, 0, 0), (2, 2, 2)).expect("a small volume is addressable")
+        Volume::new(Cell::new(0, 0, 0), (32, 32, 32)).expect("a small volume is addressable")
     }
 
     /// A chunk's hash computed by walking its cells, with no reference to
@@ -568,7 +581,7 @@ mod tests {
     fn two_volumes_sharing_no_cell_do_not_share_a_digest() {
         // The digest has to say where the volume is. Same contents at the
         // same offset, different origins — not one cell in common.
-        let mut here = Volume::new(Cell::new(0, 0, 0), (1, 1, 1)).expect("volume");
+        let mut here = Volume::new(Cell::new(0, 0, 0), (16, 16, 16)).expect("volume");
         here.set(Cell::new(0, 0, 0), STONE);
         let mut there = Volume::new(Cell::new(100, 100, 100), (1, 1, 1)).expect("volume");
         there.set(Cell::new(100, 100, 100), STONE);
@@ -577,9 +590,9 @@ mod tests {
 
     #[test]
     fn two_volumes_of_different_shape_do_not_share_a_digest() {
-        let mut wide = Volume::new(Cell::new(0, 0, 0), (2, 1, 1)).expect("volume");
+        let mut wide = Volume::new(Cell::new(0, 0, 0), (32, 16, 16)).expect("volume");
         wide.set(Cell::new(CHUNK, 0, 0), STONE);
-        let mut tall = Volume::new(Cell::new(0, 0, 0), (1, 2, 1)).expect("volume");
+        let mut tall = Volume::new(Cell::new(0, 0, 0), (16, 32, 16)).expect("volume");
         tall.set(Cell::new(0, CHUNK, 0), STONE);
         assert_ne!(
             wide.digest(),
@@ -648,7 +661,7 @@ mod tests {
 
     #[test]
     fn every_cell_round_trips_through_the_index_and_back() {
-        let v = Volume::new(Cell::new(-8, 5, -3), (2, 1, 2)).expect("volume");
+        let v = Volume::new(Cell::new(-8, 5, -3), (32, 16, 32)).expect("volume");
         let (sx, sy, sz) = v.size();
         for z in 0..sz {
             for y in 0..sy {
@@ -675,7 +688,7 @@ mod tests {
     fn filling_everything_is_bounded_by_the_volume() {
         // Without the clamp this walks four billion cells per axis to
         // refuse each one, which is a hang rather than a wrong answer.
-        let mut v = Volume::new(Cell::new(0, 0, 0), (1, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(0, 0, 0), (16, 16, 16)).expect("volume");
         let changed = v.fill(
             Cell::new(i32::MIN, i32::MIN, i32::MIN),
             Cell::new(i32::MAX, i32::MAX, i32::MAX),
@@ -696,23 +709,49 @@ mod tests {
     fn a_volume_too_large_to_address_is_refused_rather_than_clamped() {
         // A clamp here would hand back a world with an invisible wall.
         assert!(Volume::new(Cell::new(0, 0, 0), (2_000_000, 2_000_000, 2_000_000)).is_none());
+        // Rounding the extent up to whole chunks must not be the thing
+        // that overflows: the request is refused, not wrapped.
         assert!(Volume::new(Cell::new(0, 0, 0), (i32::MAX, 1, 1)).is_none());
-        let too_many = i32::try_from(MAX_CHUNKS).unwrap_or(i32::MAX) + 1;
-        assert!(Volume::new(Cell::new(0, 0, 0), (too_many, 1, 1)).is_none());
+        // Past the storage ceiling, counted in chunks however the caller
+        // spelled it in cells.
+        let too_many_cells = i32::try_from(MAX_CHUNKS + 1).unwrap_or(i32::MAX / CHUNK) * CHUNK;
+        assert!(Volume::new(Cell::new(0, 0, 0), (too_many_cells, CHUNK, CHUNK)).is_none());
+    }
+
+    #[test]
+    fn an_extent_that_is_not_a_whole_number_of_chunks_stays_that_extent() {
+        // The defect the sample migration found. Storage rounds up; the
+        // addressable extent does not. A volume that quietly grew to the
+        // next multiple of sixteen would put empty cells where the caller
+        // believed there was nothing — which a mesher reads as air against
+        // the outer wall and draws a face for, so the world grows an
+        // outside.
+        let v = Volume::new(Cell::new(-20, 0, -20), (41, 12, 41)).expect("volume");
+        assert_eq!(v.size(), (41, 12, 41), "the extent was rounded");
+        assert_eq!(v.chunks(), (3, 1, 3), "but the storage was not");
+        assert_eq!(v.max(), Cell::new(20, 11, 20));
+        assert_eq!(v.get(Cell::new(20, 11, 20)), Some(Voxel::EMPTY));
+        for past in [
+            Cell::new(21, 0, 0),
+            Cell::new(0, 12, 0),
+            Cell::new(0, 0, 21),
+        ] {
+            assert_eq!(v.get(past), None, "{past:?} is past the extent asked for");
+        }
     }
 
     #[test]
     fn a_volume_whose_top_would_not_fit_is_refused() {
         // Every cell a volume claims has to be addressable; saturating at
         // the ceiling would leave the top cells permanently unwritable.
-        assert!(Volume::new(Cell::new(i32::MAX - 5, 0, 0), (2, 1, 1)).is_none());
-        let v = Volume::new(Cell::new(i32::MAX - 5, 0, 0), (1, 1, 1));
+        assert!(Volume::new(Cell::new(i32::MAX - 5, 0, 0), (32, 16, 16)).is_none());
+        let v = Volume::new(Cell::new(i32::MAX - 5, 0, 0), (16, 16, 16));
         assert!(v.is_none(), "sixteen cells do not fit in six");
     }
 
     #[test]
     fn the_top_cell_of_a_volume_is_writable() {
-        let mut v = Volume::new(Cell::new(-3, -3, -3), (2, 1, 1)).expect("volume");
+        let mut v = Volume::new(Cell::new(-3, -3, -3), (32, 16, 16)).expect("volume");
         let top = v.max();
         assert!(v.set(top, STONE), "the highest cell must be reachable");
         assert_eq!(v.get(top), Some(STONE));
