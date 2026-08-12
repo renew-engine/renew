@@ -185,6 +185,22 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-frame $sel
           cargo build $sel
           cargo test $sel
+      # The voxel volume removed entirely, and with it the sample whose
+      # grid stands on it and the driver over that sample.
+      #
+      # **This list was the crate alone for exactly one commit.** The note
+      # here said a one-crate exclude is the shape that stops being
+      # upward-closed the day the first sample reaches it — and the same
+      # pull request then made the sample reach it, so the guard caught its
+      # author rather than a successor. That is the fifth time a sibling
+      # cell has learned this, which is why the guard exists rather than a
+      # convention.
+      - name: Build and test without the voxel volume
+        run: |
+          sel="--workspace --exclude renew-volume --exclude renew-sample-cube-world --exclude renew-sample-cube"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-volume $sel
+          cargo build $sel
+          cargo test $sel
       # The generator removed entirely. Nothing in the engine depends on
       # it yet, so the exclude list is short today — but the bench suite
       # reaches it from a bench target, which is exactly the edge that
@@ -381,12 +397,15 @@ jobs:
       # The fixed-point arithmetic, and the crates written in it. This
       # cell was a single leaf when it landed, with a comment saying the
       # first crate to depend on it should discover the obligation from
-      # a red lane rather than from nobody. It has now worked twice:
-      # physics arrived, and later the widget tree's layout solver, and
-      # each went red here until the cell named the dependent.
+      # a red lane rather than from nobody. It has now worked three
+      # times: physics arrived, then the widget tree's layout solver,
+      # then the voxel volume, and each went red here until the cell
+      # named the dependent. The volume is a genuine dependent rather
+      # than an accidental one - a cell has a position and a pick walks
+      # a ray, and neither is expressible without the fixed-point type.
       - name: Build and test without fixed-point arithmetic
         run: |
-          sel="--workspace --exclude renew-fixed --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
+          sel="--workspace --exclude renew-fixed --exclude renew-volume --exclude renew-scene --exclude renew-physics2d --exclude renew-physics3d --exclude renew-ui --exclude renew-ui-render --exclude renew-sample-glide --exclude renew-sample-cube --exclude renew-sample-cube-world --exclude renew-sample-leap --exclude renew-sample-leap-world --exclude renew-bench --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-fixed $sel
           cargo build $sel
           cargo test $sel
@@ -399,12 +418,16 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-physics2d $sel
           cargo build $sel
           cargo test $sel
-      # Three-dimensional collision. No consumers yet -- the voxel sandbox
-      # that will drive it is not written -- so the cell is the whole
-      # workspace minus one leaf.
+      # Three-dimensional collision. The comment here used to say "no
+      # consumers yet -- the voxel sandbox that will drive it is not
+      # written". The volume crate is that consumer arriving, and it
+      # reaches only the geometry half: it sweeps a box against its own
+      # cells and has no bodies to name. The half it does not take is
+      # what keeps the entity storage out of a storage crate; the half it
+      # does take is why it is on this list.
       - name: Build and test without three-dimensional collision
         run: |
-          sel="--workspace --exclude renew-physics3d --exclude renew-sample-cube --exclude renew-sample-cube-world"
+          sel="--workspace --exclude renew-physics3d --exclude renew-volume --exclude renew-sample-cube --exclude renew-sample-cube-world"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-physics3d $sel
           cargo build $sel
           cargo test $sel
@@ -512,6 +535,21 @@ jobs:
         run: |
           cargo build -p renew-rhi --no-default-features
           cargo test -p renew-rhi --no-default-features
+      # The collision crate's geometry half with no collider world, and
+      # therefore no entity storage anywhere in its graph. This is the
+      # configuration a caller holding its own geometry compiles — a
+      # voxel volume, a heightfield — and the graph guard is what makes
+      # the claim checkable rather than asserted. No narrowing of the
+      # edges, unlike the rendering crate above: this crate's only
+      # dev-dependency is a property-testing library, so the claim holds
+      # at test-build granularity too and the default edge set is right.
+      - name: Build and test the collision geometry without the collider world
+        run: |
+          sel="-p renew-physics3d --no-default-features"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
+          cargo build $sel
+          cargo clippy $sel --all-targets -- -D warnings
+          cargo test $sel
       # The same sample and the same frame loop with no winit and no
       # window-system integration anywhere in the graph — the claim the
       # loop's independence from windowing rests on. Build only:

@@ -1,0 +1,52 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated).
+#
+# This crate is storage and geometry: cells, a ray walked one boundary at a
+# time, and a box swept against a lattice. It opens no file, reads no
+# clock, spawns no thread, and takes no path.
+#
+# The bans are not incidental. A volume's whole claim is that the same
+# writes produce the same digest and that `solids` visits cells in a stated
+# order — and both are exactly what a clock read, an environment variable
+# or a process-seeded hasher would quietly destroy. Nothing would fail
+# until two machines disagreed about a replay, which is the worst place to
+# find out.
+#
+# `HashMap` is the entry most worth reading: its default hasher is seeded
+# per process, so iterating one gives a different order in every run. One
+# reached for out of convenience inside a chunk walk would make the
+# determinism invariant false while every test still passed.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "this crate is storage and geometry; it never touches the filesystem" },
+    { path = "std::fs::read_to_string", reason = "this crate does no I/O at all" },
+    { path = "std::io::Read::read_to_string", reason = "the same unbounded read by the other road" },
+    { path = "std::io::Read::read_to_end", reason = "the same unbounded read by the other road" },
+    { path = "std::fs::write", reason = "this crate is storage and geometry; it never touches the filesystem" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem, and asking about a file is one line away from opening it" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::env::var", reason = "a value from the environment would make one run differ from the next with nothing in the inputs to explain it" },
+    { path = "std::time::Instant::now", reason = "simulation state reads no clock: the same writes must produce the same digest, and a timestamp would destroy that" },
+    { path = "std::time::SystemTime::now", reason = "simulation state reads no clock" },
+    { path = "std::thread::spawn", reason = "a volume spawns nothing; parallelism over chunks belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act; a volume spawns nothing; parallelism over chunks belongs to the job system" },
+]
+
+disallowed-types = [
+    { path = "std::hash::RandomState", reason = "it seeds itself from the operating system, so a value derived from it differs between runs of the same binary on the same inputs — unseeded randomness, which simulation code may not contain" },
+    { path = "std::collections::hash_map::DefaultHasher", reason = "same road to the same entropy: it is built from RandomState, and stable Rust ships no other self-seeding source that needs no dependency" },
+    { path = "std::fs::File", reason = "the crate opens nothing; banning the type catches every road to a handle" },
+    { path = "std::fs::OpenOptions", reason = "the long way to the same handle, and the one a ban on `File::open` misses" },
+    { path = "std::path::Path", reason = "the crate takes cells and identifiers, never a path" },
+    { path = "std::path::PathBuf", reason = "the crate takes cells and identifiers, never a path" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per process, so iteration order differs every run; a chunk walk that iterated one would break the stated order the volume promises" },
+    { path = "std::collections::HashSet", reason = "the default hasher is seeded per process, so iteration order differs every run" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
