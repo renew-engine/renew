@@ -1,0 +1,40 @@
+[package]
+name = "renew-snapshot"
+description = "Two captures of one slot space, and the rule that decides which pairs may be blended"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.renew]
+purpose = "Two captures of one slot space blended by the interpolation factor, keyed by (slot, generation) so a recycled slot's new tenant never inherits the old tenant's motion."
+maturity = "bootstrap"
+core = false
+extension_points = ["Blend"]
+simulation = false
+
+# The maths crate and nothing else. Two things follow from that and both
+# are deliberate: the crate names no storage type, so it cannot drag an
+# ECS into a renderer's build; and it does not deny float arithmetic,
+# which is what mechanically refuses every simulation crate an edge to
+# it.
+[dependencies]
+renew-math = { path = "../core/math" }
+
+# The classification is a property over arbitrary (slot, generation,
+# value) sequences, which is the testing table's containers row. The
+# counting allocator holds the steady-state claim. Same versions every
+# sibling pins.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under instrumented allocators.
+[features]
+sanitized = []
+
+[lints]
+workspace = true

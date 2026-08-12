@@ -7,9 +7,12 @@
 //! sprite type themselves; the mapping is a handful of lines each, and
 //! that duplication is cheaper than a GPU edge on the game.
 
+use renew_math::Alpha;
 use renew_sample_glide_world::{
-    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, VIEW_HEIGHT, World,
+    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, UNITS_PER_PIXEL,
+    VIEW_HEIGHT, World,
 };
+use renew_snapshot::{Blend, Key, Snapshots};
 
 /// Which picture a sprite shows. Deliberately CLOSED, against the
 /// grain of the input enums elsewhere: a new tile must break every
@@ -27,9 +30,10 @@ pub enum Tile {
 /// screen units; y down from the top-left).
 ///
 /// `#[non_exhaustive]` without a constructor — a deliberate deviation
-/// from the descriptor pattern: this is a read-side record produced
-/// only by [`scene`], never built by callers, so the constructor would
-/// have exactly one caller and it lives in this file.
+/// from the descriptor pattern: this is a read-side record produced only
+/// by this module, by [`scene`] and by [`Presentation::fill`], never
+/// built by callers, so a constructor would have no caller outside this
+/// file.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct SceneSprite {
@@ -59,32 +63,181 @@ pub struct SceneSprite {
 )]
 pub fn scene(world: &World, out: &mut Vec<SceneSprite>) {
     out.clear();
-    let height = VIEW_HEIGHT as f32;
-    world.for_each_pipe_units(|x, gap_y| {
-        let gap_top = (gap_y - PIPE_GAP_HALF_UNITS) as f32;
-        let gap_bottom = (gap_y + PIPE_GAP_HALF_UNITS) as f32;
-        out.push(SceneSprite {
-            tile: Tile::Pipe,
-            x: x as f32,
-            y: 0.0,
-            width: PIPE_WIDTH_UNITS as f32,
-            height: gap_top,
-        });
-        out.push(SceneSprite {
-            tile: Tile::Pipe,
-            x: x as f32,
-            y: gap_bottom,
-            width: PIPE_WIDTH_UNITS as f32,
-            height: height - gap_bottom,
-        });
+    world.for_each_pipe_units(|x, gap_y| push_pipe(out, x as f32, gap_y as f32));
+    push_bird(out, world.bird_y_units() as f32);
+}
+
+/// One pipe's two bars, from the pipe's left edge and gap centre: the
+/// top bar from the ceiling down to the gap, the bottom bar from the gap
+/// down to the floor.
+///
+/// The one derivation, shared by the tick-exact fill above and the
+/// blended one below. Two copies of this arithmetic would be two places
+/// for the gap's half-height to drift.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "canvas units are bounded by the view constants, far below f32's exact range"
+)]
+fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
+    let half = PIPE_GAP_HALF_UNITS as f32;
+    let gap_top = gap_y - half;
+    let gap_bottom = gap_y + half;
+    out.push(SceneSprite {
+        tile: Tile::Pipe,
+        x,
+        y: 0.0,
+        width: PIPE_WIDTH_UNITS as f32,
+        height: gap_top,
     });
+    out.push(SceneSprite {
+        tile: Tile::Pipe,
+        x,
+        y: gap_bottom,
+        width: PIPE_WIDTH_UNITS as f32,
+        height: VIEW_HEIGHT as f32 - gap_bottom,
+    });
+}
+
+/// The bird's square body, from its centre's y.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "canvas units are bounded by the view constants, far below f32's exact range"
+)]
+fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32) {
+    let half = BIRD_HALF_UNITS as f32;
     out.push(SceneSprite {
         tile: Tile::Bird,
         x: (BIRD_X_UNITS - BIRD_HALF_UNITS) as f32,
-        y: (world.bird_y_units() - BIRD_HALF_UNITS) as f32,
-        width: (2 * BIRD_HALF_UNITS) as f32,
-        height: (2 * BIRD_HALF_UNITS) as f32,
+        y: centre_y - half,
+        width: 2.0 * half,
+        height: 2.0 * half,
     });
+}
+
+/// The most pipe slots presentation is sized for.
+///
+/// The rules bound live pipes well under this: they spawn every ninety
+/// ticks and are culled once fully past the left edge, and the world's
+/// own test pins the peak. Sixteen is that with room to spare, and
+/// `Capture::put` refuses by name rather than silently dropping a pipe if
+/// the rules ever outgrow it — a refusal being the outcome that gets
+/// noticed.
+const PIPE_SLOTS: u32 = 16;
+
+/// One world unit as a screen unit.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "world coordinates are bounded by the view constants, far below f32's exact range"
+)]
+fn units(world_units: i64) -> f32 {
+    world_units as f32 / UNITS_PER_PIXEL as f32
+}
+
+/// One pipe's blendable locals.
+///
+/// The locals, deliberately, and not the two bars derived from them: two
+/// derived rectangles blended directly interpolate along a chord the
+/// derivation would never have drawn, and the gap would breathe as the
+/// pipe moved. Blend what the pipe *is*, then derive what it looks like.
+///
+/// A named struct rather than `[f32; 2]`, because a transposed column in
+/// an anonymous array is invisible at the call site.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PipeAt {
+    /// Left edge, screen units.
+    pub x: f32,
+    /// Gap centre, screen units.
+    pub gap_y: f32,
+}
+
+impl Blend for PipeAt {
+    fn blend(from: Self, to: Self, alpha: Alpha) -> Self {
+        Self {
+            x: f32::blend(from.x, to.x, alpha),
+            gap_y: f32::blend(from.gap_y, to.gap_y, alpha),
+        }
+    }
+}
+
+/// The game's picture between two ticks.
+///
+/// The world steps sixty times a second and frames arrive faster, so
+/// drawing current state means every pipe holds position for a frame and
+/// then jumps. This keeps the last two ticks and draws between them.
+#[derive(Debug)]
+pub struct Presentation {
+    pipes: Snapshots<PipeAt>,
+    /// The bird is not an entity — three scalars on the world — so it is
+    /// one previous value and one blend, which is the whole of what a
+    /// singleton needs. A key is wanted exactly when a slot can be
+    /// recycled, and this one cannot be.
+    bird_y: f32,
+    previous_bird_y: Option<f32>,
+}
+
+impl Presentation {
+    /// A presentation seeded from the world as it stands, so the first
+    /// frame blends out of a real tick rather than out of a zero.
+    ///
+    /// Only the bird is seeded, and only the bird needs to be: a new
+    /// world holds no pipes at all — the first appears inside a step —
+    /// so there is nothing for the pipe captures to start from.
+    #[must_use]
+    pub fn new(world: &World) -> Self {
+        Self {
+            pipes: Snapshots::new(PIPE_SLOTS),
+            bird_y: units(world.bird_y()),
+            previous_bird_y: None,
+        }
+    }
+
+    /// Capture this tick's locals. Call once per **executed** step, after
+    /// the step — a frame that runs three catch-up steps captures three
+    /// times, or the earlier capture is stale and the blend spans the
+    /// wrong interval.
+    pub fn capture(&mut self, world: &World) {
+        let mut capture = self.pipes.capture();
+        world.for_each_pipe(|slot, generation, x, gap_y| {
+            capture.put(
+                Key::new(slot, u64::from(generation)),
+                PipeAt {
+                    x: units(x),
+                    gap_y: units(gap_y),
+                },
+            );
+        });
+        self.previous_bird_y = Some(self.bird_y);
+        self.bird_y = units(world.bird_y());
+    }
+
+    /// Fill `out` with the picture standing `alpha` of the way from the
+    /// second-newest capture to the newest, in [`scene`]'s draw order:
+    /// pipes as two bars each, then the bird over them.
+    ///
+    /// **So the picture lags the world by up to one tick.** At a zero
+    /// factor this draws the tick before last, and it reaches the last
+    /// tick only as the factor approaches one. That is inherent to
+    /// interpolating between two known states rather than extrapolating
+    /// past the newest one, and it is the usual trade: extrapolation has
+    /// no lag and overshoots instead, which shows as a rubber-band
+    /// correction on every direction change.
+    ///
+    /// A pipe that left between the two captures draws once more at its
+    /// last known place, underneath the living. It is still on screen
+    /// there — the cull fires once a pipe is fully past the left edge,
+    /// which happens *after* the move that took it there — so dropping it
+    /// would pop a visible sliver out at a tick boundary.
+    pub fn fill(&self, alpha: Alpha, out: &mut Vec<SceneSprite>) {
+        out.clear();
+        for drawn in self.pipes.frame(alpha) {
+            push_pipe(out, drawn.value.x, drawn.value.gap_y);
+        }
+        let y = match self.previous_bird_y {
+            Some(previous) => f32::blend(previous, self.bird_y, alpha),
+            None => self.bird_y,
+        };
+        push_bird(out, y);
+    }
 }
 
 #[cfg(test)]
@@ -190,5 +343,375 @@ mod tests {
             b(228.0),
             "observed: frozen at death"
         );
+    }
+
+    /// Half a step past the boundary — exact in binary, so expectations
+    /// are literals rather than tolerances.
+    fn half() -> Alpha {
+        Alpha::new(1, core::num::NonZeroU64::new(2).expect("two"))
+    }
+
+    /// Step the world once and capture it, the pairing the driver makes.
+    fn advance(presentation: &mut Presentation, world: &mut World) {
+        let flap = world.autopilot();
+        world.step(flap);
+        presentation.capture(world);
+    }
+
+    /// **The defect this fill exists to remove.** The whole-unit reading
+    /// truncates a pipe's 0.9-units-per-tick motion, so its reported
+    /// position holds still for one tick in every ten. Captured locals
+    /// keep the sub-unit part, so the same run moves every tick.
+    #[test]
+    fn captured_motion_has_no_stalls_the_truncated_reading_has() {
+        let mut world = piloted(200);
+        let mut presentation = Presentation::new(&world);
+        // Warm the pair. Reading at the boundary hands back the EARLIER
+        // capture, so an unwarmed pair reports its first tick twice and
+        // the duplicate would be this harness rather than the code.
+        presentation.capture(&world);
+
+        let mut truncated: Vec<i32> = Vec::new();
+        let mut captured: Vec<f32> = Vec::new();
+        let mut scratch = Vec::new();
+        for _ in 0..24 {
+            let mut first_truncated = None;
+            world.for_each_pipe_units(|x, _| {
+                if first_truncated.is_none() {
+                    first_truncated = Some(x);
+                }
+            });
+            if let Some(x) = first_truncated {
+                truncated.push(x);
+            }
+            // Step first, then capture: the boundary reading hands back
+            // the earlier capture, so this records the very state the
+            // truncated reading above was taken from.
+            let flap = world.autopilot();
+            world.step(flap);
+            presentation.capture(&world);
+            presentation.fill(Alpha::ZERO, &mut scratch);
+            captured.push(scratch[0].x);
+        }
+
+        // Bit equality, the module's own pattern: a stall IS two identical
+        // readings, so an epsilon would be answering a different question.
+        let stalls = |series: &[f32]| series.windows(2).filter(|w| b(w[0]) == b(w[1])).count();
+        let truncated_stalls = truncated.windows(2).filter(|w| w[0] == w[1]).count();
+        assert!(
+            truncated_stalls > 0,
+            "premise: the whole-unit reading must really stall, or this test proves nothing \
+             (series {truncated:?})"
+        );
+        assert_eq!(
+            stalls(&captured),
+            0,
+            "captured locals must move every tick (series {captured:?})"
+        );
+        for pair in captured.windows(2) {
+            assert!(
+                pair[1] < pair[0],
+                "and always leftward, never jittering back: {pair:?}"
+            );
+        }
+    }
+
+    /// A pipe that left the screen draws once more where it last stood,
+    /// then stops.
+    ///
+    /// **Why the recycling case is not tested here.** The rule that a
+    /// newcomer must not be blended out of its slot's previous tenant is
+    /// held — and constructed directly — in the crate that owns the pair.
+    /// This game cannot reach it: measured over three thousand ticks, a
+    /// vacated slot is never reused on the tick it is freed, and instead
+    /// sits empty for seventy-seven ticks before a new pipe takes it. The
+    /// previous capture therefore never holds the corpse when the
+    /// newcomer appears, so every new pipe here is a newborn and no
+    /// streak is expressible. A test asserting otherwise would pass
+    /// against a missing guard, which is worse than no test.
+    #[test]
+    fn a_departed_pipe_draws_once_more_and_then_stops() {
+        let mut world = piloted(120);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+
+        let mut scratch = Vec::new();
+        let mut departure = None;
+        for _ in 0..900 {
+            let live_before = pipe_slots(&world);
+            advance(&mut presentation, &mut world);
+            let live_after = pipe_slots(&world);
+            if live_after.len() < live_before.len() {
+                presentation.fill(Alpha::ZERO, &mut scratch);
+                let drawn = scratch.iter().filter(|s| s.tile == Tile::Pipe).count();
+                departure = Some((drawn, live_after.len()));
+                break;
+            }
+        }
+        let (drawn_on_the_tick_it_left, live) =
+            departure.expect("a pipe must leave the screen within nine hundred ticks");
+        assert_eq!(
+            drawn_on_the_tick_it_left,
+            (live + 1) * 2,
+            "the departing pipe is still drawn, as two bars, beside the {live} that remain"
+        );
+
+        // One more capture with nothing else changing, and it is gone.
+        let live = pipe_slots(&world).len();
+        advance(&mut presentation, &mut world);
+        presentation.fill(Alpha::ZERO, &mut scratch);
+        let drawn = scratch.iter().filter(|s| s.tile == Tile::Pipe).count();
+        assert_eq!(
+            drawn,
+            live * 2,
+            "and then it stops being drawn rather than lingering — exactly the {live} live \
+             pipes, as two bars each, and no more"
+        );
+    }
+
+    /// The slots the world currently holds pipes in.
+    fn pipe_slots(world: &World) -> Vec<u32> {
+        let mut slots = Vec::new();
+        world.for_each_pipe(|slot, _, _, _| slots.push(slot));
+        slots
+    }
+
+    #[test]
+    fn the_blend_stands_at_its_captured_ticks() {
+        let mut world = piloted(200);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        let mut earlier = Vec::new();
+        presentation.fill(Alpha::ZERO, &mut earlier);
+        let earlier_bird = earlier
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .copied()
+            .expect("a bird is always drawn");
+
+        advance(&mut presentation, &mut world);
+        let mut at_zero = Vec::new();
+        presentation.fill(Alpha::ZERO, &mut at_zero);
+        let bird_at_zero = at_zero
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .copied()
+            .expect("a bird is always drawn");
+        assert_eq!(
+            b(bird_at_zero.y),
+            b(earlier_bird.y),
+            "at the boundary the picture is the earlier capture, bit for bit"
+        );
+
+        let mut at_half = Vec::new();
+        presentation.fill(half(), &mut at_half);
+        let bird_at_half = at_half
+            .iter()
+            .find(|s| s.tile == Tile::Bird)
+            .copied()
+            .expect("a bird is always drawn");
+        assert_ne!(
+            b(bird_at_half.y),
+            b(earlier_bird.y),
+            "and past it the picture has actually moved"
+        );
+    }
+
+    /// Two identical captures leave nothing to interpolate, so the
+    /// blended fill must agree with the tick-exact oracle at every
+    /// factor — within the whole unit the oracle truncates away.
+    #[test]
+    fn the_blended_fill_agrees_with_the_oracle_at_a_standstill() {
+        let world = piloted(240);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        presentation.capture(&world);
+
+        let mut oracle = Vec::new();
+        scene(&world, &mut oracle);
+        let mut blended = Vec::new();
+        for step in 0..8u64 {
+            let alpha = Alpha::new(
+                step * 125,
+                core::num::NonZeroU64::new(1000).expect("nonzero"),
+            );
+            presentation.fill(alpha, &mut blended);
+            assert_eq!(
+                blended.len(),
+                oracle.len(),
+                "the same picture, sprite for sprite"
+            );
+            for (drawn, expected) in blended.iter().zip(&oracle) {
+                assert_eq!(drawn.tile, expected.tile, "and in the same order");
+                assert!(
+                    (drawn.x - expected.x).abs() < 1.0 && (drawn.y - expected.y).abs() < 1.0,
+                    "within the unit the oracle truncates: {drawn:?} against {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pipe_slots_stay_inside_the_budget() {
+        let mut world = World::new(7);
+        let mut highest = 0;
+        for _ in 0..3_000 {
+            let flap = world.autopilot();
+            world.step(flap);
+            world.for_each_pipe(|slot, _, _, _| highest = highest.max(slot));
+        }
+        // Asserted rather than handled: the pilot survives the whole run,
+        // so a restart arm here would be a branch nothing reaches, and a
+        // dead world would silently stop spawning and make the budget
+        // claim vacuous.
+        assert!(
+            world.alive(),
+            "the pilot must survive, or nothing was spawning"
+        );
+        assert!(
+            highest < PIPE_SLOTS,
+            "the rules allocated slot {highest}, past the presentation budget of {PIPE_SLOTS}"
+        );
+    }
+
+    /// **The claim the blended fill exists to make.** Between two ticks a
+    /// pipe stands strictly between where it was and where it is, and it
+    /// gets there monotonically as the factor rises.
+    ///
+    /// Without this the whole fill could ignore its factor for pipes and
+    /// every other test here would still pass: the rest read at the
+    /// boundary, or through the bird, or across two identical captures.
+    #[test]
+    fn a_pipe_between_ticks_stands_between_its_captured_positions() {
+        let mut world = piloted(200);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        let earlier = pipe_lefts(&presentation, Alpha::ZERO);
+        advance(&mut presentation, &mut world);
+        let later = pipe_lefts_at_one(&presentation);
+        assert!(!earlier.is_empty(), "premise: there must be pipes to move");
+        assert_eq!(
+            earlier.len(),
+            later.len(),
+            "premise: the same pipes both ticks"
+        );
+        assert!(
+            earlier.iter().zip(&later).all(|(was, is)| is < was),
+            "premise: the pipes must actually have moved left ({earlier:?} then {later:?})"
+        );
+
+        let mut previous = earlier.clone();
+        for step in 1..=4u64 {
+            let alpha = Alpha::new(
+                step * 200,
+                core::num::NonZeroU64::new(1000).expect("nonzero"),
+            );
+            let between = pipe_lefts(&presentation, alpha);
+            for (index, drawn) in between.iter().enumerate() {
+                let (was, is) = (earlier[index], later[index]);
+                let held = previous[index];
+                assert!(
+                    *drawn < was && *drawn > is,
+                    "at factor {step}/5 pipe {index} stands at {drawn}, outside ({is} .. {was})"
+                );
+                assert!(
+                    *drawn < held,
+                    "and each step of the factor must move pipe {index} further than {held}, \
+                     never hold it"
+                );
+            }
+            previous = between;
+        }
+    }
+
+    /// The bird interpolates too, and by the same rule.
+    #[test]
+    fn the_bird_between_ticks_stands_between_its_captured_heights() {
+        let mut world = piloted(205);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        let earlier = bird_top(&presentation, Alpha::ZERO);
+        advance(&mut presentation, &mut world);
+        let later = bird_top_at_one(&presentation);
+        assert!(
+            b(earlier) != b(later),
+            "premise: the bird must actually have moved between these ticks"
+        );
+        let middle = bird_top(&presentation, half());
+        let low = earlier.min(later);
+        let high = earlier.max(later);
+        assert!(
+            middle > low && middle < high,
+            "the half-way bird stands at {middle}, outside ({low} .. {high})"
+        );
+    }
+
+    /// A frozen pair with a frozen factor repeats the picture it was
+    /// frozen at — which is what a paused game rests on, the driver
+    /// holding the factor still being the other half of that contract.
+    ///
+    /// Asserting only that two calls agree would be a tautology: `fill`
+    /// is a pure function, so it would pass with the body deleted. The
+    /// picture is therefore compared against the one taken before the
+    /// freeze, and asserted non-empty.
+    #[test]
+    fn a_frozen_pair_at_a_frozen_factor_repeats_the_picture_it_froze_at() {
+        let mut world = piloted(300);
+        let mut presentation = Presentation::new(&world);
+        presentation.capture(&world);
+        advance(&mut presentation, &mut world);
+        let mut before_the_pause = Vec::new();
+        presentation.fill(half(), &mut before_the_pause);
+        assert!(
+            before_the_pause.iter().any(|s| s.tile == Tile::Pipe),
+            "premise: the frozen picture must contain something to freeze"
+        );
+        // The world keeps stepping; nothing is captured, exactly as a
+        // paused driver behaves.
+        for _ in 0..4 {
+            let flap = world.autopilot();
+            world.step(flap);
+            let mut again = Vec::new();
+            presentation.fill(half(), &mut again);
+            assert_eq!(
+                before_the_pause, again,
+                "an uncaptured world must not reach the picture"
+            );
+        }
+    }
+
+    /// Every pipe's left edge at `alpha`, in draw order.
+    fn pipe_lefts(presentation: &Presentation, alpha: Alpha) -> Vec<f32> {
+        let mut out = Vec::new();
+        presentation.fill(alpha, &mut out);
+        out.iter()
+            .filter(|s| s.tile == Tile::Pipe)
+            .map(|s| s.x)
+            .step_by(2)
+            .collect()
+    }
+
+    /// The same, as close to the newer capture as the factor can get.
+    fn pipe_lefts_at_one(presentation: &Presentation) -> Vec<f32> {
+        pipe_lefts(
+            presentation,
+            Alpha::new(u64::MAX, core::num::NonZeroU64::new(1).expect("one")),
+        )
+    }
+
+    fn bird_top(presentation: &Presentation, alpha: Alpha) -> f32 {
+        let mut out = Vec::new();
+        presentation.fill(alpha, &mut out);
+        out.iter()
+            .find(|s| s.tile == Tile::Bird)
+            .map(|s| s.y)
+            .expect("a bird is always drawn")
+    }
+
+    fn bird_top_at_one(presentation: &Presentation) -> f32 {
+        bird_top(
+            presentation,
+            Alpha::new(u64::MAX, core::num::NonZeroU64::new(1).expect("one")),
+        )
     }
 }

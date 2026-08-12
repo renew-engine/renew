@@ -1842,6 +1842,7 @@ dependencies = [
  "renew-replay",
  "renew-rhi",
  "renew-sample-glide-world",
+ "renew-snapshot",
  "renew-trace",
  "renew-ui",
  "renew-ui-render",
@@ -1897,6 +1898,15 @@ dependencies = [
  "renew-fixed",
  "renew-frame",
  "renew-physics2d",
+]
+
+[[package]]
+name = "renew-snapshot"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "renew-math",
+ "renew-memory",
 ]
 
 [[package]]
