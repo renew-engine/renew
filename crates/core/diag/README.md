@@ -62,9 +62,9 @@ process-isolated install/emit integration binaries, all present.
 Settled enough to depend on: the record shape and macro surface are
 what other crates in this workspace build against, and breaking them
 is avoided; examples and a performance narrative are still to come.
-The `[package.metadata.renew]` table in [Cargo.toml](Cargo.toml) is
+The `[package.metadata.renew]` table in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/core/diag/Cargo.toml) is
 authoritative for maturity and all manifest metadata. The crate's
-contract lints live in [clippy.toml](clippy.toml): clock and
+contract lints live in [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/core/diag/clippy.toml): clock and
 filesystem access are rejected at lint time, not by review.
 
 ## Key decisions

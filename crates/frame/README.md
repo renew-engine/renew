@@ -142,8 +142,8 @@ them), and Miri (no `unsafe` anywhere in the crate).
 ## Status
 
 Early-stage. The `[package.metadata.renew]` table in
-[Cargo.toml](Cargo.toml) is authoritative for maturity and all manifest
-metadata. The crate's contract lints live in [clippy.toml](clippy.toml):
+[Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/frame/Cargo.toml) is authoritative for maturity and all manifest
+metadata. The crate's contract lints live in [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/frame/clippy.toml):
 clock reads, thread spawning, filesystem access and randomly seeded hash
 containers are rejected at lint time, because this is the tree's first
 crate designated as simulation code and one `Instant::now` inside

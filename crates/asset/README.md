@@ -10,7 +10,7 @@ reader that trusts nothing the file tells it.
   name before writing, so the order they were added in — and therefore the
   order a directory happened to be walked in — never reaches the bytes.
   Nothing here reads a clock, a path, or the environment, and the crate's
-  [clippy.toml](clippy.toml) rejects all three at lint time rather than by
+  [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/asset/clippy.toml) rejects all three at lint time rather than by
   review.
 - **Names are unique and sorted.** Enforced when writing and re-checked
   when reading, because a reader must not assume the file in front of it
@@ -90,7 +90,7 @@ implicit.
 
 `bootstrap`. The container is settled enough to build on; what is stored
 in it is not. The `[package.metadata.renew]` table in
-[Cargo.toml](Cargo.toml) is authoritative for maturity and manifest
+[Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/asset/Cargo.toml) is authoritative for maturity and manifest
 metadata.
 
 ## Key decisions

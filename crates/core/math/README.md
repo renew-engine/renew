@@ -16,7 +16,7 @@ column-major `Mat4`, a rotation `Quat`, and an axis-aligned `Aabb3` — all
   results for the same build on the same platform. No clock, no
   filesystem, no allocation, no hashing anywhere in the crate — the
   clock/filesystem half is rejected at lint time via
-  [clippy.toml](clippy.toml), not by review.
+  [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/core/math/clippy.toml), not by review.
 - **`normalize` requires a positive squared length** (debug assertion);
   the vector types offer `try_normalize`, returning `Option` where absence
   of a usable direction is a normal outcome — accurate across the full
@@ -48,7 +48,7 @@ Settled enough to depend on: the type surface is what other crates in
 this workspace build against, and breaking it is avoided; operations
 are still added when a consumer needs them, not speculatively —
 examples and a performance narrative are still to come. The
-`[package.metadata.renew]` table in [Cargo.toml](Cargo.toml) is
+`[package.metadata.renew]` table in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/core/math/Cargo.toml) is
 authoritative for maturity and manifest metadata.
 
 ## Key decisions

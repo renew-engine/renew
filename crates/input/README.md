@@ -26,7 +26,7 @@ action, and the set of inputs currently down. Lookup is a binary search;
 at the size a binding table actually reaches, that beats a map and cannot
 surprise anyone with its iteration order.
 
-`HashMap` is banned by the crate's [clippy.toml](clippy.toml), and here it
+`HashMap` is banned by the crate's [clippy.toml](https://github.com/renew-engine/renew/blob/main/crates/input/clippy.toml), and here it
 is a real temptation rather than a theoretical one — a binding table is
 the textbook use for one. Its hasher is seeded per process, so resolving
 which action an input drives could differ between runs.
@@ -86,7 +86,7 @@ order does not change behaviour.
 `bootstrap`. Bindings and edges are settled; anything above them — axes,
 chords, gamepads, runtime rebinding UI, serialised binding sets — is not,
 and none of it has a consumer asking yet. The `[package.metadata.renew]`
-table in [Cargo.toml](Cargo.toml) is authoritative for maturity; the word
+table in [Cargo.toml](https://github.com/renew-engine/renew/blob/main/crates/input/Cargo.toml) is authoritative for maturity; the word
 above is a convenience and that table decides.
 
 **It has a consumer now**, which is the more useful fact: the input-echo
