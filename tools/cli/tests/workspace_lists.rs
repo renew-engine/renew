@@ -835,3 +835,89 @@ fn collect_rust_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String
     }
     Ok(())
 }
+
+/// Every committed golden image, paired with its provenance sidecar.
+///
+/// Walks the tree rather than reading a list, because a list of goldens
+/// would be exactly the hand-maintained second copy this file exists to
+/// distrust.
+fn goldens_with_provenance(dir: &Path, found: &mut Vec<(PathBuf, PathBuf)>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| format!("entry: {e}"))?.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == "target" || name == ".git" {
+                continue;
+            }
+            goldens_with_provenance(&path, found)?;
+        } else if path.extension().is_some_and(|e| e == "rgba") {
+            let sidecar = path.with_extension("provenance.txt");
+            if sidecar.exists() {
+                found.push((path, sidecar));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The hash a provenance sidecar records for its image.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[test]
+fn every_golden_matches_the_hash_its_provenance_records() {
+    // The ritual is: render a candidate, have a human look at it, rename
+    // it, and commit it beside a sidecar recording what was approved and
+    // what rendered it. The sidecar is the only record that a human ever
+    // saw those bytes.
+    //
+    // This has already failed once. A golden was refreshed with "the
+    // bytes the comparison produces" and its sidecar was left behind, so
+    // the file on disk was a capture nobody had approved while the
+    // sidecar beside it described a different image entirely. Nothing
+    // compared them, so nothing said so — and the mismatch was found
+    // only because an unrelated branch went red on a different runner.
+    //
+    // A sidecar that disagrees with its image means one of two things,
+    // and both are defects: the image was replaced without the ritual,
+    // or the ritual ran and the record was not updated.
+    let root = workspace_root();
+    let mut goldens = Vec::new();
+    goldens_with_provenance(&root, &mut goldens).expect("walk the tree for goldens");
+    assert!(
+        goldens.len() >= 5,
+        "found {} goldens with sidecars, which is fewer than are known to exist — \
+         the walk is broken and this test would pass vacuously",
+        goldens.len()
+    );
+
+    let mut wrong = Vec::new();
+    for (image, sidecar) in &goldens {
+        let bytes = std::fs::read(image).expect("read the golden");
+        let record = std::fs::read_to_string(sidecar).expect("read the sidecar");
+        let claimed = record
+            .lines()
+            .find_map(|line| line.split_once("fnv1a-64 of the pixel bytes:"))
+            .map(|(_, value)| value.trim().to_owned());
+        let actual = format!("0x{:016x}", fnv1a(&bytes));
+        match claimed {
+            Some(claimed) if claimed == actual => {}
+            Some(claimed) => wrong.push(format!(
+                "{}: the file hashes to {actual} but its sidecar records {claimed}",
+                image.display()
+            )),
+            None => wrong.push(format!(
+                "{}: its sidecar records no hash at all",
+                sidecar.display()
+            )),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

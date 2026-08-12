@@ -454,12 +454,25 @@ fn blended_sprites_match_structure_and_the_committed_golden() {
             .zip(expected.iter())
             .position(|(a, b)| a != b)
             .unwrap_or(usize::MAX);
+        // **The renderer belongs in this message**, and its absence cost a
+        // day. A divergence here is either the change under test or the
+        // machine under it, and those need opposite responses: the first
+        // is a bug to fix, the second is a golden that cannot gate
+        // anything. This message used to give offsets, lengths and hashes
+        // - everything about the bytes, nothing about what produced them
+        // - so an investigation that should have begun by comparing this
+        // string against the committed provenance sidecar instead began
+        // by re-reading a diff that touched no rendering code at all.
         panic!(
             "rendered bytes diverge from the golden: first difference at byte {first_diff}, \
-             lengths {} vs {}, fnv1a {rendered_hash:#018x} vs {:#018x}; actual written to {}",
+             lengths {} vs {}, fnv1a {rendered_hash:#018x} vs {:#018x}; rendered by {} ({:?}); \
+             actual written to {}. If that renderer differs from the one named in the \
+             provenance sidecar beside the golden, this is the machine and not the change.",
             pixels.len(),
             expected.len(),
             fnv1a(&expected),
+            device.adapter().name,
+            device.adapter().kind,
             actual.display()
         );
     }
