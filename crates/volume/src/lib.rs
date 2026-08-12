@@ -34,10 +34,12 @@
 
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
+mod mesh;
 mod pick;
 mod sweep;
 mod volume;
 
+pub use mesh::{Beyond, Quad, chunk_faces, faces};
 pub use pick::{MAX_PICK_STEPS, Pick};
 pub use sweep::Hit;
 pub use volume::{CHUNK, CHUNK_CELLS, ChangedChunks, Volume};
