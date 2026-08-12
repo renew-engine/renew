@@ -290,8 +290,10 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
             actual.display()
         ));
     }
-    std::fs::write(dir.join(format!("{name}.provenance.txt")), provenance)
-        .map_err(|error| format!("refresh provenance sidecar: {error}"))?;
+    // Nothing is written here — see the note in the 2D renderer's copy of
+    // this ritual. A passing comparison leaves the tree exactly as it found
+    // it; the sidecar is authored by the bootstrap path above, which fails,
+    // and which is therefore the one moment a human is already looking.
     Ok(())
 }
 
