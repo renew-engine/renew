@@ -20,12 +20,52 @@ extension_points = []
 # obligations: the float closure walk and the cross-target digest comparison.
 simulation = true
 
+[features]
+default = ["world"]
+# The collider set and the queries over it: bodies, the broadphase, and
+# the swept moves that report which body they met. Separated from the
+# geometry below it because a handle is an ECS entity (see the crate
+# docs), so this half — and only this half — needs the entity storage.
+#
+# Default-on, because the collider world is what most callers want. The
+# callers who turn it off are the ones holding their own geometry: a
+# voxel volume, a heightfield, a static mesh. They ask "does this box
+# meet that box" and have no bodies to name.
+world = ["dep:renew-ecs"]
+
 [dependencies]
-renew-ecs = { version = "0.1.1", path = "../ecs" }
+renew-ecs = { version = "0.1.1", path = "../ecs", optional = true }
 renew-fixed = { version = "0.1.1", path = "../fixed" }
 
 [dev-dependencies]
 proptest = "1.11"
+
+# Integration tests that build bodies, so they need the half that has
+# them. Declared rather than cfg-gated inside each file: a test binary
+# that compiles to nothing still reports as a passing test target, and a
+# suite that says "ok" while containing no tests is the kind of green
+# that means nothing. `narrow` is absent from this list on purpose — it
+# tests the geometry and must keep running when the world is off, or
+# the configuration has no coverage at all.
+[[test]]
+name = "broadphase"
+required-features = ["world"]
+
+[[test]]
+name = "clearance"
+required-features = ["world"]
+
+[[test]]
+name = "lifecycle"
+required-features = ["world"]
+
+[[test]]
+name = "ray_and_query"
+required-features = ["world"]
+
+[[test]]
+name = "sweep_and_slide"
+required-features = ["world"]
 
 [lints]
 workspace = true

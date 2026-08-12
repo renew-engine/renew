@@ -23,7 +23,13 @@ extension_points = []
 # rather than from a broadphase, which is what a uniform grid makes free.
 [dependencies]
 renew-fixed = { version = "0.1.1", path = "../fixed" }
-renew-physics3d = { version = "0.1.1", path = "../physics3d" }
+# default-features = false: the sweep needs the geometry — box against
+# box, and when — and has no bodies to name. Its cells are its own. The
+# default would bring the collider world and, through it, the entity
+# storage into every consumer of a voxel volume, which is how a removability
+# cell found this: a volume that cannot be built without the ECS is not a
+# storage crate.
+renew-physics3d = { version = "0.1.1", path = "../physics3d", default-features = false }
 
 # Property tests for arbitrary write sequences — the containers row of the
 # testing table — and the counting allocator for the allocation gate, which

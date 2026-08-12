@@ -528,6 +528,21 @@ jobs:
         run: |
           cargo build -p renew-rhi --no-default-features
           cargo test -p renew-rhi --no-default-features
+      # The collision crate's geometry half with no collider world, and
+      # therefore no entity storage anywhere in its graph. This is the
+      # configuration a caller holding its own geometry compiles — a
+      # voxel volume, a heightfield — and the graph guard is what makes
+      # the claim checkable rather than asserted. No narrowing of the
+      # edges, unlike the rendering crate above: this crate's only
+      # dev-dependency is a property-testing library, so the claim holds
+      # at test-build granularity too and the default edge set is right.
+      - name: Build and test the collision geometry without the collider world
+        run: |
+          sel="-p renew-physics3d --no-default-features"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-ecs $sel
+          cargo build $sel
+          cargo clippy $sel --all-targets -- -D warnings
+          cargo test $sel
       # The same sample and the same frame loop with no winit and no
       # window-system integration anywhere in the graph — the claim the
       # loop's independence from windowing rests on. Build only:

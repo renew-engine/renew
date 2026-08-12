@@ -22,13 +22,33 @@
 //! structure, the narrowphase algorithms and the storage layout are all
 //! expected to diverge; the meanings are not.
 //!
+//! # Two halves, and why the seam is where it is
+//!
+//! The **geometry** — shapes, bounds, separation, ray casts, swept moves —
+//! answers questions about figures in space. It knows nothing about bodies
+//! and needs no storage: given two boxes and a displacement it says whether
+//! and when they meet.
+//!
+//! The **collider world** — bodies, the broadphase, the queries that report
+//! *which body* was hit — is built on top of it and needs an identity for
+//! each body. That identity is an ECS entity, so the world half depends on
+//! the entity storage and the geometry half does not.
+//!
+//! The `world` feature (on by default) is that seam. Turning it off leaves
+//! the geometry, for callers that hold their own: a voxel volume, a
+//! heightfield, a static mesh. Such a caller has cells or triangles rather
+//! than bodies, and making it compile the entity storage to ask whether two
+//! boxes overlap would be a dependency it can never use.
+//!
 //! # The decisions worth knowing before reading the code
 //!
 //! - **A shape index is stable for the life of its body.** Removing a shape
 //!   leaves a hole; the next one fills the lowest free hole.
 //! - **A handle is an ECS entity, stored whole**, because `Entity`'s
 //!   constructor is crate-private and this crate can neither mint one nor
-//!   rebuild one from its parts.
+//!   rebuild one from its parts. This is also what puts the seam above
+//!   where it is: the coupling is real, not incidental, so the honest
+//!   response is to name which half carries it.
 //! - **A stale handle is refused, a foreign one is undetectable.**
 //! - **Incarnation counters** advance when a collider is rebuilt at an
 //!   identity it already used.
@@ -42,26 +62,41 @@
 // crate rather than drifting from it.
 #![doc = include_str!("../README.md")]
 
+// The geometry: figures in space, no storage and no identities.
 pub mod bounds;
-pub mod broadphase;
-pub mod clear;
 pub mod filter;
 pub mod narrow;
-pub mod query;
 pub mod ray;
 pub mod shape;
-pub mod slide;
 pub mod sweep;
+
+// The collider world, behind the `world` feature. Everything here either
+// holds a body handle or hands one back.
+#[cfg(feature = "world")]
+pub mod broadphase;
+#[cfg(feature = "world")]
+pub mod clear;
+#[cfg(feature = "world")]
+pub mod query;
+#[cfg(feature = "world")]
+pub mod slide;
+#[cfg(feature = "world")]
 pub mod world;
 
 pub use bounds::Aabb;
-pub use broadphase::Broadphase;
-pub use clear::{ClearEnd, ClearReport};
 pub use filter::Filter;
 pub use narrow::{Contact, collide, separation};
-pub use query::{Counts, Exclude, Hit};
 pub use ray::{RayHit, cast};
 pub use shape::{Shape, Transform};
-pub use slide::{SlideEnd, SlideHit, SlideReport};
 pub use sweep::{MAX_ADVANCE_STEPS, SweepHit, sweep};
+
+#[cfg(feature = "world")]
+pub use broadphase::Broadphase;
+#[cfg(feature = "world")]
+pub use clear::{ClearEnd, ClearReport};
+#[cfg(feature = "world")]
+pub use query::{Counts, Exclude, Hit};
+#[cfg(feature = "world")]
+pub use slide::{SlideEnd, SlideHit, SlideReport};
+#[cfg(feature = "world")]
 pub use world::{BodyKind, Collider, HandleState, Incarnation, ShapeIndex, World};
