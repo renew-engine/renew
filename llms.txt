@@ -21,39 +21,40 @@ open at https://github.com/renew-engine/renew.
 - Graphics: Vulkan through the `ash` crate, behind an internal RHI whose public API names
   no Vulkan type. MoltenVK on macOS.
 - Windowing: `winit`, behind a default-on feature on the platform crate.
-- Structure: 26 engine crates, 5 of them core; every non-core crate is removable, and CI
+- Structure: 27 engine crates, 5 of them core; every non-core crate is removable, and CI
   builds and tests one configuration per removed crate to prove it.
 - Determinism scope: simulation code only. Presentation-side crates (cameras, particle
   rendering, UI rendering) interpolate at display rate and are outside the digest.
 
 ## Crates
 
-- renew-diag — log records, severity levels, and the sink interface (internal, core)
-- renew-event — the event vocabulary as plain data, no dependencies (internal, core)
-- renew-math — Vec2/3/4, Mat4, Quat, Aabb3 with documented layout (internal, core)
-- renew-memory — LinearArena, generation-checked Pool<T>, counting global allocator (internal, core)
-- renew-platform — the engine's only doorway to the OS: clock, files, threads, window (internal, core)
-- renew-fixed — Q47.16 fixed-point arithmetic for reproducible simulation
-- renew-frame — the fixed-timestep accumulator over integer nanoseconds
-- renew-ecs — sparse-set component storage with a defined iteration order
-- renew-jobs — a fixed-size worker pool with deterministic-chunk parallel_for
-- renew-rng — PCG32 with derived per-domain streams
-- renew-input — input state and action mapping over the event vocabulary
-- renew-replay — record a run to an input trace, replay it, compare digests
-- renew-trace — the input-trace codec and simulation digests
-- renew-physics2d — bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, slide resolution
-- renew-physics3d — the same surface in three dimensions, axis-aligned only
-- renew-rhi — the GPU doorway: Vulkan through ash behind an engine interface
-- renew-render2d — sprites from an atlas, one instanced draw
-- renew-render3d — indexed geometry, depth-tested, in submission order
-- renew-camera — look-at view, reversed-depth perspective, inter-tick blending
-- renew-snapshot — two captures of one slot space blended by the interpolation factor
-- renew-particles — a fixed-capacity particle pool stepped at the simulation cadence
-- renew-ui — a retained widget tree solved in fixed point inside the simulation
-- renew-ui-render — retained snapshots blended at display rate, emitted as sprites
-- renew-audio — a fixed-voice mixer and WAV reader behind the platform's device seam
-- renew-asset — content-addressed asset packs, every entry verifiable against its digest
-- renew-png — PNG encoding with no dependencies
+- renew-diag: log records, severity levels, and the sink interface (internal, core)
+- renew-event: the event vocabulary as plain data, no dependencies (internal, core)
+- renew-math: Vec2/3/4, Mat4, Quat, Aabb3 with documented layout (internal, core)
+- renew-memory: LinearArena, generation-checked Pool<T>, counting global allocator (internal, core)
+- renew-platform: the engine's only doorway to the OS: clock, files, threads, window (internal, core)
+- renew-fixed: Q47.16 fixed-point arithmetic for reproducible simulation
+- renew-frame: the fixed-timestep accumulator over integer nanoseconds
+- renew-ecs: sparse-set component storage with a defined iteration order
+- renew-jobs: a fixed-size worker pool with deterministic-chunk parallel_for
+- renew-rng: PCG32 with derived per-domain streams
+- renew-input: input state and action mapping over the event vocabulary
+- renew-replay: record a run to an input trace, replay it, compare digests
+- renew-trace: the input-trace codec and simulation digests
+- renew-physics2d: bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, slide resolution
+- renew-physics3d: the same surface in three dimensions, axis-aligned only
+- renew-scene: local placements, parenting, and a propagation pass over entity storage
+- renew-rhi: the GPU doorway: Vulkan through ash behind an engine interface
+- renew-render2d: sprites from an atlas, one instanced draw
+- renew-render3d: indexed geometry, depth-tested, in submission order
+- renew-camera: look-at view, reversed-depth perspective, inter-tick blending
+- renew-snapshot: two captures of one slot space blended by the interpolation factor
+- renew-particles: a fixed-capacity particle pool stepped at the simulation cadence
+- renew-ui: a retained widget tree solved in fixed point inside the simulation
+- renew-ui-render: retained snapshots blended at display rate, emitted as sprites
+- renew-audio: a fixed-voice mixer and WAV reader behind the platform's device seam
+- renew-asset: content-addressed asset packs, every entry verifiable against its digest
+- renew-png: PNG encoding with no dependencies
 
 ## Command-line surface
 

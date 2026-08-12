@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>renew — a deterministic, code-first game engine in Rust</title>
-<meta name="description" content="renew is an open-source game engine in Rust: bit-deterministic fixed-timestep simulation in Q47.16 fixed point, Vulkan rendering through ash, and every capability driven from the command line. Apache-2.0, 26 modular crates, early development.">
+<title>renew, a deterministic code-first game engine in Rust</title>
+<meta name="description" content="renew is an open-source game engine in Rust: bit-deterministic fixed-timestep simulation in Q47.16 fixed point, Vulkan rendering through ash, and every capability driven from the command line. Apache-2.0, 27 modular crates, early development.">
 <link rel="canonical" href="https://renew-engine.github.io/renew/">
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 <meta name="author" content="renew-engine">
@@ -13,11 +13,11 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="renew">
 <meta property="og:url" content="https://renew-engine.github.io/renew/">
-<meta property="og:title" content="renew — a deterministic, code-first game engine in Rust">
+<meta property="og:title" content="renew, a deterministic code-first game engine in Rust">
 <meta property="og:description" content="Bit-deterministic fixed-timestep simulation, Vulkan rendering, and every capability operable from the command line. Open source under Apache-2.0.">
 <meta property="og:image" content="https://renew-engine.github.io/renew/renew-banner.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="renew — a deterministic, code-first game engine in Rust">
+<meta name="twitter:title" content="renew, a deterministic code-first game engine in Rust">
 <meta name="twitter:description" content="Bit-deterministic fixed-timestep simulation, Vulkan rendering, and every capability operable from the command line.">
 <meta name="twitter:image" content="https://renew-engine.github.io/renew/renew-banner.png">
 
@@ -48,63 +48,89 @@
 </script>
 
 <style>
+/* Palette taken from the brand assets, which are strictly monochrome.
+   No accent hue: structure comes from rules, weight and spacing. */
 :root{
-  --bg:#fbfaf8; --fg:#1a1917; --muted:#5e5b55; --rule:#e2ded6;
-  --card:#ffffff; --accent:#9a5b26; --code-bg:#f4f1eb; --shadow:0 1px 2px rgba(0,0,0,.05);
+  --bg:#ffffff; --surface:#fafafa; --ink:#0a0a0a; --muted:#6e6e6e;
+  --faint:#8c8c8c; --rule:#e0e0e0; --code-bg:#f5f5f5;
 }
 @media (prefers-color-scheme: dark){
-  :root{
-    --bg:#141311; --fg:#eceae5; --muted:#a09b91; --rule:#2c2a26;
-    --card:#1c1b18; --accent:#d99a5e; --code-bg:#1f1e1a; --shadow:none;
+  :root:not([data-theme="light"]){
+    --bg:#0a0a0a; --surface:#141414; --ink:#f5f5f5; --muted:#a0a0a0;
+    --faint:#8c8c8c; --rule:#262626; --code-bg:#161616;
   }
 }
+:root[data-theme="dark"]{
+  --bg:#0a0a0a; --surface:#141414; --ink:#f5f5f5; --muted:#a0a0a0;
+  --faint:#8c8c8c; --rule:#262626; --code-bg:#161616;
+}
+
 *{box-sizing:border-box}
 body{
-  margin:0; background:var(--bg); color:var(--fg);
+  margin:0; background:var(--bg); color:var(--ink);
   font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   -webkit-font-smoothing:antialiased;
 }
-.wrap{max-width:56rem;margin:0 auto;padding:0 1.25rem}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-code,pre{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
-code{background:var(--code-bg);padding:.12em .38em;border-radius:4px;font-size:.9em}
-pre{background:var(--code-bg);padding:1rem 1.15rem;border-radius:8px;overflow-x:auto;
-    border:1px solid var(--rule);font-size:.875rem;line-height:1.55}
+.wrap{max-width:54rem;margin:0 auto;padding:0 1.5rem}
+a{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+a:hover{color:var(--muted)}
+a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+code,pre,.mono,h2,h3,.label{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+code{background:var(--code-bg);padding:.12em .38em;border-radius:2px;font-size:.9em}
+pre{
+  background:var(--code-bg);padding:1.15rem 1.35rem;border-radius:2px;overflow-x:auto;
+  border:1px solid var(--rule);font-size:.8125rem;line-height:1.6;
+  margin:0 auto 1.5rem;text-align:left;max-width:36rem;
+}
 pre code{background:none;padding:0;font-size:1em}
 
-header{text-align:center;padding:4rem 0 2.5rem;border-bottom:1px solid var(--rule)}
-header img{max-width:100%;width:34rem;height:auto}
-.tagline{color:var(--muted);font-size:1.125rem;max-width:40rem;margin:1.5rem auto 0}
-.links{margin-top:1.75rem;display:flex;gap:.6rem;justify-content:center;flex-wrap:wrap}
-.links a{border:1px solid var(--rule);background:var(--card);padding:.45rem 1rem;
-         border-radius:999px;font-size:.875rem;color:var(--fg);box-shadow:var(--shadow)}
-.links a:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+/* ---------- header ---------- */
+header{text-align:center;padding:5rem 0;border-bottom:1px solid var(--rule)}
+header img{max-width:100%;width:32rem;height:auto}
+.tagline{color:var(--muted);font-size:1.0625rem;max-width:38rem;margin:2rem auto 0}
+.links{margin-top:2rem;display:flex;gap:1.5rem;justify-content:center;flex-wrap:wrap}
+.links a{font-size:.8125rem;font-family:ui-monospace,Menlo,Consolas,monospace;
+  text-transform:uppercase;letter-spacing:.1em;text-decoration:none;color:var(--muted)}
+.links a:hover{color:var(--ink);text-decoration:underline;text-underline-offset:4px}
 
-section{padding:3rem 0;border-bottom:1px solid var(--rule)}
-h2{font-size:1.5rem;margin:0 0 1rem;letter-spacing:-.01em}
-h3{font-size:1.05rem;margin:2rem 0 .5rem}
-p{margin:0 0 1rem}
+/* ---------- sections: equal padding above and below ---------- */
+section{padding:4rem 0;border-bottom:1px solid var(--rule);text-align:center}
+h2{font-size:.8125rem;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);
+   font-weight:500;margin:0 0 2rem}
+p{margin:0 auto 1.25rem;max-width:38rem}
 .lead{font-size:1.0625rem}
 .note{color:var(--muted);font-size:.9375rem}
+.status{border:1px solid var(--rule);background:var(--surface);padding:1.15rem 1.35rem;
+  max-width:38rem;margin:0 auto 2rem;border-radius:2px}
+.status p{margin:0;font-size:.9375rem}
 
-.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));margin-top:1.5rem}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:1.15rem;box-shadow:var(--shadow)}
-.card h3{margin:0 0 .4rem;font-size:1rem}
-.card p{margin:0;color:var(--muted);font-size:.9375rem}
+/* ---------- 2x2 grid, always even ---------- */
+.grid{display:grid;gap:1px;grid-template-columns:repeat(2,1fr);
+  background:var(--rule);border:1px solid var(--rule);margin:2rem auto 0;border-radius:2px}
+.card{background:var(--bg);padding:1.75rem 1.5rem;text-align:center}
+.card h3{margin:0 0 .6rem;font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink);font-weight:500}
+.card p{margin:0;color:var(--muted);font-size:.9375rem;max-width:none}
 
-.tablewrap{overflow-x:auto;margin-top:1.25rem}
-table{border-collapse:collapse;width:100%;font-size:.9375rem;min-width:34rem}
-th,td{text-align:left;padding:.55rem .75rem;border-bottom:1px solid var(--rule);vertical-align:top}
-th{font-weight:600;color:var(--muted);font-size:.8125rem;text-transform:uppercase;letter-spacing:.05em}
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto;margin:0 auto;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:.875rem;min-width:34rem;text-align:left}
+th,td{padding:.6rem .75rem;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:500;color:var(--faint);
+   font-size:.6875rem;text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--ink)}
 td:first-child{white-space:nowrap}
-.tag{font-size:.75rem;color:var(--muted);border:1px solid var(--rule);border-radius:4px;padding:.1rem .4rem}
+td:last-child,th:last-child{text-align:center;white-space:nowrap}
+.tag{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.6875rem;color:var(--muted)}
 
-.callout{border-left:3px solid var(--accent);background:var(--card);padding:1rem 1.15rem;
-         border-radius:0 8px 8px 0;margin:1.5rem 0}
-.callout p:last-child{margin:0}
+footer{padding:4rem 0;text-align:center;color:var(--muted);font-size:.875rem}
+footer a{color:var(--muted)}
 
-footer{padding:2.5rem 0 4rem;text-align:center;color:var(--muted);font-size:.875rem}
+@media (max-width:36rem){
+  .grid{grid-template-columns:1fr}
+  header{padding:3.5rem 0}
+  section{padding:3rem 0}
+}
 </style>
 </head>
 <body>
@@ -114,18 +140,17 @@ footer{padding:2.5rem 0 4rem;text-align:center;color:var(--muted);font-size:.875
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="renew-banner-wide.svg">
       <source media="(prefers-color-scheme: light)" srcset="renew-banner-wide-light.svg">
-      <img src="renew-banner-wide.svg" alt="renew — a game engine in Rust" width="820">
+      <img src="renew-banner-wide.svg" alt="renew, a game engine in Rust" width="820">
     </picture>
     <p class="tagline">
-      A game engine in Rust built for the long haul — and built to be <em>operated</em>,
-      not just used. The simulation core is deterministic by construction: same build,
-      same seed, same inputs, same result, bit for bit.
+      A game engine in Rust built for the long haul, and built to be operated rather than
+      merely used. The simulation core is deterministic by construction: same build, same
+      seed, same inputs, same result, bit for bit.
     </p>
     <nav class="links">
       <a href="https://github.com/renew-engine/renew">GitHub</a>
-      <a href="https://github.com/renew-engine/renew#quick-start">Quick start</a>
-      <a href="https://github.com/renew-engine/renew#modules">Modules</a>
       <a href="determinism.html">Determinism</a>
+      <a href="https://crates.io/search?q=renew-">Crates</a>
       <a href="https://github.com/renew-engine/renew/blob/main/CONTRIBUTING.md">Contributing</a>
       <a href="https://github.com/renew-engine/renew/blob/main/LICENSE">Apache-2.0</a>
     </nav>
@@ -140,32 +165,31 @@ footer{padding:2.5rem 0 4rem;text-align:center;color:var(--muted);font-size:.875
       with a command-line face and machine-readable output, so a person, a script, or an
       agent drives the engine through exactly the same surface.
     </p>
-
-    <div class="callout">
+    <div class="status">
       <p>
         <strong>Status: early development.</strong> Pre-0.1. APIs are unstable, modules are
         still moving through the maturity ladder, and this is not yet ready to build a game
         on. What is here is real, tested, and honest about what it is.
       </p>
     </div>
-
     <div class="grid">
       <div class="card">
         <h3>Deterministic simulation</h3>
         <p>Fixed timestep over integer nanoseconds, Q47.16 fixed point, no wall-clock reads,
            no unseeded randomness, no iteration-order-dependent state. Replay and lockstep
-           are a foundation, not a retrofit.</p>
+           are a foundation rather than a retrofit.</p>
       </div>
       <div class="card">
         <h3>Code-first, CLI-first</h3>
-        <p>Build, test, benchmark, asset work, running samples — all headless. Every command
+        <p>Build, test, benchmark, asset work, running samples, all headless. Every command
            takes <code>--json</code> and emits a schema-versioned document. A GUI, when it
            arrives, is a client of the same APIs.</p>
       </div>
       <div class="card">
         <h3>Modular to the core</h3>
-        <p>Twenty-six engine crates, five of them core. Everything else is optional and
-           removable behind an explicit interface — enforced by CI, not by good intentions.</p>
+        <p>Twenty-seven engine crates, five of them core. Everything else is optional and
+           removable behind an explicit interface, enforced by CI rather than by good
+           intentions.</p>
       </div>
       <div class="card">
         <h3>Measured, never assumed</h3>
@@ -181,7 +205,7 @@ footer{padding:2.5rem 0 4rem;text-align:center;color:var(--muted);font-size:.875
   <div class="wrap">
     <h2>Determinism you can check yourself</h2>
     <p>
-      <code>hello-engine</code> is the current proof of life — a fixed-timestep accumulator
+      <code>hello-engine</code> is the current proof of life. A fixed-timestep accumulator
       driven through 60 frames of deliberately uneven frame times, reading no clocks at all:
     </p>
 <pre><code>$ cargo run --bin hello-engine
@@ -192,14 +216,14 @@ time submitted: 1245000015 ns
 ticks executed: 74
 time pending: 11666657 ns</code></pre>
     <p class="note">
-      Run it twice. Run it on another machine, or another OS. Every byte is identical — that
-      is the property everything else in the engine is built to preserve.
+      Run it twice. Run it on another machine, or another OS. Every byte is identical, and
+      that is the property everything else in the engine is built to preserve.
     </p>
     <p>
       <a href="determinism.html">Making a simulation reproduce bit-for-bit on three platforms</a>
-      — what that property costs in practice: why the arithmetic is fixed point rather than
-      floating, why the frame loop cannot read a clock, and why a digest compared against a
-      committed constant proves nothing about a second machine.
+      sets out what that property costs in practice: why the arithmetic is fixed point
+      rather than floating, why the frame loop cannot read a clock, and why a digest
+      compared against a committed constant proves nothing about a second machine.
     </p>
   </div>
 </section>
@@ -229,28 +253,29 @@ cargo run --bin hello-engine</code></pre>
   <div class="wrap">
     <h2>Modules</h2>
     <p>
-      Every module is independently buildable, testable, and — outside the minimal core —
+      Every module is independently buildable, testable, and, outside the minimal core,
       removable. CI proves the last part on every commit, one crate at a time.
     </p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Crate</th><th>What it does</th><th>Maturity</th></tr></thead>
         <tbody>
-          <tr><td><code>renew-diag</code></td><td>Log records, severity levels, and the sink interface the engine reports through</td><td><span class="tag">internal · core</span></td></tr>
-          <tr><td><code>renew-event</code></td><td>The event vocabulary — key codes, pointer buttons, event shapes — as plain data</td><td><span class="tag">internal · core</span></td></tr>
-          <tr><td><code>renew-math</code></td><td><code>Vec2/3/4</code>, <code>Mat4</code>, <code>Quat</code>, <code>Aabb3</code> — documented layout, branchless kernels</td><td><span class="tag">internal · core</span></td></tr>
-          <tr><td><code>renew-memory</code></td><td><code>LinearArena</code>, a generation-checked <code>Pool&lt;T&gt;</code>, and a counting global allocator</td><td><span class="tag">internal · core</span></td></tr>
-          <tr><td><code>renew-platform</code></td><td>The engine's only doorway to the OS: clock, files, named threads, window</td><td><span class="tag">internal · core</span></td></tr>
-          <tr><td><code>renew-fixed</code></td><td>Q47.16 fixed-point arithmetic — the number type the simulation is written in</td><td><span class="tag">bootstrap</span></td></tr>
+          <tr><td><code>renew-diag</code></td><td>Log records, severity levels, and the sink interface the engine reports through</td><td><span class="tag">internal, core</span></td></tr>
+          <tr><td><code>renew-event</code></td><td>The event vocabulary (key codes, pointer buttons, event shapes) as plain data</td><td><span class="tag">internal, core</span></td></tr>
+          <tr><td><code>renew-math</code></td><td><code>Vec2/3/4</code>, <code>Mat4</code>, <code>Quat</code>, <code>Aabb3</code>, with documented layout and branchless kernels</td><td><span class="tag">internal, core</span></td></tr>
+          <tr><td><code>renew-memory</code></td><td><code>LinearArena</code>, a generation-checked <code>Pool&lt;T&gt;</code>, and a counting global allocator</td><td><span class="tag">internal, core</span></td></tr>
+          <tr><td><code>renew-platform</code></td><td>The engine's only doorway to the OS: clock, files, named threads, window</td><td><span class="tag">internal, core</span></td></tr>
+          <tr><td><code>renew-fixed</code></td><td>Q47.16 fixed-point arithmetic, the number type the simulation is written in</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-frame</code></td><td>The fixed-timestep loop: an accumulator over integer nanoseconds, clock passed in</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-ecs</code></td><td>Sparse-set storage with a defined iteration order</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-jobs</code></td><td>A fixed-size worker pool with a deterministic-chunk <code>parallel_for</code></td><td><span class="tag">bootstrap</span></td></tr>
-          <tr><td><code>renew-rng</code></td><td>Seeded, reproducible random numbers — PCG32 with derived per-domain streams</td><td><span class="tag">bootstrap</span></td></tr>
+          <tr><td><code>renew-rng</code></td><td>Seeded, reproducible random numbers: PCG32 with derived per-domain streams</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-input</code></td><td>Input state and mapping, over the event vocabulary</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-replay</code></td><td>Input traces as files: record a run, replay it, compare the digests</td><td><span class="tag">bootstrap</span></td></tr>
-          <tr><td><code>renew-trace</code></td><td>Simulation digests — the hash the cross-platform determinism lane compares</td><td><span class="tag">bootstrap</span></td></tr>
+          <tr><td><code>renew-trace</code></td><td>Simulation digests, the hash the cross-platform determinism lane compares</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-physics2d</code></td><td>Bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, slide resolution</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-physics3d</code></td><td>The same surface in three dimensions, axis-aligned only</td><td><span class="tag">bootstrap</span></td></tr>
+          <tr><td><code>renew-scene</code></td><td>Local placements, parenting, and a propagation pass composing them over entity storage</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-rhi</code></td><td>The GPU doorway: Vulkan through <code>ash</code>, behind an interface naming no Vulkan type</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-render2d</code></td><td>Sprites from an atlas, one instanced draw</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-render3d</code></td><td>Indexed geometry, depth-tested, in submission order</td><td><span class="tag">bootstrap</span></td></tr>
@@ -261,13 +286,14 @@ cargo run --bin hello-engine</code></pre>
           <tr><td><code>renew-ui-render</code></td><td>Retained snapshots blended at display rate, clipped on the CPU, emitted as sprites</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-audio</code></td><td>Mixing and playback, behind the platform's device seam</td><td><span class="tag">bootstrap</span></td></tr>
           <tr><td><code>renew-asset</code></td><td>Content-addressed asset packs, every entry verifiable against its digest</td><td><span class="tag">bootstrap</span></td></tr>
-          <tr><td><code>renew-png</code></td><td>PNG encoding with no dependencies — pixels in, the bytes of a file out</td><td><span class="tag">bootstrap</span></td></tr>
+          <tr><td><code>renew-png</code></td><td>PNG encoding with no dependencies: pixels in, the bytes of a file out</td><td><span class="tag">bootstrap</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">
-      Maturity runs <code>bootstrap</code> → <code>internal</code> → <code>stable</code>.
-      A module never claims a level it has not earned. Nothing here is <code>stable</code> yet.
+    <p class="note" style="margin-top:1.5rem">
+      Maturity runs <code>bootstrap</code>, then <code>internal</code>, then
+      <code>stable</code>. A module never claims a level it has not earned, and nothing
+      here is <code>stable</code> yet.
     </p>
   </div>
 </section>
@@ -284,9 +310,9 @@ cargo run --bin hello-engine</code></pre>
           <tr><td>Tests, debug and release</td><td><code>cargo test</code> across the three-platform matrix</td></tr>
           <tr><td>Line coverage</td><td>100% of every line not individually exempted, each exemption naming its lines and its reason</td></tr>
           <tr><td>No panicking shortcuts</td><td><code>unwrap</code>, <code>expect</code>, <code>panic</code>, <code>todo</code>, <code>dbg!</code> denied outside tests</td></tr>
-          <tr><td><code>unsafe</code> denied by default</td><td>Workspace-wide <code>unsafe_code = "deny"</code>; every opted-in block states the invariant that keeps it sound</td></tr>
+          <tr><td><code>unsafe</code> denied by default</td><td>Workspace-wide <code>unsafe_code = "deny"</code>, and every opted-in block states the invariant that keeps it sound</td></tr>
           <tr><td>Module graph is a DAG</td><td>Crate manifest and dependency-graph check (<code>renew check</code>)</td></tr>
-          <tr><td>Optional modules stay removable</td><td>Twenty-one configurations, each excluding one optional crate and its dependents, all built and tested</td></tr>
+          <tr><td>Optional modules stay removable</td><td>One configuration per optional crate, each excluding that crate and its dependents, all built and tested</td></tr>
           <tr><td>Licenses and advisories</td><td><code>cargo-deny</code>, over the full dependency tree</td></tr>
           <tr><td>Sanitizers and Miri</td><td>Scheduled nightly runs (ASan, TSan, Miri)</td></tr>
         </tbody>
@@ -301,7 +327,7 @@ cargo run --bin hello-engine</code></pre>
     <p>
       Every capability is headless, scriptable, and emits schema-versioned JSON beside its
       human-readable output, so nothing about the engine requires a person in front of a
-      screen. It does <em>not</em> mean the engine ships AI features — it means the
+      screen. It does <em>not</em> mean the engine ships AI features. It means the
       machine-operable surface is the primary one, and the GUI, when it arrives, will be a
       client of it like everything else.
     </p>
