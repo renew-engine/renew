@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" role="img" aria-label="renew">
+  <title>renew</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1B1B"/>
+      <stop offset="1" stop-color="#0A0A0A"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#tile)"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="15.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+  <g transform="translate(32,32) scale(0.78) translate(-32,-32)" fill="none" stroke="#F5F5F5"
+     stroke-width="7" stroke-linecap="butt" stroke-linejoin="round">
+    <path d="M10,44 L10,22 A12,12 0 0 1 22,10 L42,10 A12,12 0 0 1 54,22 L54,42 A12,12 0 0 1 42,54 L32,54 A8,8 0 0 1 24,46 L24,26"/>
+  </g>
+</svg>

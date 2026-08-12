@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://renew-engine.github.io/renew/sitemap.xml
