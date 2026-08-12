@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["input-trace", "replay", "deterministic", "codec", "gamedev"]
+categories = ["encoding", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The input-trace codec: a line-oriented text format for recorded input, a reader that refuses everything it does not understand, and a writer that is its exact inverse."

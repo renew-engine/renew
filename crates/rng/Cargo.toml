@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["rng", "pcg32", "deterministic", "random", "gamedev"]
+categories = ["algorithms", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Seeded, reproducible pseudo-random numbers for simulation: PCG32 with per-domain streams derived from one master seed, and bounded draws with no modulo bias."

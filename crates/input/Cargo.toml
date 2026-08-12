@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "input", "bindings", "deterministic", "engine"]
+categories = ["game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Maps physical keys and pointer buttons to caller-named actions, with press and release edges that live on the tick rather than on the event."
@@ -43,7 +46,7 @@ simulation = true
 # a filesystem, OS entropy and process spawning into the test graph. It
 # is a test-only edge and no engine code can reach it, but the claim
 # here is about normal dependencies, not the whole tree.
-renew-event = { path = "../core/event" }
+renew-event = { version = "0.1.0", path = "../core/event" }
 
 [dev-dependencies]
 proptest = "1.11"

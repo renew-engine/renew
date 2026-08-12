@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["logging", "diagnostics", "gamedev", "engine", "no-std"]
+categories = ["development-tools::debugging", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Log records, severity levels, and the sink interface the rest of the engine reports through."

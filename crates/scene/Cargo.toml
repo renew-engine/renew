@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "scene-graph", "transform", "ecs", "engine"]
+categories = ["game-development", "data-structures"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Local placements and parent links held as components, and the pass that composes them into world placements, resolving a parent before its children wherever the links form a forest and cutting each loop in exactly one place where they do not."
@@ -22,8 +25,8 @@ simulation = true
 # crate. One would make the GPU cell strip the hierarchy, so the
 # engine's own evidence would read "no parenting without a GPU".
 [dependencies]
-renew-ecs = { path = "../ecs" }
-renew-fixed = { path = "../fixed" }
+renew-ecs = { version = "0.1.0", path = "../ecs" }
+renew-fixed = { version = "0.1.0", path = "../fixed" }
 
 # The propagation is a relation over arbitrary trees, which is the
 # testing table's row for properties rather than examples. The counting

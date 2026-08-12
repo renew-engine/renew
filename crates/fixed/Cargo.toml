@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["fixed-point", "deterministic", "math", "gamedev", "no-std"]
+categories = ["mathematics", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The fixed-point number type simulation is written in: Q47.16 in an i64, with no float in any signature and no dependencies."

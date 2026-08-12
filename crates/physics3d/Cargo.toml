@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["physics", "collision", "3d", "deterministic", "gamedev"]
+categories = ["game-development", "simulation"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Bodies, shapes, filtering and collision queries in fixed-point 3D: the collider set, its lifecycle, and the orders that make contacts reproducible."
@@ -18,8 +21,8 @@ extension_points = []
 simulation = true
 
 [dependencies]
-renew-ecs = { path = "../ecs" }
-renew-fixed = { path = "../fixed" }
+renew-ecs = { version = "0.1.0", path = "../ecs" }
+renew-fixed = { version = "0.1.0", path = "../fixed" }
 
 [dev-dependencies]
 proptest = "1.11"

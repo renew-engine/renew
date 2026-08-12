@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["events", "gamedev", "engine", "input", "no-std"]
+categories = ["game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The event vocabulary — key codes, pointer buttons and event shapes — as dependency-free plain data."

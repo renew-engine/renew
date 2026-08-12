@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["platform", "windowing", "gamedev", "engine", "os"]
+categories = ["os", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, window, and audio-output seams."
@@ -34,7 +37,7 @@ audio-out = ["dep:cpal"]
 # Unconditional, not behind the `window` feature: a headless build still
 # needs to name a key, and the whole point of the extraction is that
 # taking the vocabulary does not mean taking a clock.
-renew-event = { path = "../event" }
+renew-event = { version = "0.1.0", path = "../event" }
 
 # Explicit feature selection: both Linux backends and the window-handle
 # interop. Wayland client-side decorations are deliberately OFF — the
@@ -63,7 +66,7 @@ cpal = { version = "=0.18.1", optional = true, default-features = false }
 # Not optional: the file sink in `diag.rs` is part of this crate's
 # always-available surface. The audio seam also uses it, which is why
 # this line used to be optional.
-renew-diag = { path = "../diag" }
+renew-diag = { version = "0.1.0", path = "../diag" }
 
 [lints]
 workspace = true

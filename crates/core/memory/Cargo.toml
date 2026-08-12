@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["allocator", "arena", "memory", "gamedev", "no-std"]
+categories = ["memory-management", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "The engine's allocation seam: explicit arena and pool allocators plus an instrumented global allocator for counting."

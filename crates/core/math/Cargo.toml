@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["math", "linear-algebra", "vector", "matrix", "gamedev"]
+categories = ["mathematics", "game-development"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Vector, matrix, quaternion, and bounding-box value types with documented memory layout, and the render interpolation factor."

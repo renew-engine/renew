@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["gamedev", "camera", "projection", "graphics", "engine"]
+categories = ["game-development", "rendering"]
+readme = "README.md"
+homepage.workspace = true
 
 [package.metadata.renew]
 purpose = "Presentation-side camera: view and projection matrices under the engine's clip conventions (y down, z reversed into [0, 1])."
@@ -19,7 +22,7 @@ simulation = false
 # rendering conventions, and the conventions are this crate's own
 # contract rather than a dependency's.
 [dependencies]
-renew-math = { path = "../core/math" }
+renew-math = { version = "0.1.0", path = "../core/math" }
 
 # The projection's monotonicity and range claims are properties over
 # arbitrary points, which is the testing table's row for mathematics.
