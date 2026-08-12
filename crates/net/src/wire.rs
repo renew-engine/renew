@@ -298,8 +298,17 @@ pub struct ByeBody {
 }
 
 /// What a validated datagram turned out to say.
+///
+/// **Deliberately exhaustive**, unlike the two refusal enums. It is in
+/// one-to-one correspondence with [`Kind`], which is a closed vocabulary
+/// by construction — and a consumer that cannot `match` it exhaustively
+/// is a consumer whose handling of a future kind fails silently. The
+/// crate's own round-trip oracle is exactly such a consumer: under
+/// `#[non_exhaustive]` it needed a wildcard arm, and that arm would have
+/// quietly stopped checking the day a fifth datagram appeared. Adding a
+/// variant is a breaking change and costs nothing while this crate is
+/// `bootstrap`; when it stops being `bootstrap`, that cost is the point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Body<'a> {
     Hello(HelloBody),
     Inputs(InputsBody<'a>),
