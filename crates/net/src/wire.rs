@@ -49,7 +49,12 @@ pub const BYE_BODY_BYTES: usize = 8;
 /// A `Chat` body's fixed part, before the text it carries.
 pub const CHAT_BODY_BYTES: usize = 12;
 /// A `Join` body.
-pub const JOIN_BODY_BYTES: usize = 16 + ENDPOINT_BYTES;
+///
+/// **No address.** A joiner does not tell the host where it is; the host
+/// reads that off the transport, which is the only version of the answer
+/// that is both true under NAT and impossible to forge from elsewhere.
+/// See [`JoinBody`] for what a self-reported one would have cost.
+pub const JOIN_BODY_BYTES: usize = 16;
 /// A `Roster` body's fixed part, before the endpoints it carries.
 pub const ROSTER_BODY_BYTES: usize = 32;
 /// A `Start` body.
@@ -118,7 +123,6 @@ const BYE_TICK_AT: usize = HEADER_BYTES;
 
 const JOIN_CONTENT_AT: usize = HEADER_BYTES;
 const JOIN_RULES_AT: usize = HEADER_BYTES + 8;
-const JOIN_ENDPOINT_AT: usize = HEADER_BYTES + 16;
 
 const ROSTER_SEAT_AT: usize = HEADER_BYTES;
 const ROSTER_COUNT_AT: usize = HEADER_BYTES + 1;
@@ -383,6 +387,17 @@ pub struct DigestBody {
 
 /// A departure.
 /// A joiner asking for a seat.
+///
+/// **It does not say where it is, and that omission is the point.** This
+/// body carried a self-reported endpoint for exactly one commit. Two
+/// things were wrong with it. Under NAT a joiner's idea of its own
+/// address is the one address that will not reach it, so the field was
+/// unusable in the case it existed for. And a host that believed it would
+/// send a 172-byte roster, repeatedly, to whatever endpoint a 50-byte
+/// datagram named — a reflector with a three-times amplification factor,
+/// aimed by anyone who can send one packet. The host reads the transport
+/// source instead: true under NAT, and unforgeable without owning the
+/// path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JoinBody {
     /// What content the joiner is running, checked at the door rather
@@ -390,8 +405,6 @@ pub struct JoinBody {
     /// named now is a better error at no extra cost.
     pub content: u64,
     pub rules: u64,
-    /// Where to reach this joiner. Opaque to this crate.
-    pub endpoint: [u8; ENDPOINT_BYTES],
 }
 
 /// The host's answer: a seat, the agreed parameters, and where everyone
@@ -1061,14 +1074,9 @@ fn read_chat(bytes: &[u8], len: usize) -> Result<ChatBody<'_>, WireError> {
 
 fn read_join(bytes: &[u8], len: usize) -> Result<JoinBody, WireError> {
     expect_exactly(Kind::Join, HEADER_BYTES + JOIN_BODY_BYTES, len)?;
-    let mut endpoint = [0u8; ENDPOINT_BYTES];
-    let slice =
-        region(bytes, JOIN_ENDPOINT_AT, ENDPOINT_BYTES).ok_or(WireError::TooShort { len })?;
-    endpoint.copy_from_slice(slice);
     Ok(JoinBody {
         content: u64_at(bytes, JOIN_CONTENT_AT).ok_or(WireError::TooShort { len })?,
         rules: u64_at(bytes, JOIN_RULES_AT).ok_or(WireError::TooShort { len })?,
-        endpoint,
     })
 }
 
@@ -1469,7 +1477,6 @@ pub fn write_join(
     cursor.header(Kind::Join, addressing);
     cursor.u64(body.content);
     cursor.u64(body.rules);
-    cursor.bytes(&body.endpoint);
     cursor.at
 }
 
