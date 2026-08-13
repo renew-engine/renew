@@ -1114,12 +1114,19 @@ type PinnedRun = (
 const GLIDE_FIELDS: &[&str] = &["schedule_hash", "state_hash"];
 const ONE_DIGEST: &[&str] = &["digest"];
 
-const PINNED_RUNS: [PinnedRun; 10] = [
+const PINNED_RUNS: [PinnedRun; 11] = [
     // The widget tree: a scripted menu session through the fixed-point
     // solver, the hit-tester, and the decision fold. Everything in it
     // is integer arithmetic, and this row is what turns that claim
     // into three targets agreeing rather than one target asserting.
     ("ui/menu-16", "renew-ui", &[], ONE_DIGEST),
+    // Four lockstep peers played against a scripted hostile link: loss,
+    // duplication, reordering, one-way blackouts and a silent peer. The
+    // digest folds the confirmed input stream and nothing else, so what
+    // three targets are being asked to agree about is that arrival was
+    // unobservable — not that their networks behaved the same, which
+    // they did not even within one process.
+    ("net/lockstep-4x600", "renew-net", &[], ONE_DIGEST),
     (
         "glide/seed-7-600",
         "renew-sample-glide",
