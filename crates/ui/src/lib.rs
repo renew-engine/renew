@@ -580,10 +580,8 @@ impl Ui {
                 .get(index)
                 .and_then(|slot| slot.owner)
                 .is_some_and(|owner| !self.is_live(owner));
-            if dead {
-                if let Some(slot) = self.fields.get_mut(index) {
-                    *slot = field::Field::EMPTY;
-                }
+            if let Some(slot) = self.fields.get_mut(index).filter(|_| dead) {
+                *slot = field::Field::EMPTY;
             }
         }
         let free = self
