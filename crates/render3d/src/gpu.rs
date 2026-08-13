@@ -213,20 +213,45 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
 /// what crosses the boundary is sixty-four bytes with a stated order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Camera {
-    bytes: [u8; 64],
+    bytes: [u8; 80],
 }
 
 impl Camera {
-    /// Pack four column vectors.
+    /// Pack four column vectors, fully lit.
+    ///
+    /// Light defaults to white, so a caller with nothing to say about it
+    /// gets exactly the picture it got before there was anything to say.
     #[must_use]
     pub fn from_columns(columns: [[f32; 4]; 4]) -> Self {
-        let mut bytes = [0u8; 64];
+        Self::lit(columns, [1.0; 3])
+    }
+
+    /// The same, under a light.
+    ///
+    /// **One multiplier for the whole draw, and deliberately not a light
+    /// source.** A position, a falloff and a direction are a lighting
+    /// model, and a lighting model is a decision about how a world looks
+    /// that belongs to whoever is drawing it. This is the smaller thing
+    /// underneath every version of that decision: how bright the scene
+    /// is. A day and night cycle needs exactly this and nothing more, and
+    /// so does going underground.
+    ///
+    /// Multiplied into the vertex colour, which the texture then
+    /// multiplies in turn — multiplications that compose in any order, so
+    /// no pipeline has to care which came first.
+    #[must_use]
+    pub fn lit(columns: [[f32; 4]; 4], light: [f32; 3]) -> Self {
+        let mut bytes = [0u8; 80];
         let mut at = 0;
         for column in columns {
             for value in column {
                 bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
                 at += 4;
             }
+        }
+        for value in [light[0], light[1], light[2], 1.0] {
+            bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+            at += 4;
         }
         Self { bytes }
     }
@@ -441,7 +466,7 @@ pub struct CameraRenderer {
 /// The camera's push-constant range: one column-major matrix, and the
 /// length [`Camera::bytes`] always is. Declared once so the two camera
 /// pipelines cannot drift apart.
-const CAMERA_PUSH_BYTES: u32 = 64;
+const CAMERA_PUSH_BYTES: u32 = 80;
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
@@ -800,7 +825,47 @@ mod tests {
         // The camera half is byte-identical to what the single-matrix
         // pack produces, so the two push blocks agree where they
         // overlap and a shader reading either finds the same bytes.
-        assert_eq!(&bytes[..64], Camera::from_columns(camera).bytes());
+        // The matrix half only: the camera block carries a light after
+        // its matrix and the shadow block carries a second matrix, so
+        // they agree for sixty-four bytes and diverge deliberately after.
+        assert_eq!(&bytes[..64], &Camera::from_columns(camera).bytes()[..64]);
+    }
+
+    /// **An unlit camera is a white one**, so every caller that has
+    /// nothing to say about light draws exactly what it drew before there
+    /// was anything to say — which is the whole reason the default is not
+    /// zero.
+    #[test]
+    fn a_camera_is_white_unless_told_otherwise() {
+        let columns = [[0.0; 4]; 4];
+        let plain = Camera::from_columns(columns);
+        assert_eq!(plain.bytes(), Camera::lit(columns, [1.0; 3]).bytes());
+
+        let light = |camera: &Camera| {
+            let bytes = camera.bytes();
+            [0usize, 1, 2, 3].map(|index| {
+                let at = 64 + index * 4;
+                f32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+            })
+        };
+        // Compared componentwise: these are exact powers of two written
+        // straight into the bytes, so they round-trip exactly — but a
+        // float array compared with `==` is a habit worth not having.
+        let close = |found: [f32; 4], wanted: [f32; 4]| {
+            found
+                .iter()
+                .zip(wanted)
+                .all(|(found, wanted)| (found - wanted).abs() < f32::EPSILON)
+        };
+        assert!(
+            close(light(&plain), [1.0; 4]),
+            "an unlit camera is not white"
+        );
+        // Alpha stays one: this scales a colour, it does not fade one.
+        assert!(close(
+            light(&Camera::lit(columns, [0.25, 0.5, 0.75])),
+            [0.25, 0.5, 0.75, 1.0]
+        ));
     }
 
     /// **The packing, driven with no GPU at all.** The crate claims the
@@ -820,7 +885,7 @@ mod tests {
         ];
         let camera = Camera::from_columns(columns);
         let bytes = camera.bytes();
-        assert_eq!(bytes.len(), 64, "four columns of four floats");
+        assert_eq!(bytes.len(), 80, "four columns of four floats, and a light");
         for (index, expected) in (1u8..=16).enumerate() {
             let at = index * 4;
             let found =

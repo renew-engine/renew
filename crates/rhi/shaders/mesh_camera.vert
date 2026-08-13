@@ -33,6 +33,15 @@
 
 layout(push_constant) uniform Camera {
     mat4 view_projection;
+    // How brightly the whole scene is lit, multiplied into every colour.
+    // White leaves a scene exactly as it was, which is what every caller
+    // that does not care about light passes.
+    //
+    // **Here rather than in the fragment stage.** It is one value for the
+    // whole draw, so applying it per vertex costs three multiplies per
+    // vertex instead of three per fragment, and the interpolation of a
+    // uniformly scaled colour is the uniformly scaled interpolation.
+    vec4 light;
 } camera;
 
 layout(location = 0) in vec3 vertex_position;
@@ -57,7 +66,7 @@ layout(location = 1) out float fragment_fade;
 
 void main() {
     gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
-    fragment_colour = vertex_colour;
+    fragment_colour = (vertex_colour) * camera.light;
     // The distance at which the fade is complete, in world units. A
     // little over the arena's diagonal, so its far corner is faint
     // rather than lost.
