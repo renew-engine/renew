@@ -567,6 +567,25 @@ impl Ui {
         if self.field_slot(node).is_some() {
             return Ok(());
         }
+        // Reclaim before refusing. A slot whose owner is no longer live
+        // belongs to nobody, and chasing every path that can end a
+        // node's life is a losing game: removing a parent ends its
+        // children too, and the next kind of removal will end them some
+        // third way. Asking the arena who is alive is the answer that
+        // cannot go stale — a review probe found exactly this, by
+        // removing a panel rather than the field inside it.
+        for index in 0..MAX_FIELDS {
+            let dead = self
+                .fields
+                .get(index)
+                .and_then(|slot| slot.owner)
+                .is_some_and(|owner| !self.is_live(owner));
+            if dead {
+                if let Some(slot) = self.fields.get_mut(index) {
+                    *slot = field::Field::EMPTY;
+                }
+            }
+        }
         let free = self
             .fields
             .iter()

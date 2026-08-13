@@ -366,3 +366,40 @@ fn a_stale_id_never_names_a_live_field() {
         "and the new tenant is not a field until it asks"
     );
 }
+
+#[test]
+fn removing_a_parent_releases_its_childrens_field_slots() {
+    // The direct release missed this and a review probe found it:
+    // removing a panel ends the field inside it, and the field's slot
+    // has to go back too. Chasing every path that can end a node's life
+    // is a losing game — removing a parent is one, and the next kind of
+    // removal will be another — so the pool reclaims by asking the arena
+    // who is still alive.
+    let mut ui = tree(64);
+    let root = ui.root();
+    for round in 0..MAX_FIELDS * 3 {
+        let panel = ui.insert(root).expect("room");
+        let inner = ui.insert(panel).expect("room");
+        ui.make_field(inner)
+            .unwrap_or_else(|_| panic!("the pool leaked through a parent by round {round}"));
+        assert!(
+            ui.remove(panel),
+            "the panel must go away, and the field with it"
+        );
+    }
+}
+
+#[test]
+fn a_field_whose_parent_went_away_is_not_readable() {
+    let mut ui = tree(16);
+    let root = ui.root();
+    let panel = ui.insert(root).expect("room");
+    let inner = ui.insert(panel).expect("room");
+    ui.make_field(inner).expect("slot");
+    assert!(ui.remove(panel));
+    assert_eq!(
+        ui.field_text(inner),
+        None,
+        "a field inside a removed panel must not still answer"
+    );
+}
