@@ -503,30 +503,59 @@ fn the_pool_costs_what_the_documentation_says() {
 }
 
 #[test]
-fn a_new_field_never_inherits_a_dead_ones_text() {
-    // The slot is cleared when it is claimed, and a review found that
-    // deleting the clear left every test green. It is load-bearing now
-    // rather than belt-and-braces: the pool reclaims dead slots lazily,
-    // so a slot handed out fresh may be one somebody else typed into.
-    let mut ui = tree(16);
+fn a_reclaimed_slot_arrives_empty() {
+    // **This must reach the reclaim path, and the first version did
+    // not.** It removed the field's own node, which used to clear the
+    // slot eagerly, so the reclaim's dead-owner branch never fired and
+    // weakening that branch left the test green — vacuous, in the file
+    // added to close a vacuous-test finding.
+    //
+    // Removing an *ancestor* is what leaves a slot owned by a dead node
+    // for the reclaim to find, so that is what this does.
+    let mut ui = tree(64);
     let root = ui.root();
-    let first = focused_field(&mut ui);
+    let panel = ui.insert(root).expect("room");
+    let inner = ui.insert(panel).expect("room");
+    ui.make_field(inner).expect("slot");
+    // Focus it and type, so the slot holds bytes worth inheriting.
+    ui.set_style(
+        inner,
+        Style {
+            width: Size::Px(Fixed::from_int(40)),
+            height: Size::Px(Fixed::from_int(20)),
+            ..Style::default()
+        },
+    );
+    ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+    let rect = ui.rect(inner).expect("a box");
+    let x = i32::try_from(rect.x.trunc_int() + 1).unwrap_or(0);
+    let y = i32::try_from(rect.y.trunc_int() + 1).unwrap_or(0);
+    ui.handle(UiEvent::PointerMoved { x, y });
+    ui.handle(UiEvent::PointerPressed);
+    ui.handle(UiEvent::PointerReleased);
+    let _ = ui.drain_outputs().count();
     ui.handle(UiEvent::TextEntered { ch: u32::from('s') });
     ui.handle(UiEvent::TextEntered { ch: u32::from('e') });
-    assert_eq!(ui.field_text(first), Some(&b"se"[..]));
-    assert!(ui.remove(first));
+    assert_eq!(
+        ui.field_text(inner),
+        Some(&b"se"[..]),
+        "the fixture must type"
+    );
 
-    // Exhaust the pool so the reclaim path hands back the dead slot
-    // rather than an untouched one.
-    for _ in 0..MAX_FIELDS {
+    // The ancestor goes, taking the field's node with it and leaving the
+    // slot owned by something no longer alive.
+    assert!(ui.remove(panel));
+
+    // Every slot the pool hands out from here must be empty, and the
+    // first of them is the reclaimed one.
+    for round in 0..MAX_FIELDS {
         let node = ui.insert(root).expect("room");
-        if ui.make_field(node).is_err() {
-            break;
-        }
+        ui.make_field(node)
+            .unwrap_or_else(|_| panic!("the pool leaked by round {round}"));
         assert_eq!(
             ui.field_text(node),
             Some(&[][..]),
-            "a field arrived holding somebody else's typing"
+            "round {round} inherited a dead field's typing"
         );
     }
 }
@@ -597,4 +626,27 @@ fn a_control_character_and_an_edit_key_never_fold_alike() {
         edited.absorb(StateHash::new()).finish(),
         "a typed control character and an edit key shared a fingerprint"
     );
+}
+
+#[test]
+fn a_stale_node_cannot_become_a_field() {
+    // The `# Errors` contract of a new public API, which nothing checked
+    // — deleting the liveness guard entirely left every test green, and
+    // the arm was uncovered besides. A caller holding an id across a
+    // rebuild is the ordinary way to reach this.
+    let mut ui = tree(32);
+    let root = ui.root();
+    let node = ui.insert(root).expect("room");
+    assert!(ui.remove(node));
+    assert_eq!(
+        ui.make_field(node),
+        Err(UiRefused::MissingParent),
+        "a removed node must not be able to claim a slot"
+    );
+    // And it claimed nothing on the way out: the pool is untouched, so a
+    // refusal cannot leak a slot.
+    for _ in 0..MAX_FIELDS {
+        let live = ui.insert(root).expect("room");
+        ui.make_field(live).expect("every slot is still free");
+    }
 }

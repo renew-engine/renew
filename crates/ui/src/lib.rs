@@ -341,9 +341,15 @@ impl Ui {
         if index == 0 {
             return false;
         }
-        if let Some(slot) = self.field_slot(node).and_then(|at| self.fields.get_mut(at)) {
-            *slot = field::Field::EMPTY;
-        }
+        // No field release here, and that is the second time this
+        // branch reached the same conclusion. The reclaim in
+        // `make_field` covers every freed slot by asking the arena who
+        // is live, and `field_slot` refuses a stale id before it looks —
+        // so a release on this path is a line no test can distinguish,
+        // which is the definition of dead. It was written first and its
+        // comment claimed the pool leaked without it; deleting it leaves
+        // every test green, because the claim stopped being true when
+        // the reclaim landed.
         // The field slot goes back to the pool with the node. Without
         // this the pool leaks — a form torn down and rebuilt eight times
         // refuses the ninth field while no live node holds any of them —

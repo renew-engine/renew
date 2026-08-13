@@ -48,10 +48,6 @@ fn main() {
     );
 }
 
-/// The scripted session: build the menu, solve it, walk the script,
-/// folding the tree's digest after every event and the solved
-/// geometry after every solve. `None` only if the tree refuses its
-/// own construction, which the limits above make impossible.
 /// The typed half of the scenario, lifted out so `run` stays inside the
 /// line limit the canonical lint enforces.
 ///
@@ -96,6 +92,14 @@ const TYPING: [UiEvent; 10] = [
     },
 ];
 
+/// The scripted session: build the menu, solve it, walk the script,
+/// folding the tree's digest after every event and the solved geometry
+/// after every solve, then hand the typed half to [`type_into`].
+///
+/// `None` if the tree refuses its own construction, which the limits
+/// below make impossible, or if the field pool refuses a slot — which
+/// would silently empty the only part of this scenario that exercises
+/// text, so it ends the run rather than shrinking it.
 fn run() -> Option<(u64, usize, u64)> {
     let mut ui = Ui::new(UiLimits { nodes: 16 });
     let root = ui.root();
