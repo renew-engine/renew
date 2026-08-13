@@ -54,8 +54,22 @@ fn a_message_crosses_and_arrives_once() {
     let mut there = ChatChannel::new(&params(1));
 
     here.send(b"ready when you are").expect("a legal message");
+    {
+        // One remote, so this pump holds exactly one datagram — and the
+        // caller is told which seat it is addressed to.
+        let mut out = [0u8; MAX_DATAGRAM_BYTES];
+        let addressed = here
+            .next_outbound(&mut out)
+            .expect("a queued message must be emitted");
+        assert_eq!(addressed.peer(), seat(1));
+        assert!(
+            here.next_outbound(&mut out).is_none(),
+            "one remote means one datagram per pump"
+        );
+    }
+    // The following pumps carry the repeats.
     let datagrams = drain(&mut here);
-    assert!(!datagrams.is_empty(), "a queued message must be emitted");
+    assert!(!datagrams.is_empty(), "the repeats follow");
 
     // Every repeat is delivered. Exactly one message must come out.
     for bytes in &datagrams {
@@ -243,4 +257,175 @@ fn the_session_refuses_chat_and_a_flood_of_it_changes_nothing() {
         "chat must not confirm a tick"
     );
     assert_eq!(session.outcome(), None, "chat must not end a session");
+}
+
+// ---- the duplicate window, which is where reordering lives ----
+
+/// Deliver one message from seat 0, at a chosen sequence number.
+#[allow(
+    clippy::expect_used,
+    reason = "see `params`: the fixture's own failure is the report"
+)]
+fn deliver_at(there: &mut ChatChannel, sequence: u64, text: &[u8]) -> Result<(), ChatRefusal> {
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let addressing = wire::Addressing {
+        sender: seat(0),
+        session: NonZeroU64::new(SESSION).expect("not zero"),
+    };
+    let len = wire::write_chat(&mut out, addressing, sequence, text).expect("a legal message");
+    there.deliver(seat(0), out.get(..len).unwrap_or_default())
+}
+
+#[test]
+fn messages_that_arrive_out_of_order_all_arrive() {
+    let mut there = ChatChannel::new(&params(1));
+    // 5 first, then the ones it overtook. All are new, none is a repeat.
+    for sequence in [5u64, 1, 3, 0, 4, 2] {
+        deliver_at(&mut there, sequence, b"x").unwrap_or_else(|error| {
+            panic!("sequence {sequence} was refused as {error:?}");
+        });
+    }
+    assert_eq!(there.waiting(), 6, "every distinct message must arrive");
+    assert_eq!(there.stats().duplicates, 0);
+}
+
+#[test]
+fn a_repeat_is_refused_whether_it_is_the_newest_or_an_older_one() {
+    let mut there = ChatChannel::new(&params(1));
+    deliver_at(&mut there, 7, b"x").expect("the first");
+    deliver_at(&mut there, 3, b"x").expect("an earlier one, still new");
+
+    // The high-water mark itself.
+    assert!(matches!(
+        deliver_at(&mut there, 7, b"x"),
+        Err(ChatRefusal::AlreadySeen { sequence: 7, .. })
+    ));
+    // And one inside the window that was already filled in.
+    assert!(matches!(
+        deliver_at(&mut there, 3, b"x"),
+        Err(ChatRefusal::AlreadySeen { sequence: 3, .. })
+    ));
+    assert_eq!(there.stats().duplicates, 2);
+}
+
+#[test]
+fn a_message_older_than_the_window_is_refused_rather_than_delivered_twice() {
+    let mut there = ChatChannel::new(&params(1));
+    deliver_at(&mut there, 1_000, b"x").expect("the first");
+    // Further back than the sixty-four the filter remembers. Refusing is
+    // the safe answer: delivering it might be a duplicate, and this
+    // channel would rather drop a very old message than repeat one.
+    assert!(matches!(
+        deliver_at(&mut there, 1, b"x"),
+        Err(ChatRefusal::AlreadySeen { sequence: 1, .. })
+    ));
+}
+
+#[test]
+fn a_jump_past_the_window_clears_it_rather_than_shifting_nonsense() {
+    let mut there = ChatChannel::new(&params(1));
+    deliver_at(&mut there, 0, b"x").expect("the first");
+    deliver_at(&mut there, 1, b"x").expect("the second");
+    // A jump of more than sixty-four: everything below is forgotten in
+    // one move rather than shifted out a bit at a time.
+    deliver_at(&mut there, 500, b"x").expect("a long jump");
+    assert!(matches!(
+        deliver_at(&mut there, 500, b"x"),
+        Err(ChatRefusal::AlreadySeen { .. })
+    ));
+    // And the window around the new high water still works.
+    deliver_at(&mut there, 499, b"x").expect("inside the new window");
+    assert!(matches!(
+        deliver_at(&mut there, 499, b"x"),
+        Err(ChatRefusal::AlreadySeen { .. })
+    ));
+}
+
+#[test]
+fn each_sender_has_its_own_sequence_space() {
+    // Three seats, so two remotes can both use sequence zero.
+    let params = SessionParams {
+        peer_count: 3,
+        local: seat(2),
+        input_bytes: 1,
+        input_delay: 1,
+        digest_period: 4,
+        seed: 5,
+        content: 1,
+        rules: 2,
+        session: NonZeroU64::new(SESSION).expect("not zero"),
+    }
+    .validate()
+    .expect("valid");
+    let mut there = ChatChannel::new(&params);
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+
+    for from in [0u8, 1] {
+        let addressing = wire::Addressing {
+            sender: seat(from),
+            session: NonZeroU64::new(SESSION).expect("not zero"),
+        };
+        let len = wire::write_chat(&mut out, addressing, 0, b"hi").expect("legal");
+        there
+            .deliver(seat(from), out.get(..len).unwrap_or_default())
+            .unwrap_or_else(|error| panic!("seat {from} was refused as {error:?}"));
+    }
+    assert_eq!(
+        there.waiting(),
+        2,
+        "two senders' sequence zero are two different messages"
+    );
+}
+
+#[test]
+fn traffic_that_is_not_chat_is_refused_by_the_channel_too() {
+    // The mirror of the session refusing chat: each side refuses the
+    // other's traffic by name, so a misrouting driver is told rather than
+    // silently ignored.
+    let mut there = ChatChannel::new(&params(1));
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let len = wire::write_bye(
+        &mut out,
+        wire::Addressing {
+            sender: seat(0),
+            session: NonZeroU64::new(SESSION).expect("not zero"),
+        },
+        &wire::ByeBody { tick: 3 },
+    );
+    assert!(matches!(
+        there.deliver(seat(0), out.get(..len).unwrap_or_default()),
+        Err(ChatRefusal::NotChatTraffic {
+            kind: wire::Kind::Bye
+        })
+    ));
+    assert_eq!(there.stats().refused, 1);
+}
+
+#[test]
+fn malformed_bytes_are_refused_by_the_channel() {
+    let mut there = ChatChannel::new(&params(1));
+    assert!(matches!(
+        there.deliver(seat(0), b"nonsense"),
+        Err(ChatRefusal::Malformed(_))
+    ));
+}
+
+#[test]
+fn a_message_from_this_machine_arriving_from_the_network_is_refused() {
+    let mut there = ChatChannel::new(&params(1));
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let len = wire::write_chat(
+        &mut out,
+        wire::Addressing {
+            sender: seat(1),
+            session: NonZeroU64::new(SESSION).expect("not zero"),
+        },
+        0,
+        b"echo",
+    )
+    .expect("legal");
+    assert!(matches!(
+        there.deliver(seat(1), out.get(..len).unwrap_or_default()),
+        Err(ChatRefusal::NotAPeer { .. })
+    ));
 }
