@@ -542,6 +542,19 @@ impl Session {
             Body::Chat(_) => self.refuse(Refusal::NotSessionTraffic {
                 kind: wire::Kind::Chat,
             }),
+            // The lobby's three kinds, refused for the same reason chat
+            // is: they belong to a phase that ends before tick zero
+            // exists. A session that absorbed one would be a session
+            // letting the host reach inside it.
+            Body::Join(_) => self.refuse(Refusal::NotSessionTraffic {
+                kind: wire::Kind::Join,
+            }),
+            Body::Roster(_) => self.refuse(Refusal::NotSessionTraffic {
+                kind: wire::Kind::Roster,
+            }),
+            Body::Start(_) => self.refuse(Refusal::NotSessionTraffic {
+                kind: wire::Kind::Start,
+            }),
             Body::Bye(body) => {
                 let outcome = Outcome::PeerLeft {
                     peer: sender,

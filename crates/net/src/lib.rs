@@ -144,13 +144,26 @@ pub const DIGEST_HISTORY: u32 = 16;
 
 /// The largest datagram this protocol can produce, in bytes.
 ///
-/// Derived, not chosen: a header plus the widest body, which is an
-/// `Inputs` datagram at both of its ceilings. A unit test asserts the
-/// composition, so raising a ceiling cannot silently mint a datagram no
-/// path carries.
-pub const MAX_DATAGRAM_BYTES: usize = wire::HEADER_BYTES
-    + wire::INPUTS_BODY_BYTES
-    + (INPUT_REDUNDANCY as usize) * (MAX_INPUT_BYTES as usize);
+/// Derived, not chosen: a header plus **the widest body of any kind**,
+/// which is a full roster once the lobby exists and an `Inputs` run at
+/// both ceilings before it did. A unit test asserts the composition, so
+/// raising a ceiling cannot silently mint a datagram no path carries.
+pub const MAX_DATAGRAM_BYTES: usize = pick_larger(
+    wire::HEADER_BYTES
+        + wire::INPUTS_BODY_BYTES
+        + (INPUT_REDUNDANCY as usize) * (MAX_INPUT_BYTES as usize),
+    wire::HEADER_BYTES + wire::ROSTER_BODY_BYTES + (MAX_PEERS as usize) * wire::ENDPOINT_BYTES,
+);
+
+/// The larger of two sizes, in a const context.
+///
+/// Written out because `Ord::max` is not callable here, and because the
+/// ceiling above must be the widest body *of any kind* rather than of
+/// whichever one happened to be widest when it was written. A roster of
+/// eight overtook an inputs run the day the lobby landed.
+const fn pick_larger(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
+}
 
 /// The smallest maximum transmission unit this protocol assumes a path
 /// will carry, in bytes: the IPv6 minimum, less generous room for headers
@@ -181,20 +194,30 @@ const _: () = assert!(
 
 #[cfg(test)]
 mod tests {
-    use super::{INPUT_REDUNDANCY, MAX_DATAGRAM_BYTES, MAX_INPUT_BYTES, wire};
+    use super::{INPUT_REDUNDANCY, MAX_DATAGRAM_BYTES, MAX_INPUT_BYTES, MAX_PEERS, wire};
 
     #[test]
-    fn the_widest_datagram_is_the_sum_of_its_parts() {
-        let widest = wire::HEADER_BYTES
+    fn the_widest_datagram_is_the_widest_body_of_any_kind() {
+        let inputs = wire::HEADER_BYTES
             + wire::INPUTS_BODY_BYTES
             + usize::from(INPUT_REDUNDANCY) * usize::from(MAX_INPUT_BYTES);
+        let roster = wire::HEADER_BYTES
+            + wire::ROSTER_BODY_BYTES
+            + usize::from(MAX_PEERS) * wire::ENDPOINT_BYTES;
         assert_eq!(
-            MAX_DATAGRAM_BYTES, widest,
+            MAX_DATAGRAM_BYTES,
+            inputs.max(roster),
             "the ceiling and the composition it is derived from have parted"
         );
+        assert_eq!(inputs, 156, "an inputs run at both of its ceilings");
+        assert_eq!(roster, 192, "a full roster, which is the wider of the two");
         assert_eq!(
-            MAX_DATAGRAM_BYTES, 156,
+            MAX_DATAGRAM_BYTES, 192,
             "the number a reader can check by hand"
         );
+        // The point of deriving over every kind rather than naming one:
+        // the widest body changed hands when the lobby landed, and the
+        // ceiling followed without anyone editing a constant.
+        assert!(roster > inputs);
     }
 }

@@ -287,8 +287,8 @@ fn any_version_but_the_one_is_refused_including_zero() {
 
 #[test]
 fn an_unknown_kind_is_refused_rather_than_skipped() {
-    // 5 is `Chat` now; 6 is the first code past the vocabulary.
-    for code in [0u8, 6, u8::MAX] {
+    // The vocabulary now runs to 8; 9 is the first code past it.
+    for code in [0u8, 9, u8::MAX] {
         let (mut bytes, len) = a_hello();
         bytes[6] = code;
         assert_eq!(refusal(&bytes[..len]), WireError::UnknownKind { saw: code });
@@ -659,8 +659,14 @@ fn the_widest_legal_run_writes_exactly_the_ceiling() {
     )
     .expect("both ceilings, exactly");
     assert_eq!(
-        len, MAX_DATAGRAM_BYTES,
-        "the widest datagram is the ceiling, to the byte"
+        len,
+        HEADER_BYTES + 12 + usize::from(INPUT_REDUNDANCY) * usize::from(MAX_INPUT_BYTES),
+        "an inputs run at both ceilings is its own composition, to the byte"
+    );
+    assert!(
+        len < MAX_DATAGRAM_BYTES,
+        "an inputs run stopped being the widest kind when the lobby landed, and this test says so \
+         rather than quietly tracking whichever kind happens to be widest"
     );
     assert!(
         read(&out[..len]).is_ok(),
@@ -813,7 +819,7 @@ fn a_hand_built_datagram_writes_back_to_itself() {
     let hand_built: [u8; 40] = [
         // header, 16 bytes
         b'R', b'N', b'W', b'L',   // magic
-        0x02, 0x00,               // wire version 2, little-endian
+        0x03, 0x00,               // wire version 3, little-endian
         0x03,                     // kind 3 = Digest
         0x01,                     // sender: seat 1
         0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // session 0x0123456789abcdef
