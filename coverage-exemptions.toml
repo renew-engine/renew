@@ -136,27 +136,27 @@ reason = "The two places a window resize is acted on: rebuilding the crosshair f
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [501, 502]
+lines = [555, 556]
 reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [954]
+lines = [1046]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [535, 538]
+lines = [589, 592]
 reason = "The key arm of typed_characters: the only arm that reads text off an OS key event. winit's KeyEvent carries a pub(crate) platform_specific field, so it cannot be constructed outside that crate and this arm cannot be entered from a test - checked in the pinned source rather than assumed. What the arm decides is covered without it: committed is a free function driven directly with both press and release, printable is driven over the control range, and the synthetic-event filter is a pattern in the match rather than a branch of its own. Deliberately narrow: the `_ => None` arm below is NOT exempted, because every non-key event a test dispatches enters it."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [351, 352]
+lines = [398, 399]
 reason = "Delivering the characters an OS key event committed. Unreachable for the same root cause as 535 and 538 - the loop can only have a body to run when the arm above yields text, and that needs an unconstructible KeyEvent. Exactly two lines, and the narrowness is measured rather than asserted: the guard on 349 and the block's close on 353 are both entered by every dispatched event and are covered by a_modifier_change_is_remembered_until_the_next_one, which is why 353 was removed from this entry after the gate reported it covered. What is exempt here is the delivery, not the decision to deliver."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [429, 430, 431, 432, 433, 434, 435, 436, 437, 438]
+lines = [483, 484, 485, 486, 487, 488, 489, 490, 491, 492]
 reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run."
 
 [[exempt]]

@@ -51,6 +51,15 @@ impl Default for WindowConfig {
 pub use crate::event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
 
 /// What the app tells the loop each iteration.
+///
+/// **Readable as well as writable, and the read side is not for the
+/// loop.** The loop owns this type and could reach the fields directly.
+/// The accessors exist for a driver standing where the OS loop normally
+/// stands — a test, a replay, a headless run — which otherwise cannot
+/// see what the application asked for. Requests that nothing can observe
+/// are requests a caller can delete without any test noticing, because
+/// what a test can reach instead is the application's own copy of the
+/// state, which it set itself.
 #[derive(Debug, Default)]
 pub struct LoopControl {
     exit: bool,
@@ -86,6 +95,25 @@ impl LoopControl {
     /// confinement is one of the places the desktops differ.
     pub fn hold_cursor(&mut self, held: bool) {
         self.cursor = Some(held);
+    }
+
+    /// Whether [`exit`](Self::exit) was called this iteration.
+    #[must_use]
+    pub fn exiting(&self) -> bool {
+        self.exit
+    }
+
+    /// Whether [`request_redraw`](Self::request_redraw) was called this
+    /// iteration.
+    #[must_use]
+    pub fn redraw_requested(&self) -> bool {
+        self.redraw
+    }
+
+    /// What the app asked of the cursor this iteration, if anything.
+    #[must_use]
+    pub fn cursor_request(&self) -> Option<bool> {
+        self.cursor
     }
 }
 
@@ -933,6 +961,44 @@ mod tests {
         control.exit();
         control.request_redraw();
         assert!(control.exit && control.redraw);
+    }
+
+    /// The accessors report the fields the loop reads, and a silent
+    /// iteration is distinguishable from one that asked for something.
+    ///
+    /// **The cursor is three-valued and the other two are not.** Saying
+    /// nothing about the cursor leaves the grab alone, which is a
+    /// different instruction from asking for it to be released — so a
+    /// reader that collapsed `None` into `false` would turn every quiet
+    /// iteration into a release request.
+    #[test]
+    fn loop_control_reports_what_was_asked() {
+        let quiet = LoopControl::default();
+        assert!(!quiet.exiting());
+        assert!(!quiet.redraw_requested());
+        assert_eq!(
+            quiet.cursor_request(),
+            None,
+            "saying nothing about the cursor is not asking for it to be released"
+        );
+
+        let mut asked = LoopControl::default();
+        asked.exit();
+        asked.request_redraw();
+        asked.hold_cursor(true);
+        assert!(asked.exiting());
+        assert!(asked.redraw_requested());
+        assert_eq!(asked.cursor_request(), Some(true));
+
+        // A release is a request, and the last one in the iteration wins.
+        let mut released = LoopControl::default();
+        released.hold_cursor(true);
+        released.hold_cursor(false);
+        assert_eq!(released.cursor_request(), Some(false));
+        assert!(
+            !released.exiting(),
+            "a cursor request must not be read as an exit"
+        );
     }
 
     #[test]
