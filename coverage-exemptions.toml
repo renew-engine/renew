@@ -151,8 +151,8 @@ reason = "The key arm of typed_characters: the only arm that reads text off an O
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [351, 352, 353]
-reason = "Delivering the characters an OS key event committed. Unreachable for the same root cause as 535 and 538 - the loop can only have a body to run when the arm above yields text, and that needs an unconstructible KeyEvent. The decisions around it are covered and were deliberately left unexempted: the `if !self.commanding` guard on 349 is evaluated by every dispatched event, and the modifier state it reads is driven in both directions by a_modifier_change_is_remembered_until_the_next_one. So what is exempt here is the delivery, not the decision to deliver."
+lines = [351, 352]
+reason = "Delivering the characters an OS key event committed. Unreachable for the same root cause as 535 and 538 - the loop can only have a body to run when the arm above yields text, and that needs an unconstructible KeyEvent. Exactly two lines, and the narrowness is measured rather than asserted: the guard on 349 and the block's close on 353 are both entered by every dispatched event and are covered by a_modifier_change_is_remembered_until_the_next_one, which is why 353 was removed from this entry after the gate reported it covered. What is exempt here is the delivery, not the decision to deliver."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
