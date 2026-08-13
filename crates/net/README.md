@@ -61,7 +61,10 @@ dependencies and core status. This file does not restate them.
   bit of every byte of every kind and asserts that no mutation yields a
   second spelling of the same datagram.
 - **The reader is total** over every possible byte string. It allocates
-  nothing, panics on nothing, and holds no state.
+  nothing, panics on nothing, and holds no state. A fuzz target holds both
+  that and the re-encoding claim above as its oracle; the corpus it
+  produced is committed and replayed on every push, on the stable
+  toolchain, so the claim is gated rather than scheduled.
 - **A writer cannot mint what the reader would refuse** — the ceilings are
   enforced in argument types where they can be, and in a refusal where
   they cannot. `write_inputs` refuses rather than truncating, because a

@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [asset_pack, trace_parse, wav, ui_document, ui_text]
+        target: [asset_pack, trace_parse, wav, ui_document, ui_text, net_datagram]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
