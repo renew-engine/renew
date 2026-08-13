@@ -81,7 +81,7 @@ reason = "The unreachable arm behind the sample-before-write refusal: the assert
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [627, 628]
+lines = [652, 653]
 reason = "The depthless-adapter arm of the shadow map's refusal, which translates the rendering crate's DepthUnsupported into this crate's own variant rather than reporting it as a texture failure. Unreachable wherever a depth format exists, which is every measuring lane's adapter: the format is chosen at device bring-up from a void query no fault layer can mutate, and the layer's quirk list carries no depthless-adapter quirk either. The sibling arm (any other creation failure) is driven by the R10 fault scenario."
 
 [[exempt]]
