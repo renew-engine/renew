@@ -403,3 +403,88 @@ fn a_field_whose_parent_went_away_is_not_readable() {
         "a field inside a removed panel must not still answer"
     );
 }
+
+#[test]
+fn two_different_texts_never_share_a_fingerprint() {
+    // **The collision a review found, pinned.** The first fold rotated
+    // and added, which is affine in the token: `rot7(x + 1)` is
+    // `rot7(x) + 128`, so a token one larger and a later token 128
+    // smaller cancelled exactly. Typing "aÈ" and typing "bH" produced
+    // one digest — and a fingerprint two different texts share is worse
+    // than no fingerprint, because everything downstream trusts it.
+    use renew_frame::StateHash;
+    let digest_of = |text: &str| {
+        let mut ui = tree(4);
+        let _ = focused_field(&mut ui);
+        for ch in text.chars() {
+            ui.handle(UiEvent::TextEntered { ch: u32::from(ch) });
+        }
+        ui.absorb(StateHash::new()).finish()
+    };
+    assert_ne!(
+        digest_of("aÈ"),
+        digest_of("bH"),
+        "the exact pair the affine fold collided"
+    );
+    assert_ne!(
+        digest_of("ab"),
+        digest_of("ba"),
+        "order is part of the record"
+    );
+    assert_ne!(digest_of("a"), digest_of("b"), "so is what was typed");
+    assert_eq!(
+        digest_of("hello"),
+        digest_of("hello"),
+        "and it is a function"
+    );
+}
+
+#[test]
+fn one_keystroke_into_two_different_fields_is_two_histories() {
+    // **Both runs end focused on the same node**, which is the whole
+    // difficulty: `absorb` folds the focus too, so a naive comparison
+    // passes whether or not the edit fold knows which field was typed
+    // into. The first version of this test did exactly that and could
+    // not fail. Here the only difference is *where the keystroke went*.
+    use renew_frame::StateHash;
+    let digest_of = |into_second: bool| {
+        let mut ui = tree(8);
+        let first = focused_field(&mut ui);
+        let root = ui.root();
+        let second = ui.insert(root).expect("room");
+        ui.make_field(second).expect("slot");
+        ui.set_style(
+            second,
+            Style {
+                width: Size::Px(Fixed::from_int(40)),
+                height: Size::Px(Fixed::from_int(20)),
+                ..Style::default()
+            },
+        );
+        ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+        let click_second = |ui: &mut Ui| {
+            let rect = ui.rect(second).expect("a box");
+            let x = i32::try_from(rect.x.trunc_int() + 1).unwrap_or(0);
+            let y = i32::try_from(rect.y.trunc_int() + 1).unwrap_or(0);
+            ui.handle(UiEvent::PointerMoved { x, y });
+            ui.handle(UiEvent::PointerPressed);
+            ui.handle(UiEvent::PointerReleased);
+            let _ = ui.drain_outputs().count();
+        };
+        if into_second {
+            click_second(&mut ui);
+            ui.handle(UiEvent::TextEntered { ch: u32::from('a') });
+        } else {
+            assert_eq!(ui.focus(), Some(first));
+            ui.handle(UiEvent::TextEntered { ch: u32::from('a') });
+            click_second(&mut ui);
+        }
+        assert_eq!(ui.focus(), Some(second), "both runs must end alike");
+        ui.absorb(StateHash::new()).finish()
+    };
+    assert_ne!(
+        digest_of(false),
+        digest_of(true),
+        "the same keystroke into two different fields must be two histories"
+    );
+}

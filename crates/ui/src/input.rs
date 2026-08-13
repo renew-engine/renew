@@ -186,15 +186,25 @@ impl Ui {
             return;
         }
         self.interaction.edits = self.interaction.edits.saturating_add(1);
-        // The node is folded with the token so that the same keystroke
-        // into two different fields is two different histories.
-        let node = u64::from(focus.index());
-        self.interaction.edit_fold = self
-            .interaction
-            .edit_fold
-            .rotate_left(7)
-            .wrapping_add(node.wrapping_mul(0x9e37_79b9_7f4a_7c15))
-            .wrapping_add(token);
+        // Through `StateHash`, exactly as the decision fold two screens
+        // up does, and for a reason found the hard way: the first
+        // version rotated and added, which is **affine in the token**.
+        // `rot7(x + 1) == rot7(x) + 128`, so a token one larger and a
+        // later token 128 smaller cancel exactly — typing "aÈ" and
+        // typing "bH" produced one digest. A fingerprint that two
+        // different texts share is worse than none, because everything
+        // downstream trusts it.
+        //
+        // The node's generation goes in beside its index, so a slot
+        // reused by a later node is a different history, and the
+        // previous fold seeds the next so the sequence is the record
+        // rather than the count and the last entry.
+        self.interaction.edit_fold = StateHash::new()
+            .absorb_u64(self.interaction.edit_fold)
+            .absorb_u32(focus.index())
+            .absorb_u64(focus.generation())
+            .absorb_u64(token)
+            .finish();
     }
 
     /// The node under the pointer, against the rectangles of the last
