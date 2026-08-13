@@ -239,6 +239,7 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
         app,
         window: None,
         failure: None,
+        commanding: false,
         cursor_wanted: core::cell::Cell::new(false),
     };
     let run = event_loop.run_app(&mut adapter);
@@ -254,6 +255,18 @@ struct Adapter<'a> {
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
     failure: Option<String>,
+    /// Whether a command modifier is currently down.
+    ///
+    /// **Because a shortcut is not typing.** The windowing library
+    /// reports the *unmodified* text for a modified key — Ctrl+S arrives
+    /// with `text = Some("s")`, not with a control character — so
+    /// filtering control characters cannot tell a shortcut from a
+    /// keystroke. Without this, every shortcut in the application would
+    /// insert a letter into whatever field held focus.
+    ///
+    /// Shift is deliberately not a command modifier: it is how capitals
+    /// and most punctuation are typed.
+    commanding: bool,
     /// Whether the application asked for the cursor to be held.
     ///
     /// **The layer owns the grab's lifecycle, not the application.** A
@@ -323,8 +336,20 @@ impl Adapter<'_> {
         {
             self.apply_cursor_grab(*focused);
         }
+        if let winit::event::WindowEvent::ModifiersChanged(state) = event {
+            self.commanding = commanding(state.state());
+        }
         if let Some(translated) = translate_event(event) {
             self.app.event(translated);
+        }
+        // Text rides beside the key rather than replacing it: a press
+        // that commits a character is both, and a consumer may want
+        // either. Delivered after, so a driver that acts on the key
+        // sees it first.
+        if !self.commanding {
+            for ch in typed_characters(event) {
+                self.app.event(WindowEvent::TextEntered { ch });
+            }
         }
     }
 
@@ -494,6 +519,58 @@ fn translate_event(event: &winit::event::WindowEvent) -> Option<WindowEvent> {
     Some(translated)
 }
 
+/// The characters one OS event committed, if any.
+///
+/// Only a key event carries text, and only while going down. Two of the
+/// three platforms report nothing on release; the third re-derives it
+/// from the key, so acting on a release would type some characters
+/// twice and others wrongly.
+fn typed_characters(event: &winit::event::WindowEvent) -> impl Iterator<Item = u32> + '_ {
+    let typed = match event {
+        // **Synthetic events are not typing.** On focus gain the
+        // windowing library replays a press for every key physically
+        // held, text and all, so alt-tabbing back with a letter down
+        // would insert a character nobody struck.
+        winit::event::WindowEvent::KeyboardInput {
+            event,
+            is_synthetic: false,
+            ..
+        } => committed(event.text.as_deref(), event.state.is_pressed()),
+        _ => None,
+    };
+    typed.into_iter().flat_map(str::chars).filter_map(printable)
+}
+
+/// Is a command modifier down?
+///
+/// Control, alt and the platform key mean the keystroke is addressed to
+/// the application rather than to a field. Shift is not one of them —
+/// it is how capitals are typed.
+fn commanding(state: winit::keyboard::ModifiersState) -> bool {
+    state.control_key() || state.alt_key() || state.super_key()
+}
+
+/// The text a key event committed, if it committed any.
+///
+/// Split out from the event so it is driven by tests directly: the
+/// windowing library's key event has no public constructor, which is the
+/// same reason [`keyboard`] takes its fields loose.
+fn committed(text: Option<&str>, pressed: bool) -> Option<&str> {
+    if pressed { text } else { None }
+}
+
+/// A scalar worth calling text, as its code point.
+///
+/// **Control characters are dropped here rather than downstream.** The
+/// window system reports `\r` for Enter and `\u{8}` for Backspace, and a
+/// field that inserted either would hold bytes no reader can see. Those
+/// keys arrive as [`WindowEvent::Key`], which is where editing intent
+/// belongs. Everything outside the C0 range, `DEL` and the C1 range is
+/// text and is delivered.
+fn printable(ch: char) -> Option<u32> {
+    (!ch.is_control()).then(|| u32::from(ch))
+}
+
 /// A display's scale factor changed.
 fn scale_change(scale: f64) -> WindowEvent {
     WindowEvent::ScaleFactorChanged { scale }
@@ -523,6 +600,10 @@ fn translate_key(key: winit::keyboard::PhysicalKey) -> KeyCode {
             Wk::Space => KeyCode::Space,
             Wk::Enter => KeyCode::Enter,
             Wk::Tab => KeyCode::Tab,
+            Wk::Backspace => KeyCode::Backspace,
+            Wk::Delete => KeyCode::Delete,
+            Wk::Home => KeyCode::Home,
+            Wk::End => KeyCode::End,
             Wk::ArrowUp => KeyCode::ArrowUp,
             Wk::ArrowDown => KeyCode::ArrowDown,
             Wk::ArrowLeft => KeyCode::ArrowLeft,
@@ -569,6 +650,71 @@ fn translate_wheel(delta: winit::event::MouseScrollDelta) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Text is delivered; the keys that also report text are not.
+    ///
+    /// The window system reports `\r` for Enter and `\u{8}` for
+    /// Backspace. A field that inserted either would hold bytes no
+    /// reader can see, and those keys already arrive as key events.
+    #[test]
+    fn control_characters_are_not_text() {
+        // The edges of the exempted ranges, not only their middles: a
+        // filter tested on letters and control codes alone can move its
+        // boundaries freely. U+00A0 is one past the C1 range and is
+        // typable, AltGr+Space on several layouts.
+        for ch in ['a', 'Z', '9', ' ', '.', ':', 'é', '中', '🙂', '\u{a0}'] {
+            assert_eq!(
+                printable(ch),
+                Some(u32::from(ch)),
+                "{ch:?} is text and must be delivered"
+            );
+        }
+        for ch in [
+            '\r', '\n', '\t', '\u{8}', '\u{1b}', '\u{3}', '\u{7f}', '\u{9f}',
+        ] {
+            assert_eq!(
+                printable(ch),
+                None,
+                "{ch:?} is a control character and must not be text"
+            );
+        }
+    }
+
+    /// A release repeats the press's text, and must not type it twice.
+    #[test]
+    fn only_a_press_commits_text() {
+        assert_eq!(committed(Some("a"), true), Some("a"));
+        assert_eq!(
+            committed(Some("a"), false),
+            None,
+            "a release reports the text the press already delivered"
+        );
+        assert_eq!(committed(None, true), None, "a key with no text is a key");
+    }
+
+    /// **Shift is not a command modifier, and that asymmetry is the
+    /// whole point.** The windowing library reports the unmodified text
+    /// for a modified key, so Ctrl+S arrives carrying `"s"`; without
+    /// this distinction every shortcut in an application would type a
+    /// letter into whatever field held focus. Shift has to fall the
+    /// other way, because it is how capitals are typed.
+    #[test]
+    fn the_command_modifiers_are_named_and_shift_is_not_one() {
+        use winit::keyboard::ModifiersState as Ms;
+
+        for state in [Ms::CONTROL, Ms::ALT, Ms::SUPER] {
+            assert!(commanding(state), "{state:?} addresses the application");
+        }
+        assert!(!commanding(Ms::empty()), "no modifier is not a shortcut");
+        assert!(!commanding(Ms::SHIFT), "shift is how capitals are typed");
+        // Shift alongside one is still a shortcut: the test would pass on
+        // an implementation that checked shift last and lost the others.
+        assert!(
+            commanding(Ms::SHIFT | Ms::CONTROL),
+            "a shortcut does not stop being one because shift is held"
+        );
+    }
+
     use super::*;
 
     /// **Raw motion crosses as a delta, not a position.** The two are
@@ -623,6 +769,10 @@ mod tests {
             (Wk::Space, KeyCode::Space),
             (Wk::Enter, KeyCode::Enter),
             (Wk::Tab, KeyCode::Tab),
+            (Wk::Backspace, KeyCode::Backspace),
+            (Wk::Delete, KeyCode::Delete),
+            (Wk::Home, KeyCode::Home),
+            (Wk::End, KeyCode::End),
             (Wk::ArrowUp, KeyCode::ArrowUp),
             (Wk::ArrowDown, KeyCode::ArrowDown),
             (Wk::ArrowLeft, KeyCode::ArrowLeft),
@@ -825,6 +975,7 @@ mod tests {
             app,
             window: None,
             failure: None,
+            commanding: false,
             cursor_wanted: core::cell::Cell::new(false),
         }
     }
@@ -879,6 +1030,44 @@ mod tests {
             app.events,
             [WindowEvent::CloseRequested, WindowEvent::Focused(false)],
             "the untranslatable event must be dropped, and only it"
+        );
+    }
+
+    /// **A modifier is a state, not an event, so the seam has to hold
+    /// it.** The library reports a modifier change once and then reports
+    /// keys, so whether a later keystroke is typing or a shortcut is
+    /// only answerable from what was remembered in between. Dispatching
+    /// the change is what proves it lands somewhere durable — the arm
+    /// could compute the right answer and drop it.
+    ///
+    /// That a held modifier then suppresses text is not asserted here
+    /// and cannot be: it takes a key event, and the library's key event
+    /// has no public constructor.
+    #[test]
+    fn a_modifier_change_is_remembered_until_the_next_one() {
+        use winit::event::WindowEvent as We;
+        use winit::keyboard::ModifiersState as Ms;
+
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        assert!(!adapter.commanding, "the loop starts with nothing held");
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::CONTROL.into()));
+        assert!(adapter.commanding, "a control press must be remembered");
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::SHIFT.into()));
+        assert!(
+            !adapter.commanding,
+            "releasing control while holding shift returns to typing"
+        );
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::empty().into()));
+        assert!(!adapter.commanding, "releasing everything holds nothing");
+
+        assert!(
+            app.events.is_empty(),
+            "a modifier change is state, and reaches the application as no event of its own"
         );
     }
 

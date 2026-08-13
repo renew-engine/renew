@@ -124,6 +124,7 @@ e <tick> pointer <hex-f64> <hex-f64>
 e <tick> button <name|other:<u16>> <down|up>
 e <tick> wheel <hex-f32> <hex-f32>
 e <tick> focus <in|out>
+e <tick> text <u32>
 e <tick> resize <u32> <u32>
 e <tick> scale <hex-f64>
 e <tick> redraw

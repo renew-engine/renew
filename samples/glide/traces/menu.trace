@@ -1,4 +1,4 @@
-renew-trace 0 sample=glide ticks=600 timestep_ns=16666667 budget=5 seed=7
+renew-trace 1 sample=glide ticks=600 timestep_ns=16666667 budget=5 seed=7
 e 37 key space down
 e 38 key space up
 e 75 key space down

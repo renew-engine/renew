@@ -55,7 +55,7 @@ fn a_recorded_sequence_is_written_exactly_as_expected() {
         .finish(header().expect("a well-formed header"))
         .expect("a recordable sequence");
     let expected = concat!(
-        "renew-trace 0 sample=input_echo ticks=4 timestep_ns=16666667 budget=8\n",
+        "renew-trace 1 sample=input_echo ticks=4 timestep_ns=16666667 budget=8\n",
         "e 0 key key-d down\n",
         "e 2 resize 640 360\n",
         "e 2 button left down\n",
@@ -129,7 +129,7 @@ fn a_scripted_run_records_the_input_it_was_given() {
 
     let recorded = std::fs::read_to_string(&path).expect("the trace the run was asked for");
     let expected = concat!(
-        "renew-trace 0 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=3\n",
+        "renew-trace 1 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=3\n",
         "e 1 key arrow-right down\n",
         "e 1 pointer 0x4029000000000000 0x4041400000000000\n",
         "e 3 key arrow-down down\n",

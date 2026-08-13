@@ -99,6 +99,30 @@ pub enum WindowEvent {
         dy: f32,
     },
     Focused(bool),
+    /// One character the window system says was typed.
+    ///
+    /// **A character, not a key**, and a separate event rather than a
+    /// field on [`Self::Key`], because the two do not correspond. An
+    /// input method commits text with no key behind it; a dead key
+    /// produces a press with no text and then text on the next press; a
+    /// held key repeats text. Which key produced a character — and
+    /// whether shift, a layout or a composition was involved — is the
+    /// window system's answer, and deriving it from a key code is wrong
+    /// differently in every locale.
+    ///
+    /// **Control characters never arrive here.** Enter, Tab and
+    /// Backspace are keys; the window system reports text for them too,
+    /// and a field that inserted `\r` would hold bytes no reader can
+    /// see. Editing intent travels as a key and is mapped by the driver.
+    ///
+    /// A `u32` rather than a `char` because a recording read back from
+    /// disk has to be validated regardless, and the type that admits the
+    /// invalid value is the honest one to carry across a seam that
+    /// external data reaches.
+    TextEntered {
+        /// The Unicode scalar value typed.
+        ch: u32,
+    },
 }
 
 /// Physical keys, the subset current consumers need — grows additively.
@@ -115,6 +139,14 @@ pub enum KeyCode {
     Space,
     Enter,
     Tab,
+    /// Remove the character before the cursor.
+    Backspace,
+    /// Remove the character at the cursor.
+    Delete,
+    /// Go to the start of the line.
+    Home,
+    /// Go to the end of the line.
+    End,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
@@ -183,6 +215,7 @@ pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[
     },
     WindowEvent::Wheel { dx: 0.0, dy: 1.0 },
     WindowEvent::Focused(true),
+    WindowEvent::TextEntered { ch: 0x61 },
 ];
 
 /// Where a shape sits in [`EVERY_EVENT_SHAPE`].
@@ -213,6 +246,7 @@ pub const fn shape_index(event: &WindowEvent) -> usize {
         WindowEvent::PointerButton { .. } => 7,
         WindowEvent::Wheel { .. } => 8,
         WindowEvent::Focused(_) => 9,
+        WindowEvent::TextEntered { .. } => 10,
     }
 }
 

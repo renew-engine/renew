@@ -100,6 +100,11 @@ pub enum TraceErrorKind {
     NotADecimalInteger { field: &'static str, text: String },
     /// A number too large for the field it was written in.
     IntegerTooLarge { field: &'static str, text: String },
+    /// A character field holding something that is not typed text: a
+    /// surrogate, a code point past the last one, or a control
+    /// character. Distinct from a number that does not fit, because
+    /// every one of these fits a `u32` and none of them is text.
+    NotTypedText { field: &'static str, text: String },
     /// A float field that is not a fixed-width lowercase hexadecimal bit
     /// pattern.
     NotAHexPattern {
@@ -208,6 +213,11 @@ impl fmt::Display for TraceErrorKind {
             Self::IntegerTooLarge { field, text } => write!(
                 f,
                 "{field} does not fit its width, found `{text}`",
+                text = shown(text),
+            ),
+            Self::NotTypedText { field, text } => write!(
+                f,
+                "{field} is not typed text: `{text}` is a surrogate, past the last code point, or a control character",
                 text = shown(text),
             ),
             Self::NotAHexPattern {
@@ -471,7 +481,7 @@ mod tests {
                     TraceErrorKind::UnknownKey {
                         name: "meta".to_string(),
                     },
-                    "unknown key name `meta`; this reader knows escape, space, enter, tab, arrow-up, arrow-down, arrow-left, arrow-right, key-w, key-a, key-s, key-d, unidentified",
+                    "unknown key name `meta`; this reader knows escape, space, enter, tab, backspace, delete, home, end, arrow-up, arrow-down, arrow-left, arrow-right, key-w, key-a, key-s, key-d, unidentified",
                 ),
                 (
                     TraceErrorKind::UnknownButton {
