@@ -7,11 +7,11 @@
 //! into rather than what it promised.
 //!
 //! **This one is a security control as much as an allocation-discipline
-//! one.** Every byte the session absorbs can come from a hostile peer,
-//! so a per-datagram
-//! allocation is an allocation an attacker drives. The window therefore
-//! includes refused datagrams — a wrong session id every pump — because
-//! "nothing allocates on the happy path" is not the claim that matters.
+//! one.** Every byte the session absorbs can come from a hostile peer, so
+//! a per-datagram allocation is an allocation an attacker drives. The
+//! window therefore includes refused datagrams — a wrong session id every
+//! pump — because "nothing allocates on the happy path" is not the claim
+//! that matters.
 //!
 //! **The harness allocates nothing either, and that is not decoration.**
 //! An earlier version collected outbound datagrams with `to_vec()`, which
@@ -24,10 +24,22 @@
 //! learned from a red lane: the `#[global_allocator]` is process-wide and
 //! cargo runs a file's tests concurrently, so two counting tests in one
 //! binary race and the loser reports a delta it did not cause.
+//!
+//! **And the window retries, for the half of that hazard one test per
+//! file does not close.** A process-wide counter also sees the harness
+//! around the test, so a single window can report activity this code did
+//! not cause — which is what happened: an identical build of this binary
+//! counted four allocations on one CI run and zero on the next, from the
+//! same commit's tree. Retrying separates the two cases, because
+//! one-shot noise rides out while a real allocation on the measured path
+//! reproduces in every attempt and still fails. Every other
+//! allocation-counting gate in the tree already did this; this one was
+//! the exception, which is why this one was the one that flaked.
 
 use core::num::NonZeroU64;
 
-use renew_memory::{CountingAllocator, counters};
+use renew_memory::CountingAllocator;
+use renew_memory::counters::quiet_window;
 use renew_net::{Advance, MAX_DATAGRAM_BYTES, PeerId, Session, SessionParams, wire};
 
 #[global_allocator]
@@ -165,18 +177,20 @@ fn a_whole_pump_allocates_nothing() {
     );
     let warmed = confirmed;
 
-    let before = counters::snapshot();
-    for _ in 0..16 {
-        pump(
-            &mut peers,
-            &mut outbox,
-            &mut carried,
-            &mut lengths,
-            &stranger,
-            &mut confirmed,
-        );
-    }
-    let after = counters::snapshot();
+    quiet_window(5, || {
+        for _ in 0..16 {
+            pump(
+                &mut peers,
+                &mut outbox,
+                &mut carried,
+                &mut lengths,
+                &stranger,
+                &mut confirmed,
+            );
+        }
+    })
+    .expect("the steady state allocated: a per-datagram allocation is one a hostile peer drives");
+
     // Anti-vacuity, both halves: the window must have run ticks, and it
     // must have refused something. A gate over a window where nothing
     // happened is a gate that measures nothing and passes.
@@ -187,10 +201,5 @@ fn a_whole_pump_allocates_nothing() {
     assert!(
         peers[0].stats().datagrams_refused > 0,
         "no datagram was refused in the window, so the refusal path went unmeasured"
-    );
-    assert_eq!(
-        after.allocations.saturating_sub(before.allocations),
-        0,
-        "the steady state allocated: a per-datagram allocation is one a hostile peer drives"
     );
 }
