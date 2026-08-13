@@ -177,7 +177,7 @@ reason = "The narrowing conversion on a chat message's length in the writer, gua
 
 [[exempt]]
 file = "crates/net/src/chat.rs"
-lines = [244, 245, 246, 247, 324, 325, 326, 327]
+lines = [249, 250, 251, 252, 339, 340, 341, 342]
 reason = "The same narrowing on both sides of the channel. On the send side the caller's slice is measured against MAX_CHAT_BYTES immediately above; on the receive side the reader has already refused anything longer. Both are unreachable while that ceiling stays under 256, and both are written fallible for the reason above: a silently wrapped length is a reader pointed at the wrong bytes."
 
 [[exempt]]
