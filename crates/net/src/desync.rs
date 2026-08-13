@@ -98,7 +98,8 @@ impl DesyncReport {
         self.peer_state_digests.iter().any(Option::is_some)
     }
 
-    /// The machine-readable form (D11).
+    /// The machine-readable form, so a caller can parse a desync report
+    /// rather than format one itself.
     #[must_use]
     pub const fn json(&self) -> DesyncReportJson<'_> {
         DesyncReportJson(self)

@@ -26,9 +26,9 @@
 //! Best effort, the same shape as the input stream: **redundancy rather
 //! than retransmission.** A message is repeated for a few pumps and then
 //! forgotten, and the receiver drops duplicates. Nothing is acknowledged
-//! and nothing is guaranteed — a message can be lost, and the ADR records
-//! that as accepted. Chat that must not be lost is a different feature
-//! with a different cost.
+//! and nothing is guaranteed — a message can be lost, and that is
+//! accepted. Chat that must not be lost is a different feature with a
+//! different cost.
 
 use core::num::NonZeroU64;
 

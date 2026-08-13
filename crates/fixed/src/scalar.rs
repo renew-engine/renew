@@ -84,7 +84,7 @@ impl Fixed {
     /// # Panics
     ///
     /// If `denominator` is zero. A contract violation rather than a runtime
-    /// condition (D5): the arguments are almost always literals, so this
+    /// condition: the arguments are almost always literals, so this
     /// fails at the call site that wrote it, and in a `const` context it
     /// fails at compile time.
     #[must_use]
@@ -172,7 +172,7 @@ impl Fixed {
     ///
     /// # Panics
     ///
-    /// If `other` is zero. Division by zero is a contract violation (D5), and
+    /// If `other` is zero. Division by zero is a contract violation, and
     /// returning a sentinel would put a NaN-shaped value into a type whose
     /// whole contract is that it has none.
     #[must_use]

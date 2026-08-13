@@ -12,8 +12,11 @@
 # `std::net` is deliberately NOT banned here, and the omission is the
 # point. A definition-path ban is exactly one wrapper deep, which is the
 # evasion the graph rule exists to close — and the graph rule already
-# forbids this crate every path to the only crate ADR-0025 permits to
-# spell `std::net` at all. A ban here would read as the defence when it
+# forbids this crate every path to the only crate permitted to spell
+# `std::net` at all - a permission that is enforced rather than
+# asserted, by
+# `only_the_platform_socket_module_names_the_standard_network_types` in
+# `tools/cli/tests/workspace_lists.rs`. A ban here would read as the defence when it
 # would be the weaker half of one.
 
 allow-unwrap-in-tests = true
@@ -23,7 +26,7 @@ allow-panic-in-tests = true
 disallowed-methods = [
     { path = "std::time::Instant::now", reason = "a session reads no wall clock; every pacing decision belongs to the driver and arrives as an argument" },
     { path = "std::time::SystemTime::now", reason = "a session reads no wall clock; every pacing decision belongs to the driver and arrives as an argument" },
-    { path = "std::thread::spawn", reason = "simulation is single-threaded until an accepted decision record defines a deterministic parallel-scheduling contract, and this crate is not that record" },
+    { path = "std::thread::spawn", reason = "simulation is single-threaded, and stays that way until something defines a deterministic parallel-scheduling contract - a fixed partitioning and a fixed reduction order - which this crate does not" },
     { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
     { path = "std::fs::read", reason = "this crate never touches the filesystem: it takes bytes a caller already holds" },
     { path = "std::fs::read_to_string", reason = "an unbounded whole-file read of untrusted input belongs at the seam that can refuse an oversized file, which is not here" },

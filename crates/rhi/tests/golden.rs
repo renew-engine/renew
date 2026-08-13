@@ -217,7 +217,7 @@ fn clear_is_byte_exact_everywhere() {
 ///
 /// That was not visible before the working space went linear. The golden
 /// sat unchanged and green for twelve days; the encode is what made a
-/// pre-existing one-unit difference reach the output byte. See DEBT-0072.
+/// pre-existing one-unit difference reach the output byte.
 ///
 /// **What the tolerance still catches, which is why it is not a hole.** A
 /// real rendering change moves geometry, colour or coverage: it moves

@@ -356,8 +356,8 @@ impl Volume {
     /// write can ever make diverge, reported identical. 41 by 12 by 41 is
     /// the engine's own voxel sample, not a contrived size.
     ///
-    /// Named here rather than silently correct because I3 requires a
-    /// digest to say what it leaves out: it leaves out
+    /// Named here rather than silently correct, because a digest must
+    /// say what it leaves out: it leaves out
     /// [`Volume::generation`], which is bookkeeping and has its own test.
     #[must_use]
     pub fn digest(&self) -> u64 {

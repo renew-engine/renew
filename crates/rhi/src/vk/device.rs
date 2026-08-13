@@ -137,7 +137,7 @@ impl DeviceShared {
 
 impl Drop for DeviceShared {
     fn drop(&mut self) {
-        // Best-effort quiesce; failure is logged, never a panic (D5).
+        // Best-effort quiesce; failure is logged, never a panic.
         // SAFETY: the device handle is live (nothing destroys it before
         // this Drop) and externally synchronized (crate-wide !Send).
         let idle = unsafe { self.device.device_wait_idle() };

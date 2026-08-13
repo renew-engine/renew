@@ -7,9 +7,9 @@
 //!
 //! The associativity and distributivity properties are stated as **bounds**
 //! rather than as laws, and that is not a weakening of ambition. No rounded
-//! multiply satisfies them exactly, under any rounding rule — the design
-//! note's first draft promised the ring laws and could not have delivered
-//! them. A bound is the true statement.
+//! multiply satisfies them exactly, under any rounding rule. Stating them
+//! as laws would promise something no implementation here can keep; a
+//! bound is the true statement.
 
 use proptest::prelude::*;
 use renew_fixed::{Fixed, saturations};
