@@ -139,6 +139,14 @@ pub enum KeyCode {
     Space,
     Enter,
     Tab,
+    /// Remove the character before the cursor.
+    Backspace,
+    /// Remove the character at the cursor.
+    Delete,
+    /// Go to the start of the line.
+    Home,
+    /// Go to the end of the line.
+    End,
     ArrowUp,
     ArrowDown,
     ArrowLeft,

@@ -144,6 +144,14 @@ pub enum TraceKey {
     Space,
     Enter,
     Tab,
+    /// Remove the character before the cursor.
+    Backspace,
+    /// Remove the character at the cursor.
+    Delete,
+    /// Go to the start of the line.
+    Home,
+    /// Go to the end of the line.
+    End,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
@@ -170,6 +178,10 @@ impl TraceKey {
         Self::Space,
         Self::Enter,
         Self::Tab,
+        Self::Backspace,
+        Self::Delete,
+        Self::Home,
+        Self::End,
         Self::ArrowUp,
         Self::ArrowDown,
         Self::ArrowLeft,
@@ -191,6 +203,10 @@ impl TraceKey {
             Self::Space => "space",
             Self::Enter => "enter",
             Self::Tab => "tab",
+            Self::Backspace => "backspace",
+            Self::Delete => "delete",
+            Self::Home => "home",
+            Self::End => "end",
             Self::ArrowUp => "arrow-up",
             Self::ArrowDown => "arrow-down",
             Self::ArrowLeft => "arrow-left",
@@ -400,7 +416,7 @@ mod tests {
     /// emits, and this is what says so.
     #[test]
     fn every_key_has_a_unique_name_that_reads_back() {
-        assert_eq!(TraceKey::ALL.len(), 13);
+        assert_eq!(TraceKey::ALL.len(), 17);
         for key in TraceKey::ALL {
             assert_eq!(TraceKey::from_name(key.name()), Some(*key));
         }

@@ -481,7 +481,7 @@ mod tests {
                     TraceErrorKind::UnknownKey {
                         name: "meta".to_string(),
                     },
-                    "unknown key name `meta`; this reader knows escape, space, enter, tab, arrow-up, arrow-down, arrow-left, arrow-right, key-w, key-a, key-s, key-d, unidentified",
+                    "unknown key name `meta`; this reader knows escape, space, enter, tab, backspace, delete, home, end, arrow-up, arrow-down, arrow-left, arrow-right, key-w, key-a, key-s, key-d, unidentified",
                 ),
                 (
                     TraceErrorKind::UnknownButton {

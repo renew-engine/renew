@@ -54,6 +54,10 @@ const fn key_to_trace(code: KeyCode) -> TraceKey {
         KeyCode::Space => TraceKey::Space,
         KeyCode::Enter => TraceKey::Enter,
         KeyCode::Tab => TraceKey::Tab,
+        KeyCode::Backspace => TraceKey::Backspace,
+        KeyCode::Delete => TraceKey::Delete,
+        KeyCode::Home => TraceKey::Home,
+        KeyCode::End => TraceKey::End,
         KeyCode::ArrowUp => TraceKey::ArrowUp,
         KeyCode::ArrowDown => TraceKey::ArrowDown,
         KeyCode::ArrowLeft => TraceKey::ArrowLeft,
@@ -161,6 +165,10 @@ const fn key_from_trace(code: TraceKey) -> KeyCode {
         TraceKey::Space => KeyCode::Space,
         TraceKey::Enter => KeyCode::Enter,
         TraceKey::Tab => KeyCode::Tab,
+        TraceKey::Backspace => KeyCode::Backspace,
+        TraceKey::Delete => KeyCode::Delete,
+        TraceKey::Home => KeyCode::Home,
+        TraceKey::End => KeyCode::End,
         TraceKey::ArrowUp => KeyCode::ArrowUp,
         TraceKey::ArrowDown => KeyCode::ArrowDown,
         TraceKey::ArrowLeft => KeyCode::ArrowLeft,
@@ -335,11 +343,15 @@ mod tests {
             PointerButton::Other(9),
         ];
 
-        const KEYS: [KeyCode; 13] = [
+        const KEYS: [KeyCode; 17] = [
             KeyCode::Escape,
             KeyCode::Space,
             KeyCode::Enter,
             KeyCode::Tab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::End,
             KeyCode::ArrowUp,
             KeyCode::ArrowDown,
             KeyCode::ArrowLeft,
