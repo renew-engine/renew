@@ -594,6 +594,34 @@ jobs:
   # cannot test on any runner it has, and claiming otherwise by adding a
   # leg that compiles but never opens anything would be the emptier
   # kind of green.
+  networking:
+    name: Networking (the socket seam)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # All three, and Windows is the reason rather than a completeness
+      # habit. A UDP socket there reports a datagram that did not fit as
+      # an error, where the others silently truncate and report the
+      # clamped length; it also surfaces a prior send's ICMP
+      # port-unreachable on a later RECEIVE, which is the ordinary case
+      # at the start of a session. A seam tested only on Linux would
+      # therefore pass while being wrong twice on the platform most of
+      # these runs happen on.
+      #
+      # Nothing here reaches the network: every socket binds loopback on
+      # port zero and asks the kernel which port it got, so two legs can
+      # run at once and neither needs an agreed number.
+      - name: Build, lint, and test the socket seam
+        run: |
+          cargo build -p renew-platform --features net
+          cargo clippy -p renew-platform --features net --all-targets -- -D warnings
+          cargo test -p renew-platform --features net
+
   audio:
     name: Audio (mixer, reader, and the device seam)
     strategy:

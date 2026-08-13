@@ -1,0 +1,295 @@
+//! UDP datagrams — the network seam, behind the `net` feature.
+//!
+//! **This module is the only place in the engine that names `std::net`.**
+//! That is a zoning decision rather than a style one: a crate that
+//! promises deterministic simulation is denied a dependency path to this
+//! one, at any depth and in any dependency kind, so the code that decides
+//! what a tick means cannot reach a socket even by accident. What travels
+//! over the wire is decided in a crate that has no way to send it, and
+//! moved across by an application that holds both.
+//!
+//! What that split buys is not tidiness. Every later step of the security
+//! story — an entropy source, a keyed authentication tag, encryption —
+//! lands *here*, and changes no line of the code that runs the game.
+//!
+//! # No threads, and no blocking
+//!
+//! A socket is non-blocking from birth; there is no blocking mode to
+//! reach. It is polled from the loop that already runs, and drains in
+//! microseconds — a handful of small datagrams per tick has nothing for a
+//! thread to overlap, and a receive thread would cost a shared queue, a
+//! sanitizer obligation, and an argument about send/sync, to save nothing
+//! measurable. The audio seam takes the mirror decision for the mirror
+//! reason: there the operating system owns the thread, so this crate
+//! spawns none; here there is no such thread, so this crate polls.
+//!
+//! # Failing recoverably
+//!
+//! A machine with no interface, no permission, or a port already taken
+//! fails with [`NetError::Unavailable`] — the same graceful-skip seam the
+//! audio and window modules offer, so a headless or firewalled run
+//! reports an outcome instead of dying.
+
+use core::fmt;
+use std::io::ErrorKind;
+use std::net::UdpSocket;
+
+/// Re-exported so a consumer can name an address without importing
+/// `std::net` itself. The doorway stays a doorway.
+pub use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+/// The largest datagram this seam will hand back, in bytes.
+///
+/// A seam-level ceiling, deliberately independent of whatever protocol a
+/// caller speaks: anything larger is refused as oversized rather than
+/// delivered in pieces. Two kilobytes is comfortably above the smallest
+/// maximum transmission unit any path is expected to carry, so a refusal
+/// here means a peer sent something no ordinary route would deliver
+/// whole.
+pub const RECEIVE_CEILING: usize = 2048;
+
+/// The Windows error a UDP receive raises when the datagram did not fit.
+///
+/// Named by number because `ErrorKind` folds it into `Uncategorized`,
+/// which cannot be matched on stably. Winsock calls it WSAEMSGSIZE.
+#[cfg(windows)]
+const WSAEMSGSIZE: i32 = 10040;
+
+/// Why a socket could not be opened or used.
+///
+/// Every variant names the address it was about, the way every
+/// filesystem error here names its path: an error that does not say
+/// *which* endpoint failed is one a caller cannot act on.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum NetError {
+    /// The machine, not the request: no interface, no permission, or the
+    /// port already taken. Recoverable by design — a caller reports it
+    /// and runs offline.
+    Unavailable { addr: SocketAddr, kind: ErrorKind },
+    /// The kernel refused a send for a reason that is not back-pressure.
+    Send { to: SocketAddr, kind: ErrorKind },
+    /// The kernel refused a receive for a reason that is not emptiness.
+    Receive { kind: ErrorKind },
+    /// The datagram was longer than the buffer offered.
+    ///
+    /// **Reported, never silently truncated.** A truncated datagram is a
+    /// different message: a codec handed a prefix would refuse it as
+    /// malformed, blaming the sender for the receiver's small buffer.
+    Oversized { capacity: usize },
+}
+
+impl fmt::Display for NetError {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable { addr, kind } => {
+                write!(out, "{addr} is unavailable: {kind:?}")
+            }
+            Self::Send { to, kind } => write!(out, "sending to {to} failed: {kind:?}"),
+            Self::Receive { kind } => write!(out, "receiving failed: {kind:?}"),
+            Self::Oversized { capacity } => write!(
+                out,
+                "a datagram was longer than the {capacity}-byte buffer offered, and a truncated \
+                 datagram is a different message"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for NetError {}
+
+/// Whether the kernel took the bytes.
+///
+/// A non-blocking socket with a full send buffer is a normal condition
+/// and not an error. Nothing is lost by it: a lockstep session re-offers
+/// whatever it still owes on the next pump, which is why this is a
+/// reported outcome a caller can count rather than a failure it must
+/// handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    Delivered,
+    WouldBlock,
+}
+
+/// A bound UDP socket, owned by whoever bound it.
+///
+/// No ambient state, no background thread, and no queue this crate
+/// manages — the buffers belong to the caller, which is what lets a
+/// consumer keep its whole steady state allocation-free.
+#[derive(Debug)]
+pub struct Socket {
+    inner: UdpSocket,
+}
+
+impl Socket {
+    /// Bind, and switch to non-blocking.
+    ///
+    /// Port zero binds an ephemeral port; [`Socket::local_addr`] reports
+    /// which one, which is how a test gets two sockets without agreeing a
+    /// number in advance.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Unavailable`] when the address cannot be bound, or
+    /// when the socket cannot be switched out of blocking mode — the two
+    /// are one outcome for a caller, because a blocking socket is not a
+    /// thing this seam is willing to hand back.
+    pub fn bind(addr: SocketAddr) -> Result<Self, NetError> {
+        let inner = UdpSocket::bind(addr).map_err(|error| NetError::Unavailable {
+            addr,
+            kind: error.kind(),
+        })?;
+        inner
+            .set_nonblocking(true)
+            .map_err(|error| NetError::Unavailable {
+                addr,
+                kind: error.kind(),
+            })?;
+        Ok(Self { inner })
+    }
+
+    /// The address actually bound, which is how an ephemeral port is
+    /// discovered.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Unavailable`] if the kernel will not report it.
+    pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
+        self.inner
+            .local_addr()
+            .map_err(|error| NetError::Unavailable {
+                addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+                kind: error.kind(),
+            })
+    }
+
+    /// Send one datagram.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Send`] for anything that is not back-pressure;
+    /// back-pressure is [`Sent::WouldBlock`] and not an error.
+    pub fn send_to(&self, bytes: &[u8], to: SocketAddr) -> Result<Sent, NetError> {
+        match self.inner.send_to(bytes, to) {
+            Ok(_) => Ok(Sent::Delivered),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
+            Err(error) => Err(NetError::Send {
+                to,
+                kind: error.kind(),
+            }),
+        }
+    }
+
+    /// Take one datagram, if one is waiting.
+    ///
+    /// `Ok(None)` means nothing was there. Never blocks, never allocates,
+    /// and never partially fills a buffer.
+    ///
+    /// **Oversized is detected identically on every platform, and it
+    /// takes work to make that true.** The two families disagree: Windows
+    /// raises an error, while Unix silently truncates and reports the
+    /// clamped length, so a naive `len > buffer.len()` check can never
+    /// fire there and would hand back a prefix as though it were whole.
+    /// This reads into a buffer larger than the caller's and compares, so
+    /// truncation is *observed* rather than trusted to be reported.
+    ///
+    /// **Two kinds read as "nothing waiting", and the second is the
+    /// interesting one.** `WouldBlock` is the obvious empty case. On
+    /// Windows a UDP socket also surfaces `ConnectionReset` *on receive*
+    /// to report an ICMP port-unreachable provoked by an earlier *send* —
+    /// to a peer whose process has not started yet, which is the ordinary
+    /// case at the beginning of a session. A receive loop that treated it
+    /// as fatal would die reliably on one platform and never on the
+    /// others, which is the worst shape a bug can have.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Oversized`] when the datagram would not fit, and
+    /// [`NetError::Receive`] for any other kind.
+    pub fn recv_from(&self, into: &mut [u8]) -> Result<Option<(usize, SocketAddr)>, NetError> {
+        // One byte of headroom is what makes truncation visible: a
+        // datagram that fills this exactly is one the kernel may have
+        // cut, and is refused rather than guessed at.
+        let mut scratch = [0u8; RECEIVE_CEILING + 1];
+        match self.inner.recv_from(&mut scratch) {
+            Ok((len, from)) => {
+                if len > into.len() || len > RECEIVE_CEILING {
+                    return Err(NetError::Oversized {
+                        capacity: into.len().min(RECEIVE_CEILING),
+                    });
+                }
+                let (Some(source), Some(destination)) = (scratch.get(..len), into.get_mut(..len))
+                else {
+                    return Err(NetError::Oversized {
+                        capacity: into.len(),
+                    });
+                };
+                destination.copy_from_slice(source);
+                Ok(Some((len, from)))
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::ConnectionReset
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => {
+                // Windows reports "it did not fit" as an error rather
+                // than by truncating, and folds it into an ErrorKind that
+                // cannot be matched on. The number is the only stable
+                // handle, and mapping it here is what keeps one datagram
+                // one outcome on every platform.
+                #[cfg(windows)]
+                if error.raw_os_error() == Some(WSAEMSGSIZE) {
+                    return Err(NetError::Oversized {
+                        capacity: into.len().min(RECEIVE_CEILING),
+                    });
+                }
+                Err(NetError::Receive { kind: error.kind() })
+            }
+        }
+    }
+}
+
+/// A stable, comparable tag for an address.
+///
+/// **A v4-mapped IPv6 address folds to its v4 form**, and that is the
+/// whole reason this exists rather than every driver keying on
+/// `SocketAddr` directly. The same peer can reach one machine as
+/// `::ffff:1.2.3.4` and another as `1.2.3.4`; a roster keyed on the raw
+/// address would see two peers, hand out two seats, and the resulting
+/// divergence would surface hundreds of ticks later as a desync with no
+/// obvious cause. Canonicalising belongs in the crate that owns the
+/// address type, not in each consumer that keys by one.
+///
+/// The layout is sixteen bytes of address, then the port, big-endian: two
+/// tags compare and sort without anyone deciding a byte order twice.
+#[must_use]
+pub fn peer_tag(addr: SocketAddr) -> [u8; 18] {
+    let mut tag = [0u8; 18];
+    let canonical = match addr.ip() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        // `to_ipv4_mapped` returns Some only for the ::ffff:a.b.c.d form,
+        // which is exactly the case that must fold. A native v6 address
+        // stays a v6 address.
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+    };
+    match canonical {
+        IpAddr::V4(v4) => {
+            if let Some(room) = tag.get_mut(..4) {
+                room.copy_from_slice(&v4.octets());
+            }
+        }
+        IpAddr::V6(v6) => {
+            if let Some(room) = tag.get_mut(..16) {
+                room.copy_from_slice(&v6.octets());
+            }
+        }
+    }
+    if let Some(room) = tag.get_mut(16..18) {
+        room.copy_from_slice(&addr.port().to_be_bytes());
+    }
+    tag
+}
