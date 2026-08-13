@@ -207,7 +207,7 @@ reason = "The scenario binary's refusal arms, and the three ways it gives up. Th
 
 [[exempt]]
 file = "crates/ui/src/input.rs"
-lines = [183]
+lines = [212]
 reason = "The slot lookup in `edit_focused`, refused a line after `field_slot` returned the same index. `field_slot` finds it with `position` over the very array being indexed here, so a miss would mean the array shrank between two statements. Written as a refusal because the crate bans unchecked indexing, and kept rather than restructured because the arm above it — focus on a node that is not a field — looks identical and is entirely reachable: a player clicks a button and types. That one has a test. This one cannot."
 
 [[exempt]]
