@@ -57,10 +57,10 @@ values from the operating system lives there and does need a windowing
 library; the vocabulary itself does not.
 
 **The re-export makes `renew-platform` a downstream crate of enums it
-used to define.** The enums are `#[non_exhaustive]`, which binds
-downstream crates only — so the platform crate may still *construct*
-these values, as its translation code does, but may no longer match on
-them exhaustively.
+used to define.** The enums are exhaustive, so adding a variant breaks
+every match on one — inside this workspace and outside it. That is the
+cost, and it is paid deliberately: the shape list and its index are
+written so the compiler names every place that has to be revisited.
 
 ## Testing
 

@@ -31,7 +31,7 @@ use renew_trace::{TraceEvent, parse};
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-const HEADER: &str = "renew-trace 0 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n";
+const HEADER: &str = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n";
 
 /// Enough lines that a per-line reservation is unmistakable against the
 /// text itself, and still a file a person could plausibly be handed.

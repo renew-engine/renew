@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn events_come_back_tick_indexed_from_zero() {
-        let text = "renew-trace 0 sample=t ticks=2 timestep_ns=1 budget=1\ne 0 close\n";
+        let text = "renew-trace 1 sample=t ticks=2 timestep_ns=1 budget=1\ne 0 close\n";
         let events = events("t", text).expect("a minimal trace loads");
         assert_eq!(events.len(), 1);
         assert_eq!(

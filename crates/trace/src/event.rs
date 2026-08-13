@@ -309,6 +309,17 @@ pub enum TraceEvent {
         dy: FiniteF32,
     },
     Focused(bool),
+    /// One character typed, as a Unicode scalar value.
+    ///
+    /// Recorded as a scalar rather than as the key that produced it,
+    /// because the key is not recoverable and not what a replay needs:
+    /// a run that typed an address must type the same address, whatever
+    /// layout the recording machine had.
+    TextEntered {
+        /// The scalar. Validated on the way in, so a trace cannot carry
+        /// a surrogate or an out-of-range value.
+        ch: u32,
+    },
     Resized {
         width: u32,
         height: u32,

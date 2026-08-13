@@ -12,7 +12,7 @@ use crate::event::{FiniteF32, FiniteF64, TraceEvent};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FOCUS, FOCUS_IN, FOCUS_OUT, FORMAT_VERSION,
     HEX_PREFIX, KEY, MAGIC, MOTION, POINTER, REDRAW, REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR,
-    TICKS, TIMESTEP_NS, UP, WHEEL,
+    TEXT, TICKS, TIMESTEP_NS, UP, WHEEL,
 };
 use crate::trace::Trace;
 
@@ -88,6 +88,9 @@ fn event_line(tick: u64, event: &TraceEvent) -> String {
             dx = hex_f32(dx),
             dy = hex_f32(dy),
         ),
+        TraceEvent::TextEntered { ch } => {
+            format!("{EVENT} {tick} {TEXT} {ch}")
+        }
         TraceEvent::Focused(focused) => {
             let state = if focused { FOCUS_IN } else { FOCUS_OUT };
             format!("{EVENT} {tick} {FOCUS} {state}")
@@ -145,7 +148,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 0 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
+            "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
         );
     }
 
@@ -160,7 +163,7 @@ mod tests {
         let trace = Trace::new(header, Vec::new()).unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 0 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
+            "renew-trace 1 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
         );
     }
 
@@ -220,6 +223,7 @@ mod tests {
             "e 4 wheel 0x00000000 0xbf000000"
         );
         assert_eq!(line(TraceEvent::Focused(true)), "e 4 focus in");
+        assert_eq!(line(TraceEvent::TextEntered { ch: 0x61 }), "e 4 text 97");
         assert_eq!(line(TraceEvent::Focused(false)), "e 4 focus out");
         assert_eq!(
             line(TraceEvent::Resized {
@@ -265,15 +269,17 @@ mod tests {
             vec![
                 (0, TraceEvent::RedrawRequested),
                 (0, TraceEvent::Focused(true)),
+                (0, TraceEvent::TextEntered { ch: 0x61 }),
                 (2, TraceEvent::CloseRequested),
             ],
         )
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 0 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
+            "renew-trace 1 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
              e 0 redraw\n\
              e 0 focus in\n\
+             e 0 text 97\n\
              e 2 close\n"
         );
     }

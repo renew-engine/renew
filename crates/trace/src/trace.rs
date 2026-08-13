@@ -387,6 +387,7 @@ mod tests {
     fn a_trace_keeps_its_events_in_the_order_it_was_given_them() {
         let events = vec![
             (4, TraceEvent::Focused(true)),
+            (4, TraceEvent::TextEntered { ch: 0x61 }),
             (4, TraceEvent::RedrawRequested),
             (30, TraceEvent::CloseRequested),
         ];

@@ -107,6 +107,16 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
         WindowEvent::CloseRequested => TraceEvent::CloseRequested,
         WindowEvent::RedrawRequested => TraceEvent::RedrawRequested,
         WindowEvent::Focused(focused) => TraceEvent::Focused(focused),
+        // The one shape whose payload can be refused for not being a
+        // value at all: the window vocabulary carries a `u32` so a
+        // driver forwards without converting, and a trace holds only
+        // scalars, so a surrogate or an out-of-range code point is
+        // refused here rather than recorded as something no reader can
+        // turn back into a character.
+        WindowEvent::TextEntered { ch } => match char::from_u32(ch) {
+            Some(_) => TraceEvent::TextEntered { ch },
+            None => return Err(Unencodable { shape }),
+        },
         WindowEvent::Resized { width, height } => TraceEvent::Resized { width, height },
         WindowEvent::Key {
             code,
@@ -187,6 +197,7 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
         TraceEvent::CloseRequested => WindowEvent::CloseRequested,
         TraceEvent::RedrawRequested => WindowEvent::RedrawRequested,
         TraceEvent::Focused(focused) => WindowEvent::Focused(focused),
+        TraceEvent::TextEntered { ch } => WindowEvent::TextEntered { ch },
         TraceEvent::Resized { width, height } => WindowEvent::Resized { width, height },
         TraceEvent::Key {
             code,
@@ -270,6 +281,30 @@ mod tests {
     /// replay depends on and the one a rename would quietly break, since
     /// two vocabularies that mirror each other are exactly the kind of
     /// thing that drifts one arm at a time.
+    /// A value the window vocabulary admits and the trace format does
+    /// not cannot be recorded.
+    ///
+    /// The event carries a `u32` so a driver forwards without
+    /// converting, which means it can carry a surrogate. Recording one
+    /// would put a value in a trace that no reader can turn back into a
+    /// character.
+    #[test]
+    fn a_code_point_that_is_not_a_character_is_refused() {
+        // The window vocabulary carries a `u32` so a driver forwards
+        // without converting, which means it can carry a surrogate. A
+        // trace holds scalars, so this is where that is caught — a
+        // recording of a value no reader can turn back into a character
+        // is worse than a refusal.
+        for ch in [0xD800, 0xDFFF, 0x11_0000, u32::MAX] {
+            assert!(
+                to_trace(WindowEvent::TextEntered { ch }).is_err(),
+                "{ch:#x} is not a scalar and must not record"
+            );
+        }
+        assert!(to_trace(WindowEvent::TextEntered { ch: 0x1F642 }).is_ok());
+    }
+
+    /// Every shape in the vocabulary survives encode and decode.
     #[test]
     fn every_shape_survives_the_round_trip_unchanged() {
         for event in EVERY_EVENT_SHAPE {

@@ -75,6 +75,13 @@ fn event() -> impl Strategy<Value = TraceEvent> {
             .prop_map(|(button, pressed)| TraceEvent::PointerButton { button, pressed }),
         (finite_f32(), finite_f32()).prop_map(|(dx, dy)| TraceEvent::Wheel { dx, dy }),
         any::<bool>().prop_map(TraceEvent::Focused),
+        // Only what the format admits: a scalar that is not a control
+        // character. The strategy generating anything else would be
+        // generating files the writer cannot produce.
+        any::<char>()
+            .prop_filter("typed text is not a control character", |ch| !ch
+                .is_control())
+            .prop_map(|ch| TraceEvent::TextEntered { ch: u32::from(ch) }),
         (any::<u32>(), any::<u32>())
             .prop_map(|(width, height)| TraceEvent::Resized { width, height }),
         finite_f64().prop_map(|scale| TraceEvent::ScaleFactorChanged { scale }),
@@ -202,7 +209,7 @@ proptest! {
 /// same thing.
 #[test]
 fn a_header_field_is_split_at_its_first_equals_sign() {
-    let text = "renew-trace 0 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
+    let text = "renew-trace 1 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
     let trace = parse(text).expect("a value may carry an equals sign");
     assert_eq!(
         trace.header().keys(),
@@ -214,7 +221,7 @@ fn a_header_field_is_split_at_its_first_equals_sign() {
 
     // The positional field is a value in the same sense, which is why
     // the no-equals rule binds keys only and cannot bind both halves.
-    let odd = "renew-trace 0 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
+    let odd = "renew-trace 1 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
     let trace = parse(odd).expect("the sample name is a value too");
     assert_eq!(trace.header().sample(), "a=b");
     assert_eq!(write(&trace), odd);

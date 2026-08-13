@@ -57,7 +57,10 @@ fn record_then_replay_round_trips_in_process() {
     );
     let written = std::fs::read_to_string(&path).expect("the recording was written");
     assert!(
-        written.starts_with("renew-trace 0 sample=glide"),
+        written.starts_with(&format!(
+            "renew-trace {version} sample=glide",
+            version = renew_trace::FORMAT_VERSION
+        )),
         "the recording carries the sample's own header: {written}"
     );
     assert_eq!(run(&["--replay-trace", &path_text]), 0, "replay run");
@@ -84,7 +87,7 @@ fn a_trace_whose_header_lacks_a_seed_is_refused() {
     let path = dir.join("seedless.trace");
     std::fs::write(
         &path,
-        "renew-trace 0 sample=glide ticks=5 timestep_ns=16666667 budget=5\n",
+        "renew-trace 1 sample=glide ticks=5 timestep_ns=16666667 budget=5\n",
     )
     .expect("fixture");
     assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);
@@ -127,7 +130,7 @@ fn a_trace_recorded_at_another_timestep_is_refused() {
     let path = dir.join("wrong-clock.trace");
     std::fs::write(
         &path,
-        "renew-trace 0 sample=glide ticks=5 timestep_ns=8333333 budget=5 seed=7\n",
+        "renew-trace 1 sample=glide ticks=5 timestep_ns=8333333 budget=5 seed=7\n",
     )
     .expect("fixture");
     assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);
@@ -141,7 +144,7 @@ fn a_trace_recorded_at_another_budget_is_refused() {
     let path = dir.join("wrong-budget.trace");
     std::fs::write(
         &path,
-        "renew-trace 0 sample=glide ticks=5 timestep_ns=16666667 budget=3 seed=7\n",
+        "renew-trace 1 sample=glide ticks=5 timestep_ns=16666667 budget=3 seed=7\n",
     )
     .expect("fixture");
     assert_eq!(run(&["--replay-trace", &path.to_string_lossy()]), 1);

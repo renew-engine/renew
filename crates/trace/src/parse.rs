@@ -21,7 +21,7 @@ use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FIRST_EVENT_LINE, FOCUS, FOCUS_IN, FOCUS_OUT,
     FORMAT_VERSION, HEADER_LINE, HEX_PREFIX, KEY, MAGIC, MOTION, OTHER_BUTTON, POINTER, REDRAW,
-    REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TICKS, TIMESTEP_NS, UP, WHEEL,
+    REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TEXT, TICKS, TIMESTEP_NS, UP, WHEEL,
 };
 use crate::trace::{Trace, TraceHeader};
 
@@ -198,6 +198,9 @@ fn parse_event(number: usize, line: &str) -> Result<(u64, TraceEvent), TraceErro
             dy: cursor.hex_f32("the wheel's vertical delta")?,
         },
         FOCUS => TraceEvent::Focused(cursor.focused()?),
+        TEXT => TraceEvent::TextEntered {
+            ch: cursor.typed_character("the typed character")?,
+        },
         RESIZE => TraceEvent::Resized {
             width: cursor.decimal_u32("the width (u32)")?,
             height: cursor.decimal_u32("the height (u32)")?,
@@ -312,6 +315,26 @@ impl<'a> Cursor<'a> {
                 text: text.to_string(),
             })
         })
+    }
+
+    /// A typed character, in decimal.
+    ///
+    /// **Validated to the same rule the live seam applies**, not merely
+    /// to `u32`. A trace is external data, and the event type promises
+    /// its consumers that a control character never arrives — a promise
+    /// a recording could otherwise break by carrying `13`. So this
+    /// refuses anything that is not a scalar and anything that is a
+    /// control character, and the two directions cannot disagree about
+    /// what text is.
+    fn typed_character(&mut self, field: &'static str) -> Result<u32, TraceError> {
+        let value = self.decimal_u32(field)?;
+        if char::from_u32(value).is_some_and(|ch| !ch.is_control()) {
+            return Ok(value);
+        }
+        Err(self.error(TraceErrorKind::NotTypedText {
+            field,
+            text: value.to_string(),
+        }))
     }
 
     fn hex_f64(&mut self, field: &'static str) -> Result<FiniteF64, TraceError> {
@@ -460,7 +483,7 @@ mod tests {
     use super::parse;
     use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
 
-    const HEADER: &str = "renew-trace 0 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+    const HEADER: &str = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
     /// A one-event trace, so a test can name the shape it cares about and
     /// nothing else.
@@ -570,6 +593,7 @@ mod tests {
             }
         );
         assert_eq!(one("e 0 focus in"), TraceEvent::Focused(true));
+        assert_eq!(one("e 0 text 97"), TraceEvent::TextEntered { ch: 0x61 });
         assert_eq!(one("e 0 focus out"), TraceEvent::Focused(false));
         assert_eq!(
             one("e 0 resize 1280 720"),

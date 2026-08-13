@@ -20,7 +20,7 @@
 
 use renew_trace::{TraceError, TraceErrorKind, parse};
 
-const HEADER: &str = "renew-trace 0 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+const HEADER: &str = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
 /// The refusal a text produces. Every test goes through here, so a text
 /// that is unexpectedly *accepted* fails loudly rather than quietly
@@ -109,15 +109,87 @@ fn a_file_of_one_blank_line_is_a_missing_header() {
     );
 }
 
+/// A trace line whose character is not typed text.
+///
+/// Three ways to fail and one message, because they are one fault from
+/// a reader's side: the number is not something a person typed. A
+/// surrogate and a code point past the last one are not characters at
+/// all; a control character is one the live seam never delivers, and a
+/// recording that carried it could drive a consumer into a state no
+/// window can produce.
+#[test]
+fn a_character_that_is_not_typed_text_is_refused() {
+    let header = "renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=1\n";
+    for value in [
+        "55296",      // a high surrogate
+        "57343",      // a low surrogate
+        "1114112",    // one past the last code point
+        "4294967295", // the whole width
+        "0",          // NUL
+        "13",         // carriage return
+        "27",         // escape
+        "127",        // delete
+        "159",        // the end of the C1 range
+    ] {
+        let error = refuse(&format!("{header}e 0 text {value}\n"));
+        assert_eq!(error.line(), 2, "the second line is the event");
+        assert_eq!(
+            error.kind(),
+            &TraceErrorKind::NotTypedText {
+                field: "the typed character",
+                text: value.to_string()
+            },
+            "`{value}` must be refused as not typed text"
+        );
+    }
+}
+
+/// And the message says which of the two it is.
+///
+/// A number that does not fit its width and a number that fits and is
+/// not text are different faults, and the older message described only
+/// the first. A reader who meets the wrong one looks in the wrong place.
+#[test]
+fn not_typed_text_reads_differently_from_not_fitting() {
+    let header = "renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=1\n";
+    let not_text = refuse(&format!("{header}e 0 text 55296\n")).to_string();
+    assert!(
+        not_text.contains("is not typed text"),
+        "a surrogate is not a width problem: {not_text}"
+    );
+    let too_wide = refuse(&format!("{header}e 0 resize 4294967296 1\n")).to_string();
+    assert!(
+        too_wide.contains("does not fit its width"),
+        "a number past the width still says so: {too_wide}"
+    );
+}
+
+/// Text that IS typed text reads back.
+///
+/// The other half, so the refusals above cannot pass by the arm
+/// refusing everything.
+#[test]
+fn a_typed_character_reads_back() {
+    let header = "renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=1\n";
+    let trace = parse(&format!("{header}e 0 text 97\n")).expect("a letter is text");
+    assert_eq!(trace.events().len(), 1);
+}
+
 #[test]
 fn a_version_newer_than_this_reader_is_refused() {
-    let error = refuse("renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=1\n");
+    // Derived from the reader's own version rather than written out, so
+    // that moving the format does not quietly turn this test into one
+    // that hands the reader a file it can read.
+    let newer = u64::from(renew_trace::FORMAT_VERSION).saturating_add(1);
+    let error = refuse(&format!(
+        "renew-trace {newer} sample=x ticks=1 timestep_ns=1 budget=1\n"
+    ));
     assert_eq!(error.line(), 1);
     assert_eq!(
         error.kind(),
         &TraceErrorKind::UnsupportedVersion {
-            found: 1,
-            supported: 0
+            found: newer,
+            supported: renew_trace::FORMAT_VERSION
         }
     );
 }
@@ -152,7 +224,7 @@ fn a_header_that_stops_before_a_field_names_the_field() {
         }
     );
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=1 timestep_ns=1\n").kind(),
         &TraceErrorKind::LineEndsEarly {
             expected: "`budget=<u32>`"
         }
@@ -163,7 +235,7 @@ fn a_header_that_stops_before_a_field_names_the_field() {
 /// to guess which one it is holding.
 #[test]
 fn a_header_field_in_the_wrong_place_is_refused() {
-    let error = refuse("renew-trace 0 sample=x timestep_ns=1 ticks=1 budget=1\n");
+    let error = refuse("renew-trace 1 sample=x timestep_ns=1 ticks=1 budget=1\n");
     assert_eq!(
         error.kind(),
         &TraceErrorKind::HeaderFieldOutOfOrder {
@@ -176,7 +248,7 @@ fn a_header_field_in_the_wrong_place_is_refused() {
 #[test]
 fn a_header_field_that_is_not_a_pair_is_refused() {
     assert_eq!(
-        refuse("renew-trace 0 sample ticks=1 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample ticks=1 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::NotAKeyValuePair {
             field: "sample".to_string()
         }
@@ -231,7 +303,7 @@ fn a_caller_key_with_an_empty_value_is_refused() {
 #[test]
 fn a_header_value_carrying_a_control_character_is_refused() {
     assert_eq!(
-        refuse("renew-trace 0 sample=in\u{7}put ticks=1 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample=in\u{7}put ticks=1 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::UnwritableText {
             text: "sample=in\u{7}put".to_string(),
             reason: "a control character is invisible in a diff and in a log",
@@ -255,7 +327,7 @@ fn a_header_value_carrying_a_tab_is_refused() {
 #[test]
 fn two_spaces_in_the_header_are_refused() {
     assert_eq!(
-        refuse("renew-trace 0  sample=x ticks=1 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1  sample=x ticks=1 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::BlankField
     );
 }
@@ -271,14 +343,14 @@ fn a_trailing_space_on_the_header_is_refused() {
 #[test]
 fn a_header_number_that_is_not_digits_is_refused() {
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=1_000 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=1_000 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::NotADecimalInteger {
             field: "`ticks=<u64>`",
             text: "1_000".to_string(),
         }
     );
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=+1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=1 timestep_ns=+1 budget=1\n").kind(),
         &TraceErrorKind::NotADecimalInteger {
             field: "`timestep_ns=<u64>`",
             text: "+1".to_string(),
@@ -289,21 +361,21 @@ fn a_header_number_that_is_not_digits_is_refused() {
 #[test]
 fn a_header_number_too_large_for_its_width_is_refused() {
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=99999999999999999999 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=99999999999999999999 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::IntegerTooLarge {
             field: "`ticks=<u64>`",
             text: "99999999999999999999".to_string(),
         }
     );
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1 budget=4294967296\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=4294967296\n").kind(),
         &TraceErrorKind::IntegerTooLarge {
             field: "`budget=<u32>`",
             text: "4294967296".to_string(),
         }
     );
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticks=1 timestep_ns=1 budget=five\n").kind(),
+        refuse("renew-trace 1 sample=x ticks=1 timestep_ns=1 budget=five\n").kind(),
         &TraceErrorKind::NotADecimalInteger {
             field: "`budget=<u32>`",
             text: "five".to_string(),
@@ -357,7 +429,7 @@ fn a_line_keyword_that_merely_begins_with_the_event_keyword_is_unknown() {
 #[test]
 fn a_header_key_that_merely_begins_with_a_known_one_is_out_of_order() {
     assert_eq!(
-        refuse("renew-trace 0 sample=x ticksx=1 timestep_ns=1 budget=1\n").kind(),
+        refuse("renew-trace 1 sample=x ticksx=1 timestep_ns=1 budget=1\n").kind(),
         &TraceErrorKind::HeaderFieldOutOfOrder {
             expected: "`ticks=<u64>`",
             found: "ticksx=1".to_string(),
