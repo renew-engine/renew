@@ -4,5 +4,11 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
+#
+# The two seeds below were produced by deliberate mutations run while
+# checking these properties can fail — an insert gutted to do nothing,
+# and a Home landing one byte late. They record no defect this code ever
+# had. They are kept because what they shrank to is worth re-running
+# first anyway: type one character, and one script against an empty one.
 cc ac3b18710010d608d635c45f19323a7acec4e7c0da9fd9531731ae966b44236f # shrinks to script = [Type('a')]
 cc d7224c0ec432323f279fee772330397af56448f3af66a2e1227779d0b3b07579 # shrinks to left = [], right = [Type('a')]
