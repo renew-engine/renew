@@ -1203,8 +1203,16 @@ fn a_block_that_slid_together_is_reported_as_moved_with_its_new_lines() {
         stdout.contains("moved up"),
         "the direction must be named: {stdout}"
     );
+    // Once, not once per finding. The first version printed a
+    // forty-one-element list forty-one times on the very change that
+    // added it: correct, and unreadable.
+    assert_eq!(
+        stdout.matches("Corrected: lines = [").count(),
+        1,
+        "the pasteable list must appear exactly once per file: {stdout}"
+    );
     assert!(
-        stdout.contains("check the content at those lines"),
+        stdout.contains("Check the content at those lines"),
         "a moved block and a changed block look the same from here, and the hint must say so: \
          {stdout}"
     );

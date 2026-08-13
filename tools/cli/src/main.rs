@@ -824,8 +824,15 @@ fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
 /// hundreds of line numbers into a single finding.
 fn drift_hint(outcome: &Outcome, file: &str) -> Option<String> {
     const SHOWN: usize = 6;
-    if let Some(moved) = relocation_hint(outcome, file) {
-        return Some(moved);
+    // When the whole block slid, every finding in the file says so in a
+    // few words and the pasteable list is printed once at the end. The
+    // first version put the list on every finding: forty-one copies of a
+    // forty-one-element line, correct and unreadable, and it did that on
+    // the very change that added it.
+    if let Some((offset, direction, _)) = relocation(outcome, file) {
+        return Some(format!(
+            " (the whole block moved {direction} {offset} lines — corrected pins below)"
+        ));
     }
     let lines: Vec<u32> = outcome
         .gaps
@@ -871,7 +878,7 @@ fn drift_hint(outcome: &Outcome, file: &str) -> Option<String> {
 /// pin without a gap at the same offset, any offset of zero, or fewer
 /// than two pins to agree with each other, and the ordinary listing is
 /// the honest answer.
-fn relocation_hint(outcome: &Outcome, file: &str) -> Option<String> {
+fn relocation(outcome: &Outcome, file: &str) -> Option<(i64, &'static str, String)> {
     let stale: Vec<u32> = outcome
         .stale
         .iter()
@@ -911,12 +918,7 @@ fn relocation_hint(outcome: &Outcome, file: &str) -> Option<String> {
         .collect::<Vec<String>>()
         .join(", ");
     let direction = if offset > 0 { "down" } else { "up" };
-    let distance = offset.abs();
-    Some(format!(
-        " (every exemption in this file is {distance} lines above an unexempted gap, so the block \
-         moved {direction}: lines = [{listed}] — check the content at those lines before pinning \
-         them, because a block that moved and a block that changed look the same from here)"
-    ))
+    Some((offset.abs(), direction, listed))
 }
 
 /// One line per finding, in `check`'s shape, then a summary.
@@ -945,6 +947,26 @@ fn coverage_report(outcome: &Outcome) -> String {
             stale.kind.explanation(),
             hint.as_deref().unwrap_or_default()
         );
+    }
+    // One note per file, after the findings: the value of this line is
+    // that it can be pasted, so it has to be whole — and a whole list
+    // repeated once per finding is what made the first version useless.
+    let mut noted: Vec<&str> = Vec::new();
+    for stale in &outcome.stale {
+        let file = stale.site.file.as_str();
+        if stale.kind != coverage::StaleKind::NowCovered || noted.contains(&file) {
+            continue;
+        }
+        if let Some((offset, direction, listed)) = relocation(outcome, file) {
+            noted.push(file);
+            let _ = writeln!(
+                report,
+                "MOVED {:<16} {file}: every pin is {offset} lines above a gap, so the block moved \
+                 {direction}. Corrected: lines = [{listed}]. Check the content at those lines \
+                 first — a block that moved and a block that changed look the same from here.",
+                "relocation"
+            );
+        }
     }
     let summary = if outcome.passes() {
         format!(

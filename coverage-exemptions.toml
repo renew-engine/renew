@@ -121,12 +121,12 @@ reason = "The arm that clears a voice whose sound index is missing. A voice is o
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [86, 87, 88, 1208, 1209, 1210, 1211, 1217, 1218, 1220, 1221, 1222, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1260, 1264, 1265]
+lines = [86, 87, 88, 1302, 1303, 1304, 1305, 1311, 1312, 1314, 1315, 1316, 1321, 1322, 1323, 1324, 1325, 1326, 1327, 1329, 1330, 1331, 1332, 1333, 1334, 1335, 1336, 1337, 1341, 1342, 1343, 1344, 1345, 1346, 1347, 1348, 1349, 1350, 1351, 1352, 1354, 1358, 1359]
 reason = "The emit half of determinism: it spawns a cargo run per pinned scenario and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [1271]
+lines = [1365]
 reason = "The comparison refusing to start because no workspace root is above it. Every other subcommand carries the same arm and reaches it the same way -- never, from a test, because a test runs inside the workspace it is testing. Reaching it would mean invoking the binary from outside any cargo project, which is a property of where a caller stands rather than of anything this code does."
 
 [[exempt]]
