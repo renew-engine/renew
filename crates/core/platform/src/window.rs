@@ -51,10 +51,22 @@ impl Default for WindowConfig {
 pub use crate::event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
 
 /// What the app tells the loop each iteration.
+///
+/// **Readable as well as writable, and the read side is not for the
+/// loop.** The loop owns this type and could reach the fields directly.
+/// The accessors exist for a driver standing where the OS loop normally
+/// stands — a test, a replay, a headless run — which otherwise cannot
+/// see what the application asked for. Requests that nothing can observe
+/// are requests a caller can delete without any test noticing, because
+/// what a test can reach instead is the application's own copy of the
+/// state, which it set itself.
 #[derive(Debug, Default)]
 pub struct LoopControl {
     exit: bool,
     redraw: bool,
+    /// A change of mind about the cursor, if the app had one this
+    /// iteration. `None` leaves the grab as it is.
+    cursor: Option<bool>,
 }
 
 impl LoopControl {
@@ -67,6 +79,41 @@ impl LoopControl {
     /// [`WindowEvent::RedrawRequested`]).
     pub fn request_redraw(&mut self) {
         self.redraw = true;
+    }
+
+    /// Hold the cursor for mouse look, or release it.
+    ///
+    /// **Between events, not only at bring-up.** An application with a
+    /// menu has to release the cursor to be clicked and take it back to
+    /// be played, and it learns which it wants long after the window
+    /// opened. Asking once at bring-up leaves it holding an invisible
+    /// pointer over its own buttons.
+    ///
+    /// Idempotent, and the loop still owns the lifecycle: focus loss
+    /// releases the grab whatever was asked here, and focus return
+    /// reapplies the last request. Refusal is ordinary — cursor
+    /// confinement is one of the places the desktops differ.
+    pub fn hold_cursor(&mut self, held: bool) {
+        self.cursor = Some(held);
+    }
+
+    /// Whether [`exit`](Self::exit) was called this iteration.
+    #[must_use]
+    pub fn exiting(&self) -> bool {
+        self.exit
+    }
+
+    /// Whether [`request_redraw`](Self::request_redraw) was called this
+    /// iteration.
+    #[must_use]
+    pub fn redraw_requested(&self) -> bool {
+        self.redraw
+    }
+
+    /// What the app asked of the cursor this iteration, if anything.
+    #[must_use]
+    pub fn cursor_request(&self) -> Option<bool> {
+        self.cursor
     }
 }
 
@@ -373,6 +420,13 @@ impl Adapter<'_> {
         }
         let mut control = LoopControl::default();
         self.app.update(&mut control);
+        if let Some(held) = control.cursor {
+            self.cursor_wanted.set(held);
+            // The answer is the same one bring-up gets and means the
+            // same thing: a desktop that refuses confinement plays on
+            // without mouse look, which is not a failure to report.
+            let _refused = self.apply_cursor_grab(held);
+        }
         if control.redraw
             && let Some(window) = &self.window
         {
@@ -909,6 +963,91 @@ mod tests {
         assert!(control.exit && control.redraw);
     }
 
+    /// **A request between events is remembered, and silence changes
+    /// nothing.** Remembering is the whole mechanism: the loop reapplies
+    /// the last request when focus returns, so an app that asked once
+    /// keeps mouse look across an alt-tab. An iteration that asks nothing
+    /// must therefore leave the memory alone rather than write a default
+    /// into it — otherwise every quiet frame would revoke the grab.
+    ///
+    /// The grab itself is not asserted here and cannot be: there is no
+    /// window under a unit test, and confinement is a request the desktop
+    /// may refuse anyway.
+    #[test]
+    fn a_cursor_request_between_events_is_remembered() {
+        let config = WindowConfig::default();
+
+        let mut asking = Recorder {
+            ask_cursor: Some(true),
+            ..Recorder::default()
+        };
+        let mut adapter = new_adapter(&config, &mut asking);
+        assert!(!adapter.cursor_wanted.get(), "the loop starts holding none");
+        assert!(!adapter.tick());
+        assert!(
+            adapter.cursor_wanted.get(),
+            "the request must outlive the iteration that made it"
+        );
+
+        // A release is a request too, and reaches the same memory.
+        let mut releasing = Recorder {
+            ask_cursor: Some(false),
+            ..Recorder::default()
+        };
+        let mut adapter = new_adapter(&config, &mut releasing);
+        adapter.cursor_wanted.set(true);
+        assert!(!adapter.tick());
+        assert!(!adapter.cursor_wanted.get(), "a release must be applied");
+
+        // And silence is not a release.
+        let mut quiet = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut quiet);
+        adapter.cursor_wanted.set(true);
+        assert!(!adapter.tick());
+        assert!(
+            adapter.cursor_wanted.get(),
+            "an iteration that asked nothing must not revoke the grab"
+        );
+    }
+
+    /// The accessors report the fields the loop reads, and a silent
+    /// iteration is distinguishable from one that asked for something.
+    ///
+    /// **The cursor is three-valued and the other two are not.** Saying
+    /// nothing about the cursor leaves the grab alone, which is a
+    /// different instruction from asking for it to be released — so a
+    /// reader that collapsed `None` into `false` would turn every quiet
+    /// iteration into a release request.
+    #[test]
+    fn loop_control_reports_what_was_asked() {
+        let quiet = LoopControl::default();
+        assert!(!quiet.exiting());
+        assert!(!quiet.redraw_requested());
+        assert_eq!(
+            quiet.cursor_request(),
+            None,
+            "saying nothing about the cursor is not asking for it to be released"
+        );
+
+        let mut asked = LoopControl::default();
+        asked.exit();
+        asked.request_redraw();
+        asked.hold_cursor(true);
+        assert!(asked.exiting());
+        assert!(asked.redraw_requested());
+        assert_eq!(asked.cursor_request(), Some(true));
+
+        // A release is a request, and the last one in the iteration wins.
+        let mut released = LoopControl::default();
+        released.hold_cursor(true);
+        released.hold_cursor(false);
+        assert_eq!(released.cursor_request(), Some(false));
+        assert!(
+            !released.exiting(),
+            "a cursor request must not be read as an exit"
+        );
+    }
+
     #[test]
     fn scale_and_key_payloads_survive_translation() {
         use winit::event::ElementState;
@@ -943,6 +1082,9 @@ mod tests {
         updates: u32,
         ask_redraw: bool,
         ask_exit: bool,
+        /// What to ask of the cursor, if anything. `None` asks nothing,
+        /// which is the case that must leave the grab alone.
+        ask_cursor: Option<bool>,
     }
 
     impl WindowApp for Recorder {
@@ -964,6 +1106,9 @@ mod tests {
             }
             if self.ask_exit {
                 control.exit();
+            }
+            if let Some(held) = self.ask_cursor {
+                control.hold_cursor(held);
             }
         }
     }
