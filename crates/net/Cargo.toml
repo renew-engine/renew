@@ -1,0 +1,36 @@
+[package]
+name = "renew-net"
+description = "The lockstep datagram codec: a self-describing wire format for inputs-only multiplayer, and a reader that refuses everything it does not understand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["gamedev", "netcode", "lockstep", "deterministic", "engine"]
+categories = ["game-development", "network-programming"]
+readme = "README.md"
+homepage.workspace = true
+
+[package.metadata.renew]
+purpose = "The wire half of inputs-only lockstep: a fixed-width little-endian datagram format with one accepted spelling per fact, a total reader that is a pure function of its bytes, and writers that cannot mint what the reader would refuse. It names peers by index, owns no socket, reads no clock, and spawns nothing."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = true
+
+[lints]
+workspace = true
+
+# Deliberately empty, and load-bearing. This crate declares
+# `simulation = true`, which denies it a dependency path to the platform
+# crate at any depth and in any dependency kind — dev edges included. An
+# empty list makes that promise structural rather than contractual: there
+# is no crate here that could offer a socket, a clock, or a randomly
+# seeded hasher, so there is nothing for a future edit to launder one
+# through.
+#
+# The session state machine arrives with `renew-frame`, for the digest
+# fold. It is not taken now, because nothing here folds one yet and a
+# dependency nothing depends on is a claim about the graph that is not
+# true.
+[dependencies]

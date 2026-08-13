@@ -211,6 +211,21 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-rng $sel
           cargo build $sel
           cargo test $sel
+      # The lockstep codec removed entirely. Nothing depends on it yet,
+      # so the exclude list is the crate alone — and that is a fact with
+      # a shelf life: the day a sample takes the dependency, the guard
+      # below reports the crate still in the graph and names the sample
+      # that kept it there, exactly as it did for the trace codec in the
+      # change right after that cell's list was written. Grow this list
+      # then; do not pre-empt it now, because an exclude for a
+      # dependency that does not exist proves nothing and reads as if it
+      # does.
+      - name: Build and test without the lockstep codec
+        run: |
+          sel="--workspace --exclude renew-net"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-net $sel
+          cargo build $sel
+          cargo test $sel
       # The trace codec removed entirely, and with it the sample that
       # records traces. The comment here used to say the list was the
       # crate alone and would fail first the day a sample reached it.
@@ -476,7 +491,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
