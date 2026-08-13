@@ -1,8 +1,8 @@
 # renew-platform
 
 The engine's only doorway to the operating system: a monotonic clock,
-whole-file I/O, named threads, the window, and audio output — each a
-thin, explicit seam.
+whole-file I/O, named threads, the window, audio output, and UDP
+datagrams — each a thin, explicit seam.
 
 - `Clock` — a value the caller owns, anchored at `start()`, reporting
   integer nanoseconds (`elapsed_nanos`, saturating at ~584 years). No

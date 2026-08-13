@@ -5,10 +5,8 @@
 //! anyone. Nothing reaches the network: an unavailable loopback is a
 //! broken machine, not a flaky test.
 
-#![cfg(feature = "net")]
-
 use renew_platform::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, NetError, Sent, Socket, SocketAddr, peer_tag,
+    IpAddr, Ipv4Addr, Ipv6Addr, NetError, RECEIVE_CEILING, Sent, Socket, SocketAddr, peer_tag,
 };
 
 fn loopback() -> SocketAddr {
@@ -154,4 +152,94 @@ fn the_port_is_part_of_the_tag_and_is_ordered() {
     let high = peer_tag(SocketAddr::from((Ipv4Addr::LOCALHOST, 2)));
     assert_ne!(low, high, "two ports on one host are two peers");
     assert!(low < high, "big-endian, so tags sort the way ports do");
+}
+
+#[test]
+fn a_v4_peer_and_a_native_v6_peer_are_never_one_tag() {
+    // The regression for a collision the test above was reaching for and
+    // missed. It checked `::1`, which happens not to alias; a native v6
+    // whose low twelve bytes are zero does. With the address written into
+    // only the first four bytes, `32.1.13.184` and `2001:db8::` produced
+    // byte-identical tags — two peers, one seat, and a divergence
+    // hundreds of ticks later with no obvious cause.
+    let v4 = SocketAddr::from((Ipv4Addr::new(32, 1, 13, 184), 9000));
+    let v6 = SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0)),
+        9000,
+    );
+    assert_ne!(
+        peer_tag(v4),
+        peer_tag(v6),
+        "two peers sharing one tag take one seat, which is the bug this fold exists to prevent"
+    );
+
+    // The same shape with a link-local prefix, because one example of a
+    // family collision is an anecdote.
+    let v4 = SocketAddr::from((Ipv4Addr::new(254, 128, 0, 0), 5000));
+    let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)), 5000);
+    assert_ne!(peer_tag(v4), peer_tag(v6));
+}
+
+#[test]
+fn a_v4_tag_is_the_mapped_form_and_fills_the_whole_address_field() {
+    // The docstring promises sixteen bytes of address then the port. It
+    // is only true if v4 is re-emitted mapped, so the layout is pinned
+    // rather than left to be re-derived.
+    let tag = peer_tag(SocketAddr::from((Ipv4Addr::new(1, 2, 3, 4), 0x1234)));
+    assert_eq!(
+        &tag[..10],
+        &[0u8; 10],
+        "the mapped prefix is ten zero bytes"
+    );
+    assert_eq!(&tag[10..12], &[0xff, 0xff], "then the mapped marker");
+    assert_eq!(&tag[12..16], &[1, 2, 3, 4], "then the four octets");
+    assert_eq!(&tag[16..18], &[0x12, 0x34], "then the port, big-endian");
+}
+
+#[test]
+fn a_datagram_past_the_seam_ceiling_is_refused_identically_everywhere() {
+    // The whole stated reason for running this job on three platforms,
+    // and until this test existed it proved neither of the two things it
+    // claimed. Windows raises an error here (WSAEMSGSIZE, folded into an
+    // ErrorKind that cannot be matched on, so the seam maps the number);
+    // Unix truncates into the scratch buffer and the seam observes it by
+    // the byte of headroom. Both must produce one outcome.
+    let listener = Socket::bind(loopback()).expect("loopback must bind");
+    let sender = Socket::bind(loopback()).expect("loopback must bind");
+    let to = listener.local_addr().expect("bound");
+
+    // Past the scratch, not merely past the caller's buffer: this is the
+    // path where the two platforms genuinely diverge.
+    let huge = vec![5u8; RECEIVE_CEILING + 64];
+    match sender.send_to(&huge, to) {
+        Ok(_) => {}
+        // A loopback MTU below the ceiling is a property of the machine,
+        // not a defect here. Skipping is honest; asserting would make
+        // this test about the host's network stack.
+        Err(_) => return,
+    }
+
+    let mut buffer = [0u8; RECEIVE_CEILING];
+    let mut verdict = None;
+    for _ in 0..10_000 {
+        match listener.recv_from(&mut buffer) {
+            Ok(None) => {}
+            other => {
+                verdict = Some(other);
+                break;
+            }
+        }
+    }
+    match verdict {
+        // Refused, which is the outcome under test — or nothing arrived
+        // at all, because the host dropped it below this seam, which is
+        // the host and not this seam being wrong. The two share an arm
+        // because the test's claim is "never silently truncated", and
+        // both satisfy it.
+        Some(Err(NetError::Oversized { .. })) | None => {}
+        Some(Ok(Some((len, _)))) => {
+            panic!("a {}-byte datagram came back as {len} bytes", huge.len())
+        }
+        other => panic!("expected an oversized refusal, got {other:?}"),
+    }
 }

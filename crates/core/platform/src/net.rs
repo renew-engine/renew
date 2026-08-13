@@ -211,43 +211,52 @@ impl Socket {
         // datagram that fills this exactly is one the kernel may have
         // cut, and is refused rather than guessed at.
         let mut scratch = [0u8; RECEIVE_CEILING + 1];
-        match self.inner.recv_from(&mut scratch) {
-            Ok((len, from)) => {
-                if len > into.len() || len > RECEIVE_CEILING {
-                    return Err(NetError::Oversized {
-                        capacity: into.len().min(RECEIVE_CEILING),
-                    });
+        // A loop, not a single attempt, and the difference matters. A
+        // consumed ICMP error is not an empty queue: returning `None` for
+        // one would end the caller's drain early and leave real datagrams
+        // sitting behind it until the next pump. On Windows a peer that
+        // is not listening yet produces one of these per send, so the
+        // rate is set by the network rather than by this machine — a
+        // drain that gave up on each would fall behind exactly when a
+        // session is starting. Only `WouldBlock` means "nothing there".
+        loop {
+            match self.inner.recv_from(&mut scratch) {
+                Ok((len, from)) => {
+                    if len > into.len() || len > RECEIVE_CEILING {
+                        return Err(NetError::Oversized {
+                            capacity: into.len().min(RECEIVE_CEILING),
+                        });
+                    }
+                    let (Some(source), Some(destination)) =
+                        (scratch.get(..len), into.get_mut(..len))
+                    else {
+                        return Err(NetError::Oversized {
+                            capacity: into.len(),
+                        });
+                    };
+                    destination.copy_from_slice(source);
+                    return Ok(Some((len, from)));
                 }
-                let (Some(source), Some(destination)) = (scratch.get(..len), into.get_mut(..len))
-                else {
-                    return Err(NetError::Oversized {
-                        capacity: into.len(),
-                    });
-                };
-                destination.copy_from_slice(source);
-                Ok(Some((len, from)))
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::WouldBlock | ErrorKind::ConnectionReset
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(error) => {
-                // Windows reports "it did not fit" as an error rather
-                // than by truncating, and folds it into an ErrorKind that
-                // cannot be matched on. The number is the only stable
-                // handle, and mapping it here is what keeps one datagram
-                // one outcome on every platform.
-                #[cfg(windows)]
-                if error.raw_os_error() == Some(WSAEMSGSIZE) {
-                    return Err(NetError::Oversized {
-                        capacity: into.len().min(RECEIVE_CEILING),
-                    });
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(None),
+                // Consumed and stepped over. The empty arm is the loop
+                // going round again: an ICMP error is not a datagram and
+                // not an empty queue, so the only correct response is to
+                // ask once more.
+                Err(error) if error.kind() == ErrorKind::ConnectionReset => {}
+                Err(error) => {
+                    // Windows reports "it did not fit" as an error rather
+                    // than by truncating, and folds it into an ErrorKind that
+                    // cannot be matched on. The number is the only stable
+                    // handle, and mapping it here is what keeps one datagram
+                    // one outcome on every platform.
+                    #[cfg(windows)]
+                    if error.raw_os_error() == Some(WSAEMSGSIZE) {
+                        return Err(NetError::Oversized {
+                            capacity: into.len().min(RECEIVE_CEILING),
+                        });
+                    }
+                    return Err(NetError::Receive { kind: error.kind() });
                 }
-                Err(NetError::Receive { kind: error.kind() })
             }
         }
     }
@@ -276,17 +285,21 @@ pub fn peer_tag(addr: SocketAddr) -> [u8; 18] {
         // stays a v6 address.
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
     };
-    match canonical {
-        IpAddr::V4(v4) => {
-            if let Some(room) = tag.get_mut(..4) {
-                room.copy_from_slice(&v4.octets());
-            }
-        }
-        IpAddr::V6(v6) => {
-            if let Some(room) = tag.get_mut(..16) {
-                room.copy_from_slice(&v6.octets());
-            }
-        }
+    // **Both families fill all sixteen bytes**, and that is the whole of
+    // the correctness argument. Writing a v4 address into the first four
+    // and leaving twelve zero puts the two families in one key space with
+    // no discriminator: `32.1.13.184` and the native `2001:db8::` would
+    // then produce identical tags, so two genuinely different peers would
+    // take one seat — the exact failure this function exists to prevent,
+    // inverted. Re-emitting v4 in its mapped form keeps the two disjoint
+    // by construction, because the fold above has already turned every
+    // mapped v6 into a v4.
+    let address = match canonical {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        IpAddr::V6(v6) => v6.octets(),
+    };
+    if let Some(room) = tag.get_mut(..16) {
+        room.copy_from_slice(&address);
     }
     if let Some(room) = tag.get_mut(16..18) {
         room.copy_from_slice(&addr.port().to_be_bytes());
