@@ -1028,6 +1028,13 @@ jobs:
           # process does not reliably flush its counters, so covering
           # them here would hinge on an exit-path detail.
           cargo llvm-cov --no-report run -p renew-ui
+          # The lockstep scenario binary, for the same reason as the
+          # line above: the comparison legs run it for real elsewhere,
+          # and here it runs once so the entry point's lines are
+          # executed by the suite that measures them. Its two refusal
+          # arms are exempted by name on the same grounds — an exiting
+          # process does not reliably flush its counters.
+          cargo llvm-cov --no-report run -p renew-net
           cargo llvm-cov --no-report test -p renew-sample-glide --features window
           cargo llvm-cov --no-report test -p renew-sample-cube --features window
           # The voxel game's three views, one run each. The line above

@@ -53,6 +53,10 @@ fn every_recorded_corpus_input_gets_an_answer() {
                     .expect("what the reader accepted, the writer must accept"),
                 Body::Digest(body) => wire::write_digest(&mut again, addressing, &body),
                 Body::Bye(body) => wire::write_bye(&mut again, addressing, &body),
+                Body::Chat(body) => {
+                    wire::write_chat(&mut again, addressing, body.sequence, body.text())
+                        .expect("what the reader accepted, the writer must accept")
+                }
                 Body::Inputs(body) => wire::write_inputs(
                     &mut again,
                     addressing,

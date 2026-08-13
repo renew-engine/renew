@@ -121,12 +121,12 @@ reason = "The arm that clears a voice whose sound index is missing. A voice is o
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [86, 87, 88, 1201, 1202, 1203, 1204, 1210, 1211, 1213, 1214, 1215, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 1228, 1229, 1230, 1231, 1232, 1233, 1234, 1235, 1236, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1253, 1257, 1258]
+lines = [86, 87, 88, 1208, 1209, 1210, 1211, 1217, 1218, 1220, 1221, 1222, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1260, 1264, 1265]
 reason = "The emit half of determinism: it spawns a cargo run per pinned scenario and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [1264]
+lines = [1271]
 reason = "The comparison refusing to start because no workspace root is above it. Every other subcommand carries the same arm and reaches it the same way -- never, from a test, because a test runs inside the workspace it is testing. Reaching it would mean invoking the binary from outside any cargo project, which is a property of where a caller stands rather than of anything this code does."
 
 [[exempt]]
@@ -164,10 +164,26 @@ file = "crates/volume/src/volume.rs"
 lines = [248, 268]
 reason = "Two restatements of a bound already proved, re-anchored from 220 and 240 by content rather than by arithmetic. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup at 248 nor the version lookup at 268 can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."
 
+
 [[exempt]]
 file = "crates/net/src/wire.rs"
-lines = [147]
+lines = [183]
 reason = "The overflow arm of the Inputs body-size product. Both factors are u8, so the product peaks at 65,025 and cannot leave u64 — no datagram, and no fuzzer, can drive it. The check is written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and this one is reached from a reader parsing hostile bytes. It cannot be folded away either: `Option::and_then` is not callable in a const fn, so the arm has to be spelled out."
+
+[[exempt]]
+file = "crates/net/src/wire.rs"
+lines = [1208, 1209, 1210, 1211]
+reason = "The narrowing conversion on a chat message's length in the writer, guarded three lines above by a check that bounds the length to MAX_CHAT_BYTES — 128, which fits a byte with room to spare. Kept fallible rather than cast because that ceiling is derived from the datagram size rather than chosen, and a cast would stop being safe the day it crosses 255 without anything saying so."
+
+[[exempt]]
+file = "crates/net/src/chat.rs"
+lines = [244, 245, 246, 247, 324, 325, 326, 327]
+reason = "The same narrowing on both sides of the channel. On the send side the caller's slice is measured against MAX_CHAT_BYTES immediately above; on the receive side the reader has already refused anything longer. Both are unreachable while that ceiling stays under 256, and both are written fallible for the reason above: a silently wrapped length is a reader pointed at the wrong bytes."
+
+[[exempt]]
+file = "crates/net/src/session.rs"
+lines = [716, 770, 1083, 1095, 1119]
+reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
 
 [[exempt]]
 file = "crates/net/src/desync.rs"
@@ -175,6 +191,6 @@ lines = [128, 133, 167]
 reason = "The error arms of `write!` inside a Display implementation. A formatter over a String cannot fail, so these propagate an error that never arrives; they exist because Display must be total and `?` is the only honest way to write that. Every one of them sits on a line whose successful path is covered by the JSON tests."
 
 [[exempt]]
-file = "crates/net/src/session.rs"
-lines = [704, 758, 1071, 1083, 1107]
-reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
+file = "crates/net/src/bin/net_digest.rs"
+lines = [99, 100, 105, 106, 195, 231, 245]
+reason = "The scenario binary's refusal arms, and the three ways it gives up. The argument guard exists so a drifted pinned-run row fails loudly rather than running a different scenario under the same name; the not-enough-ticks arm exists so a short run can never print a digest every target would agree on. Each is a message and a nonzero exit, and an exiting process does not reliably flush its coverage counters, so exercising them under instrumentation would hinge on an exit-path detail rather than prove anything — the same reason the widget tree's witness exempts its own pair. The remaining three are the give-up paths inside the run: a session that ends mid-scenario, and the pump ceiling running out. Reaching any of them means the scenario deadlocked, which is a failure the lane reports by exit code; a test that drove one would be asserting that a deliberately survivable link is not survivable. The happy path is executed by the lane's own run of the binary."

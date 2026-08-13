@@ -12,8 +12,9 @@ use core::num::NonZeroU64;
 
 use renew_net::wire::{
     Addressing, BYE_DATAGRAM_BYTES, Body, ByeBody, DIGEST_DATAGRAM_BYTES, DigestBody, HEADER_BYTES,
-    HELLO_DATAGRAM_BYTES, HelloBody, INPUTS_MIN_DATAGRAM_BYTES, Kind, MAGIC, WIRE_VERSION,
-    WireError, WriteError, read, write_bye, write_digest, write_hello, write_inputs,
+    HELLO_DATAGRAM_BYTES, HelloBody, INPUTS_MIN_DATAGRAM_BYTES, Kind, MAGIC, MAX_CHAT_BYTES,
+    WIRE_VERSION, WireError, WriteError, read, write_bye, write_chat, write_digest, write_hello,
+    write_inputs,
 };
 use renew_net::{
     INPUT_REDUNDANCY, INPUT_WINDOW, MAX_DATAGRAM_BYTES, MAX_INPUT_BYTES, MAX_PEERS, PeerId,
@@ -286,7 +287,8 @@ fn any_version_but_the_one_is_refused_including_zero() {
 
 #[test]
 fn an_unknown_kind_is_refused_rather_than_skipped() {
-    for code in [0u8, 5, u8::MAX] {
+    // 5 is `Chat` now; 6 is the first code past the vocabulary.
+    for code in [0u8, 6, u8::MAX] {
         let (mut bytes, len) = a_hello();
         bytes[6] = code;
         assert_eq!(refusal(&bytes[..len]), WireError::UnknownKind { saw: code });
@@ -706,6 +708,11 @@ fn refusals_display_their_evidence() {
             window: 64,
         },
         WireError::DigestPeriodZero,
+        WireError::ChatEmpty,
+        WireError::ChatTooLong {
+            saw: 200,
+            ceiling: 128,
+        },
     ];
     let write_errors = vec![
         WriteError::FrameCount { saw: 9, ceiling: 8 },
@@ -731,12 +738,18 @@ fn refusals_display_their_evidence() {
             window: 64,
         },
         WriteError::DigestPeriodZero,
+        WriteError::ChatLength {
+            saw: 0,
+            ceiling: 128,
+        },
     ];
 
-    // Four refusals name their value in words rather than in digits,
-    // because the value IS zero and "0" would read worse than "zero".
-    // Held to that spelling by name rather than exempted from the rule,
-    // so the rule keeps its teeth for the other nineteen.
+    // Five refusals name their value in words rather than in digits,
+    // because the value IS zero and "0" would read worse. They are held
+    // to that spelling by name rather than exempted from the rule, so the
+    // rule keeps its teeth for every refusal that carries a number — and
+    // the five stay consistent with each other, which is why the chat one
+    // says "zero bytes" rather than "no bytes".
     let spelled_out = |text: &str| assert!(text.contains("zero"), "expected the word: \"{text}\"");
 
     for case in wire_errors {
@@ -746,7 +759,8 @@ fn refusals_display_their_evidence() {
             WireError::SessionZero
             | WireError::FrameCountZero
             | WireError::InputBytesZero
-            | WireError::DigestPeriodZero => spelled_out(&text),
+            | WireError::DigestPeriodZero
+            | WireError::ChatEmpty => spelled_out(&text),
             _ => assert!(
                 text.chars().any(|character| character.is_ascii_digit()),
                 "{case:?} printed no number: \"{text}\" — a refusal that names no value teaches                  a reader nothing"
@@ -774,6 +788,9 @@ fn every_body_size_is_a_function_of_its_kind() {
     assert_eq!(Kind::Digest.body_bytes(9, 9), Some(24));
     assert_eq!(Kind::Bye.body_bytes(u8::MAX, u8::MAX), Some(8));
     assert_eq!(Kind::Inputs.body_bytes(3, 2), Some(18));
+    // A chat body's length rides in `count`: one record, its own width.
+    assert_eq!(Kind::Chat.body_bytes(0, 0), Some(12));
+    assert_eq!(Kind::Chat.body_bytes(40, 9), Some(52));
     assert_eq!(
         Kind::Inputs.body_bytes(u8::MAX, u8::MAX),
         Some(12 + 255 * 255),
@@ -796,7 +813,7 @@ fn a_hand_built_datagram_writes_back_to_itself() {
     let hand_built: [u8; 40] = [
         // header, 16 bytes
         b'R', b'N', b'W', b'L',   // magic
-        0x01, 0x00,               // wire version 1, little-endian
+        0x02, 0x00,               // wire version 2, little-endian
         0x03,                     // kind 3 = Digest
         0x01,                     // sender: seat 1
         0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // session 0x0123456789abcdef
@@ -876,4 +893,116 @@ fn no_single_bit_flip_produces_a_second_spelling_of_the_same_datagram() {
             }
         }
     }
+}
+
+// ---- chat, the kind that is not simulation state ----
+
+#[test]
+fn a_chat_datagram_round_trips_and_carries_bytes_that_are_not_text() {
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    // Deliberately not UTF-8: this codec does not know what encoding a
+    // game speaks, and a reader that guessed would refuse real messages.
+    let raw = [0x00u8, 0x80, 0xc0, 0xff];
+    let len = write_chat(&mut out, addressing(), 42, &raw).expect("a legal message");
+
+    let datagram = read(&out[..len]).expect("a datagram this crate wrote");
+    assert_eq!(datagram.header.kind, Kind::Chat);
+    let Body::Chat(body) = datagram.body else {
+        panic!("a Chat decoded as something else")
+    };
+    assert_eq!(body.sequence, 42);
+    assert_eq!(body.text(), &raw[..]);
+
+    let mut again = [0u8; MAX_DATAGRAM_BYTES];
+    let again_len = write_chat(
+        &mut again,
+        datagram.header.addressing(),
+        body.sequence,
+        body.text(),
+    )
+    .expect("what the reader accepted, the writer must accept");
+    assert_eq!(&again[..again_len], &out[..len]);
+}
+
+#[test]
+fn the_chat_writer_refuses_what_the_reader_would() {
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    assert_eq!(
+        write_chat(&mut out, addressing(), 0, b""),
+        Err(WriteError::ChatLength {
+            saw: 0,
+            ceiling: MAX_CHAT_BYTES
+        })
+    );
+    let huge = [b'x'; MAX_CHAT_BYTES + 1];
+    assert_eq!(
+        write_chat(&mut out, addressing(), 0, &huge),
+        Err(WriteError::ChatLength {
+            saw: MAX_CHAT_BYTES + 1,
+            ceiling: MAX_CHAT_BYTES
+        })
+    );
+    // The ceiling itself is legal, so the refusal pins a range.
+    let widest = [b'x'; MAX_CHAT_BYTES];
+    let len = write_chat(&mut out, addressing(), 0, &widest).expect("the ceiling is legal");
+    assert_eq!(
+        len, MAX_DATAGRAM_BYTES,
+        "the widest chat fills a datagram exactly"
+    );
+    assert!(read(&out[..len]).is_ok());
+}
+
+#[test]
+fn an_empty_or_oversized_chat_on_the_wire_is_refused() {
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let len = write_chat(&mut out, addressing(), 7, b"hi").expect("legal");
+
+    // Length zero, hand-poked: the writer will not mint one.
+    let mut empty = out;
+    empty[HEADER_BYTES + 8] = 0;
+    assert_eq!(refusal(&empty[..len]), WireError::ChatEmpty);
+
+    // A length past the ceiling, likewise.
+    let mut oversized = out;
+    oversized[HEADER_BYTES + 8] = 200;
+    assert_eq!(
+        refusal(&oversized[..len]),
+        WireError::ChatTooLong {
+            saw: 200,
+            ceiling: MAX_CHAT_BYTES
+        }
+    );
+
+    // A length that disagrees with the datagram is a size mismatch.
+    let mut wrong = out;
+    wrong[HEADER_BYTES + 8] = 3;
+    assert!(matches!(
+        refusal(&wrong[..len]),
+        WireError::SizeMismatch {
+            kind: Kind::Chat,
+            ..
+        }
+    ));
+
+    // And its reserved bytes are pinned like every other kind's.
+    for step in 0..3 {
+        let mut padded = out;
+        padded[HEADER_BYTES + 9 + step] = 1;
+        assert_eq!(
+            refusal(&padded[..len]),
+            WireError::PadNotZero {
+                offset: HEADER_BYTES + 9 + step,
+                saw: 1
+            }
+        );
+    }
+
+    // Too short to declare its own size.
+    assert!(matches!(
+        refusal(&out[..HEADER_BYTES + 11]),
+        WireError::SizeMismatch {
+            kind: Kind::Chat,
+            ..
+        }
+    ));
 }

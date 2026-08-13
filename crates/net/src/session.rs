@@ -132,6 +132,15 @@ pub enum Refusal {
     WrongWidth { saw: u8, agreed: u8 },
     /// A digest for a `(peer, tick)` already held, disagreeing with it.
     DigestContradiction { peer: PeerId, tick: u64 },
+    /// A datagram the session does not handle, and must not.
+    ///
+    /// Today this is chat, and the refusal is the point rather than an
+    /// omission: chat is not simulation state, so a session that absorbed
+    /// one would be a session holding something that must never reach a
+    /// digest. The driver routes it to [`crate::ChatChannel`] instead.
+    /// The compiler enforces the split — `Body` is exhaustive, so a new
+    /// kind cannot be quietly ignored here.
+    NotSessionTraffic { kind: wire::Kind },
 }
 
 /// Why a session ended. Every arm is terminal.
@@ -530,6 +539,9 @@ impl Session {
                 self.playing_seen = self.playing_seen.with(sender);
                 self.absorb_digest(sender, body.tick, body.state_digest, body.input_digest)
             }
+            Body::Chat(_) => self.refuse(Refusal::NotSessionTraffic {
+                kind: wire::Kind::Chat,
+            }),
             Body::Bye(body) => {
                 let outcome = Outcome::PeerLeft {
                     peer: sender,
