@@ -164,19 +164,28 @@ file = "crates/volume/src/volume.rs"
 lines = [248, 268]
 reason = "Two restatements of a bound already proved, re-anchored from 220 and 240 by content rather than by arithmetic. `index_of` returns only indices inside the cells vector, and the chunk is that index divided by the chunk size, so neither the slot lookup at 248 nor the version lookup at 268 can be absent. The let-else and the if-let say so without a banned expect, which is the shape the sibling exemptions in the rendering crate record for the same reason. Driving either would mean breaking the bounds check they stand behind."
 
+
 [[exempt]]
 file = "crates/net/src/wire.rs"
-lines = [147]
+lines = [183]
 reason = "The overflow arm of the Inputs body-size product. Both factors are u8, so the product peaks at 65,025 and cannot leave u64 — no datagram, and no fuzzer, can drive it. The check is written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and this one is reached from a reader parsing hostile bytes. It cannot be folded away either: `Option::and_then` is not callable in a const fn, so the arm has to be spelled out."
+
+[[exempt]]
+file = "crates/net/src/wire.rs"
+lines = [1208, 1209, 1210, 1211]
+reason = "The narrowing conversion on a chat message's length in the writer, guarded three lines above by a check that bounds the length to MAX_CHAT_BYTES — 128, which fits a byte with room to spare. Kept fallible rather than cast because that ceiling is derived from the datagram size rather than chosen, and a cast would stop being safe the day it crosses 255 without anything saying so."
+
+[[exempt]]
+file = "crates/net/src/chat.rs"
+lines = [244, 245, 246, 247, 324, 325, 326, 327]
+reason = "The same narrowing on both sides of the channel. On the send side the caller's slice is measured against MAX_CHAT_BYTES immediately above; on the receive side the reader has already refused anything longer. Both are unreachable while that ceiling stays under 256, and both are written fallible for the reason above: a silently wrapped length is a reader pointed at the wrong bytes."
+
+[[exempt]]
+file = "crates/net/src/session.rs"
+lines = [716, 770, 1083, 1095, 1119]
+reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
 
 [[exempt]]
 file = "crates/net/src/desync.rs"
 lines = [128, 133, 167]
 reason = "The error arms of `write!` inside a Display implementation. A formatter over a String cannot fail, so these propagate an error that never arrives; they exist because Display must be total and `?` is the only honest way to write that. Every one of them sits on a line whose successful path is covered by the JSON tests."
-
-[[exempt]]
-file = "crates/net/src/session.rs"
-lines = [704, 758, 1071, 1083, 1107]
-reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
-lines = [183]
-reason = "The overflow arm of the Inputs body-size product. Both factors are u8, so the product peaks at 65,025 and cannot leave u64 — no datagram, and no fuzzer, can drive it. The check is written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and this one is reached from a reader parsing hostile bytes. It cannot be folded away either: `Option::and_then` is not callable in a const fn, so the arm has to be spelled out. Re-anchored from 147 to 183 by content when the chat kind was added above it."
