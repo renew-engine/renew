@@ -55,6 +55,9 @@ pub use crate::event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, s
 pub struct LoopControl {
     exit: bool,
     redraw: bool,
+    /// A change of mind about the cursor, if the app had one this
+    /// iteration. `None` leaves the grab as it is.
+    cursor: Option<bool>,
 }
 
 impl LoopControl {
@@ -67,6 +70,22 @@ impl LoopControl {
     /// [`WindowEvent::RedrawRequested`]).
     pub fn request_redraw(&mut self) {
         self.redraw = true;
+    }
+
+    /// Hold the cursor for mouse look, or release it.
+    ///
+    /// **Between events, not only at bring-up.** An application with a
+    /// menu has to release the cursor to be clicked and take it back to
+    /// be played, and it learns which it wants long after the window
+    /// opened. Asking once at bring-up leaves it holding an invisible
+    /// pointer over its own buttons.
+    ///
+    /// Idempotent, and the loop still owns the lifecycle: focus loss
+    /// releases the grab whatever was asked here, and focus return
+    /// reapplies the last request. Refusal is ordinary — cursor
+    /// confinement is one of the places the desktops differ.
+    pub fn hold_cursor(&mut self, held: bool) {
+        self.cursor = Some(held);
     }
 }
 
@@ -373,6 +392,13 @@ impl Adapter<'_> {
         }
         let mut control = LoopControl::default();
         self.app.update(&mut control);
+        if let Some(held) = control.cursor {
+            self.cursor_wanted.set(held);
+            // The answer is the same one bring-up gets and means the
+            // same thing: a desktop that refuses confinement plays on
+            // without mouse look, which is not a failure to report.
+            let _refused = self.apply_cursor_grab(held);
+        }
         if control.redraw
             && let Some(window) = &self.window
         {
