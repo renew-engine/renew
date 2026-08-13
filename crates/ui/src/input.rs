@@ -283,22 +283,38 @@ impl Ui {
     /// - *Styles and the tree structure*: authoring data, same road.
     /// - *The output queue*: its contents are exactly the activated
     ///   ids in order, and the decision fold above records that
-    ///   sequence — so two states with equal digests hand their hosts
-    ///   the same drained decisions.
+    ///   sequence — so two states with equal digests have activated the
+    ///   same nodes in the same order. **Not the same thing as holding
+    ///   the same queue**, and the earlier wording said the stronger
+    ///   thing: draining is a host action this digest never sees, so a
+    ///   host that drained after every click and one that never drained
+    ///   share a digest and hand over three decisions versus none.
+    ///   Demonstrated by review rather than reasoned about.
     /// - *A field's bytes, its cursor, and how much of the pool is
     ///   occupied*: the edit fold above records the stream that
     ///   produced them — which node, which kind of event, which
-    ///   character or operation, in order — so two states with equal
-    ///   digests were typed into identically and hold identical text.
-    ///   The bytes themselves stay out because folding them on every
-    ///   keystroke is linear in a field's length for a property the
-    ///   stream already has. **Pool occupancy is the weaker half and is
-    ///   named as such:** a slot freed by a removal is reclaimed
-    ///   lazily, so two states with equal digests can differ in how
-    ///   many fields they will accept next. Nothing observable today
-    ///   turns on that, and a review measured it rather than assuming
-    ///   — but it is a difference the digest does not see, and this is
-    ///   where that is said out loud.
+    ///   character or operation, in order. **For two states with the
+    ///   same live tree and the same field set**, equal digests
+    ///   therefore mean identical text: the bytes stay out because
+    ///   folding them on every keystroke is linear in a field's length
+    ///   for a property the stream already has.
+    ///
+    ///   That hedge is load-bearing and an earlier version of this
+    ///   bullet lacked it, which a review demonstrated three ways. Two
+    ///   trees can share a digest while one holds a field with `"a"` and
+    ///   the other holds no text, because the focused node was removed
+    ///   and the stale id is absorbed unchanged. Two trees with every
+    ///   node live can share one while a node is a field in one and not
+    ///   in the other — a difference the public API reports and the next
+    ///   keystroke acts on. And a tree that will accept a ninth field
+    ///   can share one with a tree that will refuse.
+    ///
+    ///   **The common cause is that this digest folds decisions, not the
+    ///   tree**, and which nodes exist and which of them are fields is
+    ///   tree state. That is the same road geometry and structure travel
+    ///   by, three bullets up; it is written out here rather than left
+    ///   to the reader because the field pool is newer than that
+    ///   sentence and reads like an exception to it.
     /// - *Worn state patches*: derived from the absorbed pointer and
     ///   press/focus state applied over the excluded geometry and
     ///   authored tables — like geometry, dress reaches this digest

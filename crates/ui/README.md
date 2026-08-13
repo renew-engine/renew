@@ -126,6 +126,7 @@ claims a slot, `field_text` and `field_cursor` read one, and removing a
 node returns its slot to the pool. A field always holds valid UTF-8:
 insertion refuses rather than truncating when the last byte will not
 fit, and deletion steps whole characters.
+
 Hit-testing walks the retained rectangles topmost-first (children
 over parents, later siblings over earlier); a press remembers its
 node, a release on the same node activates it — queueing
@@ -145,6 +146,7 @@ every keystroke is linear in the field's length for a property the
 stream already has. What it therefore leaves out, and this is the half
 worth naming, is a field's bytes, its cursor, and how much of the pool
 is occupied.
+
 What it leaves out is named in the source beside it — hover is
 computed fresh rather than stored, geometry reaches the digest only
 by changing a decision, and a test pins exactly that: a padding
