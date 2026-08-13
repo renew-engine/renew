@@ -141,8 +141,18 @@ reason = "The scale-factor and keyboard arms of the winit event translation. Nei
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [923]
+lines = [954]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [535, 538]
+reason = "The key arm of typed_characters: the only arm that reads text off an OS key event. winit's KeyEvent carries a pub(crate) platform_specific field, so it cannot be constructed outside that crate and this arm cannot be entered from a test - checked in the pinned source rather than assumed. What the arm decides is covered without it: committed is a free function driven directly with both press and release, printable is driven over the control range, and the synthetic-event filter is a pattern in the match rather than a branch of its own. Deliberately narrow: the `_ => None` arm below is NOT exempted, because every non-key event a test dispatches enters it."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [351, 352, 353]
+reason = "Delivering the characters an OS key event committed. Unreachable for the same root cause as 535 and 538 - the loop can only have a body to run when the arm above yields text, and that needs an unconstructible KeyEvent. The decisions around it are covered and were deliberately left unexempted: the `if !self.commanding` guard on 349 is evaluated by every dispatched event, and the modifier state it reads is driven in both directions by a_modifier_change_is_remembered_until_the_next_one. So what is exempt here is the delivery, not the decision to deliver."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"

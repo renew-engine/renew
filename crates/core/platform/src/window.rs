@@ -692,6 +692,29 @@ mod tests {
         assert_eq!(committed(None, true), None, "a key with no text is a key");
     }
 
+    /// **Shift is not a command modifier, and that asymmetry is the
+    /// whole point.** The windowing library reports the unmodified text
+    /// for a modified key, so Ctrl+S arrives carrying `"s"`; without
+    /// this distinction every shortcut in an application would type a
+    /// letter into whatever field held focus. Shift has to fall the
+    /// other way, because it is how capitals are typed.
+    #[test]
+    fn the_command_modifiers_are_named_and_shift_is_not_one() {
+        use winit::keyboard::ModifiersState as Ms;
+
+        for state in [Ms::CONTROL, Ms::ALT, Ms::SUPER] {
+            assert!(commanding(state), "{state:?} addresses the application");
+        }
+        assert!(!commanding(Ms::empty()), "no modifier is not a shortcut");
+        assert!(!commanding(Ms::SHIFT), "shift is how capitals are typed");
+        // Shift alongside one is still a shortcut: the test would pass on
+        // an implementation that checked shift last and lost the others.
+        assert!(
+            commanding(Ms::SHIFT | Ms::CONTROL),
+            "a shortcut does not stop being one because shift is held"
+        );
+    }
+
     use super::*;
 
     /// **Raw motion crosses as a delta, not a position.** The two are
@@ -1007,6 +1030,44 @@ mod tests {
             app.events,
             [WindowEvent::CloseRequested, WindowEvent::Focused(false)],
             "the untranslatable event must be dropped, and only it"
+        );
+    }
+
+    /// **A modifier is a state, not an event, so the seam has to hold
+    /// it.** The library reports a modifier change once and then reports
+    /// keys, so whether a later keystroke is typing or a shortcut is
+    /// only answerable from what was remembered in between. Dispatching
+    /// the change is what proves it lands somewhere durable — the arm
+    /// could compute the right answer and drop it.
+    ///
+    /// That a held modifier then suppresses text is not asserted here
+    /// and cannot be: it takes a key event, and the library's key event
+    /// has no public constructor.
+    #[test]
+    fn a_modifier_change_is_remembered_until_the_next_one() {
+        use winit::event::WindowEvent as We;
+        use winit::keyboard::ModifiersState as Ms;
+
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        assert!(!adapter.commanding, "the loop starts with nothing held");
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::CONTROL.into()));
+        assert!(adapter.commanding, "a control press must be remembered");
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::SHIFT.into()));
+        assert!(
+            !adapter.commanding,
+            "releasing control while holding shift returns to typing"
+        );
+
+        adapter.dispatch(&We::ModifiersChanged(Ms::empty().into()));
+        assert!(!adapter.commanding, "releasing everything holds nothing");
+
+        assert!(
+            app.events.is_empty(),
+            "a modifier change is state, and reaches the application as no event of its own"
         );
     }
 
