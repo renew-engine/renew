@@ -327,6 +327,11 @@ pub struct Session {
 
     /// Seats that have said hello, including this one.
     hello_seen: PeerSet,
+    /// Seats seen *playing* — proved by any datagram only a playing peer
+    /// sends. A peer cannot leave `Joining` without having heard every
+    /// hello, so one of these is proof that peer heard ours, and that is
+    /// the acknowledgement this handshake has instead of an ack.
+    playing_seen: PeerSet,
     /// The tick handed out by `advance` and not yet committed.
     uncommitted: Option<(u64, bool)>,
 
@@ -356,6 +361,7 @@ impl Session {
             theirs: [[None; HISTORY]; PEERS],
             owed_digest: None,
             hello_seen: PeerSet::EMPTY.with(params.local()),
+            playing_seen: PeerSet::EMPTY,
             uncommitted: None,
             outcome: None,
             stats: SessionStats::default(),
@@ -513,8 +519,12 @@ impl Session {
                 self.maybe_start();
                 Delivery::Accepted
             }
-            Body::Inputs(body) => self.absorb_inputs(sender, &body),
+            Body::Inputs(body) => {
+                self.playing_seen = self.playing_seen.with(sender);
+                self.absorb_inputs(sender, &body)
+            }
             Body::Digest(body) => {
+                self.playing_seen = self.playing_seen.with(sender);
                 self.absorb_digest(sender, body.tick, body.state_digest, body.input_digest)
             }
             Body::Bye(body) => {
@@ -963,12 +973,26 @@ impl Session {
         best
     }
 
+    /// Whether this peer still owes anyone a hello.
+    ///
+    /// **Not "am I joining".** A hello that is lost while the sender goes
+    /// on to play is a hello never sent again, and the peer that missed it
+    /// waits in `Joining` forever holding a full set of that sender's
+    /// input frames — stalled on a handshake rather than on data, with no
+    /// error raised anywhere. So a hello keeps going out until every
+    /// remote has been *seen playing*, which is proof it heard this one.
+    /// That terminates: a peer cannot play without having heard everyone.
+    fn hello_owed(&self) -> bool {
+        !matches!(self.phase, Phase::Over) && self.playing_seen != self.params.remotes()
+    }
+
     /// The first thing a pump emits, given the phase.
-    const fn first_emit(&self) -> Emit {
+    fn first_emit(&self) -> Emit {
         match self.phase {
-            Phase::Joining => Emit::Hello,
-            Phase::Playing => Emit::Inputs,
             Phase::Over => Emit::Bye,
+            _ if self.hello_owed() => Emit::Hello,
+            Phase::Playing => Emit::Inputs,
+            Phase::Joining => Emit::Hello,
         }
     }
 
@@ -986,9 +1010,11 @@ impl Session {
                 self.emit_peer = self.emit_peer.saturating_add(1);
             }
             self.emit_peer = 0;
-            // Inputs is the only kind with anything after it. Every other
-            // kind is the whole of what its phase says, so the pump ends.
             self.emit = match self.emit {
+                // A hello no longer ends the pump: a peer that is playing
+                // and still owes a hello sends both, or its inputs would
+                // stop while it re-announced.
+                Emit::Hello if matches!(self.phase, Phase::Playing) => Emit::Inputs,
                 Emit::Inputs => Emit::Digest,
                 _ => Emit::Done,
             };
@@ -1055,14 +1081,35 @@ impl Session {
         }
         let newest = self.local_next.saturating_sub(1);
         let want = u64::from(INPUT_REDUNDANCY);
-        let oldest = newest
-            .saturating_sub(want.saturating_sub(1))
-            .max(self.pending);
-        let count = u8::try_from(newest.saturating_sub(oldest).saturating_add(1)).ok()?;
+        let local = self.params.local();
+
+        // **Bounded by what this peer has submitted, never by what it has
+        // confirmed.** Clamping the run to the local frontier is the
+        // obvious thing to write and it deadlocks: the moment this peer
+        // confirms a tick it would stop repeating it, so a peer that never
+        // received that frame could never be sent it again — each waiting
+        // on the other, forever, with no error raised anywhere. A sender's
+        // own progress says nothing about what a receiver still needs.
+        //
+        // Walked backwards from the newest and stopped at the first gap,
+        // so a frame the ring has already recycled ends the run instead of
+        // cancelling the whole datagram.
+        let mut oldest = newest;
+        let mut span = 1u64;
+        while span < want {
+            let Some(earlier) = oldest.checked_sub(1) else {
+                break;
+            };
+            if self.frame_of(local, earlier).is_none() {
+                break;
+            }
+            oldest = earlier;
+            span = span.saturating_add(1);
+        }
+        let count = u8::try_from(span).ok()?;
         let width = usize::from(self.params.input_bytes());
 
         let mut run = [0u8; (INPUT_REDUNDANCY as usize) * WIDTH];
-        let local = self.params.local();
         for step in 0..u64::from(count) {
             let tick = oldest.checked_add(step)?;
             let bytes = self.frame_of(local, tick)?;

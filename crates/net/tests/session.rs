@@ -55,7 +55,15 @@ type Wire = (u8, Vec<u8>);
 /// One peer's confirmed run: every tick, and the inputs that made it.
 type Run = Vec<(u64, Vec<u8>)>;
 
-/// Both peers' runs, and both peers' final input fingerprints.
+/// Both peers' runs, and each peer's input fingerprint **at exactly the
+/// requested tick count**.
+///
+/// Snapshotted at that tick rather than read at the end, and the
+/// distinction is load-bearing: the fold runs once per confirmed tick, so
+/// two runs that overshoot the target by different amounts hold different
+/// folds while having confirmed identical inputs. Comparing the end state
+/// of two such runs compares how far each happened to get, which is a
+/// property of the link and not of the simulation.
 type Converged = ([Run; 2], [u64; 2]);
 
 /// Drain one session's outbound queue into a list of datagrams.
@@ -83,6 +91,7 @@ fn converge(delay: u8, ticks: u64, mut hazard: impl FnMut(usize, &Wire) -> Vec<W
     // lifetime of the session, which is why the type is shaped this way.
     let mut peers = [Box::new(session(0, delay)), Box::new(session(1, delay))];
     let mut confirmed: [Run; 2] = [Vec::new(), Vec::new()];
+    let mut digest_at: [Option<u64>; 2] = [None, None];
     let mut inflight: Vec<Wire> = Vec::new();
     let mut step = 0usize;
 
@@ -144,6 +153,14 @@ fn converge(delay: u8, ticks: u64, mut hazard: impl FnMut(usize, &Wire) -> Vec<W
                         });
                         peer.commit(tick, confirmed_step.digest_due().then_some(world))
                             .expect("the tick just handed out");
+                        if confirmed
+                            .get(index)
+                            .is_some_and(|run| run.len() as u64 == ticks)
+                            && let Some(slot) = digest_at.get_mut(index)
+                            && slot.is_none()
+                        {
+                            *slot = Some(peer.input_digest());
+                        }
                     }
                     Advance::Waiting | Advance::Stalled { .. } => break,
                     Advance::Ended(outcome) => panic!("unexpected end: {outcome:?}"),
@@ -155,7 +172,19 @@ fn converge(delay: u8, ticks: u64, mut hazard: impl FnMut(usize, &Wire) -> Vec<W
         }
     }
 
-    let digests = [peers[0].input_digest(), peers[1].input_digest()];
+    // Truncated to exactly the requested count, and that is the claim
+    // being made rather than a convenience. Peers run at their own pace,
+    // so the loop stops when BOTH have reached the target and one may have
+    // taken a further tick inside that last pump. "Both stopped at the
+    // same instant" is not a property of lockstep and could not be: what
+    // is promised is that the sequences agree wherever both have one.
+    for run in &mut confirmed {
+        run.truncate(usize::try_from(ticks).unwrap_or(usize::MAX));
+    }
+    let digests = [
+        digest_at[0].unwrap_or_else(|| peers[0].input_digest()),
+        digest_at[1].unwrap_or_else(|| peers[1].input_digest()),
+    ];
     (confirmed, digests)
 }
 
@@ -298,4 +327,44 @@ fn leaving_is_terminal_and_names_the_last_confirmed_tick() {
     assert!(matches!(peer.advance(), Advance::Ended(_)));
     assert!(!peer.wants_local());
     assert!(matches!(peer.submit(&[0]), Err(SubmitError::Ended(_))));
+}
+
+/// The regression for the deadlock the allocation gate found.
+///
+/// An earlier `render_inputs` bounded its redundancy run by the *sender's*
+/// confirmed frontier. The moment a peer confirmed a tick it stopped
+/// repeating it — so a peer that had never received that frame could never
+/// be sent it again. Both then waited on each other forever, and nothing
+/// raised an error: no refusal, no desync, no timeout. Two sessions
+/// politely stalled, which is the worst shape a bug can take here.
+///
+/// **The hazard has to be one-way, and that is the whole point.** A
+/// symmetric blackout stalls both peers equally and never reproduces it —
+/// the first version of this test did exactly that and passed against the
+/// bug. The deadlock needs one peer to run *ahead*: seat 1 keeps hearing
+/// seat 0 and confirms ticks, while seat 0 hears nothing and starves. When
+/// the link heals, seat 1 must still be willing to repeat frames it has
+/// long since confirmed, or seat 0 never catches up.
+#[test]
+fn a_starved_peer_still_catches_up_after_a_one_way_blackout() {
+    // Seat 0's datagrams always arrive. Seat 1's are dropped for the first
+    // stretch, so seat 1 races ahead while seat 0 waits on tick zero.
+    let (runs, digests) = converge(2, 30, |step, wire| {
+        let (sender, _) = wire;
+        if *sender == 1 && step <= 10 {
+            Vec::new()
+        } else {
+            vec![wire.clone()]
+        }
+    });
+    assert_eq!(runs[0], runs[1], "the two peers confirmed different inputs");
+    assert_eq!(digests[0], digests[1]);
+
+    let (perfect, perfect_digests) = converge(2, 30, |_, wire| vec![wire.clone()]);
+    assert_eq!(
+        runs[0][..30],
+        perfect[0][..30],
+        "a one-way blackout reached a confirmed value"
+    );
+    assert_eq!(digests[0], perfect_digests[0]);
 }
