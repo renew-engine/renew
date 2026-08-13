@@ -23,7 +23,7 @@
 
 use renew_fixed::Fixed;
 use renew_frame::StateHash;
-use renew_ui::{Align, Direction, Edges, Size, Style, Ui, UiEvent, UiLimits};
+use renew_ui::{Align, Direction, Edges, EditOp, NodeId, Size, Style, Ui, UiEvent, UiLimits};
 
 fn main() {
     // The scenario takes no arguments; being handed one means the
@@ -48,10 +48,76 @@ fn main() {
     );
 }
 
+/// The typed half of the scenario, lifted out so `run` stays inside the
+/// line limit the canonical lint enforces.
+///
+/// **This is the only part of the scenario that exercises text**, and it
+/// covers both event kinds and the whole editing vocabulary. U+0003 is
+/// here on purpose: Windows delivers it for Ctrl and a letter, and a
+/// typed scalar once shared a token namespace with an operation code.
+///
+/// **What it does not do is catch an exchanged digest token.** This lane
+/// holds its legs against *each other*, never against a committed
+/// constant, so exchanging two tokens moves every target's digest by the
+/// same amount and the comparison still agrees. That covers two sets:
+/// the operation codes on `EditOp`, and the two event-kind tags in the
+/// input module. Nothing in this repository catches either exchange
+/// today, and naming the whole class is worth more than a guard that is
+/// not one — a hole known by half is the one that gets trusted.
+fn type_into(ui: &mut Ui, node: NodeId, mut hash: StateHash) -> Option<StateHash> {
+    // An error rather than a skip: silently dropping these would leave
+    // the reported event count claiming them.
+    ui.make_field(node).ok()?;
+    for &event in &TYPING {
+        ui.handle(event);
+        hash = ui.absorb(hash);
+    }
+    // **The typed events must have landed somewhere.** Without this the
+    // whole block is decoration: replace the claim above with a no-op
+    // and all ten events reach a node that is not a field, doing
+    // nothing, while the reported count still says twenty-seven and
+    // every cross-target leg still agrees. Anything that moves focus off
+    // this node before the typing — a restyle, a layout change, a change
+    // to focus-follows-activation — would empty the only part of this
+    // scenario that exercises text, silently.
+    //
+    // The script leaves "hi" less its last character plus an inserted
+    // one, so a non-empty field is the evidence the events were taken.
+    let typed = ui.field_text(node)?;
+    if typed.is_empty() {
+        return None;
+    }
+    Some(hash)
+}
+
+/// The typed events, as a constant so `run` can count them without
+/// holding the array.
+const TYPING: [UiEvent; 10] = [
+    UiEvent::TextEntered { ch: 0x68 },
+    UiEvent::TextEntered { ch: 0x69 },
+    UiEvent::TextEntered { ch: 3 },
+    UiEvent::Edit { op: EditOp::Left },
+    UiEvent::TextEntered { ch: 0xe9 },
+    UiEvent::Edit { op: EditOp::Home },
+    UiEvent::Edit { op: EditOp::Right },
+    UiEvent::Edit { op: EditOp::Delete },
+    UiEvent::Edit { op: EditOp::End },
+    UiEvent::Edit {
+        op: EditOp::Backspace,
+    },
+];
+
 /// The scripted session: build the menu, solve it, walk the script,
-/// folding the tree's digest after every event and the solved
-/// geometry after every solve. `None` only if the tree refuses its
-/// own construction, which the limits above make impossible.
+/// folding the tree's digest after every event and the solved geometry
+/// after every solve, then hand the typed half to [`type_into`].
+///
+/// `None` on any of four roads, all of them unreachable under this
+/// file's own limits and all of them ending in main's nonzero exit
+/// rather than in a digest: the two inserts, the field pool refusing a
+/// slot — which would silently empty the only part of this scenario
+/// that exercises text, so it ends the run rather than shrinking it —
+/// and the style read-back, which answers `None` only for an id the
+/// tree does not know.
 fn run() -> Option<(u64, usize, u64)> {
     let mut ui = Ui::new(UiLimits { nodes: 16 });
     let root = ui.root();
@@ -125,6 +191,8 @@ fn run() -> Option<(u64, usize, u64)> {
         hash = ui.absorb(hash);
     }
 
+    hash = type_into(&mut ui, buttons[2], hash)?;
+
     // Mid-session restyle: the growing button stops growing, the tree
     // re-solves, and the pixel that hit the middle button before the
     // restyle now hits the last one — the coda click activates a
@@ -150,7 +218,11 @@ fn run() -> Option<(u64, usize, u64)> {
         hash = ui.absorb(hash);
     }
     let activations = ui.drain_outputs().count() as u64;
-    Some((hash.finish(), script.len() + coda.len(), activations))
+    Some((
+        hash.finish(),
+        script.len() + TYPING.len() + coda.len(),
+        activations,
+    ))
 }
 
 /// Fold the solved rectangles of `nodes`, to the raw fixed-point bit.
@@ -172,19 +244,39 @@ mod tests {
     /// The scenario is a pure function: two runs in one process agree
     /// exactly. The cross-machine half of the claim belongs to the
     /// comparison lane, which is the point of the binary existing.
+    ///
+    /// **Agreement is asserted only after the scenario is known to have
+    /// produced something.** `None == None` is agreement too, so a
+    /// version of this that compared the two calls alone stayed green
+    /// against a scenario collapsed to nothing — stubbing the field
+    /// claim was enough to do it.
     #[test]
     fn the_scenario_reproduces_in_process() {
-        assert_eq!(run(), run());
+        let first = run();
+        assert!(
+            first.is_some(),
+            "the scenario produced nothing, so agreement means nothing"
+        );
+        assert_eq!(first, run());
     }
 
     /// The script really decides things: two activations before the
     /// restyle and one after, counted from the drained queue — a
     /// scenario that stopped deciding could never pass this, however
     /// stable its digest.
+    ///
+    /// The event count is pinned for the same reason, and it caught
+    /// exactly what it is for: typing was added to the scenario while
+    /// the reported count still said seventeen, so the machine-readable
+    /// line understated what had run. Both halves move together or the
+    /// number is decoration.
     #[test]
     fn the_scenario_actually_activates() {
         let (digest, events, activations) = run().expect("the scenario builds its own tree");
-        assert_eq!(events, 17);
+        assert_eq!(
+            events, 27,
+            "fourteen pointer, ten typed or edited, three coda"
+        );
         assert_eq!(activations, 3, "the script activates exactly three times");
         assert_ne!(digest, 0);
     }

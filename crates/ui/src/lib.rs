@@ -46,12 +46,14 @@
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 pub mod document;
+mod field;
 mod input;
 mod layout;
 pub mod state;
 pub mod text;
 
 pub use document::{Document, DocumentError};
+pub use field::{EditOp, MAX_FIELD_BYTES, MAX_FIELDS, POOL_BYTES};
 use input::Interaction;
 pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
@@ -90,7 +92,16 @@ pub struct UiLimits {
 pub enum UiRefused {
     /// The tree already holds [`UiLimits::nodes`] nodes.
     Full,
-    /// The named parent is not live: removed since the id was taken.
+    /// A node the operation named is not live: removed since the id was
+    /// taken.
+    ///
+    /// **The name is `insert`'s, and it outgrew it.** There the node is
+    /// genuinely a parent; `make_field` reuses the variant for a node
+    /// that is nobody's parent, because the condition is the same one
+    /// and a second variant meaning "some other id was stale" would be
+    /// a distinction no caller acts on differently. The `Display` below
+    /// still says "parent", which is the honest cost of the reuse and
+    /// is written down rather than papered over.
     MissingParent,
 }
 
@@ -208,6 +219,12 @@ pub struct Ui {
     free: u32,
     live: u32,
     limits: UiLimits,
+    /// The text fields: a fixed pool, present in every tree.
+    ///
+    /// [`POOL_BYTES`] whether the tree has a field or not, which is the price
+    /// of asking no caller to declare a capacity. See [`field`] for the
+    /// two designs this beat.
+    fields: [field::Field; MAX_FIELDS],
 }
 
 impl Ui {
@@ -241,6 +258,7 @@ impl Ui {
             dirty: true,
             solved_for: (Fixed::ZERO, Fixed::ZERO),
             interaction: Interaction::default(),
+            fields: [field::Field::EMPTY; MAX_FIELDS],
             outputs: Vec::with_capacity(capacity as usize),
             states: vec![state::StateSlot::default(); capacity as usize],
             patches: Vec::new(),
@@ -323,6 +341,10 @@ impl Ui {
         if index == 0 {
             return false;
         }
+        // No field release here, deliberately. The reclaim in
+        // `make_field` covers every freed slot by asking the arena who
+        // is live, and `field_slot` refuses a stale id before it looks,
+        // so a release on this path is a line no test can distinguish.
         self.unlink(index);
         self.free_subtree(index);
         self.dirty = true;
@@ -530,6 +552,106 @@ impl Ui {
         if moves {
             self.dirty = true;
         }
+    }
+
+    /// Make `node` a text field, claiming one of the pool's slots.
+    ///
+    /// Idempotent: a node that is already a field keeps its slot and its
+    /// contents, so a caller rebuilding a screen does not wipe what
+    /// somebody typed.
+    ///
+    /// # Errors
+    ///
+    /// [`UiRefused::Full`] when every slot in the pool is taken — the
+    /// same refusal a full arena gives, for the same reason. A ninth
+    /// simultaneous field is a different kind of interface.
+    ///
+    /// [`UiRefused::MissingParent`] for a stale id. The variant's name
+    /// is `insert`'s and reads oddly here, since this node is nobody's
+    /// parent; see the variant for why it is reused rather than
+    /// twinned.
+    pub fn make_field(&mut self, node: NodeId) -> Result<(), UiRefused> {
+        if !self.is_live(node) {
+            return Err(UiRefused::MissingParent);
+        }
+        if self.field_slot(node).is_some() {
+            return Ok(());
+        }
+        // Reclaim before refusing. A slot whose owner is no longer live
+        // belongs to nobody, and chasing every path that can end a
+        // node's life is a losing game: removing a parent ends its
+        // children too, and the next kind of removal will end them some
+        // third way. Asking the arena who is alive is the answer that
+        // cannot go stale. Removing a panel rather than the field
+        // inside it is the case that makes the difference visible.
+        for index in 0..MAX_FIELDS {
+            let dead = self
+                .fields
+                .get(index)
+                .and_then(|slot| slot.owner)
+                .is_some_and(|owner| !self.is_live(owner));
+            if let Some(slot) = self.fields.get_mut(index).filter(|_| dead) {
+                *slot = field::Field::EMPTY;
+            }
+        }
+        let free = self
+            .fields
+            .iter()
+            .position(|slot| slot.owner.is_none())
+            .ok_or(UiRefused::Full)?;
+        if let Some(slot) = self.fields.get_mut(free) {
+            // No clear here, and that is checked rather than assumed.
+            // A slot is free only when its `owner` is `None`, and the
+            // only two ways that happens both write the whole struct:
+            // the reclaim above assigns `Field::EMPTY`, and so does
+            // construction. There is no third, which is the point — a
+            // partial free would leave bytes behind a `None` owner and
+            // this clear would be load-bearing.
+            //
+            // **`remove` is not one of those ways.** Removal leaves the
+            // slot owned by a node that is gone, and the reclaim is what
+            // notices, later.
+            slot.owner = Some(node);
+        }
+        Ok(())
+    }
+
+    /// What a field holds, as bytes.
+    ///
+    /// **Always valid UTF-8**, because insertion encodes a whole scalar
+    /// and deletion steps whole characters. [`None`] for a node that is
+    /// not a field.
+    #[must_use]
+    pub fn field_text(&self, node: NodeId) -> Option<&[u8]> {
+        self.fields
+            .get(self.field_slot(node)?)
+            .map(field::Field::text)
+    }
+
+    /// Where the cursor sits in a field, in bytes from the start.
+    ///
+    /// Always on a character boundary and never past the length.
+    /// [`None`] for a node that is not a field, the same as
+    /// [`Self::field_text`].
+    #[must_use]
+    pub fn field_cursor(&self, node: NodeId) -> Option<u8> {
+        self.fields
+            .get(self.field_slot(node)?)
+            .map(field::Field::cursor)
+    }
+
+    /// Which pool slot a node owns, if any.
+    ///
+    /// **Liveness is checked here rather than trusted.** A slot outlives
+    /// its node: nothing releases it on removal, and the next
+    /// [`Ui::make_field`] reclaims it. So the owner recorded in a slot
+    /// can name a node that is gone, and checking is what makes a stale
+    /// id miss, the way it misses everywhere else in this crate.
+    fn field_slot(&self, node: NodeId) -> Option<usize> {
+        if !self.is_live(node) {
+            return None;
+        }
+        self.fields.iter().position(|slot| slot.owner == Some(node))
     }
 
     /// The style `node` currently holds; `None` for stale ids.

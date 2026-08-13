@@ -8,12 +8,20 @@
 //! [`crate::Ui::handle`]. No float enters this crate, so nothing here
 //! can put one where a digest sees it.
 //!
-//! **The v0 interaction vocabulary** is hover, press/release
-//! activation, and focus — focus follows activation, because the first
-//! consumer is a menu and a clicked button is the focused one. Keyboard
-//! traversal, scroll, and text input are cut until a consumer needs
-//! them; each returns with its own quantization rule where floats are
-//! involved.
+//! **The interaction vocabulary** is hover, press/release activation,
+//! focus, and — for whichever node holds focus and is a text field —
+//! typed characters and a closed set of editing operations. Focus
+//! follows activation, because the first consumer was a menu and a
+//! clicked button is the focused one; text arrived when a consumer
+//! needed a typed address and had nowhere to put it. Keyboard traversal
+//! and scroll are still cut until a consumer needs them; each returns
+//! with its own quantization rule where floats are involved.
+//!
+//! A typed character arrives as a Unicode scalar, never a key code.
+//! What a keystroke means — shift, layout, dead keys, composition — is
+//! the window system's answer and differs per platform and per person,
+//! so a tree deriving a character from a key would be wrong differently
+//! everywhere. It is the same line the pointer draws.
 //!
 //! **Hit-testing walks the retained rectangles** of the last
 //! [`crate::Ui::solve`], topmost first: children draw over their
@@ -37,6 +45,18 @@ pub enum UiEvent {
     PointerPressed,
     /// The primary button came up at the current pointer position.
     PointerReleased,
+    /// One character was typed, as a Unicode scalar value.
+    ///
+    /// **A scalar, not a key.** Shift, layout, dead keys and IME
+    /// composition are the window system's answer and differ per
+    /// platform and per person; a tree deriving a character from a key
+    /// code would be wrong differently everywhere. The driver decides
+    /// what a keystroke means, exactly as it decides what a pointer
+    /// position is. A value that is not a scalar is ignored rather than
+    /// refused — this event carries no failure back to anyone.
+    TextEntered { ch: u32 },
+    /// One editing operation, from the closed set the tree understands.
+    Edit { op: crate::EditOp },
 }
 
 /// One decision the tree made, queued for the host to drain.
@@ -46,6 +66,25 @@ pub enum UiOutput {
     /// happened, and the node now holds focus.
     Activated(NodeId),
 }
+
+/// Which kind of event a folded token came from.
+///
+/// **Without this the two share a namespace and collide.** An edit
+/// operation's code is a small integer and so is a control character's
+/// scalar, so typing U+0003 and pressing the key bound to `Left` folded
+/// the same number — and Windows delivers U+0001..U+001A for Ctrl with a
+/// letter, so it is a keystroke a player can produce by accident. Two
+/// materially different fields, different bytes *and* different cursor,
+/// shared a fingerprint.
+///
+/// The affine collision and this one are separate faults, and fixing the
+/// first hid the second: routing through the hash made the arithmetic
+/// sound and left the domain unexamined.
+///
+/// Exchanging these two values is caught by nothing, for the reason the
+/// scenario binary's typing script sets out.
+const KIND_TEXT: u64 = 1;
+const KIND_EDIT: u64 = 2;
 
 /// The interaction state one [`Ui`] carries between events.
 #[derive(Debug, Default)]
@@ -67,6 +106,13 @@ pub(crate) struct Interaction {
     /// different nodes, or the same nodes in a different order, hold
     /// different folds even after their queues drain.
     pub decisions: u64,
+    /// A running fold of every accepted edit, in order.
+    ///
+    /// **The stream, not the contents.** Folding a field's bytes on
+    /// every keystroke is linear in its length for a property this
+    /// already has: two runs that typed different things, or the same
+    /// things in a different order, differ here.
+    pub edit_fold: u64,
     /// Decisions dropped because the output queue was full. Absorbed
     /// into the digest: a dropped decision is a behaviour difference,
     /// and a counter is how it stays visible rather than silent.
@@ -85,6 +131,18 @@ impl Ui {
     /// every toolkit lets a mis-click be dragged off a button.
     pub fn handle(&mut self, event: UiEvent) {
         match event {
+            // Typing reaches the focused node and nothing else. A tree
+            // with no focus, or a focus that is not a field, hears the
+            // event and does nothing — which is what a keystroke into a
+            // page with no cursor in it should do.
+            UiEvent::TextEntered { ch } => {
+                if let Some(ch) = char::from_u32(ch) {
+                    self.edit_focused(KIND_TEXT, |field| field.insert(ch), u64::from(ch as u32));
+                }
+            }
+            UiEvent::Edit { op } => {
+                self.edit_focused(KIND_EDIT, |field| field.edit(op), op.code());
+            }
             UiEvent::PointerMoved { x, y } => {
                 self.interaction.pointer = (x, y);
             }
@@ -133,6 +191,64 @@ impl Ui {
         self.outputs.drain(..)
     }
 
+    /// Apply an edit to the focused field, folding it if it changed.
+    ///
+    /// **Only a change is folded.** A left arrow at the start of a field
+    /// does nothing, and an event that does nothing must not move the
+    /// fingerprint — otherwise two runs that reached the same field
+    /// contents by different amounts of cursor-bumping would disagree.
+    fn edit_focused(
+        &mut self,
+        kind: u64,
+        apply: impl FnOnce(&mut crate::field::Field) -> bool,
+        token: u64,
+    ) {
+        let Some(focus) = self.interaction.focus else {
+            return;
+        };
+        let Some(slot) = self.field_slot(focus) else {
+            return;
+        };
+        let Some(field) = self.fields.get_mut(slot) else {
+            return;
+        };
+        if !apply(field) {
+            return;
+        }
+        // Through `StateHash`, exactly as the decision fold two screens
+        // up does, and for a reason found the hard way: the first
+        // version rotated and added, which is **affine in the token**.
+        // `rot7(x + 1) == rot7(x) + 128`, so a token one larger and a
+        // later token 128 smaller cancel exactly — typing "aÈ" and
+        // typing "bH" produced one digest. A fingerprint that two
+        // different texts share is worse than none, because everything
+        // downstream trusts it.
+        //
+        // The previous fold seeds the next, so the sequence is the
+        // record rather than the count and the last entry.
+        //
+        // **Both halves of the id, and the generation is the half that
+        // is easy to argue away.** The argument goes: activation already
+        // folds the whole id into `decisions`, so two runs typing into
+        // different generations of one slot must have diverged upstream.
+        // It is false.
+        // `decisions` records *which nodes were activated in what
+        // order*; two runs can share that exactly and interleave typing
+        // between the same activations. Deleting the generation gave
+        // two live trees with the same fields and different text one
+        // fingerprint. `typing_before_a_slot_is_recycled_is_not_typing_after`
+        // is that case, and it exists because no test covered it — which
+        // is not the same as the line being untestable, though it reads
+        // the same from here.
+        self.interaction.edit_fold = StateHash::new()
+            .absorb_u64(self.interaction.edit_fold)
+            .absorb_u32(focus.index())
+            .absorb_u64(focus.generation())
+            .absorb_u64(kind)
+            .absorb_u64(token)
+            .finish();
+    }
+
     /// The node under the pointer, against the rectangles of the last
     /// [`Self::solve`] — computed fresh on every ask, so a re-solve
     /// that moved a box under a stationary pointer answers the new
@@ -160,7 +276,8 @@ impl Ui {
     /// **What is absorbed:** the pointer position (input echo — it
     /// decides the next press), the pressed and focus ids, the
     /// activation ordinal, the running fold of every activated id in
-    /// order, and the overflow count. Ids absorb as slot index plus
+    /// order, the overflow count, and the running fold of every
+    /// accepted text edit in order. Ids absorb as slot index plus
     /// generation, with the index `NIL` standing for none — a
     /// collision-free sentinel, since no real slot carries `NIL` and
     /// no generation is zero.
@@ -177,16 +294,56 @@ impl Ui {
     ///   press that hits a different node — which is exactly when it
     ///   should.
     /// - *Styles and the tree structure*: authoring data, same road.
-    /// - *The output queue*: its contents are exactly the activated
-    ///   ids in order, and the decision fold above records that
-    ///   sequence — so two states with equal digests hand their hosts
-    ///   the same drained decisions.
+    /// - *The output queue*: it holds activated ids in order, and the
+    ///   decision fold above records that sequence — so two states with
+    ///   equal digests have activated the same nodes in the same order.
+    ///   The queue itself is not that sequence when it has overflowed,
+    ///   which the counter beside it records and a test pins; the fold
+    ///   is, because it is folded before the queue is offered the id. **Not the same thing as holding
+    ///   the same queue**: draining is a host action this digest never
+    ///   sees, so a
+    ///   host that drained after every click and one that never drained
+    ///   share a digest and hand over three decisions versus none.
+    /// - *A field's bytes, its cursor, and how much of the pool is
+    ///   occupied*: the edit fold above records the stream that
+    ///   produced them — which node, which kind of event, which
+    ///   character or operation, in order. **For two states with the
+    ///   same live tree and the same field set**, equal digests
+    ///   therefore mean identical text: the bytes stay out because
+    ///   folding them on every keystroke is linear in a field's length
+    ///   for a property the stream already has.
+    ///
+    ///   That hedge is load-bearing, and there are three ways to lose
+    ///   it. Two
+    ///   trees can share a digest while one holds a field with `"a"` and
+    ///   the other holds no text, because the focused node was removed
+    ///   and the stale id is absorbed unchanged. Two trees with every
+    ///   node live can share one while a node is a field in one and not
+    ///   in the other — a difference the public API reports and the next
+    ///   keystroke acts on. And a tree that will accept a ninth field
+    ///   can share one with a tree that will refuse.
+    ///
+    ///   **The common cause is that this digest folds decisions, not the
+    ///   tree**, and which nodes exist and which of them are fields is
+    ///   tree state. That is the same road geometry and structure travel
+    ///   by, three bullets up; it is written out here rather than left
+    ///   to the reader because the field pool is newer than that
+    ///   sentence and reads like an exception to it.
     /// - *Worn state patches*: derived from the absorbed pointer and
     ///   press/focus state applied over the excluded geometry and
     ///   authored tables — like geometry, dress reaches this digest
-    ///   only by changing a decision. Two *identically authored*
-    ///   states with equal digests wear the same patches; authoring
-    ///   is excluded here exactly as styles are.
+    ///   only by changing a decision. Authoring is excluded here
+    ///   exactly as styles are.
+    ///
+    ///   **Not that equal digests mean identical dress.** Two trees
+    ///   authored by the same code, differing only in whether the solve
+    ///   ran before or after the first pointer move, hold one digest
+    ///   and wear different patches: bits refresh on an event, not on a
+    ///   solve. The difference is transient — the next event re-derives
+    ///   them from the pointer this digest already carries — so dress
+    ///   still reaches the digest only through decisions, which are
+    ///   absorbed. `a_lagging_patch_catches_up_and_the_digest_never_saw_it`
+    ///   in [`crate::state`] is that pair.
     #[must_use]
     pub fn absorb(&self, hash: StateHash) -> StateHash {
         let hash = hash
@@ -197,6 +354,7 @@ impl Ui {
         hash.absorb_u64(self.interaction.activations)
             .absorb_u64(self.interaction.decisions)
             .absorb_u64(self.interaction.overflowed)
+            .absorb_u64(self.interaction.edit_fold)
     }
 
     /// The deepest, latest node containing the point, or `None` when
