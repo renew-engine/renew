@@ -254,8 +254,12 @@ impl Field {
 /// than its bytes: it carries an owner, a length and a cursor, and
 /// `Option<NodeId>` pays a discriminant beside a `u32` and a `u64`. Any
 /// figure worked out by hand is wrong the first time the struct changes,
-/// and prose has no way to notice. The assertion below fails the build
-/// if a field grows past what the documentation claims.
+/// and prose has no way to notice — so no prose here states a figure,
+/// and the one test that pins a number reads it from this constant.
+///
+/// The assertion below is a separate and much looser thing: a ceiling of
+/// one kilobyte, past which "a rounding error in every tree" stops being
+/// self-evident and wants re-arguing rather than raising.
 pub const POOL_BYTES: usize = core::mem::size_of::<Field>() * MAX_FIELDS;
 
 const _: () = assert!(
@@ -263,3 +267,43 @@ const _: () = assert!(
     "the field pool is meant to be a rounding error in every tree; past a kilobyte that stops \
      being obviously true and the claim in the module doc needs re-arguing rather than editing"
 );
+
+#[cfg(test)]
+mod tests {
+    use super::EditOp;
+
+    /// No two operations fold the same number.
+    ///
+    /// **The distinctness half of the token problem, which is testable,
+    /// as against the exchange half, which is not.** Swapping two codes
+    /// preserves every distinction a digest comparison can make, so no
+    /// test here can see it. A *collision* is the opposite: it destroys
+    /// a distinction, and destroying one is exactly what a comparison
+    /// notices.
+    ///
+    /// This was documented at length as though the two halves were one
+    /// gap. They are not, and only one pair of the fifteen was guarded —
+    /// so `Home` could have been given `Left`'s number and the whole
+    /// workspace would have stayed green while two fields differing in
+    /// cursor position shared a fingerprint.
+    #[test]
+    fn every_operation_folds_a_different_number() {
+        const ALL: [EditOp; 6] = [
+            EditOp::Backspace,
+            EditOp::Delete,
+            EditOp::Left,
+            EditOp::Right,
+            EditOp::Home,
+            EditOp::End,
+        ];
+        for (index, one) in ALL.iter().enumerate() {
+            for other in ALL.iter().skip(index.saturating_add(1)) {
+                assert_ne!(
+                    one.code(),
+                    other.code(),
+                    "{one:?} and {other:?} fold the same number, so a digest cannot tell them apart"
+                );
+            }
+        }
+    }
+}

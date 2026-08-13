@@ -347,7 +347,7 @@ fn typing_into_a_focused_node_that_is_not_a_field_does_nothing() {
 }
 
 #[test]
-fn removing_a_node_releases_its_field_slot() {
+fn a_removed_nodes_slot_is_reclaimed_by_the_next_field() {
     // The pool is eight slots and a screen gets rebuilt. If a removed
     // node kept its slot, a form torn down and rebuilt eight times would
     // refuse the ninth field with no node holding any of them — a leak
@@ -389,7 +389,7 @@ fn a_stale_id_never_names_a_live_field() {
 }
 
 #[test]
-fn removing_a_parent_releases_its_childrens_field_slots() {
+fn a_removed_parents_childrens_slots_are_reclaimed_too() {
     // The direct release missed this case:
     // removing a panel ends the field inside it, and the field's slot
     // has to go back too. Chasing every path that can end a node's life
@@ -591,6 +591,88 @@ fn an_operation_that_changes_something_moves_the_fingerprint() {
     }
 }
 
+/// Give `node` a box, solve, and click it so it holds focus.
+#[allow(
+    clippy::expect_used,
+    reason = "a fixture that cannot be built is a failure of the fixture, and its message is the report"
+)]
+fn click_to_focus(ui: &mut Ui, node: renew_ui::NodeId) {
+    ui.set_style(
+        node,
+        Style {
+            width: Size::Px(Fixed::from_int(40)),
+            height: Size::Px(Fixed::from_int(20)),
+            ..Style::default()
+        },
+    );
+    ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+    let rect = ui.rect(node).expect("a solved field has a box");
+    let x = i32::try_from(rect.x.trunc_int() + 1).unwrap_or(0);
+    let y = i32::try_from(rect.y.trunc_int() + 1).unwrap_or(0);
+    ui.handle(UiEvent::PointerMoved { x, y });
+    ui.handle(UiEvent::PointerPressed);
+    ui.handle(UiEvent::PointerReleased);
+    assert_eq!(ui.focus(), Some(node), "the click must have given it focus");
+    let _ = ui.drain_outputs().count();
+}
+
+#[test]
+fn typing_before_a_slot_is_recycled_is_not_typing_after() {
+    // **The generation is what separates these two runs, and nothing
+    // else does.** Both click a node, remove it, insert a replacement
+    // that lands in the same arena slot with the next generation, and
+    // click that. One types before the removal, the other after. They
+    // end with the same live tree, the same single field, the same
+    // pointer, the same pressed and focused ids, and the same
+    // activation count and decision fold — because the *sequence of
+    // activations* is identical either way. Only the text differs.
+    //
+    // The reasoning that deleted the generation from the edit fold said
+    // the activation fold had already separated such runs. It has not:
+    // it records which nodes were activated in what order, and that is
+    // the same here. Typing is interleaved between the same
+    // activations, so nothing upstream of the edit fold can see the
+    // difference.
+    use renew_frame::StateHash;
+
+    let run = |type_first: bool| {
+        let mut ui = tree(8);
+        let root = ui.root();
+        let first = ui.insert(root).expect("room");
+        ui.make_field(first).expect("a free slot");
+        click_to_focus(&mut ui, first);
+        if type_first {
+            ui.handle(UiEvent::TextEntered { ch: u32::from('a') });
+        }
+        assert!(ui.remove(first), "the first field goes away");
+
+        let second = ui.insert(root).expect("room");
+        ui.make_field(second).expect("a free slot");
+        click_to_focus(&mut ui, second);
+        if !type_first {
+            ui.handle(UiEvent::TextEntered { ch: u32::from('a') });
+        }
+        (
+            ui.absorb(StateHash::new()).finish(),
+            ui.field_text(second).map(<[u8]>::to_vec),
+        )
+    };
+
+    let (early, text_early) = run(true);
+    let (late, text_late) = run(false);
+
+    // Without this the test proves nothing: if both runs ended with the
+    // same text there would be no difference for a digest to miss.
+    assert_ne!(
+        text_early, text_late,
+        "the fixture must end in two different texts or it is testing nothing"
+    );
+    assert_ne!(
+        early, late,
+        "two live trees with the same fields and different text share a fingerprint"
+    );
+}
+
 #[test]
 fn the_pool_costs_what_the_documentation_says() {
     // The first figure in the docs was 512, which counted the bytes
@@ -600,7 +682,7 @@ fn the_pool_costs_what_the_documentation_says() {
     assert_eq!(
         renew_ui::POOL_BYTES,
         768,
-        "the pool size moved; update the module doc with it"
+        "the pool size moved; this test is the only place that states it"
     );
 }
 

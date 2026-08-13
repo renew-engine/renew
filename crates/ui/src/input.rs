@@ -227,16 +227,23 @@ impl Ui {
         // The previous fold seeds the next, so the sequence is the
         // record rather than the count and the last entry.
         //
-        // The node's index goes in but not its generation, and that is
-        // deliberate. Focus is reachable only by activation, and
-        // `PointerReleased` already folds both halves of the id into
-        // `decisions` — so two runs that typed into different
-        // generations of one slot have diverged before reaching here. A
-        // generation folded here would be a line no test could
-        // distinguish, which is the definition of dead.
+        // **Both halves of the id, and the generation is the half that
+        // is easy to argue away.** It was argued away once, on the
+        // grounds that activation already folds the whole id into
+        // `decisions`, so two runs typing into different generations of
+        // one slot must have diverged upstream. That is false.
+        // `decisions` records *which nodes were activated in what
+        // order*; two runs can share that exactly and interleave typing
+        // between the same activations. Deleting the generation gave
+        // two live trees with the same fields and different text one
+        // fingerprint. `typing_before_a_slot_is_recycled_is_not_typing_after`
+        // is that case, and it exists because no test covered it — which
+        // is not the same as the line being untestable, though it reads
+        // the same from here.
         self.interaction.edit_fold = StateHash::new()
             .absorb_u64(self.interaction.edit_fold)
             .absorb_u32(focus.index())
+            .absorb_u64(focus.generation())
             .absorb_u64(kind)
             .absorb_u64(token)
             .finish();
@@ -269,7 +276,8 @@ impl Ui {
     /// **What is absorbed:** the pointer position (input echo — it
     /// decides the next press), the pressed and focus ids, the
     /// activation ordinal, the running fold of every activated id in
-    /// order, and the overflow count. Ids absorb as slot index plus
+    /// order, the overflow count, and the running fold of every
+    /// accepted text edit in order. Ids absorb as slot index plus
     /// generation, with the index `NIL` standing for none — a
     /// collision-free sentinel, since no real slot carries `NIL` and
     /// no generation is zero.
@@ -290,8 +298,8 @@ impl Ui {
     ///   ids in order, and the decision fold above records that
     ///   sequence — so two states with equal digests have activated the
     ///   same nodes in the same order. **Not the same thing as holding
-    ///   the same queue**, and the earlier wording said the stronger
-    ///   thing: draining is a host action this digest never sees, so a
+    ///   the same queue**: draining is a host action this digest never
+    ///   sees, so a
     ///   host that drained after every click and one that never drained
     ///   share a digest and hand over three decisions versus none.
     /// - *A field's bytes, its cursor, and how much of the pool is
