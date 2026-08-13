@@ -69,6 +69,12 @@ dependencies and core status. This file does not restate them.
   enforced in argument types where they can be, and in a refusal where
   they cannot. `write_inputs` refuses rather than truncating, because a
   silently shorter run would be a second spelling of a shorter fact.
+- **Chat cannot touch the simulation.** It travels on this wire and
+  nowhere near a `Session`, which refuses a chat datagram by name. The
+  separation is structural rather than a rule: there is no field on a
+  session that could hold a message. A test floods a session with two
+  hundred of them and asserts the tick, the input fingerprint and the
+  outcome are all unmoved.
 - **This crate owns no socket, reads no clock, and spawns nothing.**
 
 ## Ceilings, and which of them are types
@@ -146,7 +152,7 @@ Every datagram opens with the same sixteen bytes:
 |---|---|---|
 | 0 | 4 | magic `RNWL` |
 | 4 | 2 | wire version — exactly one value is accepted |
-| 6 | 1 | kind — `1` Hello, `2` Inputs, `3` Digest, `4` Bye |
+| 6 | 1 | kind — `1` Hello, `2` Inputs, `3` Digest, `4` Bye, `5` Chat |
 | 7 | 1 | the claimed sender's seat |
 | 8 | 8 | session id — never zero |
 
@@ -193,6 +199,12 @@ that tick at 8, and the sender's running fold of every confirmed input set
 at 16.
 
 **`Bye` — 8 bytes.** `tick` at 0: the last tick this peer confirmed.
+
+**`Chat` — 12 bytes, then the message.** `sequence` at 0 (the sender's own
+counter, deliberately **not** a tick), `len` at 8, three reserved
+bytes at 9, and the message from 12. It is the one kind that is not
+simulation state: a session refuses it by name, and a separate channel
+carries it, so a message cannot reach a digest or hold a tick up.
 
 The same offsets appear in
 [`wire.rs`](https://github.com/renew-engine/renew/blob/main/crates/net/src/wire.rs)

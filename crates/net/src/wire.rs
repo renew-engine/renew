@@ -28,7 +28,11 @@ pub const MAGIC: [u8; 4] = *b"RNWL";
 /// the session's agreement digest, so a version skew becomes a named
 /// handshake refusal at tick zero rather than a mystery at tick four
 /// hundred.
-pub const WIRE_VERSION: u16 = 1;
+///
+/// Moved to 2 when `Chat` joined the vocabulary. A new kind is a new word,
+/// and a reader of version 1 would refuse it as unknown — correctly, but
+/// as a mystery. The version makes it a named handshake refusal instead.
+pub const WIRE_VERSION: u16 = 2;
 
 /// The bytes every datagram begins with, whatever its kind.
 pub const HEADER_BYTES: usize = 16;
@@ -41,6 +45,16 @@ pub const INPUTS_BODY_BYTES: usize = 12;
 pub const DIGEST_BODY_BYTES: usize = 24;
 /// A `Bye` body.
 pub const BYE_BODY_BYTES: usize = 8;
+/// A `Chat` body's fixed part, before the text it carries.
+pub const CHAT_BODY_BYTES: usize = 12;
+
+/// The longest message one `Chat` datagram may carry, in bytes.
+///
+/// Derived from the datagram ceiling rather than chosen: whatever is left
+/// once a header and the fixed part are paid for. A message longer than
+/// this is the caller's to split or refuse; this crate never fragments,
+/// because reassembly is a buffer an attacker fills.
+pub const MAX_CHAT_BYTES: usize = MAX_DATAGRAM_BYTES - HEADER_BYTES - CHAT_BODY_BYTES;
 
 /// A whole `Hello` datagram. Fixed: there is nothing in it that varies.
 pub const HELLO_DATAGRAM_BYTES: usize = HEADER_BYTES + HELLO_BODY_BYTES;
@@ -84,6 +98,16 @@ const DIGEST_INPUT_AT: usize = HEADER_BYTES + 16;
 
 const BYE_TICK_AT: usize = HEADER_BYTES;
 
+const CHAT_SEQUENCE_AT: usize = HEADER_BYTES;
+const CHAT_LEN_AT: usize = HEADER_BYTES + 8;
+const CHAT_PAD_AT: usize = HEADER_BYTES + 9;
+const CHAT_PAD_BYTES: usize = 3;
+const CHAT_TEXT_AT: usize = HEADER_BYTES + CHAT_BODY_BYTES;
+/// The smallest a `Chat` datagram can be: its fixed part with no text,
+/// which the reader refuses — but only after proving the fixed part is
+/// present, because the declared size is computed from a byte inside it.
+const CHAT_MIN_DATAGRAM_BYTES: usize = HEADER_BYTES + CHAT_BODY_BYTES;
+
 /// The smallest roster a session can be: one peer is not multiplayer, and
 /// a `Hello` claiming it is malformed rather than lonely.
 const MIN_PEER_COUNT: u8 = 2;
@@ -104,6 +128,14 @@ pub enum Kind {
     Digest = 3,
     /// I am leaving, at this tick.
     Bye = 4,
+    /// Something a player typed.
+    ///
+    /// **The only kind that is not simulation state**, and the session
+    /// never sees one: chat is carried by its own channel, so a message
+    /// cannot reach a digest, cannot gate a tick, and cannot desync
+    /// anything. That separation is structural rather than a rule someone
+    /// has to remember — see [`crate::ChatChannel`].
+    Chat = 5,
 }
 
 impl Kind {
@@ -121,6 +153,7 @@ impl Kind {
             2 => Some(Self::Inputs),
             3 => Some(Self::Digest),
             4 => Some(Self::Bye),
+            5 => Some(Self::Chat),
             _ => None,
         }
     }
@@ -142,6 +175,9 @@ impl Kind {
             Self::Hello => Some(HELLO_BODY_BYTES as u64),
             Self::Digest => Some(DIGEST_BODY_BYTES as u64),
             Self::Bye => Some(BYE_BODY_BYTES as u64),
+            // A chat body's length rides in `count`, since a message is
+            // one record whose width is its own.
+            Self::Chat => (CHAT_BODY_BYTES as u64).checked_add(count as u64),
             Self::Inputs => match (count as u64).checked_mul(input_bytes as u64) {
                 Some(frames) => (INPUTS_BODY_BYTES as u64).checked_add(frames),
                 None => None,
@@ -287,6 +323,28 @@ pub struct DigestBody {
 }
 
 /// A departure.
+/// One message a player typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatBody<'a> {
+    /// The sender's own message counter, from zero, never reused.
+    ///
+    /// Not a tick. Chat is deliberately not tick-addressed: it must never
+    /// be able to hold a tick up, so it cannot borrow the input stream's
+    /// ordering and carries its own.
+    pub sequence: u64,
+    text: &'a [u8],
+}
+
+impl<'a> ChatBody<'a> {
+    /// The message bytes. **Not validated as text** — this crate does not
+    /// know what encoding a game speaks, and a parser that guessed would
+    /// be a parser refusing messages it should carry.
+    #[must_use]
+    pub const fn text(&self) -> &'a [u8] {
+        self.text
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByeBody {
     /// The last tick this peer confirmed.
@@ -314,6 +372,7 @@ pub enum Body<'a> {
     Inputs(InputsBody<'a>),
     Digest(DigestBody),
     Bye(ByeBody),
+    Chat(ChatBody<'a>),
 }
 
 /// A validated datagram, borrowing the bytes it was read from.
@@ -417,6 +476,14 @@ pub enum WireError {
     /// digest, which is a bandwidth decision nobody makes on purpose and a
     /// division by zero if it were honoured.
     DigestPeriodZero,
+    /// A `Chat` carrying no text. Refused rather than accepted as empty:
+    /// an empty message says nothing and costs a parse.
+    ChatEmpty,
+    /// A `Chat` longer than one datagram can hold.
+    ChatTooLong {
+        saw: u8,
+        ceiling: usize,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -499,6 +566,13 @@ impl core::fmt::Display for WireError {
             Self::DigestPeriodZero => {
                 write!(out, "a digest period of zero would digest every tick")
             }
+            Self::ChatEmpty => write!(out, "a chat message of zero bytes says nothing"),
+            Self::ChatTooLong { saw, ceiling } => {
+                write!(
+                    out,
+                    "a chat message of {saw} bytes is past the ceiling of {ceiling}"
+                )
+            }
         }
     }
 }
@@ -514,6 +588,11 @@ pub enum WriteError {
     FrameCount {
         saw: u8,
         ceiling: u8,
+    },
+    /// An empty message, or one longer than a datagram can carry.
+    ChatLength {
+        saw: usize,
+        ceiling: usize,
     },
     /// Zero width, or more than the input ceiling.
     InputBytes {
@@ -580,6 +659,12 @@ impl core::fmt::Display for WriteError {
             Self::DigestPeriodZero => {
                 write!(out, "a digest period of zero would digest every tick")
             }
+            Self::ChatLength { saw, ceiling } => {
+                write!(
+                    out,
+                    "a chat message of {saw} bytes is not within 1..={ceiling}"
+                )
+            }
         }
     }
 }
@@ -645,6 +730,7 @@ pub fn read(bytes: &[u8]) -> Result<Datagram<'_>, WireError> {
         Kind::Inputs => Body::Inputs(read_inputs(bytes, len)?),
         Kind::Digest => Body::Digest(read_digest(bytes, len)?),
         Kind::Bye => Body::Bye(read_bye(bytes, len)?),
+        Kind::Chat => Body::Chat(read_chat(bytes, len)?),
     };
     Ok(Datagram { header, body })
 }
@@ -782,6 +868,50 @@ fn read_bye(bytes: &[u8], len: usize) -> Result<ByeBody, WireError> {
     expect_exactly(Kind::Bye, BYE_DATAGRAM_BYTES, len)?;
     Ok(ByeBody {
         tick: u64_at(bytes, BYE_TICK_AT).ok_or(WireError::TooShort { len })?,
+    })
+}
+
+fn read_chat(bytes: &[u8], len: usize) -> Result<ChatBody<'_>, WireError> {
+    // Same ordering rule as an inputs run: the declared size comes from a
+    // byte inside the fixed part, so the fixed part is proven present
+    // before that byte is read.
+    if len < CHAT_MIN_DATAGRAM_BYTES {
+        return Err(WireError::SizeMismatch {
+            kind: Kind::Chat,
+            declared: widen(CHAT_MIN_DATAGRAM_BYTES),
+            actual: len,
+        });
+    }
+    let text_len = byte_at(bytes, CHAT_LEN_AT).ok_or(WireError::TooShort { len })?;
+    if text_len == 0 {
+        return Err(WireError::ChatEmpty);
+    }
+    if usize::from(text_len) > MAX_CHAT_BYTES {
+        return Err(WireError::ChatTooLong {
+            saw: text_len,
+            ceiling: MAX_CHAT_BYTES,
+        });
+    }
+    let declared = widen(CHAT_MIN_DATAGRAM_BYTES)
+        .checked_add(u64::from(text_len))
+        .ok_or(WireError::SizeMismatch {
+            kind: Kind::Chat,
+            declared: u64::MAX,
+            actual: len,
+        })?;
+    if declared != widen(len) {
+        return Err(WireError::SizeMismatch {
+            kind: Kind::Chat,
+            declared,
+            actual: len,
+        });
+    }
+    expect_zeroes(bytes, CHAT_PAD_AT, CHAT_PAD_BYTES)?;
+
+    Ok(ChatBody {
+        sequence: u64_at(bytes, CHAT_SEQUENCE_AT).ok_or(WireError::TooShort { len })?,
+        text: region(bytes, CHAT_TEXT_AT, usize::from(text_len))
+            .ok_or(WireError::TooShort { len })?,
     })
 }
 
@@ -1045,5 +1175,47 @@ pub fn write_inputs(
     cursor.byte(input_bytes);
     cursor.zeroes(INPUTS_PAD_BYTES);
     cursor.bytes(frames);
+    Ok(cursor.at)
+}
+
+/// Write a `Chat`, returning the byte count written.
+///
+/// # Errors
+///
+/// [`WriteError`] for an empty message or one longer than a datagram can
+/// hold. This crate never fragments a message: reassembly is a buffer an
+/// attacker fills, and a game that wants long messages can split them
+/// where it knows what a safe boundary is.
+pub fn write_chat(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    sequence: u64,
+    text: &[u8],
+) -> Result<usize, WriteError> {
+    if text.is_empty() {
+        return Err(WriteError::ChatLength {
+            saw: 0,
+            ceiling: MAX_CHAT_BYTES,
+        });
+    }
+    if text.len() > MAX_CHAT_BYTES {
+        return Err(WriteError::ChatLength {
+            saw: text.len(),
+            ceiling: MAX_CHAT_BYTES,
+        });
+    }
+    let Ok(text_len) = u8::try_from(text.len()) else {
+        return Err(WriteError::ChatLength {
+            saw: text.len(),
+            ceiling: MAX_CHAT_BYTES,
+        });
+    };
+
+    let mut cursor = Cursor { out, at: 0 };
+    cursor.header(Kind::Chat, addressing);
+    cursor.u64(sequence);
+    cursor.byte(text_len);
+    cursor.zeroes(CHAT_PAD_BYTES);
+    cursor.bytes(text);
     Ok(cursor.at)
 }
