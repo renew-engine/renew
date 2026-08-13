@@ -1437,7 +1437,7 @@ impl Drop for WindowTarget {
         // after the swapchain, the window keep-alive after everything
         // (field drop).
         unsafe {
-            // Best-effort quiesce; failure is logged, never a panic (D5)
+            // Best-effort quiesce; failure is logged, never a panic
             // — the diag record is the only observable this path has.
             if let Err(code) = self.shared.device.device_wait_idle() {
                 renew_diag::error!(

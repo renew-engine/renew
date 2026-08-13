@@ -74,7 +74,10 @@ runs:
           # runs weeks apart. A width that never varied cannot be the
           # variable. What does still vary across the pool is the JIT's
           # target CPU and feature set, which llvmpipe takes from the
-          # host and which no vector-width setting reaches - see
-          # DEBT-0072, which holds the evidence and the open question.
+          # host and which no vector-width setting reaches. That is
+          # still open, and it is tracked nowhere in this repository.
+          # What the difference costs, and why the golden's tolerance
+          # bounds it rather than hides it, is written out above the
+          # comparison in `crates/rhi/tests/golden.rs`.
           echo "LP_NATIVE_VECTOR_WIDTH=256"
         } >> "$GITHUB_ENV"

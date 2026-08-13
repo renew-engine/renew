@@ -351,39 +351,51 @@ fn the_unsafe_surface_is_exactly_what_is_recorded() {
 /// claim the property and permit the calls that break it.
 /// What a `simulation = true` crate's lint file must forbid.
 ///
-/// **Two of I3's three applicable clauses, and it used to be one.** I3
-/// bans wall-clock reads, unseeded randomness, and iteration-order
-/// dependent state (fast-math has no stable-Rust equivalent). Until
+/// **All three applicable clauses, and it used to be one.** A simulation
+/// crate may not read the wall clock, may not use unseeded randomness,
+/// and may not depend on iteration order (fast-math has no stable-Rust
+/// equivalent). Until
 /// 2026-08-01 this list held only the clocks, so a crate could declare
 /// itself simulation code and iterate a `HashMap` freely — which is
 /// precisely the non-determinism the third clause exists to prevent.
 ///
-/// All four declaring crates already banned the collections when this
-/// grew, so it locks in a convention rather than demanding a change.
-/// **That is the argument for adding it now**: a list that costs nothing
-/// to satisfy today costs a rewrite once a crate forgets.
+/// Every declaring crate already banned the collections when that grew,
+/// so it locked in a convention rather than demanding a change. **That
+/// is the argument for adding an entry the moment it is free**: a list
+/// that costs nothing to satisfy today costs a rewrite once a crate
+/// forgets.
 ///
-/// The randomness clause stays unlisted deliberately — but **the reason
-/// recorded here until 2026-08-01 was wrong, and the correction is worth
-/// keeping.** It said `std` ships no generator, so reaching one means
-/// taking a dependency caught at the `docs/deps/` gate. The premise is
-/// true and the inference is not: what is banned is *unseeded
-/// randomness*, not generators, and `RandomState::new` /
-/// `DefaultHasher::new` are stable Rust's dependency-free road to
-/// operating-system entropy.
+/// **The randomness clause is listed now, and the reason it was not is
+/// worth keeping.** The account recorded here until 2026-08-01 was that
+/// `std` ships no generator, so reaching one means taking a dependency,
+/// which is separately gated. The premise is true and the inference is
+/// not: what is banned is *unseeded randomness*, not generators, and
+/// `RandomState::new` / `DefaultHasher::new` are stable Rust's
+/// dependency-free road to operating-system entropy.
 ///
-/// It stays unlisted because adding it here is **not** the zero-cost
-/// lock-in the collections were. Every declaring crate must already
-/// satisfy every entry, and until 2026-08-01 only `renew-rng` banned
-/// those two types — the other three carried the marker with no
-/// randomness guard at all. That gap is now closed crate-by-crate, which
-/// is the prerequisite for listing it here rather than an alternative to
-/// it. Add it once a fifth crate would not be surprised by it.
+/// It stayed unlisted afterwards for a stated reason: every declaring
+/// crate must already satisfy every entry, and the trigger recorded for
+/// adding it was that a further declaring crate would not be surprised
+/// by it.
+///
+/// **That trigger has fired**, several times over. Every crate declaring itself simulation
+/// code now bans both types, so the entry is the same zero-cost lock-in
+/// the collections were, and it is listed above rather than described
+/// here as pending. A documented trigger that has fired and not been
+/// acted on is worse than no trigger, because the prose keeps reading as
+/// a plan.
+///
+/// No count appears in that sentence on purpose: one manifest quotes the
+/// phrase in a comment while declaring the opposite, so a grep over them
+/// answers a different question than the one being asked. The test reads
+/// the manifests either way.
 const BANNED_IN_SIMULATION: &[&str] = &[
     "std::time::Instant::now",
     "std::time::SystemTime::now",
     "std::collections::HashMap",
     "std::collections::HashSet",
+    "std::hash::RandomState",
+    "std::collections::hash_map::DefaultHasher",
 ];
 
 /// Crates whose manifest sets `simulation = true`, with the text of the
@@ -450,7 +462,7 @@ fn simulation_crates(root: &Path) -> Result<Vec<(String, Vec<String>)>, String> 
 /// This does not prove such a crate is reproducible — no test here
 /// could. It proves the one mechanical guard it relies on is present.
 #[test]
-fn every_simulation_crate_forbids_the_nondeterminism_i3_names() {
+fn every_simulation_crate_forbids_clocks_unordered_collections_and_entropy() {
     let root = workspace_root();
     let crates = simulation_crates(&root).expect("manifests and lint files should be readable");
 
@@ -965,9 +977,9 @@ fn the_readme_counts_what_the_workspace_actually_holds() {
     // The front page states three numbers a reader is invited to trust:
     // how many removability configurations CI runs, which one builds the
     // minimal core, and how many engine crates there are. The first of
-    // those is the row the repository nominates as its evidence for I12,
-    // an INVARIANT — its entire function is to let a session audit the
-    // invariant without reading the workflow.
+    // those is the row the repository nominates as its evidence that
+    // every optional crate can be removed — its entire function is to let
+    // a reader audit that claim without reading the workflow.
     //
     // All three had drifted, and one had drifted twice: a crate landed in
     // #217 without a table row and nothing said so, which is exactly the
@@ -1081,4 +1093,432 @@ fn ordinal(n: usize) -> String {
         28 => "twenty-eighth".to_owned(),
         other => format!("{other}th"),
     }
+}
+
+/// The part of a line to read as prose.
+///
+/// In Rust that is whatever follows the first `//`, because the code
+/// half holds names that look like references and are not — the audio
+/// module spells its PCM formats with a capital I and a bit width.
+/// Everywhere else the whole line is prose: Markdown has no comment
+/// syntax, and a reference inside a configuration value is read by
+/// everyone that value speaks to.
+///
+/// Cuts at the first `//` wherever it appears, including inside a string
+/// literal.
+fn comment_part(line: &str, rust: bool) -> &str {
+    if !rust {
+        // **Outside Rust the whole line is prose.** Markdown has no
+        // comment syntax, and a reference in a `reason = "..."` value is
+        // read by anyone the lint speaks to — one of the references this
+        // guard was written for lived in exactly that position, and
+        // reading only what follows `//` would exclude every Markdown
+        // paragraph and every configuration value in the tree.
+        return line;
+    }
+    line.find("//").and_then(|at| line.get(at..)).unwrap_or("")
+}
+
+/// The half of a line the compiler reads: everything before the first
+/// `//`, with the same string-literal caveat.
+fn code_part(line: &str) -> &str {
+    line.find("//")
+        .and_then(|at| line.get(..at))
+        .unwrap_or(line)
+}
+
+/// Code with its whitespace removed and its raw-identifier marks
+/// dropped.
+///
+/// `r#net` and `net` are the same module to the compiler, so they are
+/// the same module here.
+fn squashed(code: &str) -> String {
+    code.replace("r#", "")
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// Does `code` name `net` inside a group opened by `opening`?
+///
+/// Walks to the matching brace rather than the first one, so a nested
+/// group does not end the region early, and splits on every brace and
+/// comma so depth stops mattering once the region is right. `netas`
+/// catches `net as n`, whose spacing the caller has removed.
+///
+/// `code` must already be [`squashed`].
+fn names_net_in_group(code: &str, opening: &str) -> bool {
+    for tail in code.split(opening).skip(1) {
+        let mut depth = 1_usize;
+        let mut region = String::new();
+        for character in tail.chars() {
+            match character {
+                '{' => depth = depth.saturating_add(1),
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            region.push(character);
+        }
+        if region
+            .split(['{', '}', ','])
+            .any(|part| part == "net" || part.starts_with("net::") || part.starts_with("netas"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Every file this repository contains, as `(path, contents)`.
+///
+/// **Asked of git rather than of the filesystem.** A working tree's root
+/// can hold files that are no part of the repository — reading those
+/// makes a scan pass in one checkout and fail in another, and it cannot
+/// tell a file it should never have opened from a fault.
+///
+/// Fails rather than shrinks: a listed file that will not read, and a
+/// listing too small to be the tree, are both reported.
+#[allow(
+    clippy::expect_used,
+    reason = "a guard that cannot enumerate the repository must fail loudly, and the message is the report"
+)]
+fn tracked_files(root: &std::path::Path, extensions: &[&str]) -> Vec<(String, String)> {
+    let listing = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .expect("`git ls-files` must run; this guard cannot otherwise tell what the tree holds");
+    assert!(
+        listing.status.success(),
+        "`git ls-files` failed, so this guard does not know what the repository holds"
+    );
+    let text = String::from_utf8_lossy(&listing.stdout);
+
+    let mut found = Vec::new();
+    let mut unreadable = Vec::new();
+    for name in text.split('\0').filter(|entry| !entry.is_empty()) {
+        let path = root.join(name);
+        let wanted = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                extensions
+                    .iter()
+                    .any(|wanted| wanted.eq_ignore_ascii_case(extension))
+            });
+        if !wanted {
+            continue;
+        }
+        // Paths stay as git prints them, separators and all, so nothing
+        // has to convert and nothing differs by platform.
+        //
+        // A listed file that will not read is reported, not skipped. It
+        // is gone from disk, or not UTF-8, or named in bytes this could
+        // not reproduce — and in every case the scan covered less than
+        // it was asked to, which the caller must hear about.
+        match std::fs::read_to_string(&path) {
+            Ok(source) => found.push((name.to_owned(), source)),
+            Err(error) => unreadable.push(format!("{name}: {error}")),
+        }
+    }
+    assert!(
+        unreadable.is_empty(),
+        "git lists these but they could not be read, so the scan covered less than it claims:\n{}",
+        unreadable.join("\n")
+    );
+    assert!(
+        found.len() > 50,
+        "git listed only {} scannable files, so this guard is looking at nothing",
+        found.len()
+    );
+    found
+}
+
+/// An upper-case `I` followed by one or two digits, standing alone.
+///
+/// That is the shape of a reference naming a numbered rule. It is not
+/// the shape of `Ipv4Addr` or `AXIS_I2`, both of which have an
+/// alphanumeric neighbour, so both are skipped.
+fn numbered_rule_citation(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes.get(index) != Some(&b'I') {
+            continue;
+        }
+        let before = index
+            .checked_sub(1)
+            .and_then(|earlier| bytes.get(earlier))
+            .copied();
+        if before.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+            continue;
+        }
+        let mut digits = 0;
+        while index
+            .checked_add(1 + digits)
+            .and_then(|at| bytes.get(at))
+            .is_some_and(u8::is_ascii_digit)
+        {
+            digits += 1;
+        }
+        if digits == 0 || digits > 2 {
+            continue;
+        }
+        let after = index
+            .checked_add(1 + digits)
+            .and_then(|at| bytes.get(at))
+            .copied();
+        if after.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+            continue;
+        }
+        return index
+            .checked_add(1 + digits)
+            .and_then(|end| line.get(index..end))
+            .map(str::to_owned);
+    }
+    None
+}
+
+/// A parenthesised rule reference: a bracketed letter and number.
+///
+/// The brackets are what separate a reference from a label. This tree
+/// writes bare letter-and-number for its own things — fault scenarios
+/// `D1` through `T18`, the Vulkan format `D32` — and none of them is
+/// ever bracketed, so scanning bare ones would report followable labels
+/// as unfollowable references.
+fn parenthesised_rule_citation(line: &str) -> Option<String> {
+    for (start, _) in line.match_indices('(') {
+        let rest = line.get(start.saturating_add(1)..).unwrap_or("");
+        let mut characters = rest.chars();
+        let Some(letter) = characters.next() else {
+            continue;
+        };
+        if !matches!(letter, 'D' | 'I' | 'T' | 'M') {
+            continue;
+        }
+        let digits: String = characters.take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        if rest
+            .chars()
+            .nth(digits.len().saturating_add(1))
+            .is_some_and(|next| next == ')')
+        {
+            return Some(format!("({letter}{digits})"));
+        }
+    }
+    None
+}
+
+/// No source file may cite material this repository does not contain.
+///
+/// **A comment naming a document a reader cannot open is worse than a
+/// comment naming nothing.** It reads as sourced. A reader who goes
+/// looking finds no such file and cannot tell whether the evidence is
+/// missing or they are.
+///
+/// A sweep by eye searches for the notations it already knows and
+/// reports the tree clean when it runs out of them, which is why this is
+/// a test — and why the needle list is the thing to extend when a new
+/// spelling turns up.
+///
+/// **The needles are assembled at run time**, halves joined rather than
+/// written whole, so the file defining them is scanned like every other.
+///
+/// What it does not catch: a reference inside an identifier, since the
+/// rule scanners read only prose; a bare letter-and-number, for the
+/// reason [`parenthesised_rule_citation`] gives; and any phrasing that
+/// avoids the literal needles, including a different case of one.
+#[test]
+fn no_source_cites_material_this_repository_does_not_contain() {
+    let root = workspace_root();
+    let join = |left: &str, right: &str| format!("{left}{right}");
+    let needles = [
+        join("DEBT", "-"),
+        join("A", "DR"),
+        join("mile", "stone"),
+        join("consti", "tution"),
+        join("STATE", ".md"),
+        join("ROADMAP", ".md"),
+        join("CLAUDE", ".md"),
+        join("DEVELOPMENT", ".md"),
+        join("DEBT", ".md"),
+        join("docs", "/"),
+        join("spikes", "/"),
+        join("threading", ".md"),
+        join("targets", ".md"),
+        join("lifecycle", ".md"),
+        join("design ", "note"),
+        join("decision ", "journal"),
+        join("decision ", "record"),
+        join("review ", "pass"),
+    ];
+
+    let files = tracked_files(&root, &["rs", "toml", "yml", "yaml", "md", "txt"]);
+
+    let mut faults = Vec::new();
+    for (shown, source) in &files {
+        let rust = std::path::Path::new(shown)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"));
+
+        // **The prose of a file, joined, before it is read line by
+        // line.** A citation is a phrase and a wrap is a line break, so
+        // a two-word needle straddling one is invisible to a per-line
+        // scan — which is how a live citation of a document sat in this
+        // tree while this guard reported clean. Joined first, then
+        // scanned; the per-line pass below survives only to give a line
+        // number when the phrase happens to fit on one.
+        let flowed = source
+            .lines()
+            .map(|line| comment_part(line, rust))
+            // The marker goes too. Joining `// the design` to
+            // `// note's` with the slashes still on puts `//` between
+            // the two words and the phrase never matches — which is the
+            // shape of the miss this pass exists to close, and it went
+            // wrong that way once before it went right.
+            .map(|prose| prose.trim_start().trim_start_matches(['/', '!', '#', ' ']))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for needle in &needles {
+            if flowed.contains(needle.as_str()) && !source.contains(needle.as_str()) {
+                faults.push(format!("{shown} names `{needle}` across a line break"));
+            }
+        }
+
+        for (offset, line) in source.lines().enumerate() {
+            let number = offset.saturating_add(1);
+            for needle in &needles {
+                if line.contains(needle.as_str()) {
+                    faults.push(format!("{shown}:{number} names `{needle}`"));
+                }
+            }
+            // Only the comment half of a line. A reference is prose; the
+            // collisions are code — the audio module names its PCM
+            // sample formats with a capital I and a bit width, and a
+            // scanner that reads those as references is a scanner
+            // nobody keeps.
+            let prose = comment_part(line, rust);
+            if let Some(found) = numbered_rule_citation(prose) {
+                faults.push(format!("{shown}:{number} cites the rule `{found}`"));
+            }
+            if let Some(found) = parenthesised_rule_citation(prose) {
+                faults.push(format!("{shown}:{number} cites the rule `{found}`"));
+            }
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "these cite material that is not in this repository, so a reader cannot follow \
+         them. Say the thing itself, or name a file that is actually here:\n{}",
+        faults.join("\n")
+    );
+}
+
+/// Only the platform's socket module may name the standard networking
+/// types.
+///
+/// **A zoning rule that was written down and enforced by nothing.** One
+/// module owns the socket so everything above it stays testable without
+/// one, and so a crate carrying a determinism obligation cannot reach a
+/// wire by accident. Any crate could have added the import with every
+/// gate staying green.
+///
+/// **A lexical check, not a proof, and the difference matters.** It
+/// reads text; Rust has more ways to name a path than text can
+/// enumerate, and each round of use has turned up another. What it
+/// catches is the spellings anyone actually writes: `std::net` and
+/// `core::net`; a brace group naming `net`, nested or not, on one line
+/// or split as the formatter splits a long import; `net as something`;
+/// raw identifiers; and `use std as` / `extern crate std as`, refused
+/// outright because no file here needs a second name for the standard
+/// library.
+///
+/// What it does not catch is unbounded, and these are the known ones: a
+/// crate-root rename spelled `use std::{self as s}`; an import on a line
+/// whose earlier text contains `//` inside a string literal, which the
+/// comment split truncates; and any file whose extension is outside the
+/// scanned set. The graph rule in the structure check is the load-bearing
+/// half — it denies a simulation crate any dependency path here at all —
+/// and this is a speed bump in front of it.
+///
+/// Comments are exempt, since the rule is discussed in them, which also
+/// means a string literal quoting the path is a false positive.
+#[test]
+fn only_the_platform_socket_module_names_the_standard_network_types() {
+    let root = workspace_root();
+    let allowed = "crates/core/platform/src/net.rs";
+
+    let files = tracked_files(&root, &["rs"]);
+    assert!(
+        files.iter().any(|(shown, _)| shown == allowed),
+        "the one module allowed to name them was not walked, so this guards nothing"
+    );
+
+    let direct = [
+        format!("{}{}", "std::", "net"),
+        format!("{}{}", "core::", "net"),
+    ];
+    let groups = [
+        format!("{}{}", "std::", "{"),
+        format!("{}{}", "core::", "{"),
+    ];
+    // Renaming the crate root reaches the socket without either pair
+    // ever appearing: `use std as s` then `s::net::UdpSocket`. Tracking
+    // the alias would mean parsing; refusing the rename costs nothing,
+    // because no file here has a reason to give the standard library a
+    // second name.
+    let renames = [
+        format!("{}{}", "usestd", "as"),
+        format!("{}{}", "usecore", "as"),
+        format!("{}{}", "externcratestd", "as"),
+        format!("{}{}", "externcratecore", "as"),
+    ];
+
+    let mut faults = Vec::new();
+    for (shown, source) in &files {
+        if shown == allowed {
+            continue;
+        }
+
+        // The direct spellings, per line, so the report can point at one.
+        for (offset, line) in source.lines().enumerate() {
+            let code = squashed(code_part(line));
+            let named = direct.iter().any(|needle| code.contains(needle.as_str()))
+                || renames.iter().any(|needle| code.contains(needle.as_str()));
+            if named {
+                faults.push(format!("{shown}:{}", offset.saturating_add(1)));
+            }
+        }
+
+        // **Brace groups against the whole file, not line by line.** The
+        // formatter splits an import list wider than the line limit, so
+        // `use std::{` and `net::UdpSocket` land on different lines and a
+        // per-line scan sees unrelated text. The formatter runs as a
+        // gate, so that is where long imports live. Squashing the file
+        // costs the line number, which is why the direct spellings keep
+        // their own pass above.
+        let code = squashed(&source.lines().map(code_part).collect::<Vec<_>>().join("\n"));
+        let grouped = groups
+            .iter()
+            .any(|opening| names_net_in_group(&code, opening));
+        if grouped {
+            faults.push(format!("{shown} (in a brace group)"));
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "the socket belongs to one module and these reach around it:\n{}",
+        faults.join("\n")
+    );
 }

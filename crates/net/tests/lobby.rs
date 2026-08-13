@@ -984,7 +984,7 @@ fn a_datagram_from_no_address_is_refused() {
 /// The structural claim, from the session's side. A lobby datagram that
 /// reaches a session is a routing defect, and the session says so by name
 /// rather than falling through — which is what makes the wall visible in a
-/// log instead of only in a design note.
+/// log instead of only in prose.
 #[test]
 fn a_session_refuses_all_three_lobby_kinds_by_name() {
     use renew_net::{Delivery, Refusal, Session, SessionParams};

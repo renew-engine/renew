@@ -204,7 +204,7 @@ impl Drop for Partial<'_> {
         if self.fence.is_some() {
             // SAFETY: device live via the spine `Rc`; blocking until
             // every queue is idle. Best-effort quiesce; failure is
-            // logged, never a panic (D5) — the diag record is the only
+            // logged, never a panic — the diag record is the only
             // observable this path has.
             if let Err(code) = unsafe { device.device_wait_idle() } {
                 renew_diag::error!(

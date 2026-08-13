@@ -6,8 +6,9 @@
 //! because a gate that arrives later measures whatever the code has grown
 //! into rather than what it promised.
 //!
-//! **This one is a security control as much as a D7 one.** Every byte the
-//! session absorbs can come from a hostile peer, so a per-datagram
+//! **This one is a security control as much as an allocation-discipline
+//! one.** Every byte the session absorbs can come from a hostile peer,
+//! so a per-datagram
 //! allocation is an allocation an attacker drives. The window therefore
 //! includes refused datagrams — a wrong session id every pump — because
 //! "nothing allocates on the happy path" is not the claim that matters.

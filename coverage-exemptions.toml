@@ -197,7 +197,7 @@ reason = "The addressless guard inside `seat_of`, unreachable through the only p
 
 [[exempt]]
 file = "crates/net/src/desync.rs"
-lines = [128, 133, 167]
+lines = [129, 134, 168]
 reason = "The error arms of `write!` inside a Display implementation. A formatter over a String cannot fail, so these propagate an error that never arrives; they exist because Display must be total and `?` is the only honest way to write that. Every one of them sits on a line whose successful path is covered by the JSON tests."
 
 [[exempt]]

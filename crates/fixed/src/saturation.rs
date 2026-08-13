@@ -37,8 +37,8 @@ impl Saturations {
 
 /// Read this thread's saturation count.
 ///
-/// The explicit snapshot call `threading.md` requires: the counter is never
-/// read from another thread and never published except through here.
+/// The explicit snapshot call: the counter is never read from another
+/// thread and never published except through here.
 ///
 /// # Example
 ///

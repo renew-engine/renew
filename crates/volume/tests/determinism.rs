@@ -1,17 +1,16 @@
 //! The determinism trigger: same inputs, bit-identical digest, every run.
 //!
-//! The manifest declares `simulation = true`, and the engine's constitution
-//! makes that declaration carry an obligation — a simulation system owes a
-//! test that the same inputs produce a bit-identical state hash across
-//! repeated runs. This crate is the storage half of that simulation, so it
-//! owes one.
+//! The manifest declares `simulation = true`, and that declaration carries
+//! an obligation: a simulation system owes a test that the same inputs
+//! produce a bit-identical state hash across repeated runs. This crate is
+//! the storage half of that simulation, so it owes one.
 //!
 //! **The committed constant is a regression guard, not evidence of
 //! cross-platform determinism.** It catches a change to the mixing, the
 //! packing, the fold, or the iteration order on *this* machine. Proving the
 //! stronger claim needs the same input replayed on the other target
-//! platforms and the digests compared against each other, which is work for
-//! the milestone that first has more than one machine to run on.
+//! platforms and the digests compared against each other, which needs more
+//! than one machine to run on.
 
 use renew_volume::{Cell, Volume, Voxel};
 

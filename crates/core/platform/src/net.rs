@@ -1,8 +1,17 @@
 //! UDP datagrams — the network seam, behind the `net` feature.
 //!
 //! **This module is the only place in the engine that names `std::net`.**
-//! That is a zoning decision rather than a style one: a crate that
-//! promises deterministic simulation is denied a dependency path to this
+//! That is a zoning decision rather than a style one, and it is enforced
+//! rather than merely stated:
+//! `only_the_platform_socket_module_names_the_standard_network_types` in
+//! `tools/cli/tests/workspace_lists.rs` walks every Rust file git lists
+//! and fails on any but this one that names those types in code —
+//! `std::net`, `core::net`, a brace group naming `net` however it is
+//! wrapped, or a rename of the crate root. Comments are exempt, this one
+//! among them.
+//!
+//! The graph rule is the other half: a crate that promises deterministic
+//! simulation is denied a dependency path to this
 //! one, at any depth and in any dependency kind, so the code that decides
 //! what a tick means cannot reach a socket even by accident. What travels
 //! over the wire is decided in a crate that has no way to send it, and

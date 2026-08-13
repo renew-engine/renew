@@ -840,7 +840,7 @@ impl Drop for RenderPipeline {
         // Rc; wait-idle guarantees no submitted work still references
         // the pipeline; handles were created with these callbacks.
         unsafe {
-            // Best-effort quiesce; failure is logged, never a panic (D5)
+            // Best-effort quiesce; failure is logged, never a panic
             // — the diag record is the only observable this path has.
             if let Err(code) = self.shared.device.device_wait_idle() {
                 renew_diag::error!(
