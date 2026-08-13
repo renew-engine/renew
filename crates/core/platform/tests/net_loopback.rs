@@ -6,7 +6,8 @@
 //! broken machine, not a flaky test.
 
 use renew_platform::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, NetError, RECEIVE_CEILING, Sent, Socket, SocketAddr, peer_tag,
+    IpAddr, Ipv4Addr, Ipv6Addr, NetError, RECEIVE_CEILING, Sent, Socket, SocketAddr, peer_addr,
+    peer_tag,
 };
 
 fn loopback() -> SocketAddr {
@@ -242,4 +243,98 @@ fn a_datagram_past_the_seam_ceiling_is_refused_identically_everywhere() {
         }
         other => panic!("expected an oversized refusal, got {other:?}"),
     }
+}
+
+// ---- a tag is an encoding, so it has to come back ----
+
+#[test]
+fn a_tag_round_trips_to_an_address_that_can_be_sent_to() {
+    // The property the whole pair exists for: an endpoint crosses a
+    // boundary that may not name a `SocketAddr` — a peer roster, a save,
+    // a wire format written by a crate denied any path to this one — and
+    // arrives somewhere that must put a datagram on it. Without this
+    // direction the tag is only half a value.
+    let listener = Socket::bind(loopback()).expect("loopback must bind");
+    let sender = Socket::bind(loopback()).expect("loopback must bind");
+    let to = listener.local_addr().expect("bound");
+
+    // Out through the tag and back, exactly as a roster would carry it.
+    let carried = peer_tag(to);
+    let recovered = peer_addr(carried);
+
+    assert_eq!(
+        sender.send_to(b"routed", recovered).expect("loopback send"),
+        Sent::Delivered,
+        "an address recovered from a tag must be an address that sends"
+    );
+    let mut buffer = [0u8; 64];
+    let mut got = None;
+    for _ in 0..10_000 {
+        if let Some(pair) = listener.recv_from(&mut buffer).expect("healthy") {
+            got = Some(pair);
+            break;
+        }
+    }
+    let (len, _) = got.expect("a datagram sent to a recovered address must arrive");
+    assert_eq!(buffer.get(..len), Some(&b"routed"[..]));
+}
+
+#[test]
+fn every_tag_encodes_the_address_it_decodes_to() {
+    // `peer_tag(peer_addr(t)) == t`, exactly, for every tag — including
+    // ones no address in this test ever produced, because a tag arriving
+    // off a wire was not necessarily written here.
+    let mut tag = [0u8; 18];
+    for (index, byte) in tag.iter_mut().enumerate() {
+        *byte = u8::try_from(index)
+            .unwrap_or(0)
+            .wrapping_mul(37)
+            .wrapping_add(11);
+    }
+    assert_eq!(
+        peer_tag(peer_addr(tag)),
+        tag,
+        "a decoded tag re-encoded to something else"
+    );
+
+    // And the v4-mapped shape, which is the one the fold touches.
+    let mut mapped = [0u8; 18];
+    mapped[10] = 0xff;
+    mapped[11] = 0xff;
+    mapped[12..16].copy_from_slice(&[203, 0, 113, 9]);
+    mapped[16..18].copy_from_slice(&7777u16.to_be_bytes());
+    assert_eq!(peer_tag(peer_addr(mapped)), mapped);
+}
+
+#[test]
+fn a_mapped_tag_decodes_to_the_v4_address_a_v4_socket_will_accept() {
+    // Returning the literal sixteen bytes would give `::ffff:a.b.c.d`,
+    // which compares equal to the right peer and which a v4-bound socket
+    // refuses to send to on several platforms — an address that looks
+    // correct everywhere except where it is used.
+    let v4 = SocketAddr::from((Ipv4Addr::new(203, 0, 113, 9), 7777));
+    assert_eq!(peer_addr(peer_tag(v4)), v4);
+
+    let written_as_mapped = SocketAddr::new(
+        IpAddr::V6(Ipv4Addr::new(203, 0, 113, 9).to_ipv6_mapped()),
+        7777,
+    );
+    assert_eq!(
+        peer_addr(peer_tag(written_as_mapped)),
+        v4,
+        "the two spellings of one peer must decode to the one the socket accepts"
+    );
+}
+
+#[test]
+fn a_native_v6_tag_stays_v6() {
+    let v6 = SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0x1234)),
+        443,
+    );
+    assert_eq!(
+        peer_addr(peer_tag(v6)),
+        v6,
+        "folding must not reach a native v6"
+    );
 }
