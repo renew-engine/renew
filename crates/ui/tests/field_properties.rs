@@ -73,79 +73,129 @@ fn apply(ui: &mut Ui, act: Act) {
     }
 }
 
+/// An independent model of what a field should hold.
+///
+/// **The point of writing it twice.** The first version of this file
+/// asserted invariants — valid text, cursor in range, cursor on a
+/// boundary — and a review showed all four passing against an `insert`
+/// gutted to do nothing at all: an empty field satisfies every one of
+/// them. Invariants describe a shape, and the empty field has the right
+/// shape. A model describes the *content*, and nothing vacuous agrees
+/// with it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Model {
+    text: String,
+    cursor: usize,
+}
+
+impl Model {
+    fn apply(&mut self, act: Act) {
+        match act {
+            Act::Type(ch) => {
+                if self.text.len() + ch.len_utf8() <= MAX_FIELD_BYTES {
+                    self.text.insert(self.cursor, ch);
+                    self.cursor += ch.len_utf8();
+                }
+            }
+            Act::Edit(EditOp::Home) => self.cursor = 0,
+            Act::Edit(EditOp::End) => self.cursor = self.text.len(),
+            Act::Edit(EditOp::Left) => self.cursor = self.prev(),
+            Act::Edit(EditOp::Right) => self.cursor = self.next(),
+            Act::Edit(EditOp::Backspace) => {
+                let from = self.prev();
+                if from != self.cursor {
+                    self.text.replace_range(from..self.cursor, "");
+                    self.cursor = from;
+                }
+            }
+            Act::Edit(EditOp::Delete) => {
+                let to = self.next();
+                if to != self.cursor {
+                    self.text.replace_range(self.cursor..to, "");
+                }
+            }
+        }
+    }
+
+    fn prev(&self) -> usize {
+        let mut at = self.cursor;
+        while at > 0 {
+            at -= 1;
+            if self.text.is_char_boundary(at) {
+                break;
+            }
+        }
+        at
+    }
+
+    fn next(&self) -> usize {
+        let mut at = self.cursor;
+        while at < self.text.len() {
+            at += 1;
+            if self.text.is_char_boundary(at) {
+                break;
+            }
+        }
+        at
+    }
+}
+
 proptest! {
-    /// A field holds text, always. The accessor says so in prose and
-    /// every consumer that draws or measures one depends on it.
+    /// The field agrees with the model, byte for byte and cursor for
+    /// cursor, after every single operation.
+    ///
+    /// This is the property the other three were meant to imply and did
+    /// not. It fails immediately against an implementation that drops an
+    /// insertion, ignores an edit, or moves a cursor differently.
     #[test]
-    fn a_field_is_always_valid_text(script in acts()) {
+    fn the_field_agrees_with_an_independent_model(script in acts()) {
         let mut ui = Ui::new(UiLimits { nodes: 8 });
         let node = focused_field(&mut ui);
-        for act in script {
+        let mut model = Model::default();
+        for (step, act) in script.into_iter().enumerate() {
             apply(&mut ui, act);
+            model.apply(act);
             let bytes = ui.field_text(node).unwrap_or_default();
-            prop_assert!(core::str::from_utf8(bytes).is_ok());
-            prop_assert!(bytes.len() <= MAX_FIELD_BYTES);
+            prop_assert_eq!(
+                core::str::from_utf8(bytes).unwrap_or("<not text>"),
+                model.text.as_str(),
+                "diverged at step {} on {:?}", step, act
+            );
+            prop_assert_eq!(
+                usize::from(ui.field_cursor(node).unwrap_or(0)),
+                model.cursor,
+                "cursor diverged at step {} on {:?}", step, act
+            );
         }
     }
 
-    /// The cursor never leaves the buffer, and never lands inside a
-    /// character. An insertion at a byte that is not a boundary would
-    /// split a scalar in half.
+    /// Two scripts that produce different text must produce different
+    /// fingerprints.
+    ///
+    /// Replaces a reflexivity check — `run(s) == run(s)` — that no
+    /// deterministic implementation could fail and which therefore said
+    /// nothing. The model decides when the two runs really differ, so
+    /// this only demands a difference where one exists.
     #[test]
-    fn the_cursor_stays_on_a_character_boundary(script in acts()) {
-        let mut ui = Ui::new(UiLimits { nodes: 8 });
-        let node = focused_field(&mut ui);
-        for act in script {
-            apply(&mut ui, act);
-            let bytes = ui.field_text(node).unwrap_or_default();
-            let cursor = usize::from(ui.field_cursor(node).unwrap_or(0));
-            prop_assert!(cursor <= bytes.len(), "cursor {cursor} past {}", bytes.len());
-            let text = core::str::from_utf8(bytes).unwrap_or_default();
-            prop_assert!(text.is_char_boundary(cursor));
-        }
-    }
-
-    /// Typing one character and backspacing it is identity — whatever
-    /// the field held before, and wherever the cursor was.
-    #[test]
-    fn typing_then_backspacing_restores_the_field(script in acts(), ch in prop_oneof![
-        proptest::char::range('a', 'z'), Just('é'), Just('☃'), Just('𝄞')
-    ]) {
-        let mut ui = Ui::new(UiLimits { nodes: 8 });
-        let node = focused_field(&mut ui);
-        for act in script {
-            apply(&mut ui, act);
-        }
-        let before = ui.field_text(node).unwrap_or_default().to_vec();
-        let cursor_before = ui.field_cursor(node).unwrap_or(0);
-
-        ui.handle(UiEvent::TextEntered { ch: u32::from(ch) });
-        // Only when it fit: a refused insertion is not an insertion, and
-        // a backspace after one would eat a character that was there
-        // first. That asymmetry is the behaviour, not a bug in it.
-        if ui.field_text(node).unwrap_or_default() != before.as_slice() {
-            ui.handle(UiEvent::Edit { op: EditOp::Backspace });
-            prop_assert_eq!(ui.field_text(node).unwrap_or_default(), before.as_slice());
-            prop_assert_eq!(ui.field_cursor(node).unwrap_or(0), cursor_before);
-        }
-    }
-
-    /// The same script twice is the same field and the same fingerprint.
-    /// Determinism is the whole reason this crate is shaped as it is.
-    #[test]
-    fn one_script_is_one_outcome(script in acts()) {
+    fn different_text_means_different_fingerprints(left in acts(), right in acts()) {
         use renew_frame::StateHash;
         let run = |script: &[Act]| {
             let mut ui = Ui::new(UiLimits { nodes: 8 });
             let node = focused_field(&mut ui);
+            let mut model = Model::default();
             for act in script {
                 apply(&mut ui, *act);
+                model.apply(*act);
             }
-            (
-                ui.field_text(node).unwrap_or_default().to_vec(),
-                ui.absorb(StateHash::new()).finish(),
-            )
+            let text = ui.field_text(node).unwrap_or_default().to_vec();
+            (text, model, ui.absorb(StateHash::new()).finish())
         };
-        prop_assert_eq!(run(&script), run(&script));
+        let (text_l, model_l, digest_l) = run(&left);
+        let (text_r, model_r, digest_r) = run(&right);
+        prop_assert_eq!(&text_l, model_l.text.as_bytes());
+        prop_assert_eq!(&text_r, model_r.text.as_bytes());
+        if model_l != model_r {
+            prop_assert_ne!(digest_l, digest_r, "two different fields shared a fingerprint");
+        }
     }
 }
