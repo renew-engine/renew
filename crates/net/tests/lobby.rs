@@ -210,20 +210,35 @@ fn every_peer_learns_where_every_other_peer_is() {
 }
 
 #[test]
-fn a_seated_joiner_stops_talking() {
+fn a_seated_joiner_keeps_asking_until_it_starts() {
+    // It used to go quiet the moment it held any roster, and that was a
+    // wedge with no way out: one stale or forged roster set the held
+    // state, the joiner never spoke again, and every genuine roster after
+    // it was refused while the peer sat in `Seated` looking healthy.
+    // Asking until the go-ahead is what makes a bad roster survivable.
     let mut world = World::new(&[2]);
     world.pumps(3);
     assert!(matches!(
         world.joiners[0].1.state(),
         LobbyState::Seated { .. }
     ));
-    let still_asking = world
-        .drain()
-        .into_iter()
-        .any(|packet| packet.from == endpoint(2));
     assert!(
-        !still_asking,
-        "a joiner repeats its Join until a roster answers, and not one datagram after"
+        world
+            .drain()
+            .into_iter()
+            .any(|packet| packet.from == endpoint(2)),
+        "a seated joiner still has something to say: it has not started yet"
+    );
+
+    world.host.start().expect("start");
+    world.pumps(2);
+    assert!(world.joiners[0].1.agreed().is_some(), "it started");
+    assert!(
+        !world
+            .drain()
+            .into_iter()
+            .any(|packet| packet.from == endpoint(2)),
+        "and then it stops, because the lobby is over and the session owns the wire"
     );
 }
 
@@ -448,16 +463,18 @@ fn the_lobby_fills_and_then_refuses() {
 // ---- the checks that keep this from being a weapon ----
 
 #[test]
-fn a_join_names_no_address_so_a_roster_can_only_go_where_the_join_came_from() {
-    // The reflection guard, stated as a property rather than a comment.
-    // A `Join` body has no room for an address at all — a host cannot be
-    // told where to aim, because there is no field in which to tell it.
-    assert_eq!(
-        wire::JOIN_BODY_BYTES,
-        16,
-        "a Join carries content and rules and nothing else; an address here would be a reflector"
-    );
-
+fn a_join_is_never_smaller_than_the_roster_it_provokes() {
+    // **The anti-amplification property, measured rather than asserted.**
+    // The first version of this module claimed removing a self-reported
+    // address had closed a reflector. It had not: forging a UDP source
+    // needs an unfiltered uplink and nothing else, and a host that seats
+    // whatever asks then sends it a roster every pump for the life of the
+    // lobby — one small packet buying an unbounded reply aimed anywhere.
+    //
+    // Two things bound it now, and this measures both: a `Join` is padded
+    // to the datagram ceiling, so no answer can exceed it; and a seat's
+    // roster is paid for in credit that decays, so one datagram cannot
+    // buy a subscription.
     let mut host = Lobby::host(host_setup());
     let mut joiner = Lobby::join(join_setup());
     let mut buffer = [0u8; MAX_DATAGRAM_BYTES];
@@ -467,15 +484,42 @@ fn a_join_names_no_address_so_a_roster_can_only_go_where_the_join_came_from() {
         .bytes()
         .to_vec();
 
-    // The same bytes delivered from two sources seat two different
-    // peers, which is the same statement from the other side: the source
-    // decides, and the payload cannot.
-    host.deliver(endpoint(2), &join).expect("seated");
-    host.deliver(endpoint(3), &join).expect("seated");
-    host.start().expect("start");
-    let agreed = host.agreed().expect("agreed");
-    assert_eq!(agreed.endpoint(seat(1)), Some(endpoint(2)));
-    assert_eq!(agreed.endpoint(seat(2)), Some(endpoint(3)));
+    // One spoofed join, from a source that will never speak again.
+    let victim = endpoint(99);
+    host.deliver(victim, &join).expect("seated");
+
+    let mut sent = 0usize;
+    let mut buffer = [0u8; MAX_DATAGRAM_BYTES];
+    for _ in 0..500 {
+        while let Some(out) = host.next_outbound(&mut buffer) {
+            if out.to() == victim {
+                sent = sent.saturating_add(out.bytes().len());
+            }
+        }
+    }
+    assert!(
+        sent <= join.len(),
+        "one {}-byte join bought {sent} bytes aimed at a third party — that is a reflector",
+        join.len()
+    );
+
+    // And the bound is not vacuous: a peer that keeps asking keeps being
+    // answered, which is the whole reason the credit exists rather than a
+    // flat refusal.
+    let mut answered = 0usize;
+    let mut buffer = [0u8; MAX_DATAGRAM_BYTES];
+    for _ in 0..500 {
+        host.deliver(victim, &join).expect("still asking");
+        while let Some(out) = host.next_outbound(&mut buffer) {
+            if out.to() == victim {
+                answered = answered.saturating_add(1);
+            }
+        }
+    }
+    assert!(
+        answered > 400,
+        "a peer that asks must be answered: {answered}"
+    );
 }
 
 #[test]
@@ -1076,5 +1120,152 @@ fn the_start_run_carries_the_roster_beside_it() {
     assert!(
         world.joiners[0].1.agreed().is_some(),
         "the roster rides with the start run so a late peer can still make it"
+    );
+}
+
+#[test]
+fn a_roster_offering_seat_zero_is_refused() {
+    // Seat zero is the host's. A roster handing it away puts two machines
+    // on one seat, each submitting as sender zero and each refusing the
+    // other's inputs, so no tick ever confirms and a third peer sees two
+    // contradicting streams from one seat. Nothing downstream recovers
+    // from that, which is why it is refused where it can still be seen.
+    let mut joiner = Lobby::join(join_setup());
+    let endpoints = [0u8; 18 * 2];
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let len = wire::write_roster(
+        &mut out,
+        wire::Addressing {
+            sender: seat(0),
+            session: session(),
+        },
+        &wire::RosterBody {
+            seat: 0,
+            peer_count: 2,
+            input_bytes: 2,
+            input_delay: 2,
+            digest_period: 8,
+            seed: 0xC0FF_EE00_1234_5678,
+            content: 0xAAAA_BBBB,
+            rules: 0x1111_2222,
+            endpoints: &endpoints,
+        },
+    )
+    .expect("the wire permits it; the lobby must not");
+    assert!(matches!(
+        joiner.deliver(endpoint(HOST_AT), out.get(..len).expect("written")),
+        Err(LobbyRefusal::SeatZeroOffered)
+    ));
+    assert_eq!(joiner.state(), LobbyState::Joining);
+}
+
+#[test]
+fn a_roster_that_went_backwards_is_refused() {
+    // Ordinary reordering, not an attack: the host's three-seat roster
+    // overtakes its two-seat one. Taking the older one would move this
+    // peer back onto a fingerprint the others have left behind, and it
+    // would then refuse the go-ahead and stall everybody at tick zero.
+    let (_, mut joiner) = seated_pair();
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let three = [0u8; 18 * 3];
+    let len = wire::write_roster(
+        &mut out,
+        wire::Addressing {
+            sender: seat(0),
+            session: session(),
+        },
+        &wire::RosterBody {
+            seat: 1,
+            peer_count: 3,
+            input_bytes: 2,
+            input_delay: 2,
+            digest_period: 8,
+            seed: 0xC0FF_EE00_1234_5678,
+            content: 0xAAAA_BBBB,
+            rules: 0x1111_2222,
+            endpoints: &three,
+        },
+    )
+    .expect("a three-seat roster");
+    joiner
+        .deliver(endpoint(HOST_AT), out.get(..len).expect("written"))
+        .expect("the roster grew, which is normal");
+
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let two = [0u8; 18 * 2];
+    let len = wire::write_roster(
+        &mut out,
+        wire::Addressing {
+            sender: seat(0),
+            session: session(),
+        },
+        &wire::RosterBody {
+            seat: 1,
+            peer_count: 2,
+            input_bytes: 2,
+            input_delay: 2,
+            digest_period: 8,
+            seed: 0xC0FF_EE00_1234_5678,
+            content: 0xAAAA_BBBB,
+            rules: 0x1111_2222,
+            endpoints: &two,
+        },
+    )
+    .expect("a two-seat roster");
+    assert!(matches!(
+        joiner.deliver(endpoint(HOST_AT), out.get(..len).expect("written")),
+        Err(LobbyRefusal::RosterWentBackwards {
+            held: 3,
+            offered: 2
+        })
+    ));
+}
+
+#[test]
+fn a_joiners_own_seat_answers_unknown_like_the_hosts_does() {
+    // The contract `Agreed::endpoint` states, which held on the host and
+    // failed on every joiner: the roster carries the recipient's own
+    // endpoint, because the host observed it and sends the whole table
+    // back. A driver that skips itself by this sentinel would pass its
+    // tests as a host and loop every datagram back to itself as a joiner.
+    let mut world = World::new(&[2, 3]);
+    world.pumps(3);
+    world.host.start().expect("start");
+    world.pumps(2);
+
+    for (index, (_, joiner)) in world.joiners.iter().enumerate() {
+        let agreed = joiner.agreed().expect("agreed");
+        let own = agreed.params().local();
+        assert_eq!(
+            agreed.endpoint(own),
+            Some(UNKNOWN_ENDPOINT),
+            "joiner {index} was handed its own address for its own seat"
+        );
+    }
+}
+
+#[test]
+fn the_start_run_is_as_long_as_it_says_it_is() {
+    // `the_start_run_is_finite` pins the ceiling and nothing else, so the
+    // run could be cut from eight pumps to one and stay green — throwing
+    // away seven eighths of the only loss protection the go-ahead has,
+    // silently. This pins the floor.
+    let mut world = World::new(&[2]);
+    world.pumps(2);
+    world.host.start().expect("start");
+
+    let mut starts = 0usize;
+    let mut buffer = [0u8; MAX_DATAGRAM_BYTES];
+    for _ in 0..(usize::from(START_REPEATS) + 4) {
+        while let Some(out) = world.host.next_outbound(&mut buffer) {
+            if wire::read(out.bytes()).is_ok_and(|d| d.header.kind == wire::Kind::Start) {
+                starts = starts.saturating_add(1);
+            }
+        }
+    }
+    assert_eq!(
+        starts,
+        usize::from(START_REPEATS),
+        "the run must be exactly as long as the constant promises"
     );
 }

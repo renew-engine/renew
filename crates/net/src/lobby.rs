@@ -100,6 +100,39 @@ pub const UNSEATED_SESSION: NonZeroU64 = NonZeroU64::MIN;
 /// the one seat number that cannot be read as a claim to a seat.
 const UNSEATED_SEAT: u8 = 0;
 
+/// How many pumps of roster one arriving `Join` pays for.
+///
+/// **A subscription is what makes a reflector.** The first version of
+/// this lobby seated a peer on one `Join` and then sent that endpoint a
+/// roster every pump for the rest of the lobby's life, so one forged
+/// datagram bought an unbounded reply aimed wherever the forger named,
+/// growing with how long the host waited. A seat is still permanent;
+/// being *spoken to* is not. Each `Join` buys this many pumps of roster
+/// and no more, so what a host emits is bounded by what it was sent —
+/// and that, with the padding on `wire::JOIN_BODY_BYTES`, is the whole
+/// anti-amplification argument.
+///
+/// **One, and the arithmetic below forces it.** A roster can be as wide
+/// as the ceiling, and a `Join` is exactly the ceiling, so a second
+/// answer to one question would put a host over the line it is padded to
+/// stay under. Written as a constant with the bound asserted rather than
+/// as a bare `if`, because the number that must not drift is the one a
+/// reader would assume is a free tuning knob.
+///
+/// A real joiner keeps asking until it starts, so it is answered every
+/// pump and never notices the limit; a forged source asks once and is
+/// answered once.
+pub const ROSTER_CREDIT: u8 = 1;
+
+// The anti-amplification bound, checked where it is decided rather than
+// in a test that would report it only after the build succeeded. Raising
+// the credit, or shrinking the join padding, fails compilation here with
+// the reason attached.
+const _: () = assert!(
+    (ROSTER_CREDIT as usize) * MAX_DATAGRAM_BYTES <= wire::HEADER_BYTES + wire::JOIN_BODY_BYTES,
+    "a host would answer one join with more bytes than the join carried, which is a reflector:      either lower ROSTER_CREDIT or widen the padding on a Join"
+);
+
 /// How many pumps the host repeats its `Start` for before considering the
 /// lobby over.
 ///
@@ -225,6 +258,24 @@ pub enum LobbyRefusal {
     /// A roster that moved this peer to a different seat. Seats are
     /// assigned once; a host that reassigns is a host to walk away from.
     SeatMoved { held: PeerId, offered: PeerId },
+    /// A roster offering this peer seat zero.
+    ///
+    /// Seat zero is the host's, always. A roster that hands it away puts
+    /// two machines on one seat, each submitting inputs as sender zero
+    /// and each refusing the other's — no tick ever confirms, and any
+    /// third peer sees two contradicting streams from one seat. Nothing
+    /// downstream can recover from it, so it is refused at the only place
+    /// it can be seen.
+    SeatZeroOffered,
+    /// A roster describing fewer seats than the one this peer already
+    /// holds.
+    ///
+    /// A real roster only grows, so a smaller one is an older one that
+    /// overtook a newer one — ordinary reordering, not an error. Taking
+    /// it would move the peer backwards onto a fingerprint the others
+    /// have left behind, and it would then refuse the go-ahead and stall
+    /// everybody at tick zero.
+    RosterWentBackwards { held: u8, offered: u8 },
     /// A `Start` before any roster: there is nothing to start yet.
     NotSeatedYet,
     /// A `Start` whose agreement fingerprint is not the one this peer
@@ -271,6 +322,8 @@ pub struct Lobby {
     table: [u8; TABLE_BYTES],
     seated: u8,
     agreed: Option<Agreed>,
+    /// Per-seat roster credit, spent one per pump. See [`ROSTER_CREDIT`].
+    credit: [u8; PEERS],
     /// Where the emitter is in its walk over seats, per pump.
     emit_seat: u8,
     emit_start: bool,
@@ -306,6 +359,7 @@ impl Lobby {
             role: Role::Host { setup },
             state: LobbyState::Hosting { seated: 1 },
             table: [0u8; TABLE_BYTES],
+            credit: [0u8; PEERS],
             seated: 1,
             agreed: None,
             emit_seat: 1,
@@ -321,6 +375,7 @@ impl Lobby {
             role: Role::Joiner { setup, held: None },
             state: LobbyState::Joining,
             table: [0u8; TABLE_BYTES],
+            credit: [0u8; PEERS],
             seated: 0,
             agreed: None,
             emit_seat: 0,
@@ -448,7 +503,12 @@ impl Lobby {
         // every seated peer sends several of these. Idempotent by
         // endpoint, which is also what makes a joiner that restarted on
         // the same port get its own seat back rather than a second one.
-        if self.seat_of(source).is_some() {
+        // Already seated? Then this is the redundancy working, and it is
+        // also this peer saying it is still waiting — so it tops up the
+        // credit that pays for its roster rather than being discarded as
+        // a duplicate.
+        if let Some(seat) = self.seat_of(source) {
+            self.grant(seat);
             return Ok(());
         }
         if self.seated >= MAX_PEERS {
@@ -464,6 +524,7 @@ impl Lobby {
         {
             slot.copy_from_slice(&source);
         }
+        self.grant(self.seated);
         self.seated = self.seated.saturating_add(1);
         self.state = LobbyState::Hosting {
             seated: self.seated,
@@ -506,6 +567,15 @@ impl Lobby {
             return Err(LobbyRefusal::RulesMismatch {
                 ours: setup.rules,
                 theirs: body.rules,
+            });
+        }
+        if body.seat == 0 {
+            return Err(LobbyRefusal::SeatZeroOffered);
+        }
+        if let Some(current) = holding.filter(|c| body.peer_count < c.params.peer_count()) {
+            return Err(LobbyRefusal::RosterWentBackwards {
+                held: current.params.peer_count(),
+                offered: body.peer_count,
             });
         }
         let seat = PeerId::new(body.seat).ok_or(LobbyRefusal::Parameters(
@@ -559,9 +629,22 @@ impl Lobby {
         if let Some(slot) = self.table.get_mut(..ENDPOINT_BYTES) {
             slot.copy_from_slice(&setup.host);
         }
+        // And this peer's own slot is blanked, because the roster carries
+        // it — the host observed it and sends the whole table back. Left
+        // in, `Agreed::endpoint` would hand a joiner its own address for
+        // its own seat while handing the host UNKNOWN_ENDPOINT for
+        // *its* own seat, so a driver skipping itself by that sentinel
+        // would pass as a host and loop every datagram back to itself as
+        // a joiner.
+        if let Some(slot) = self
+            .table
+            .chunks_exact_mut(ENDPOINT_BYTES)
+            .nth(usize::from(seat.index()))
+        {
+            slot.fill(0);
+        }
 
         *held = Some(Held { seat, params });
-        self.seated = body.peer_count;
         self.state = LobbyState::Seated { seat };
         Ok(())
     }
@@ -620,14 +703,23 @@ impl Lobby {
     ) -> Option<Outbound<'b>> {
         match &self.role {
             Role::Host { setup } => self.host_outbound(*setup, out),
-            Role::Joiner { setup, held } => {
-                // A seated joiner has what it came for and goes quiet;
-                // the host has no acknowledgement to wait for, so it
-                // keeps sending until it says go.
-                if held.is_some() {
+            Role::Joiner { setup, .. } => {
+                // **A joiner asks until it starts, not until it is
+                // seated.** Going quiet on the first roster was a wedge
+                // with no way out: one stale or forged roster set the
+                // held state, the joiner never spoke again, every genuine
+                // roster after it was refused, and the peer sat in
+                // `Seated` looking healthy for ever. Asking costs one
+                // datagram a pump and buys three things — recovery from a
+                // bad roster, the liveness signal the host otherwise has
+                // no way to get, and the credit that pays for the roster
+                // coming back.
+                let setup = *setup;
+                // Until it starts — and then never again, because the
+                // lobby is over and the session owns the wire.
+                if self.state == LobbyState::Started {
                     return None;
                 }
-                let setup = *setup;
                 if self.emit_seat > 0 {
                     self.emit_seat = 0;
                     return None;
@@ -660,69 +752,104 @@ impl Lobby {
         if self.state == LobbyState::Started && self.start_repeats == 0 {
             return None;
         }
-        if self.emit_seat >= self.seated {
-            // One pump spent. A `Start` run is the only thing that
-            // ever ends: the roster repeats for as long as the lobby
-            // is open, because a host has no way to learn that a
-            // joiner heard it.
-            self.emit_seat = 1;
-            self.emit_start = false;
-            if self.state == LobbyState::Started {
-                self.start_repeats = self.start_repeats.saturating_sub(1);
+        loop {
+            if self.emit_seat >= self.seated {
+                // One pump spent. Credit decays here rather than per
+                // datagram, so a unit of it means a pump and not a peer —
+                // the same charging the chat outbox uses.
+                self.emit_seat = 1;
+                self.emit_start = false;
+                self.spend();
+                if self.state == LobbyState::Started {
+                    self.start_repeats = self.start_repeats.saturating_sub(1);
+                }
+                return None;
             }
-            return None;
-        }
-        let seat = self.emit_seat;
-        // Every seated peer gets the roster, and during the start run
-        // gets a `Start` behind it — the roster stays in the run so a
-        // joiner that lost every earlier one can still be seated by
-        // the last pump and start on the datagram after it.
-        let send_start = self.state == LobbyState::Started && self.emit_start;
-        if self.state == LobbyState::Started && !self.emit_start {
-            self.emit_start = true;
-        } else {
-            self.emit_start = false;
-            self.emit_seat = self.emit_seat.saturating_add(1);
-        }
+            let seat = self.emit_seat;
+            // Every credited peer gets the roster, and during the start
+            // run gets a `Start` behind it — the roster stays in the run
+            // so a joiner that lost every earlier one can still be seated
+            // by the last pump and start on the datagram after it.
+            let send_start = self.state == LobbyState::Started && self.emit_start;
+            if self.state == LobbyState::Started && !self.emit_start {
+                self.emit_start = true;
+            } else {
+                self.emit_start = false;
+                self.emit_seat = self.emit_seat.saturating_add(1);
+            }
 
-        let to = self.endpoint_at(seat);
-        let sender = PeerId::new(0)?;
-        let addressing = wire::Addressing {
-            sender,
-            session: setup.session,
-        };
-        let len = if send_start {
-            let digest = self.agreed.as_ref()?.params().agreement_digest();
-            wire::write_start(
-                out,
-                addressing,
-                &wire::StartBody {
-                    agreement_digest: digest,
-                },
-            )
-        } else {
-            let endpoints = self.roster_endpoints()?;
-            wire::write_roster(
-                out,
-                addressing,
-                &wire::RosterBody {
-                    seat,
-                    peer_count: self.seated,
-                    input_bytes: setup.input_bytes,
-                    input_delay: setup.input_delay,
-                    digest_period: setup.digest_period,
-                    seed: setup.seed,
-                    content: setup.content,
-                    rules: setup.rules,
-                    endpoints,
-                },
-            )
-            .ok()?
-        };
-        Some(Outbound {
-            to,
-            bytes: out.get(..len)?,
-        })
+            // A seat with no credit left is not spoken to. It keeps its
+            // seat — the roster still counts it — but a host does not
+            // talk into a silence that never asked it to. This is what
+            // stops one arriving datagram buying an unbounded reply, and
+            // it costs a real joiner nothing, because a real joiner keeps
+            // asking until it starts.
+            //
+            // The go-ahead is exempt: it is sent once per pump of a
+            // bounded run, to peers already seated, and a peer that has
+            // gone quiet is exactly the peer most likely to have stopped
+            // for a reason a `Start` would resolve.
+            if !send_start && self.credit_of(seat) == 0 {
+                continue;
+            }
+
+            let to = self.endpoint_at(seat);
+            let sender = PeerId::new(0)?;
+            let addressing = wire::Addressing {
+                sender,
+                session: setup.session,
+            };
+            let len = if send_start {
+                let digest = self.agreed.as_ref()?.params().agreement_digest();
+                wire::write_start(
+                    out,
+                    addressing,
+                    &wire::StartBody {
+                        agreement_digest: digest,
+                    },
+                )
+            } else {
+                let endpoints = self.roster_endpoints()?;
+                wire::write_roster(
+                    out,
+                    addressing,
+                    &wire::RosterBody {
+                        seat,
+                        peer_count: self.seated,
+                        input_bytes: setup.input_bytes,
+                        input_delay: setup.input_delay,
+                        digest_period: setup.digest_period,
+                        seed: setup.seed,
+                        content: setup.content,
+                        rules: setup.rules,
+                        endpoints,
+                    },
+                )
+                .ok()?
+            };
+            return Some(Outbound {
+                to,
+                bytes: out.get(..len)?,
+            });
+        }
+    }
+
+    /// Top up one seat's roster credit. See [`ROSTER_CREDIT`].
+    fn grant(&mut self, seat: u8) {
+        if let Some(cell) = self.credit.get_mut(usize::from(seat)) {
+            *cell = ROSTER_CREDIT;
+        }
+    }
+
+    fn credit_of(&self, seat: u8) -> u8 {
+        self.credit.get(usize::from(seat)).copied().unwrap_or(0)
+    }
+
+    /// One pump's worth of credit, off every seat.
+    fn spend(&mut self) {
+        for cell in &mut self.credit {
+            *cell = cell.saturating_sub(1);
+        }
     }
 
     /// The flat endpoint table for the seats currently taken.

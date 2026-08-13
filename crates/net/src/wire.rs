@@ -48,13 +48,25 @@ pub const DIGEST_BODY_BYTES: usize = 24;
 pub const BYE_BODY_BYTES: usize = 8;
 /// A `Chat` body's fixed part, before the text it carries.
 pub const CHAT_BODY_BYTES: usize = 12;
-/// A `Join` body.
+/// A `Join` body: sixteen bytes of content and rules, then zero padding
+/// out to the datagram ceiling.
 ///
-/// **No address.** A joiner does not tell the host where it is; the host
-/// reads that off the transport, which is the only version of the answer
-/// that is both true under NAT and impossible to forge from elsewhere.
-/// See [`JoinBody`] for what a self-reported one would have cost.
-pub const JOIN_BODY_BYTES: usize = 16;
+/// **The padding is the whole point, and it is a security control rather
+/// than alignment.** A `Join` provokes a roster, and a roster is the
+/// widest datagram this protocol has. If a join were the 32 bytes its
+/// contents need, one forged packet would buy an answer six times its
+/// size aimed at whoever the forger named — the shape every reflection
+/// attack is built from. Padded to the ceiling, the request is never
+/// smaller than the response, so a host cannot be made to emit more than
+/// it was sent. A joiner sends a handful of these and the cost is
+/// nothing; the attack it forecloses has no other cheap defence.
+///
+/// Every padding byte is proven zero on the way in, so the padding cannot
+/// become a covert channel or a second spelling of one join.
+pub const JOIN_BODY_BYTES: usize = MAX_DATAGRAM_BYTES - HEADER_BYTES;
+
+/// The zero run that pads a `Join` out to the ceiling.
+pub const JOIN_PAD_BYTES: usize = JOIN_BODY_BYTES - 16;
 /// A `Roster` body's fixed part, before the endpoints it carries.
 pub const ROSTER_BODY_BYTES: usize = 32;
 /// A `Start` body.
@@ -123,6 +135,7 @@ const BYE_TICK_AT: usize = HEADER_BYTES;
 
 const JOIN_CONTENT_AT: usize = HEADER_BYTES;
 const JOIN_RULES_AT: usize = HEADER_BYTES + 8;
+const JOIN_PAD_AT: usize = HEADER_BYTES + 16;
 
 const ROSTER_SEAT_AT: usize = HEADER_BYTES;
 const ROSTER_COUNT_AT: usize = HEADER_BYTES + 1;
@@ -393,11 +406,19 @@ pub struct DigestBody {
 /// things were wrong with it. Under NAT a joiner's idea of its own
 /// address is the one address that will not reach it, so the field was
 /// unusable in the case it existed for. And a host that believed it would
-/// send a 172-byte roster, repeatedly, to whatever endpoint a 50-byte
-/// datagram named — a reflector with a three-times amplification factor,
-/// aimed by anyone who can send one packet. The host reads the transport
-/// source instead: true under NAT, and unforgeable without owning the
-/// path.
+/// send a roster — up to 192 bytes — repeatedly, to whatever endpoint the
+/// body named, which is a reflector aimed for free.
+///
+/// **Reading the source off the transport narrowed who can aim that, and
+/// nothing else.** Forging a UDP source address needs an unfiltered
+/// uplink and no more, and a reflection attacker never wants the reply,
+/// so the capability this once claimed to require is the capability such
+/// an attack is built on. What actually bounds the amplification is
+/// [`JOIN_BODY_BYTES`]: the request is padded to the ceiling, so it is
+/// never smaller than the answer. The transport source remains the right
+/// place to read an address from — it is true under NAT, where a
+/// self-reported one is not — but it is a correctness argument, not a
+/// security one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JoinBody {
     /// What content the joiner is running, checked at the door rather
@@ -1074,6 +1095,7 @@ fn read_chat(bytes: &[u8], len: usize) -> Result<ChatBody<'_>, WireError> {
 
 fn read_join(bytes: &[u8], len: usize) -> Result<JoinBody, WireError> {
     expect_exactly(Kind::Join, HEADER_BYTES + JOIN_BODY_BYTES, len)?;
+    expect_zeroes(bytes, JOIN_PAD_AT, JOIN_PAD_BYTES)?;
     Ok(JoinBody {
         content: u64_at(bytes, JOIN_CONTENT_AT).ok_or(WireError::TooShort { len })?,
         rules: u64_at(bytes, JOIN_RULES_AT).ok_or(WireError::TooShort { len })?,
@@ -1255,10 +1277,19 @@ impl Cursor<'_> {
         self.bytes(&value.to_le_bytes());
     }
 
+    /// Write `count` zero bytes and advance past them.
+    ///
+    /// **Writes rather than merely skips.** This copied from a fixed
+    /// eight-byte blank until a `Join` needed a hundred and sixty, at
+    /// which point the slice borrow failed, nothing was written, and the
+    /// cursor did not advance — so the writer produced a datagram of the
+    /// wrong length that its own reader refused. Fails closed the same
+    /// way `bytes` does: no room means no advance.
     fn zeroes(&mut self, count: usize) {
-        const BLANK: [u8; 8] = [0; 8];
-        if let Some(source) = BLANK.get(..count) {
-            self.bytes(source);
+        let end = self.at.saturating_add(count);
+        if let Some(room) = self.out.get_mut(self.at..end) {
+            room.fill(0);
+            self.at = end;
         }
     }
 
@@ -1477,6 +1508,7 @@ pub fn write_join(
     cursor.header(Kind::Join, addressing);
     cursor.u64(body.content);
     cursor.u64(body.rules);
+    cursor.zeroes(JOIN_PAD_BYTES);
     cursor.at
 }
 
