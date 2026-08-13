@@ -23,7 +23,7 @@
 
 use renew_fixed::Fixed;
 use renew_frame::StateHash;
-use renew_ui::{Align, Direction, Edges, Size, Style, Ui, UiEvent, UiLimits};
+use renew_ui::{Align, Direction, Edges, EditOp, Size, Style, Ui, UiEvent, UiLimits};
 
 fn main() {
     // The scenario takes no arguments; being handed one means the
@@ -125,6 +125,44 @@ fn run() -> Option<(u64, usize, u64)> {
         hash = ui.absorb(hash);
     }
 
+    // Typing, into the button the last click focused. **This is the
+    // only guard against a digest token being exchanged**: swapping two
+    // editing operations' codes preserves every distinction a test can
+    // check by comparing two digests to each other, and changes a
+    // fingerprint only against a recorded one. That argument was made in
+    // a comment beside those codes and the guard was never placed here,
+    // which a review pointed out; a deferral to a place nothing was
+    // added to is a deferral to nowhere.
+    //
+    // The script covers both event kinds and the whole editing
+    // vocabulary, and includes a control character — U+0003, which
+    // Windows delivers for Ctrl+C — because a typed scalar and an
+    // operation code once shared a namespace and collided.
+    let typing = [
+        UiEvent::TextEntered { ch: u32::from('h') },
+        UiEvent::TextEntered { ch: u32::from('i') },
+        UiEvent::TextEntered { ch: 3 },
+        UiEvent::Edit { op: EditOp::Left },
+        UiEvent::TextEntered {
+            ch: u32::from('é')
+        },
+        UiEvent::Edit { op: EditOp::Home },
+        UiEvent::Edit { op: EditOp::Right },
+        UiEvent::Edit { op: EditOp::Delete },
+        UiEvent::Edit { op: EditOp::End },
+        UiEvent::Edit {
+            op: EditOp::Backspace,
+        },
+    ];
+    // A refusal here would silently drop ten events from the scenario
+    // while the count below still claimed them, so it is an error rather
+    // than a skip: the pool has eight slots and this asks for one.
+    ui.make_field(buttons[2]).ok()?;
+    for &event in &typing {
+        ui.handle(event);
+        hash = ui.absorb(hash);
+    }
+
     // Mid-session restyle: the growing button stops growing, the tree
     // re-solves, and the pixel that hit the middle button before the
     // restyle now hits the last one — the coda click activates a
@@ -150,7 +188,11 @@ fn run() -> Option<(u64, usize, u64)> {
         hash = ui.absorb(hash);
     }
     let activations = ui.drain_outputs().count() as u64;
-    Some((hash.finish(), script.len() + coda.len(), activations))
+    Some((
+        hash.finish(),
+        script.len() + typing.len() + coda.len(),
+        activations,
+    ))
 }
 
 /// Fold the solved rectangles of `nodes`, to the raw fixed-point bit.
@@ -181,10 +223,19 @@ mod tests {
     /// restyle and one after, counted from the drained queue — a
     /// scenario that stopped deciding could never pass this, however
     /// stable its digest.
+    ///
+    /// The event count is pinned for the same reason, and it caught
+    /// exactly what it is for: typing was added to the scenario while
+    /// the reported count still said seventeen, so the machine-readable
+    /// line understated what had run. Both halves move together or the
+    /// number is decoration.
     #[test]
     fn the_scenario_actually_activates() {
         let (digest, events, activations) = run().expect("the scenario builds its own tree");
-        assert_eq!(events, 17);
+        assert_eq!(
+            events, 27,
+            "fourteen pointer, ten typed or edited, three coda"
+        );
         assert_eq!(activations, 3, "the script activates exactly three times");
         assert_ne!(digest, 0);
     }
