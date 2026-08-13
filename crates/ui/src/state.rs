@@ -19,9 +19,18 @@
 //! freshly-computed hover answer does not. Because every bit derives
 //! from state the digest already covers (the pointer and the decision
 //! fold) or deliberately excludes (hover and geometry), applied
-//! patches add nothing to [`crate::Ui::absorb`]: two identically
-//! authored trees with equal digests wear the same patches, and like
-//! geometry, dress reaches the digest only by changing a decision.
+//! patches add nothing to [`crate::Ui::absorb`]: like geometry, dress
+//! reaches the digest only by changing a decision.
+//!
+//! **Not that equal digests mean identical dress.** This module said so
+//! until it was checked. Two trees authored by the same code, differing
+//! only in whether the solve ran before or after the first pointer
+//! move, hold one digest and wear different patches — the lag named
+//! above, seen from outside. What holds is the exclusion: the next
+//! event re-derives the bits from the pointer the digest already
+//! carries, the two converge, and dress never decides anything on its
+//! own. `a_lagging_patch_catches_up_and_the_digest_never_saw_it` is
+//! that pair.
 
 use crate::layout::Style;
 
@@ -337,6 +346,90 @@ mod tests {
 
     /// The digest does not see dress: hover flips wearing a patch
     /// leave absorb where it was, exactly as bare hover always has.
+    /// Two identically authored trees with equal digests can wear
+    /// different patches — and the difference does not last.
+    ///
+    /// **The narrow claim, because the wide one is false.** Equal
+    /// digests do not mean identical worn dress. Bits refresh on an
+    /// event and not on a solve, so a tree
+    /// solved before its first pointer move has rects to hit-test
+    /// against and wears the patch, while one solved after does not —
+    /// same authoring, same digest, different dress.
+    ///
+    /// What saves the exclusion is that it is transient: the next event
+    /// re-derives the bits from the pointer the digest already carries,
+    /// and the two converge. So dress still reaches the digest only by
+    /// changing a decision, and it cannot change one on its own.
+    #[test]
+    fn a_lagging_patch_catches_up_and_the_digest_never_saw_it() {
+        let build = |move_first: bool| {
+            let mut ui = Ui::new(UiLimits { nodes: 4 });
+            let root = ui.root();
+            let button = ui.insert(root).expect("room");
+            let base = Style {
+                width: Size::Px(Fixed::from_int(40)),
+                height: Size::Px(Fixed::from_int(20)),
+                background: BASE_BG,
+                ..Style::default()
+            };
+            ui.set_style(button, base);
+            assert!(ui.set_patch_pool(vec![StatePatch {
+                style: Style {
+                    width: Size::Px(Fixed::from_int(80)),
+                    background: HOVER_BG,
+                    ..base
+                },
+                touches_layout: true,
+            }]));
+            let mut table = [NO_PATCH; STATE_COMBINATIONS];
+            for (bits, entry) in table.iter_mut().enumerate() {
+                if u8::try_from(bits).unwrap_or(0) & STATE_HOVER != 0 {
+                    *entry = 0;
+                }
+            }
+            assert!(ui.set_state_table(button, table));
+            // The only difference between the two: which side of the
+            // solve the pointer arrived on.
+            if move_first {
+                ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+                ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+            } else {
+                ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+                ui.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+            }
+            (ui, button)
+        };
+
+        let (mut solved_first, one) = build(false);
+        let (mut moved_first, other) = build(true);
+        let digest = |ui: &Ui| ui.absorb(renew_frame::StateHash::new()).finish();
+
+        assert_eq!(
+            digest(&solved_first),
+            digest(&moved_first),
+            "the two absorbed the same pointer and the same nothing else"
+        );
+        assert_ne!(
+            solved_first.style(one).map(|style| style.width),
+            moved_first.style(other).map(|style| style.width),
+            "equal digests do not mean identical dress, which this module once promised"
+        );
+
+        solved_first.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+        moved_first.handle(UiEvent::PointerMoved { x: 5, y: 5 });
+
+        assert_eq!(
+            solved_first.style(one).map(|style| style.width),
+            moved_first.style(other).map(|style| style.width),
+            "one event re-derives the bits and the lag is gone"
+        );
+        assert_eq!(
+            digest(&solved_first),
+            digest(&moved_first),
+            "and it was never in the digest to begin with"
+        );
+    }
+
     #[test]
     fn worn_patches_stay_outside_the_digest() {
         let (mut ui, _button) = hoverable();

@@ -228,10 +228,10 @@ impl Ui {
         // record rather than the count and the last entry.
         //
         // **Both halves of the id, and the generation is the half that
-        // is easy to argue away.** It was argued away once, on the
-        // grounds that activation already folds the whole id into
-        // `decisions`, so two runs typing into different generations of
-        // one slot must have diverged upstream. That is false.
+        // is easy to argue away.** The argument goes: activation already
+        // folds the whole id into `decisions`, so two runs typing into
+        // different generations of one slot must have diverged upstream.
+        // It is false.
         // `decisions` records *which nodes were activated in what
         // order*; two runs can share that exactly and interleave typing
         // between the same activations. Deleting the generation gave
@@ -335,20 +335,15 @@ impl Ui {
     ///   only by changing a decision. Authoring is excluded here
     ///   exactly as styles are.
     ///
-    ///   **This bullet used to promise more than that, and the extra
-    ///   was false.** It said two identically authored states with
-    ///   equal digests wear the same patches. They need not: worn dress
-    ///   is refreshed by an event, not by a solve, so two trees built by
-    ///   the same code differing only in whether the solve ran before or
-    ///   after the pointer moved fold identically and wear differently.
-    ///   Feed both the same four events afterwards and they activate
-    ///   different nodes. The mechanism is named two sentences into
-    ///   [`crate::state`], which is what makes the promise a
-    ///   contradiction rather than a gap.
-    ///
-    ///   What survives is the exclusion itself, which is all this list
-    ///   owes: dress is not absorbed, and it reaches the digest only
-    ///   through the decisions it changes — those being absorbed.
+    ///   **Not that equal digests mean identical dress.** Two trees
+    ///   authored by the same code, differing only in whether the solve
+    ///   ran before or after the first pointer move, hold one digest
+    ///   and wear different patches: bits refresh on an event, not on a
+    ///   solve. The difference is transient — the next event re-derives
+    ///   them from the pointer this digest already carries — so dress
+    ///   still reaches the digest only through decisions, which are
+    ///   absorbed. `a_lagging_patch_catches_up_and_the_digest_never_saw_it`
+    ///   in [`crate::state`] is that pair.
     #[must_use]
     pub fn absorb(&self, hash: StateHash) -> StateHash {
         let hash = hash

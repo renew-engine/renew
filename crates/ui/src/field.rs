@@ -9,10 +9,11 @@
 //! rather than arrive by a number being raised — the same reasoning the
 //! networking crate's seat ceiling states.
 //!
-//! Two designs were tried and discarded first: a buffer per node, which
-//! multiplies to tens of kilobytes for a tree with one field, and an
-//! arena sized by a new capacity, which dragged fifty-three
-//! construction sites behind it and told none of them anything.
+//! Two designs are worse. A buffer per node multiplies to tens of
+//! kilobytes for a tree with one field. An arena sized by a new
+//! capacity makes every construction site in the workspace declare a
+//! number, and almost all of them are fixtures with nothing to say
+//! about text.
 
 use crate::NodeId;
 
@@ -63,9 +64,9 @@ impl EditOp {
     /// digests cannot see a swap, because a swap preserves every
     /// distinction such a test makes; and the cross-target lane holds
     /// its legs against each other rather than against a recorded
-    /// value, so a swap moves all of them alike. An earlier comment
-    /// here deferred the guard to that lane, which was wrong about what
-    /// the lane does. Catching it needs a digest pinned as a constant,
+    /// value, so a swap moves all of them alike — deferring the guard
+    /// to it would be wrong about what it does. Catching a swap needs a
+    /// digest pinned as a constant,
     /// which this crate does not have and which is a decision of its
     /// own — so these numbers are held by being written out and read,
     /// and the gap is stated instead of covered over.
@@ -212,11 +213,10 @@ impl Field {
 
     /// The end of the character starting at `at`.
     ///
-    /// Expects `at < len`, which both callers check before asking. A
-    /// clamp to `len` used to sit on the return; it could not be reached
-    /// through either caller and no test could distinguish it, so it is
-    /// gone rather than kept as defence against a caller that does not
-    /// exist. [`Self::step_back`] states its own edge the same way.
+    /// Expects `at < len`, which both callers check before asking, so
+    /// the return needs no clamp: one would be unreachable through
+    /// either of them and no test could distinguish it.
+    /// [`Self::step_back`] states its own edge the same way.
     fn step_forward(&self, at: u8) -> u8 {
         let mut index = at.saturating_add(1);
         while index < self.len && self.is_continuation(index) {
@@ -281,11 +281,10 @@ mod tests {
     /// a distinction, and destroying one is exactly what a comparison
     /// notices.
     ///
-    /// This was documented at length as though the two halves were one
-    /// gap. They are not, and only one pair of the fifteen was guarded —
-    /// so `Home` could have been given `Left`'s number and the whole
-    /// workspace would have stayed green while two fields differing in
-    /// cursor position shared a fingerprint.
+    /// The two halves are easy to read as one gap and are not: without
+    /// this test, `Home` could take `Left`'s number with the whole
+    /// workspace staying green, while two fields differing in cursor
+    /// position shared a fingerprint.
     #[test]
     fn every_operation_folds_a_different_number() {
         const ALL: [EditOp; 6] = [

@@ -1,10 +1,9 @@
 //! The field pool's invariants, over inputs nobody chose.
 //!
 //! A container with editing operations wants these, and the field pool
-//! shipped its first revision without them. Forty
-//! thousand pseudo-random operations by hand and found the invariants
-//! held — which established they were true once and guarded
-//! nothing afterwards.
+//! shipped its first revision without them. Walking forty thousand
+//! pseudo-random operations by hand establishes that the invariants held
+//! that once; only a property test keeps establishing it.
 
 use proptest::prelude::*;
 use renew_ui::{EditOp, Fixed, MAX_FIELD_BYTES, NodeId, Size, Style, Ui, UiEvent, UiLimits};

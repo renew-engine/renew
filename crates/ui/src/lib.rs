@@ -608,12 +608,9 @@ impl Ui {
             // partial free would leave bytes behind a `None` owner and
             // this clear would be load-bearing.
             //
-            // **`remove` is not one of those ways**, and three earlier
-            // versions of this comment said it was. Removal leaves the
-            // slot owned by a node that is gone; the reclaim is what
-            // notices, later. The conclusion held anyway, which is why
-            // the error survived four readings: a false premise under a
-            // true claim reads exactly like a true one.
+            // **`remove` is not one of those ways.** Removal leaves the
+            // slot owned by a node that is gone, and the reclaim is what
+            // notices, later.
             slot.owner = Some(node);
         }
         Ok(())

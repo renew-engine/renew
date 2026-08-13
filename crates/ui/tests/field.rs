@@ -169,10 +169,8 @@ fn a_multi_byte_character_is_removed_whole() {
         "left steps the whole character"
     );
 
-    // Forward over it too. That is a separate walk in the code, and it
-    // was uncovered until this line existed —
-    // it silently edited nothing, and the coverage report is what said
-    // so.
+    // Forward over it too: a separate walk in the code, and uncovered
+    // until this line existed.
     ui.handle(UiEvent::Edit { op: EditOp::Right });
     assert_eq!(
         ui.field_cursor(node),
@@ -390,8 +388,7 @@ fn a_stale_id_never_names_a_live_field() {
 
 #[test]
 fn a_removed_parents_childrens_slots_are_reclaimed_too() {
-    // The direct release missed this case:
-    // removing a panel ends the field inside it, and the field's slot
+    // Removing a panel ends the field inside it, and the field's slot
     // has to go back too. Chasing every path that can end a node's life
     // is a losing game — removing a parent is one, and the next kind of
     // removal will be another — so the pool reclaims by asking the arena
@@ -688,11 +685,10 @@ fn the_pool_costs_what_the_documentation_says() {
 
 #[test]
 fn a_reclaimed_slot_arrives_empty() {
-    // **This must reach the reclaim path, and the first version did
-    // not.** It removed the field's own node, which used to clear the
-    // slot eagerly, so the reclaim's dead-owner branch never fired and
-    // weakening that branch left the test green — vacuous, in the file
-    // that was meant to prove it.
+    // **This must reach the reclaim path, and removing the field's own
+    // node does not.** That frees the slot by another road, so the
+    // reclaim's dead-owner branch never runs and weakening it would
+    // leave the test green.
     //
     // Removing an *ancestor* is what leaves a slot owned by a dead node
     // for the reclaim to find, so that is what this does.
@@ -784,9 +780,8 @@ fn a_control_character_and_an_edit_key_never_fold_alike() {
     // U+0001..U+001A for Ctrl with a letter, so it is a keystroke a
     // player produces by accident, not an exotic input.
     //
-    // The exact pair from the report: both runs accept both events, so
-    // every other counter matches and only the fold could tell them
-    // apart. It could not.
+    // Both runs accept both events, so every other counter matches and
+    // only the fold could tell them apart.
     use renew_frame::StateHash;
     let mut typed = tree(4);
     let node_a = focused_field(&mut typed);

@@ -208,7 +208,7 @@ reason = "The scenario binary's refusal arms, and the three ways it gives up. Th
 [[exempt]]
 file = "crates/ui/src/bin/ui_digest.rs"
 lines = [88]
-reason = "The bail arm of the guard that proves the scenario's typed events reached a field. It cannot fire while the scenario is correct — the script types two characters and removes one — and that is exactly its job: it exists so that a change moving focus off the field before the typing ends the run instead of silently emptying the only part of the scenario that exercises text. A review demonstrated that emptiness by making the field claim a no-op and watching every test stay green and the reported event count stay at twenty-seven, which is why the guard is here rather than trusted. Exempted rather than driven: reaching it needs the scenario broken, and a test that breaks the scenario to watch the guard fire would be asserting that a deliberately broken scenario is broken."
+reason = "The bail arm of the guard that proves the scenario's typed events reached a field. It cannot fire while the scenario is correct — the script types two characters and removes one — and that is exactly its job: it exists so that a change moving focus off the field before the typing ends the run instead of silently emptying the only part of the scenario that exercises text. Making the field claim a no-op demonstrates that emptiness and watching every test stay green and the reported event count stay at twenty-seven, which is why the guard is here rather than trusted. Exempted rather than driven: reaching it needs the scenario broken, and a test that breaks the scenario to watch the guard fire would be asserting that a deliberately broken scenario is broken."
 
 [[exempt]]
 file = "crates/ui/src/input.rs"

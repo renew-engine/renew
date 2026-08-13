@@ -88,9 +88,8 @@ fn text_entry_stays_heap_silent() {
         // live; neither should touch the heap either. **Re-runnable on
         // purpose:** a loud attempt makes `quiet_window` call this
         // closure again, so a body that consumed the tree would report
-        // its own broken setup instead of the allocation it measured. A
-        // is exactly what happened. The node is re-made rather than
-        // assumed to survive.
+        // its own broken setup instead of the allocation it measured.
+        // The node is re-made rather than assumed to survive.
         let scratch = ui.insert(root).expect("room");
         ui.make_field(scratch).expect("a free slot");
         assert_eq!(
