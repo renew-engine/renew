@@ -390,7 +390,7 @@ fn a_stale_id_never_names_a_live_field() {
 
 #[test]
 fn removing_a_parent_releases_its_childrens_field_slots() {
-    // The direct release missed this and a review probe found it:
+    // The direct release missed this case:
     // removing a panel ends the field inside it, and the field's slot
     // has to go back too. Chasing every path that can end a node's life
     // is a losing game — removing a parent is one, and the next kind of

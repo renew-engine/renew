@@ -122,8 +122,9 @@ per platform and per person and is the driver's answer to give.
 Text fields are a fixed pool rather than a declared capacity:
 `MAX_FIELDS` nodes may hold text, `MAX_FIELD_BYTES` each, present in
 every tree at `POOL_BYTES` whether it has a field or not. `make_field`
-claims a slot, `field_text` and `field_cursor` read one, and removing a
-node returns its slot to the pool. A field always holds valid UTF-8:
+claims a slot, `field_text` and `field_cursor` read one, and a removed
+node's slot is reclaimed by the next `make_field` rather than released on
+removal. A field always holds valid UTF-8:
 insertion refuses rather than truncating when the last byte will not
 fit, and deletion steps whole characters.
 
@@ -138,8 +139,8 @@ silently lost.
 
 `Ui::absorb` folds the discrete decisions into the engine's state
 fingerprint: pointer, pressed, focus, the activation ordinal, a
-running fold of every activated id in order, the overflow count, the
-count of accepted text edits, and a running fold of those in order.
+running fold of every activated id in order, the overflow count, and a
+running fold of every accepted text edit in order.
 What the edit fold carries is the stream — which node, which operation,
 which character — and never the field's contents: folding the bytes on
 every keystroke is linear in the field's length for a property the

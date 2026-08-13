@@ -77,9 +77,12 @@ pub enum UiOutput {
 /// materially different fields, different bytes *and* different cursor,
 /// shared a fingerprint.
 ///
-/// A review found it after the affine collision was fixed: routing
-/// through the hash made the arithmetic sound and left the domain
-/// unexamined.
+/// The affine collision and this one are separate faults, and fixing the
+/// first hid the second: routing through the hash made the arithmetic
+/// sound and left the domain unexamined.
+///
+/// Exchanging these two values is caught by nothing, for the reason the
+/// scenario binary's typing script sets out.
 const KIND_TEXT: u64 = 1;
 const KIND_EDIT: u64 = 2;
 
@@ -103,8 +106,6 @@ pub(crate) struct Interaction {
     /// different nodes, or the same nodes in a different order, hold
     /// different folds even after their queues drain.
     pub decisions: u64,
-    /// Accepted edits, ever — the ordinal a replay compares.
-    pub edits: u64,
     /// A running fold of every accepted edit, in order.
     ///
     /// **The stream, not the contents.** Folding a field's bytes on
@@ -214,7 +215,6 @@ impl Ui {
         if !apply(field) {
             return;
         }
-        self.interaction.edits = self.interaction.edits.saturating_add(1);
         // Through `StateHash`, exactly as the decision fold two screens
         // up does, and for a reason found the hard way: the first
         // version rotated and added, which is **affine in the token**.
@@ -224,14 +224,19 @@ impl Ui {
         // different texts share is worse than none, because everything
         // downstream trusts it.
         //
-        // The node's generation goes in beside its index, so a slot
-        // reused by a later node is a different history, and the
-        // previous fold seeds the next so the sequence is the record
-        // rather than the count and the last entry.
+        // The previous fold seeds the next, so the sequence is the
+        // record rather than the count and the last entry.
+        //
+        // The node's index goes in but not its generation, and that is
+        // deliberate. Focus is reachable only by activation, and
+        // `PointerReleased` already folds both halves of the id into
+        // `decisions` — so two runs that typed into different
+        // generations of one slot have diverged before reaching here. A
+        // generation folded here would be a line no test could
+        // distinguish, which is the definition of dead.
         self.interaction.edit_fold = StateHash::new()
             .absorb_u64(self.interaction.edit_fold)
             .absorb_u32(focus.index())
-            .absorb_u64(focus.generation())
             .absorb_u64(kind)
             .absorb_u64(token)
             .finish();
@@ -289,7 +294,6 @@ impl Ui {
     ///   thing: draining is a host action this digest never sees, so a
     ///   host that drained after every click and one that never drained
     ///   share a digest and hand over three decisions versus none.
-    ///   Demonstrated by review rather than reasoned about.
     /// - *A field's bytes, its cursor, and how much of the pool is
     ///   occupied*: the edit fold above records the stream that
     ///   produced them — which node, which kind of event, which
@@ -299,8 +303,8 @@ impl Ui {
     ///   folding them on every keystroke is linear in a field's length
     ///   for a property the stream already has.
     ///
-    ///   That hedge is load-bearing and an earlier version of this
-    ///   bullet lacked it, which a review demonstrated three ways. Two
+    ///   That hedge is load-bearing, and there are three ways to lose
+    ///   it. Two
     ///   trees can share a digest while one holds a field with `"a"` and
     ///   the other holds no text, because the focused node was removed
     ///   and the stale id is absorbed unchanged. Two trees with every
@@ -331,7 +335,6 @@ impl Ui {
         hash.absorb_u64(self.interaction.activations)
             .absorb_u64(self.interaction.decisions)
             .absorb_u64(self.interaction.overflowed)
-            .absorb_u64(self.interaction.edits)
             .absorb_u64(self.interaction.edit_fold)
     }
 

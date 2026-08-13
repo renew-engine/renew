@@ -35,11 +35,8 @@ pub const MAX_FIELD_BYTES: usize = 64;
 ///
 /// **Every one of these moves and removes whole characters, never
 /// bytes.** A field holding `é` is two bytes and one character, and one
-/// `Left` steps over both — a caller sending two to skip two bytes
-/// would land two characters back. These docs said "byte" for four
-/// review passes while the code walked characters and a test pinned it;
-/// the enum is what a driver author reads, so it is what has to be
-/// right.
+/// `Left` steps over both, so a caller sending two of them to skip two
+/// bytes lands two characters back instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditOp {
     /// Remove the character before the cursor.
@@ -214,12 +211,18 @@ impl Field {
     }
 
     /// The end of the character starting at `at`.
+    ///
+    /// Expects `at < len`, which both callers check before asking. A
+    /// clamp to `len` used to sit on the return; it could not be reached
+    /// through either caller and no test could distinguish it, so it is
+    /// gone rather than kept as defence against a caller that does not
+    /// exist. [`Self::step_back`] states its own edge the same way.
     fn step_forward(&self, at: u8) -> u8 {
         let mut index = at.saturating_add(1);
         while index < self.len && self.is_continuation(index) {
             index = index.saturating_add(1);
         }
-        index.min(self.len)
+        index
     }
 
     fn is_continuation(&self, index: u8) -> bool {
@@ -247,12 +250,12 @@ impl Field {
 
 /// What the pool costs, stated where it cannot drift.
 ///
-/// A review found the first prose figure wrong — 512 was the arithmetic
-/// of the bytes alone, and a `Field` also carries an owner and two
-/// cursors, with `Option<NodeId>` paying a discriminant beside a `u32`
-/// and a `u64`. The number now comes from the compiler rather than from
-/// anyone's addition, and the assertion below fails the build if a field
-/// grows past what the docs claim.
+/// **From the compiler, not from anyone's addition.** A `Field` is wider
+/// than its bytes: it carries an owner, a length and a cursor, and
+/// `Option<NodeId>` pays a discriminant beside a `u32` and a `u64`. Any
+/// figure worked out by hand is wrong the first time the struct changes,
+/// and prose has no way to notice. The assertion below fails the build
+/// if a field grows past what the documentation claims.
 pub const POOL_BYTES: usize = core::mem::size_of::<Field>() * MAX_FIELDS;
 
 const _: () = assert!(

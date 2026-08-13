@@ -56,14 +56,14 @@ fn main() {
 /// here on purpose: Windows delivers it for Ctrl and a letter, and a
 /// typed scalar once shared a token namespace with an operation code.
 ///
-/// **What it does not do is catch an exchanged digest token**, and an
-/// earlier version of this comment claimed it did. This lane holds its
-/// legs against *each other*, never against a committed constant, so
-/// swapping two operation codes moves every target's digest by the same
-/// amount and the comparison still agrees. The claim was written into
-/// two files and a commit message before anyone checked it against what
-/// the lane compares. Nothing in this repository catches that mutation
-/// today; saying so is worth more than a guard that is not one.
+/// **What it does not do is catch an exchanged digest token.** This lane
+/// holds its legs against *each other*, never against a committed
+/// constant, so exchanging two tokens moves every target's digest by the
+/// same amount and the comparison still agrees. That covers two sets:
+/// the operation codes on `EditOp`, and the two event-kind tags in the
+/// input module. Nothing in this repository catches either exchange
+/// today, and naming the whole class is worth more than a guard that is
+/// not one — a hole known by half is the one that gets trusted.
 fn type_into(ui: &mut Ui, node: NodeId, mut hash: StateHash) -> Option<StateHash> {
     // An error rather than a skip: silently dropping these would leave
     // the reported event count claiming them.
@@ -244,9 +244,20 @@ mod tests {
     /// The scenario is a pure function: two runs in one process agree
     /// exactly. The cross-machine half of the claim belongs to the
     /// comparison lane, which is the point of the binary existing.
+    ///
+    /// **Agreement is asserted only after the scenario is known to have
+    /// produced something.** `None == None` is agreement too, so a
+    /// version of this that compared the two calls alone stayed green
+    /// against a scenario collapsed to nothing — stubbing the field
+    /// claim was enough to do it.
     #[test]
     fn the_scenario_reproduces_in_process() {
-        assert_eq!(run(), run());
+        let first = run();
+        assert!(
+            first.is_some(),
+            "the scenario produced nothing, so agreement means nothing"
+        );
+        assert_eq!(first, run());
     }
 
     /// The script really decides things: two activations before the

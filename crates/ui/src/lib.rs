@@ -341,19 +341,10 @@ impl Ui {
         if index == 0 {
             return false;
         }
-        // No field release here. The reclaim in `make_field` covers
-        // every freed slot by asking the arena who is live, and
-        // `field_slot` refuses a stale id before it looks — so a release
-        // on this path is a line no test can distinguish, which is dead
-        // code. One was written here first, with a comment claiming the
-        // pool leaked without it; the claim stopped being true when the
-        // reclaim landed, and deleting the code left every test green.
-        //
-        // Then the deletion kept the comment, so this spot said both
-        // things at once for two commits. Third time over five lines,
-        // and the lesson is not about fields: an edit that removes code
-        // and an edit that removes its justification are two edits, and
-        // doing one is not doing the other.
+        // No field release here, deliberately. The reclaim in
+        // `make_field` covers every freed slot by asking the arena who
+        // is live, and `field_slot` refuses a stale id before it looks,
+        // so a release on this path is a line no test can distinguish.
         self.unlink(index);
         self.free_subtree(index);
         self.dirty = true;
@@ -591,8 +582,8 @@ impl Ui {
         // node's life is a losing game: removing a parent ends its
         // children too, and the next kind of removal will end them some
         // third way. Asking the arena who is alive is the answer that
-        // cannot go stale — a review probe found exactly this, by
-        // removing a panel rather than the field inside it.
+        // cannot go stale. Removing a panel rather than the field
+        // inside it is the case that makes the difference visible.
         for index in 0..MAX_FIELDS {
             let dead = self
                 .fields
@@ -609,12 +600,11 @@ impl Ui {
             .position(|slot| slot.owner.is_none())
             .ok_or(UiRefused::Full)?;
         if let Some(slot) = self.fields.get_mut(free) {
-            // No clear here, and that is checked rather than assumed. A
-            // review flagged deleting one as a surviving mutation, which
-            // it was — because every path that frees a slot already
-            // clears it: `remove` empties it, the reclaim above empties
-            // it, and a slot never claimed starts empty. A second clear
-            // is a line no test can distinguish, which is dead code.
+            // No clear here, and that is checked rather than assumed.
+            // Every path that frees a slot already clears it: `remove`
+            // empties it, the reclaim above empties it, and a slot never
+            // claimed starts empty. A second clear is a line no test can
+            // distinguish.
             // The property it protected is now asserted where it is
             // real, on the reclaim path.
             slot.owner = Some(node);
@@ -635,6 +625,10 @@ impl Ui {
     }
 
     /// Where the cursor sits in a field, in bytes from the start.
+    ///
+    /// Always on a character boundary and never past the length.
+    /// [`None`] for a node that is not a field, the same as
+    /// [`Self::field_text`].
     #[must_use]
     pub fn field_cursor(&self, node: NodeId) -> Option<u8> {
         self.fields
@@ -644,11 +638,11 @@ impl Ui {
 
     /// Which pool slot a node owns, if any.
     ///
-    /// **Liveness is checked here rather than trusted.** Releasing on
-    /// removal is what keeps the pool honest, and this is the second
-    /// half of the same promise: a stale id misses, the way it misses
-    /// everywhere else in this crate, even if a slot were ever left
-    /// behind.
+    /// **Liveness is checked here rather than trusted.** A slot outlives
+    /// its node: nothing releases it on removal, and the next
+    /// [`Ui::make_field`] reclaims it. So the owner recorded in a slot
+    /// can name a node that is gone, and checking is what makes a stale
+    /// id miss, the way it misses everywhere else in this crate.
     fn field_slot(&self, node: NodeId) -> Option<usize> {
         if !self.is_live(node) {
             return None;
