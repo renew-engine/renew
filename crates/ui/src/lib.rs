@@ -601,12 +601,19 @@ impl Ui {
             .ok_or(UiRefused::Full)?;
         if let Some(slot) = self.fields.get_mut(free) {
             // No clear here, and that is checked rather than assumed.
-            // Every path that frees a slot already clears it: `remove`
-            // empties it, the reclaim above empties it, and a slot never
-            // claimed starts empty. A second clear is a line no test can
-            // distinguish.
-            // The property it protected is now asserted where it is
-            // real, on the reclaim path.
+            // A slot is free only when its `owner` is `None`, and the
+            // only two ways that happens both write the whole struct:
+            // the reclaim above assigns `Field::EMPTY`, and so does
+            // construction. There is no third, which is the point — a
+            // partial free would leave bytes behind a `None` owner and
+            // this clear would be load-bearing.
+            //
+            // **`remove` is not one of those ways**, and three earlier
+            // versions of this comment said it was. Removal leaves the
+            // slot owned by a node that is gone; the reclaim is what
+            // notices, later. The conclusion held anyway, which is why
+            // the error survived four readings: a false premise under a
+            // true claim reads exactly like a true one.
             slot.owner = Some(node);
         }
         Ok(())

@@ -16,7 +16,7 @@ use renew_ui::{EditOp, Fixed, Size, Style, Ui, UiEvent, UiLimits};
 /// separate binaries, so a sibling file's allocator does not apply here:
 /// `counters` would be written by nobody, every snapshot would read
 /// zero, and the window would pass on its first attempt whatever the
-/// code did. The first version of this file omitted it and a review
+/// code did. The first version of this file omitted it, and that
 /// proved the point by allocating four kilobytes inside the measured
 /// closure — still green.
 #[global_allocator]
@@ -89,7 +89,7 @@ fn text_entry_stays_heap_silent() {
         // purpose:** a loud attempt makes `quiet_window` call this
         // closure again, so a body that consumed the tree would report
         // its own broken setup instead of the allocation it measured. A
-        // review watched that happen. The node is re-made rather than
+        // is exactly what happened. The node is re-made rather than
         // assumed to survive.
         let scratch = ui.insert(root).expect("room");
         ui.make_field(scratch).expect("a free slot");

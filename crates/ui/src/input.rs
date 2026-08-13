@@ -294,10 +294,12 @@ impl Ui {
     ///   press that hits a different node — which is exactly when it
     ///   should.
     /// - *Styles and the tree structure*: authoring data, same road.
-    /// - *The output queue*: its contents are exactly the activated
-    ///   ids in order, and the decision fold above records that
-    ///   sequence — so two states with equal digests have activated the
-    ///   same nodes in the same order. **Not the same thing as holding
+    /// - *The output queue*: it holds activated ids in order, and the
+    ///   decision fold above records that sequence — so two states with
+    ///   equal digests have activated the same nodes in the same order.
+    ///   The queue itself is not that sequence when it has overflowed,
+    ///   which the counter beside it records and a test pins; the fold
+    ///   is, because it is folded before the queue is offered the id. **Not the same thing as holding
     ///   the same queue**: draining is a host action this digest never
     ///   sees, so a
     ///   host that drained after every click and one that never drained
@@ -330,9 +332,23 @@ impl Ui {
     /// - *Worn state patches*: derived from the absorbed pointer and
     ///   press/focus state applied over the excluded geometry and
     ///   authored tables — like geometry, dress reaches this digest
-    ///   only by changing a decision. Two *identically authored*
-    ///   states with equal digests wear the same patches; authoring
-    ///   is excluded here exactly as styles are.
+    ///   only by changing a decision. Authoring is excluded here
+    ///   exactly as styles are.
+    ///
+    ///   **This bullet used to promise more than that, and the extra
+    ///   was false.** It said two identically authored states with
+    ///   equal digests wear the same patches. They need not: worn dress
+    ///   is refreshed by an event, not by a solve, so two trees built by
+    ///   the same code differing only in whether the solve ran before or
+    ///   after the pointer moved fold identically and wear differently.
+    ///   Feed both the same four events afterwards and they activate
+    ///   different nodes. The mechanism is named two sentences into
+    ///   [`crate::state`], which is what makes the promise a
+    ///   contradiction rather than a gap.
+    ///
+    ///   What survives is the exclusion itself, which is all this list
+    ///   owes: dress is not absorbed, and it reaches the digest only
+    ///   through the decisions it changes — those being absorbed.
     #[must_use]
     pub fn absorb(&self, hash: StateHash) -> StateHash {
         let hash = hash

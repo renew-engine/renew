@@ -170,7 +170,7 @@ fn a_multi_byte_character_is_removed_whole() {
     );
 
     // Forward over it too. That is a separate walk in the code, and it
-    // was uncovered until this line existed — the earlier attempt to add
+    // was uncovered until this line existed —
     // it silently edited nothing, and the coverage report is what said
     // so.
     ui.handle(UiEvent::Edit { op: EditOp::Right });
@@ -427,7 +427,7 @@ fn a_field_whose_parent_went_away_is_not_readable() {
 
 #[test]
 fn two_different_texts_never_share_a_fingerprint() {
-    // **The collision a review found, pinned.** The first fold rotated
+    // **A collision, pinned.** The first fold rotated
     // and added, which is affine in the token: `rot7(x + 1)` is
     // `rot7(x) + 128`, so a token one larger and a later token 128
     // smaller cancelled exactly. Typing "aÈ" and typing "bH" produced
@@ -692,7 +692,7 @@ fn a_reclaimed_slot_arrives_empty() {
     // not.** It removed the field's own node, which used to clear the
     // slot eagerly, so the reclaim's dead-owner branch never fired and
     // weakening that branch left the test green — vacuous, in the file
-    // added to close a vacuous-test finding.
+    // that was meant to prove it.
     //
     // Removing an *ancestor* is what leaves a slot owned by a dead node
     // for the reclaim to find, so that is what this does.
@@ -753,8 +753,7 @@ fn left_and_right_fold_different_tokens() {
     // changes a fingerprint only against a previously recorded value —
     // which nothing here catches: the cross-target
     // lane compares its legs to each other, not to a recorded value, so
-    // a swap moves all of them alike. Stated in the codes themselves. Two attempts were spent here before the shape of
-    // the mutation was read properly.
+    // a swap moves all of them alike. Stated in the codes themselves.
     use renew_frame::StateHash;
     let digest_after = |op: EditOp| {
         let mut ui = tree(4);
@@ -778,7 +777,7 @@ fn left_and_right_fold_different_tokens() {
 
 #[test]
 fn a_control_character_and_an_edit_key_never_fold_alike() {
-    // **The second collision a review found**, after the first was
+    // **The second collision**, found after the first was
     // fixed. An edit operation's code is a small integer and so is a
     // control character's scalar, so the two shared a namespace: typing
     // U+0003 and pressing Left folded the same number. Windows delivers

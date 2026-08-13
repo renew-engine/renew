@@ -1,9 +1,9 @@
 //! The field pool's invariants, over inputs nobody chose.
 //!
 //! A container with editing operations wants these, and the field pool
-//! shipped its first revision without them. A review then walked forty
+//! shipped its first revision without them. Forty
 //! thousand pseudo-random operations by hand and found the invariants
-//! held — which established they were true that afternoon and guarded
+//! held — which established they were true once and guarded
 //! nothing afterwards.
 
 use proptest::prelude::*;
@@ -77,7 +77,7 @@ fn apply(ui: &mut Ui, act: Act) {
 ///
 /// **The point of writing it twice.** The first version of this file
 /// asserted invariants — valid text, cursor in range, cursor on a
-/// boundary — and a review showed all four passing against an `insert`
+/// boundary — and all four passed against an `insert`
 /// gutted to do nothing at all: an empty field satisfies every one of
 /// them. Invariants describe a shape, and the empty field has the right
 /// shape. A model describes the *content*, and nothing vacuous agrees
