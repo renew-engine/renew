@@ -92,7 +92,16 @@ pub struct UiLimits {
 pub enum UiRefused {
     /// The tree already holds [`UiLimits::nodes`] nodes.
     Full,
-    /// The named parent is not live: removed since the id was taken.
+    /// A node the operation named is not live: removed since the id was
+    /// taken.
+    ///
+    /// **The name is `insert`'s, and it outgrew it.** There the node is
+    /// genuinely a parent; `make_field` reuses the variant for a node
+    /// that is nobody's parent, because the condition is the same one
+    /// and a second variant meaning "some other id was stale" would be
+    /// a distinction no caller acts on differently. The `Display` below
+    /// still says "parent", which is the honest cost of the reuse and
+    /// is written down rather than papered over.
     MissingParent,
 }
 
@@ -560,6 +569,11 @@ impl Ui {
     /// [`UiRefused::Full`] when every slot in the pool is taken — the
     /// same refusal a full arena gives, for the same reason. A ninth
     /// simultaneous field is a different kind of interface.
+    ///
+    /// [`UiRefused::MissingParent`] for a stale id. The variant's name
+    /// is `insert`'s and reads oddly here, since this node is nobody's
+    /// parent; see the variant for why it is reused rather than
+    /// twinned.
     pub fn make_field(&mut self, node: NodeId) -> Result<(), UiRefused> {
         if !self.is_live(node) {
             return Err(UiRefused::MissingParent);
