@@ -85,9 +85,9 @@ dependencies and core status. This file does not restate them.
 | `MAX_INPUT_BYTES` | 16 | the widest one peer's input may be, per tick |
 | `INPUT_REDUNDANCY` | 8 | the most frames one datagram may carry — the newest plus up to seven repeats, which is the whole of the loss story |
 | `INPUT_WINDOW` | 64 | how far ahead of the pending tick a peer's inputs may buffer; a power of two so a ring index is a mask |
-| `MAX_DATAGRAM_BYTES` | 156 | derived rather than chosen: the sixteen-byte header and an `Inputs` body's twelve-byte fixed part, plus `INPUT_REDUNDANCY` frames of `MAX_INPUT_BYTES` each. The composition is asserted where it is defined |
+| `MAX_DATAGRAM_BYTES` | 192 | derived rather than chosen: the sixteen-byte header plus **the widest body of any kind**, which is a full eight-seat `Roster` at 176. An `Inputs` run at both its ceilings comes to 156 and set this number until the lobby landed; the composition is asserted where it is defined, over every kind, so a ceiling cannot move without the constant following it |
 
-156 bytes sits well inside `MTU_FLOOR`, the 1,200-byte path this protocol
+192 bytes sits well inside `MTU_FLOOR`, the 1,200-byte path this protocol
 assumes. Nothing enforces that at run time — it is asserted at compile
 time, because a ceiling raised past it would produce datagrams that vanish
 on some paths and arrive on others, and that reads as a bug in the
@@ -127,8 +127,24 @@ open host.
 authenticates a sender, so a spoofed digest datagram is accepted as that
 peer's — and because a digest mismatch is how this protocol detects
 divergence, one such packet halts the run for everyone and names an
-innocent peer in the report. It is the one remaining single-packet denial
-and it is not defended here.
+innocent peer in the report. It is not defended here.
+
+**A spoofed lobby datagram can keep a game from starting.** Seats are
+granted to whatever asks and are never released, so eight forged joins
+fill a lobby and real players are turned away; a forged roster from the
+host's address puts a joiner on parameters the host never sent, and it
+then refuses the go-ahead. Neither can cause a divergence — the agreement
+fingerprint is checked before tick zero, and a peer that disagrees does
+not start — and neither is permanent: a joiner keeps asking until it
+starts, so it recovers as soon as the interference stops. Both are
+denial, both are undefended, and closing them needs a return-routability
+exchange this version does not have.
+
+What *is* defended is amplification. A `Join` is padded to the datagram
+ceiling and one join buys exactly one roster, so a host can never be made
+to emit more bytes than it was sent — the property is asserted at compile
+time and measured by a test, because an earlier version of this crate
+claimed it without either and was wrong.
 
 **Cheating is out of scope, and specifically:** information cheating —
 seeing what you should not — is *unpreventable* in any inputs-only design,
@@ -152,7 +168,7 @@ Every datagram opens with the same sixteen bytes:
 |---|---|---|
 | 0 | 4 | magic `RNWL` |
 | 4 | 2 | wire version — exactly one value is accepted |
-| 6 | 1 | kind — `1` Hello, `2` Inputs, `3` Digest, `4` Bye, `5` Chat |
+| 6 | 1 | kind — `1` Hello, `2` Inputs, `3` Digest, `4` Bye, `5` Chat, `6` Join, `7` Roster, `8` Start |
 | 7 | 1 | the claimed sender's seat |
 | 8 | 8 | session id — never zero |
 
@@ -160,8 +176,31 @@ Discriminants start at one and the session id is never zero, so an
 all-zero buffer names nothing. There is no padding in the header: the
 sender byte occupies what would otherwise be one.
 
-Four bodies follow it. Offsets below are from the start of the body, so
-add sixteen for the offset in the datagram.
+Eight bodies follow it — five carried by a session or its chat channel,
+and three by the lobby that runs before a session exists. Offsets below
+are from the start of the body, so add sixteen for the offset in the
+datagram.
+
+The three lobby bodies, stated here because this section is the interop
+spec and an implementer needs all eight:
+
+- **`Join` — 176 bytes.** Eight of content, eight of rules, then 160 zero
+  bytes. **The padding is a security control, not alignment.** A join
+  provokes a roster, and a roster is the widest datagram here; padded to
+  the ceiling, the request can never be smaller than the answer, so a
+  host cannot be made to emit more than it was sent. Every padding byte
+  is proven zero on the way in. A join carries no address: the host reads
+  that from the transport, which is the only version that is true under
+  NAT.
+- **`Roster` — 32 bytes plus 18 per seat**, so 84 at two seats and 176 at
+  eight. Seat, peer count, the three tick parameters, three bytes of zero
+  padding, then seed, content and rules, then one eighteen-byte opaque
+  endpoint per seat in seat order. **Seat zero's endpoint is always
+  zero** — a host cannot see its own address from outside, so each
+  recipient fills that slot with wherever the roster arrived from.
+- **`Start` — 8 bytes.** The agreement fingerprint the host believes
+  everyone shares, so a peer holding a stale roster refuses before tick
+  zero instead of forking after it.
 
 **`Hello` — 40 bytes.** The parameters a peer claims it is playing under.
 They are redundant with the agreement digest by construction, and carried

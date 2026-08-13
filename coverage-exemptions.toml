@@ -167,13 +167,13 @@ reason = "Two restatements of a bound already proved, re-anchored from 220 and 2
 
 [[exempt]]
 file = "crates/net/src/wire.rs"
-lines = [183]
-reason = "The overflow arm of the Inputs body-size product. Both factors are u8, so the product peaks at 65,025 and cannot leave u64 — no datagram, and no fuzzer, can drive it. The check is written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and this one is reached from a reader parsing hostile bytes. It cannot be folded away either: `Option::and_then` is not callable in a const fn, so the arm has to be spelled out."
+lines = [255, 259]
+reason = "The overflow arms of the two body-size products: a roster's seat count times an endpoint's width, and an inputs run's frame count times its input width. Every factor is a u8, so neither product can leave u64 — no datagram, and no fuzzer, can drive either arm. Both are written anyway because a size computation that trusts its own ceilings stops being true the day one of them widens, and both are reached from a reader parsing hostile bytes. Neither can be folded away: `Option::and_then` is not callable in a const fn, so each arm has to be spelled out."
 
 [[exempt]]
 file = "crates/net/src/wire.rs"
-lines = [1208, 1209, 1210, 1211]
-reason = "The narrowing conversion on a chat message's length in the writer, guarded three lines above by a check that bounds the length to MAX_CHAT_BYTES — 128, which fits a byte with room to spare. Kept fallible rather than cast because that ceiling is derived from the datagram size rather than chosen, and a cast would stop being safe the day it crosses 255 without anything saying so."
+lines = [1481, 1482, 1483, 1484]
+reason = "The narrowing conversion on a chat message's length in the writer, guarded three lines above by a check that bounds the length to MAX_CHAT_BYTES — 164, which fits a byte with room to spare. Kept fallible rather than cast because that ceiling is derived from the datagram size rather than chosen, and a cast would stop being safe the day it crosses 255 without anything saying so."
 
 [[exempt]]
 file = "crates/net/src/chat.rs"
@@ -182,8 +182,18 @@ reason = "The same narrowing on both sides of the channel. On the send side the 
 
 [[exempt]]
 file = "crates/net/src/session.rs"
-lines = [716, 770, 1083, 1095, 1119]
+lines = [729, 783, 1096, 1108, 1132]
 reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
+
+[[exempt]]
+file = "crates/net/src/lib.rs"
+lines = [169, 170, 171]
+reason = "`pick_larger`, which exists only to compute MAX_DATAGRAM_BYTES in a const context — `Ord::max` is not callable there. It runs at compile time and never at run time, so no test can execute it and the two compile-time assertions immediately below it are what actually check its answer. Kept as a function rather than inlined because the ceiling must be the widest body of any kind, and spelling that as a comparison is what stopped the constant lying when a roster overtook an inputs run."
+
+[[exempt]]
+file = "crates/net/src/lobby.rs"
+lines = [889]
+reason = "The addressless guard inside `seat_of`, unreachable through the only path that reaches it: `deliver` refuses UNKNOWN_ENDPOINT by name before any seat is looked up, and that refusal is covered. Kept because the two statements are one claim — seat zero's own slot holds exactly these bytes, so a caller that reached here with them would be told the host already holds the seat — and a private helper that depends on its caller having checked something is exactly the arrangement that breaks when a second caller appears."
 
 [[exempt]]
 file = "crates/net/src/desync.rs"

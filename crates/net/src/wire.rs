@@ -29,10 +29,11 @@ pub const MAGIC: [u8; 4] = *b"RNWL";
 /// handshake refusal at tick zero rather than a mystery at tick four
 /// hundred.
 ///
-/// Moved to 2 when `Chat` joined the vocabulary. A new kind is a new word,
+/// Moved to 2 when `Chat` joined the vocabulary, and to 3 when the three
+/// lobby kinds did. A new kind is a new word,
 /// and a reader of version 1 would refuse it as unknown — correctly, but
 /// as a mystery. The version makes it a named handshake refusal instead.
-pub const WIRE_VERSION: u16 = 2;
+pub const WIRE_VERSION: u16 = 3;
 
 /// The bytes every datagram begins with, whatever its kind.
 pub const HEADER_BYTES: usize = 16;
@@ -47,6 +48,40 @@ pub const DIGEST_BODY_BYTES: usize = 24;
 pub const BYE_BODY_BYTES: usize = 8;
 /// A `Chat` body's fixed part, before the text it carries.
 pub const CHAT_BODY_BYTES: usize = 12;
+/// A `Join` body: sixteen bytes of content and rules, then zero padding
+/// out to the datagram ceiling.
+///
+/// **The padding is the whole point, and it is a security control rather
+/// than alignment.** A `Join` provokes a roster, and a roster is the
+/// widest datagram this protocol has. If a join were the 32 bytes its
+/// contents need, one forged packet would buy an answer six times its
+/// size aimed at whoever the forger named — the shape every reflection
+/// attack is built from. Padded to the ceiling, the request is never
+/// smaller than the response, so a host cannot be made to emit more than
+/// it was sent. A joiner sends a handful of these and the cost is
+/// nothing; the attack it forecloses has no other cheap defence.
+///
+/// Every padding byte is proven zero on the way in, so the padding cannot
+/// become a covert channel or a second spelling of one join.
+pub const JOIN_BODY_BYTES: usize = MAX_DATAGRAM_BYTES - HEADER_BYTES;
+
+/// The zero run that pads a `Join` out to the ceiling.
+pub const JOIN_PAD_BYTES: usize = JOIN_BODY_BYTES - 16;
+/// A `Roster` body's fixed part, before the endpoints it carries.
+pub const ROSTER_BODY_BYTES: usize = 32;
+/// A `Start` body.
+pub const START_BODY_BYTES: usize = 8;
+
+/// One peer's endpoint, as the lobby carries it.
+///
+/// **Eighteen opaque bytes.** This crate never interprets one: it cannot,
+/// because it declares `simulation = true` and is denied any path to the
+/// crate that owns an address type. The driver encodes and decodes these
+/// through the platform seam, whose `peer_tag` produces exactly this
+/// shape — sixteen bytes of address and two of port, canonicalised. A
+/// mesh needs every peer to know every other's endpoint; this is how that
+/// travels without the engine learning what an endpoint is.
+pub const ENDPOINT_BYTES: usize = 18;
 
 /// The longest message one `Chat` datagram may carry, in bytes.
 ///
@@ -98,6 +133,25 @@ const DIGEST_INPUT_AT: usize = HEADER_BYTES + 16;
 
 const BYE_TICK_AT: usize = HEADER_BYTES;
 
+const JOIN_CONTENT_AT: usize = HEADER_BYTES;
+const JOIN_RULES_AT: usize = HEADER_BYTES + 8;
+const JOIN_PAD_AT: usize = HEADER_BYTES + 16;
+
+const ROSTER_SEAT_AT: usize = HEADER_BYTES;
+const ROSTER_COUNT_AT: usize = HEADER_BYTES + 1;
+const ROSTER_INPUT_BYTES_AT: usize = HEADER_BYTES + 2;
+const ROSTER_INPUT_DELAY_AT: usize = HEADER_BYTES + 3;
+const ROSTER_DIGEST_PERIOD_AT: usize = HEADER_BYTES + 4;
+const ROSTER_PAD_AT: usize = HEADER_BYTES + 5;
+const ROSTER_PAD_BYTES: usize = 3;
+const ROSTER_SEED_AT: usize = HEADER_BYTES + 8;
+const ROSTER_CONTENT_AT: usize = HEADER_BYTES + 16;
+const ROSTER_RULES_AT: usize = HEADER_BYTES + 24;
+const ROSTER_ENDPOINTS_AT: usize = HEADER_BYTES + ROSTER_BODY_BYTES;
+const ROSTER_MIN_DATAGRAM_BYTES: usize = HEADER_BYTES + ROSTER_BODY_BYTES;
+
+const START_AGREEMENT_AT: usize = HEADER_BYTES;
+
 const CHAT_SEQUENCE_AT: usize = HEADER_BYTES;
 const CHAT_LEN_AT: usize = HEADER_BYTES + 8;
 const CHAT_PAD_AT: usize = HEADER_BYTES + 9;
@@ -128,6 +182,18 @@ pub enum Kind {
     Digest = 3,
     /// I am leaving, at this tick.
     Bye = 4,
+    /// A joiner asking the host for a seat.
+    ///
+    /// The three kinds below all belong to the lobby, which happens
+    /// **before tick zero exists**. A session refuses every one of them
+    /// by name: the host decides who is playing and never what a tick
+    /// contains, and that separation is what keeps a mesh a mesh.
+    Join = 6,
+    /// The host's answer: your seat, the agreed parameters, and where
+    /// everyone is.
+    Roster = 7,
+    /// The host saying go.
+    Start = 8,
     /// Something a player typed.
     ///
     /// **The only kind that is not simulation state**, and the session
@@ -154,6 +220,9 @@ impl Kind {
             3 => Some(Self::Digest),
             4 => Some(Self::Bye),
             5 => Some(Self::Chat),
+            6 => Some(Self::Join),
+            7 => Some(Self::Roster),
+            8 => Some(Self::Start),
             _ => None,
         }
     }
@@ -178,6 +247,13 @@ impl Kind {
             // A chat body's length rides in `count`, since a message is
             // one record whose width is its own.
             Self::Chat => (CHAT_BODY_BYTES as u64).checked_add(count as u64),
+            Self::Join => Some(JOIN_BODY_BYTES as u64),
+            Self::Start => Some(START_BODY_BYTES as u64),
+            // A roster's length is its seat count; `count` carries it.
+            Self::Roster => match (count as u64).checked_mul(ENDPOINT_BYTES as u64) {
+                Some(seats) => (ROSTER_BODY_BYTES as u64).checked_add(seats),
+                None => None,
+            },
             Self::Inputs => match (count as u64).checked_mul(input_bytes as u64) {
                 Some(frames) => (INPUTS_BODY_BYTES as u64).checked_add(frames),
                 None => None,
@@ -323,6 +399,85 @@ pub struct DigestBody {
 }
 
 /// A departure.
+/// A joiner asking for a seat.
+///
+/// **It does not say where it is, and that omission is the point.** This
+/// body carried a self-reported endpoint for exactly one commit. Two
+/// things were wrong with it. Under NAT a joiner's idea of its own
+/// address is the one address that will not reach it, so the field was
+/// unusable in the case it existed for. And a host that believed it would
+/// send a roster — up to 192 bytes — repeatedly, to whatever endpoint the
+/// body named, which is a reflector aimed for free.
+///
+/// **Reading the source off the transport narrowed who can aim that, and
+/// nothing else.** Forging a UDP source address needs an unfiltered
+/// uplink and no more, and a reflection attacker never wants the reply,
+/// so the capability this once claimed to require is the capability such
+/// an attack is built on. What actually bounds the amplification is
+/// [`JOIN_BODY_BYTES`]: the request is padded to the ceiling, so it is
+/// never smaller than the answer. The transport source remains the right
+/// place to read an address from — it is true under NAT, where a
+/// self-reported one is not — but it is a correctness argument, not a
+/// security one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinBody {
+    /// What content the joiner is running, checked at the door rather
+    /// than at the handshake: the numbers are already here, so a mismatch
+    /// named now is a better error at no extra cost.
+    pub content: u64,
+    pub rules: u64,
+}
+
+/// The host's answer: a seat, the agreed parameters, and where everyone
+/// is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RosterBody<'a> {
+    /// The seat this roster is addressed to.
+    pub seat: u8,
+    /// How many seats are playing.
+    pub peer_count: u8,
+    pub input_bytes: u8,
+    pub input_delay: u8,
+    pub digest_period: u8,
+    pub seed: u64,
+    pub content: u64,
+    pub rules: u64,
+    /// One endpoint per seat, in seat order, `ENDPOINT_BYTES` each.
+    ///
+    /// Public because it is opaque: this crate copies these bytes and
+    /// never reads one, so there is nothing here for an accessor to
+    /// protect. [`RosterBody::endpoint`] is the convenience, not the
+    /// boundary.
+    pub endpoints: &'a [u8],
+}
+
+impl RosterBody<'_> {
+    /// One seat's endpoint, or `None` past the roster.
+    ///
+    /// Opaque: this crate copies these and never reads one. What they
+    /// mean belongs to the driver, which is the only place allowed to
+    /// know what an address is.
+    #[must_use]
+    pub fn endpoint(&self, seat: u8) -> Option<[u8; ENDPOINT_BYTES]> {
+        if seat >= self.peer_count {
+            return None;
+        }
+        let at = usize::from(seat).checked_mul(ENDPOINT_BYTES)?;
+        let slice = self.endpoints.get(at..)?.get(..ENDPOINT_BYTES)?;
+        let mut out = [0u8; ENDPOINT_BYTES];
+        out.copy_from_slice(slice);
+        Some(out)
+    }
+}
+
+/// The host saying go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartBody {
+    /// The agreement fingerprint the host believes everyone shares, so a
+    /// joiner can refuse before tick zero rather than diverge after it.
+    pub agreement_digest: u64,
+}
+
 /// One message a player typed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChatBody<'a> {
@@ -373,6 +528,9 @@ pub enum Body<'a> {
     Digest(DigestBody),
     Bye(ByeBody),
     Chat(ChatBody<'a>),
+    Join(JoinBody),
+    Roster(RosterBody<'a>),
+    Start(StartBody),
 }
 
 /// A validated datagram, borrowing the bytes it was read from.
@@ -484,6 +642,11 @@ pub enum WireError {
         saw: u8,
         ceiling: usize,
     },
+    /// A roster addressed to a seat it does not contain.
+    SeatNotInRoster {
+        seat: u8,
+        peer_count: u8,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -567,6 +730,9 @@ impl core::fmt::Display for WireError {
                 write!(out, "a digest period of zero would digest every tick")
             }
             Self::ChatEmpty => write!(out, "a chat message of zero bytes says nothing"),
+            Self::SeatNotInRoster { seat, peer_count } => {
+                write!(out, "a roster of {peer_count} has no seat {seat}")
+            }
             Self::ChatTooLong { saw, ceiling } => {
                 write!(
                     out,
@@ -620,6 +786,12 @@ pub enum WriteError {
     },
     /// Every tick would owe a digest, and the period would divide by zero.
     DigestPeriodZero,
+    /// A roster addressed to a seat it does not contain — what an
+    /// off-by-one in seat assignment produces.
+    SeatNotInRoster {
+        seat: u8,
+        peer_count: u8,
+    },
 }
 
 impl core::fmt::Display for WriteError {
@@ -658,6 +830,9 @@ impl core::fmt::Display for WriteError {
             }
             Self::DigestPeriodZero => {
                 write!(out, "a digest period of zero would digest every tick")
+            }
+            Self::SeatNotInRoster { seat, peer_count } => {
+                write!(out, "a roster of {peer_count} has no seat {seat}")
             }
             Self::ChatLength { saw, ceiling } => {
                 write!(
@@ -731,6 +906,9 @@ pub fn read(bytes: &[u8]) -> Result<Datagram<'_>, WireError> {
         Kind::Digest => Body::Digest(read_digest(bytes, len)?),
         Kind::Bye => Body::Bye(read_bye(bytes, len)?),
         Kind::Chat => Body::Chat(read_chat(bytes, len)?),
+        Kind::Join => Body::Join(read_join(bytes, len)?),
+        Kind::Roster => Body::Roster(read_roster(bytes, len)?),
+        Kind::Start => Body::Start(read_start(bytes, len)?),
     };
     Ok(Datagram { header, body })
 }
@@ -915,6 +1093,92 @@ fn read_chat(bytes: &[u8], len: usize) -> Result<ChatBody<'_>, WireError> {
     })
 }
 
+fn read_join(bytes: &[u8], len: usize) -> Result<JoinBody, WireError> {
+    expect_exactly(Kind::Join, HEADER_BYTES + JOIN_BODY_BYTES, len)?;
+    expect_zeroes(bytes, JOIN_PAD_AT, JOIN_PAD_BYTES)?;
+    Ok(JoinBody {
+        content: u64_at(bytes, JOIN_CONTENT_AT).ok_or(WireError::TooShort { len })?,
+        rules: u64_at(bytes, JOIN_RULES_AT).ok_or(WireError::TooShort { len })?,
+    })
+}
+
+fn read_roster(bytes: &[u8], len: usize) -> Result<RosterBody<'_>, WireError> {
+    // The declared size comes from a byte inside the fixed part, so the
+    // fixed part is proven present before that byte is read - the same
+    // ordering an inputs run needs, for the same reason.
+    if len < ROSTER_MIN_DATAGRAM_BYTES {
+        return Err(WireError::SizeMismatch {
+            kind: Kind::Roster,
+            declared: widen(ROSTER_MIN_DATAGRAM_BYTES),
+            actual: len,
+        });
+    }
+    let peer_count = byte_at(bytes, ROSTER_COUNT_AT).ok_or(WireError::TooShort { len })?;
+    if !(MIN_PEER_COUNT..=MAX_PEERS).contains(&peer_count) {
+        return Err(WireError::PeerCountOutOfRange {
+            saw: peer_count,
+            floor: MIN_PEER_COUNT,
+            ceiling: MAX_PEERS,
+        });
+    }
+    let seat = byte_at(bytes, ROSTER_SEAT_AT).ok_or(WireError::TooShort { len })?;
+    if seat >= peer_count {
+        return Err(WireError::SeatNotInRoster { seat, peer_count });
+    }
+    let input_bytes = byte_at(bytes, ROSTER_INPUT_BYTES_AT).ok_or(WireError::TooShort { len })?;
+    check_input_width(input_bytes)?;
+    let input_delay = byte_at(bytes, ROSTER_INPUT_DELAY_AT).ok_or(WireError::TooShort { len })?;
+    if u32::from(input_delay) >= INPUT_WINDOW {
+        return Err(WireError::InputDelayPastWindow {
+            saw: input_delay,
+            window: INPUT_WINDOW,
+        });
+    }
+    let digest_period =
+        byte_at(bytes, ROSTER_DIGEST_PERIOD_AT).ok_or(WireError::TooShort { len })?;
+    if digest_period == 0 {
+        return Err(WireError::DigestPeriodZero);
+    }
+
+    let mismatch = WireError::SizeMismatch {
+        kind: Kind::Roster,
+        declared: u64::MAX,
+        actual: len,
+    };
+    let body = Kind::Roster.body_bytes(peer_count, 0).ok_or(mismatch)?;
+    let declared = widen(HEADER_BYTES).checked_add(body).ok_or(mismatch)?;
+    if declared != widen(len) {
+        return Err(WireError::SizeMismatch {
+            kind: Kind::Roster,
+            declared,
+            actual: len,
+        });
+    }
+    expect_zeroes(bytes, ROSTER_PAD_AT, ROSTER_PAD_BYTES)?;
+
+    let width = usize::from(peer_count)
+        .checked_mul(ENDPOINT_BYTES)
+        .ok_or(mismatch)?;
+    Ok(RosterBody {
+        seat,
+        peer_count,
+        input_bytes,
+        input_delay,
+        digest_period,
+        seed: u64_at(bytes, ROSTER_SEED_AT).ok_or(WireError::TooShort { len })?,
+        content: u64_at(bytes, ROSTER_CONTENT_AT).ok_or(WireError::TooShort { len })?,
+        rules: u64_at(bytes, ROSTER_RULES_AT).ok_or(WireError::TooShort { len })?,
+        endpoints: region(bytes, ROSTER_ENDPOINTS_AT, width).ok_or(WireError::TooShort { len })?,
+    })
+}
+
+fn read_start(bytes: &[u8], len: usize) -> Result<StartBody, WireError> {
+    expect_exactly(Kind::Start, HEADER_BYTES + START_BODY_BYTES, len)?;
+    Ok(StartBody {
+        agreement_digest: u64_at(bytes, START_AGREEMENT_AT).ok_or(WireError::TooShort { len })?,
+    })
+}
+
 fn check_input_width(input_bytes: u8) -> Result<(), WireError> {
     if input_bytes == 0 {
         return Err(WireError::InputBytesZero);
@@ -1013,10 +1277,19 @@ impl Cursor<'_> {
         self.bytes(&value.to_le_bytes());
     }
 
+    /// Write `count` zero bytes and advance past them.
+    ///
+    /// **Writes rather than merely skips.** This copied from a fixed
+    /// eight-byte blank until a `Join` needed a hundred and sixty, at
+    /// which point the slice borrow failed, nothing was written, and the
+    /// cursor did not advance — so the writer produced a datagram of the
+    /// wrong length that its own reader refused. Fails closed the same
+    /// way `bytes` does: no room means no advance.
     fn zeroes(&mut self, count: usize) {
-        const BLANK: [u8; 8] = [0; 8];
-        if let Some(source) = BLANK.get(..count) {
-            self.bytes(source);
+        let end = self.at.saturating_add(count);
+        if let Some(room) = self.out.get_mut(self.at..end) {
+            room.fill(0);
+            self.at = end;
         }
     }
 
@@ -1217,5 +1490,108 @@ pub fn write_chat(
     cursor.byte(text_len);
     cursor.zeroes(CHAT_PAD_BYTES);
     cursor.bytes(text);
+    Ok(cursor.at)
+}
+
+/// Write a `Join`, returning the byte count written.
+///
+/// Unrefusable: every field is opaque to this crate. The content and
+/// rules are numbers it never validates, and the endpoint is eighteen
+/// bytes it never reads.
+#[must_use]
+pub fn write_join(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    body: &JoinBody,
+) -> usize {
+    let mut cursor = Cursor { out, at: 0 };
+    cursor.header(Kind::Join, addressing);
+    cursor.u64(body.content);
+    cursor.u64(body.rules);
+    cursor.zeroes(JOIN_PAD_BYTES);
+    cursor.at
+}
+
+/// Write a `Start`, returning the byte count written.
+#[must_use]
+pub fn write_start(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    body: &StartBody,
+) -> usize {
+    let mut cursor = Cursor { out, at: 0 };
+    cursor.header(Kind::Start, addressing);
+    cursor.u64(body.agreement_digest);
+    cursor.at
+}
+
+/// Write a `Roster`, returning the byte count written.
+///
+/// `endpoints` is exactly `peer_count` blobs, in seat order.
+///
+/// # Errors
+///
+/// [`WriteError`] for every range [`read`] enforces on a roster, so the
+/// host cannot mint one a joiner would refuse — the seat outside its own
+/// roster included, which is the mistake an off-by-one in seat
+/// assignment would produce.
+pub fn write_roster(
+    out: &mut [u8; MAX_DATAGRAM_BYTES],
+    addressing: Addressing,
+    body: &RosterBody<'_>,
+) -> Result<usize, WriteError> {
+    if !(MIN_PEER_COUNT..=MAX_PEERS).contains(&body.peer_count) {
+        return Err(WriteError::PeerCount {
+            saw: body.peer_count,
+            floor: MIN_PEER_COUNT,
+            ceiling: MAX_PEERS,
+        });
+    }
+    if body.seat >= body.peer_count {
+        return Err(WriteError::SeatNotInRoster {
+            seat: body.seat,
+            peer_count: body.peer_count,
+        });
+    }
+    if body.input_bytes == 0 || body.input_bytes > MAX_INPUT_BYTES {
+        return Err(WriteError::InputBytes {
+            saw: body.input_bytes,
+            ceiling: MAX_INPUT_BYTES,
+        });
+    }
+    if u32::from(body.input_delay) >= INPUT_WINDOW {
+        return Err(WriteError::InputDelay {
+            saw: body.input_delay,
+            window: INPUT_WINDOW,
+        });
+    }
+    if body.digest_period == 0 {
+        return Err(WriteError::DigestPeriodZero);
+    }
+    let expected = usize::from(body.peer_count)
+        .checked_mul(ENDPOINT_BYTES)
+        .ok_or(WriteError::FramesLength {
+            saw: body.endpoints.len(),
+            expected: usize::MAX,
+        })?;
+    if body.endpoints.len() != expected {
+        return Err(WriteError::FramesLength {
+            saw: body.endpoints.len(),
+            expected,
+        });
+    }
+
+    let mut cursor = Cursor { out, at: 0 };
+    cursor.header(Kind::Roster, addressing);
+    cursor.byte(body.seat);
+    cursor.byte(body.peer_count);
+    cursor.byte(body.input_bytes);
+    cursor.byte(body.input_delay);
+    cursor.byte(body.digest_period);
+    cursor.zeroes(ROSTER_PAD_BYTES);
+    cursor.u64(body.seed);
+    cursor.u64(body.content);
+    cursor.u64(body.rules);
+    cursor.bytes(body.endpoints);
     Ok(cursor.at)
 }

@@ -287,8 +287,8 @@ fn any_version_but_the_one_is_refused_including_zero() {
 
 #[test]
 fn an_unknown_kind_is_refused_rather_than_skipped() {
-    // 5 is `Chat` now; 6 is the first code past the vocabulary.
-    for code in [0u8, 6, u8::MAX] {
+    // The vocabulary now runs to 8; 9 is the first code past it.
+    for code in [0u8, 9, u8::MAX] {
         let (mut bytes, len) = a_hello();
         bytes[6] = code;
         assert_eq!(refusal(&bytes[..len]), WireError::UnknownKind { saw: code });
@@ -659,8 +659,14 @@ fn the_widest_legal_run_writes_exactly_the_ceiling() {
     )
     .expect("both ceilings, exactly");
     assert_eq!(
-        len, MAX_DATAGRAM_BYTES,
-        "the widest datagram is the ceiling, to the byte"
+        len,
+        HEADER_BYTES + 12 + usize::from(INPUT_REDUNDANCY) * usize::from(MAX_INPUT_BYTES),
+        "an inputs run at both ceilings is its own composition, to the byte"
+    );
+    assert!(
+        len < MAX_DATAGRAM_BYTES,
+        "an inputs run stopped being the widest kind when the lobby landed, and this test says so \
+         rather than quietly tracking whichever kind happens to be widest"
     );
     assert!(
         read(&out[..len]).is_ok(),
@@ -813,7 +819,7 @@ fn a_hand_built_datagram_writes_back_to_itself() {
     let hand_built: [u8; 40] = [
         // header, 16 bytes
         b'R', b'N', b'W', b'L',   // magic
-        0x02, 0x00,               // wire version 2, little-endian
+        0x03, 0x00,               // wire version 3, little-endian
         0x03,                     // kind 3 = Digest
         0x01,                     // sender: seat 1
         0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // session 0x0123456789abcdef
@@ -1005,4 +1011,219 @@ fn an_empty_or_oversized_chat_on_the_wire_is_refused() {
             ..
         }
     ));
+}
+
+// ---- the lobby's three kinds ----
+
+/// The size table, asked directly. `read` reaches the roster arm and no
+/// other: a `Join` and a `Start` are fixed-width, so their readers check a
+/// constant and never come here. Asked anyway, because a size table one
+/// caller happens not to use is a table that can drift from the layout
+/// beneath it without anything noticing.
+#[test]
+fn every_lobby_kind_declares_the_body_it_writes() {
+    use renew_net::wire::{ENDPOINT_BYTES, JOIN_BODY_BYTES, ROSTER_BODY_BYTES, START_BODY_BYTES};
+    assert_eq!(Kind::Join.body_bytes(0, 0), Some(JOIN_BODY_BYTES as u64));
+    assert_eq!(Kind::Start.body_bytes(0, 0), Some(START_BODY_BYTES as u64));
+    for seats in 0..=MAX_PEERS {
+        assert_eq!(
+            Kind::Roster.body_bytes(seats, 0),
+            Some(ROSTER_BODY_BYTES as u64 + u64::from(seats) * ENDPOINT_BYTES as u64),
+            "a roster's width is its seat count"
+        );
+    }
+}
+
+#[test]
+fn a_roster_hands_back_each_seats_endpoint_and_nothing_past_them() {
+    use renew_net::wire::{ENDPOINT_BYTES, RosterBody, write_roster};
+    let mut endpoints = [0u8; 18 * 3];
+    for (seat, chunk) in endpoints.chunks_exact_mut(ENDPOINT_BYTES).enumerate() {
+        chunk.fill(u8::try_from(seat).expect("three seats") + 10);
+    }
+    let mut out: Buffer = [0; MAX_DATAGRAM_BYTES];
+    let len = write_roster(
+        &mut out,
+        Addressing {
+            sender: PeerId::new(0).expect("seat zero"),
+            session: NonZeroU64::new(9).expect("nonzero"),
+        },
+        &RosterBody {
+            seat: 2,
+            peer_count: 3,
+            input_bytes: 1,
+            input_delay: 0,
+            digest_period: 1,
+            seed: 1,
+            content: 2,
+            rules: 3,
+            endpoints: &endpoints,
+        },
+    )
+    .expect("a well-formed roster");
+
+    let Body::Roster(body) = read(out.get(..len).expect("written"))
+        .expect("reads back")
+        .body
+    else {
+        panic!("a roster must read back as one");
+    };
+    assert_eq!(body.endpoint(0), Some([10u8; ENDPOINT_BYTES]));
+    assert_eq!(body.endpoint(2), Some([12u8; ENDPOINT_BYTES]));
+    assert_eq!(
+        body.endpoint(3),
+        None,
+        "a seat past the roster has no endpoint, and must not read the next one"
+    );
+}
+
+/// Every way a roster can be asked for that the reader would refuse.
+/// The writer has to refuse each one first, or it can mint a datagram
+/// nothing accepts.
+#[test]
+fn a_roster_a_reader_would_refuse_cannot_be_written() {
+    use renew_net::wire::{RosterBody, write_roster};
+    let addressing = Addressing {
+        sender: PeerId::new(0).expect("seat zero"),
+        session: NonZeroU64::new(9).expect("nonzero"),
+    };
+    let endpoints = [0u8; 18 * 2];
+    let good = RosterBody {
+        seat: 1,
+        peer_count: 2,
+        input_bytes: 1,
+        input_delay: 0,
+        digest_period: 1,
+        seed: 1,
+        content: 2,
+        rules: 3,
+        endpoints: &endpoints,
+    };
+    let mut out: Buffer = [0; MAX_DATAGRAM_BYTES];
+    write_roster(&mut out, addressing, &good).expect("the fixture must be writable");
+
+    let cases: [(RosterBody<'_>, &str); 6] = [
+        (
+            RosterBody {
+                peer_count: 1,
+                ..good
+            },
+            "one peer is not a session",
+        ),
+        (RosterBody { seat: 2, ..good }, "a seat outside the roster"),
+        (
+            RosterBody {
+                input_bytes: 0,
+                ..good
+            },
+            "a zero-width input",
+        ),
+        (
+            RosterBody {
+                input_delay: u8::try_from(INPUT_WINDOW).unwrap_or(u8::MAX),
+                ..good
+            },
+            "a delay past the window",
+        ),
+        (
+            RosterBody {
+                digest_period: 0,
+                ..good
+            },
+            "a period that digests every tick",
+        ),
+        (
+            RosterBody {
+                peer_count: 3,
+                ..good
+            },
+            "endpoints that do not match the seat count",
+        ),
+    ];
+    for (body, why) in cases {
+        let mut out: Buffer = [0; MAX_DATAGRAM_BYTES];
+        let refusal = write_roster(&mut out, addressing, &body)
+            .expect_err(&format!("{why} must be refused, not written"));
+        // Every refusal has to say enough to act on, which is the whole
+        // reason they are typed rather than a bare unit.
+        let mut text = String::new();
+        core::fmt::Write::write_fmt(&mut text, format_args!("{refusal}")).expect("formats");
+        assert!(!text.is_empty(), "{why}");
+    }
+}
+
+/// The two `SeatNotInRoster` arms — one on the reader's error, one on the
+/// writer's. They say the same sentence and are two types, so a change to
+/// one that skipped the other would go unnoticed.
+#[test]
+fn a_seat_outside_the_roster_reads_the_same_from_either_side() {
+    use renew_net::wire::{RosterBody, write_roster};
+    let endpoints = [0u8; 18 * 2];
+    let mut out: Buffer = [0; MAX_DATAGRAM_BYTES];
+    let write_side = write_roster(
+        &mut out,
+        Addressing {
+            sender: PeerId::new(0).expect("seat zero"),
+            session: NonZeroU64::new(9).expect("nonzero"),
+        },
+        &RosterBody {
+            seat: 5,
+            peer_count: 2,
+            input_bytes: 1,
+            input_delay: 0,
+            digest_period: 1,
+            seed: 1,
+            content: 2,
+            rules: 3,
+            endpoints: &endpoints,
+        },
+    )
+    .expect_err("seat five of two");
+    assert!(matches!(
+        write_side,
+        WriteError::SeatNotInRoster {
+            seat: 5,
+            peer_count: 2
+        }
+    ));
+    let mut written = String::new();
+    core::fmt::Write::write_fmt(&mut written, format_args!("{write_side}")).expect("formats");
+    assert!(written.contains('5') && written.contains('2'), "{written}");
+
+    // And the same claim from the reader, on bytes a writer would not
+    // have produced.
+    let mut hand_built: Buffer = [0; MAX_DATAGRAM_BYTES];
+    let len = write_roster(
+        &mut hand_built,
+        Addressing {
+            sender: PeerId::new(0).expect("seat zero"),
+            session: NonZeroU64::new(9).expect("nonzero"),
+        },
+        &RosterBody {
+            seat: 1,
+            peer_count: 2,
+            input_bytes: 1,
+            input_delay: 0,
+            digest_period: 1,
+            seed: 1,
+            content: 2,
+            rules: 3,
+            endpoints: &endpoints,
+        },
+    )
+    .expect("a well-formed roster");
+    if let Some(cell) = hand_built.get_mut(HEADER_BYTES) {
+        *cell = 5;
+    }
+    let read_side = read(hand_built.get(..len).expect("written")).expect_err("seat five of two");
+    assert!(matches!(
+        read_side,
+        WireError::SeatNotInRoster {
+            seat: 5,
+            peer_count: 2
+        }
+    ));
+    let mut got = String::new();
+    core::fmt::Write::write_fmt(&mut got, format_args!("{read_side}")).expect("formats");
+    assert_eq!(got, written, "one sentence, said by both sides");
 }
