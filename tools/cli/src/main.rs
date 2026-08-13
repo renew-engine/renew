@@ -824,6 +824,16 @@ fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
 /// hundreds of line numbers into a single finding.
 fn drift_hint(outcome: &Outcome, file: &str) -> Option<String> {
     const SHOWN: usize = 6;
+    // When the whole block slid, every finding in the file says so in a
+    // few words and the pasteable list is printed once at the end. The
+    // first version put the list on every finding: forty-one copies of a
+    // forty-one-element line, correct and unreadable, and it did that on
+    // the very change that added it.
+    if let Some((offset, direction, _)) = relocation(outcome, file) {
+        return Some(format!(
+            " (the whole block moved {direction} {offset} lines — corrected pins below)"
+        ));
+    }
     let lines: Vec<u32> = outcome
         .gaps
         .iter()
@@ -845,6 +855,70 @@ fn drift_hint(outcome: &Outcome, file: &str) -> Option<String> {
             " (unless the code moved: this file is uncovered and unexempted at {listed}, and {more} more)"
         )),
     }
+}
+
+/// The same fact, sharpened when the whole block moved together.
+///
+/// A file whose stale pins are each the *same distance* from an
+/// unexempted gap is a file where text was inserted above them. That has
+/// happened four times running in one stack — once from a change that
+/// added nothing but documentation — and each time the fix was to work
+/// out the offset by hand, verify a few lines by content, and re-pin.
+/// Every input to that arithmetic is already on the screen; only the
+/// subtraction was missing.
+///
+/// **Offered as an observation, never as an inference.** A uniform offset
+/// is strong evidence that a block slid and no evidence at all that the
+/// code inside it still means what the exemption says — so this prints
+/// the corrected numbers and says to check them, rather than implying
+/// the entry is fine where it lands. Anchoring on content is still the
+/// step that decides; this only removes the counting.
+///
+/// Silent unless the correspondence is exact and one-to-one: any stale
+/// pin without a gap at the same offset, any offset of zero, or fewer
+/// than two pins to agree with each other, and the ordinary listing is
+/// the honest answer.
+fn relocation(outcome: &Outcome, file: &str) -> Option<(i64, &'static str, String)> {
+    let stale: Vec<u32> = outcome
+        .stale
+        .iter()
+        .filter(|entry| entry.site.file == file && entry.kind == coverage::StaleKind::NowCovered)
+        .map(|entry| entry.site.line)
+        .collect();
+    let gaps: Vec<u32> = outcome
+        .gaps
+        .iter()
+        .filter(|site| site.file == file)
+        .map(|site| site.line)
+        .collect();
+    // Two pins are the fewest that can agree on an offset. One pin and
+    // one gap always "agree", which would make this fire on every
+    // ordinary single-line change.
+    if stale.len() < 2 || gaps.len() != stale.len() {
+        return None;
+    }
+    let first = *stale.first()?;
+    let offset = i64::from(*gaps.first()?) - i64::from(first);
+    let moved: Vec<u32> = stale
+        .iter()
+        .map(|line| i64::from(*line).saturating_add(offset))
+        .map(|line| u32::try_from(line).unwrap_or(0))
+        .collect();
+    // A zero offset is folded into the same guard rather than refused
+    // above it. It cannot happen — a line the report calls covered and a
+    // line it calls uncovered are never the same line — and an arm no
+    // input can reach is an arm no test can check, so it is written where
+    // the condition that already subsumes it lives.
+    if offset == 0 || moved != gaps {
+        return None;
+    }
+    let listed = moved
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<String>>()
+        .join(", ");
+    let direction = if offset > 0 { "down" } else { "up" };
+    Some((offset.abs(), direction, listed))
 }
 
 /// One line per finding, in `check`'s shape, then a summary.
@@ -873,6 +947,26 @@ fn coverage_report(outcome: &Outcome) -> String {
             stale.kind.explanation(),
             hint.as_deref().unwrap_or_default()
         );
+    }
+    // One note per file, after the findings: the value of this line is
+    // that it can be pasted, so it has to be whole — and a whole list
+    // repeated once per finding is what made the first version useless.
+    let mut noted: Vec<&str> = Vec::new();
+    for stale in &outcome.stale {
+        let file = stale.site.file.as_str();
+        if stale.kind != coverage::StaleKind::NowCovered || noted.contains(&file) {
+            continue;
+        }
+        if let Some((offset, direction, listed)) = relocation(outcome, file) {
+            noted.push(file);
+            let _ = writeln!(
+                report,
+                "MOVED {:<16} {file}: every pin is {offset} lines above a gap, so the block moved \
+                 {direction}. Corrected: lines = [{listed}]. Check the content at those lines \
+                 first — a block that moved and a block that changed look the same from here.",
+                "relocation"
+            );
+        }
     }
     let summary = if outcome.passes() {
         format!(

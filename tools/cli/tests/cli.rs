@@ -1166,6 +1166,88 @@ fn the_drift_hint_is_capped_so_one_finding_cannot_print_every_gap() {
     let _ = fs::remove_dir_all(&directory);
 }
 
+/// Two exempt lines that both ran, and two gaps the same distance below
+/// each: the shape a block of code takes when text is inserted above it.
+const BLOCK_MOVED: &str =
+    "[10,1,10,9,0,0,0,0],[12,1,12,9,0,0,0,0],[20,1,20,9,3,0,0,0],[22,1,22,9,3,0,0,0]";
+
+/// The same two exempt lines, but the gaps are not a constant distance
+/// away — one moved four lines and the other ten, which no insertion
+/// does.
+const BLOCK_SCATTERED: &str =
+    "[10,1,10,9,0,0,0,0],[16,1,16,9,0,0,0,0],[20,1,20,9,3,0,0,0],[22,1,22,9,3,0,0,0]";
+
+#[test]
+fn a_block_that_slid_together_is_reported_as_moved_with_its_new_lines() {
+    // Working the offset out by hand cost four separate sessions in one
+    // stack -- once for a change that added nothing but documentation.
+    // Every input to the subtraction was already on the screen.
+    let directory = coverage_workspace(
+        "relocated",
+        &exempting("crates/a.rs", "[20, 22]"),
+        BLOCK_MOVED,
+    )
+    .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    // The verdict is untouched: this is a sharper sentence about the same
+    // failure, never a reason to pass.
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("lines = [10, 12]"),
+        "the corrected block must be printed ready to paste: {stdout}"
+    );
+    assert!(
+        stdout.contains("moved up"),
+        "the direction must be named: {stdout}"
+    );
+    // Once, not once per finding. The first version printed a
+    // forty-one-element list forty-one times on the very change that
+    // added it: correct, and unreadable.
+    assert_eq!(
+        stdout.matches("Corrected: lines = [").count(),
+        1,
+        "the pasteable list must appear exactly once per file: {stdout}"
+    );
+    assert!(
+        stdout.contains("Check the content at those lines"),
+        "a moved block and a changed block look the same from here, and the hint must say so: \
+         {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn gaps_that_did_not_move_together_get_the_ordinary_listing() {
+    // The guard against the sharper sentence being confidently wrong. No
+    // single insertion moves two lines by different amounts, so this is
+    // not drift and must not be described as it.
+    let directory = coverage_workspace(
+        "scattered",
+        &exempting("crates/a.rs", "[20, 22]"),
+        BLOCK_SCATTERED,
+    )
+    .expect("scratch workspace should be creatable");
+
+    let output =
+        run_in(&directory, &["coverage", "--report", "report.json"]).expect("binary should spawn");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("the block moved"),
+        "a scattered file must not be called a moved block: {stdout}"
+    );
+    assert!(
+        stdout.contains("unless the code moved: this file is uncovered and unexempted at"),
+        "the ordinary listing is still owed: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
 #[test]
 fn coverage_fails_on_an_exemption_the_report_never_measured() {
     let directory = coverage_workspace(
