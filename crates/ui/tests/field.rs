@@ -501,3 +501,63 @@ fn the_pool_costs_what_the_documentation_says() {
         "the pool size moved; update the module doc with it"
     );
 }
+
+#[test]
+fn a_new_field_never_inherits_a_dead_ones_text() {
+    // The slot is cleared when it is claimed, and a review found that
+    // deleting the clear left every test green. It is load-bearing now
+    // rather than belt-and-braces: the pool reclaims dead slots lazily,
+    // so a slot handed out fresh may be one somebody else typed into.
+    let mut ui = tree(16);
+    let root = ui.root();
+    let first = focused_field(&mut ui);
+    ui.handle(UiEvent::TextEntered { ch: u32::from('s') });
+    ui.handle(UiEvent::TextEntered { ch: u32::from('e') });
+    assert_eq!(ui.field_text(first), Some(&b"se"[..]));
+    assert!(ui.remove(first));
+
+    // Exhaust the pool so the reclaim path hands back the dead slot
+    // rather than an untouched one.
+    for _ in 0..MAX_FIELDS {
+        let node = ui.insert(root).expect("room");
+        if ui.make_field(node).is_err() {
+            break;
+        }
+        assert_eq!(
+            ui.field_text(node),
+            Some(&[][..]),
+            "a field arrived holding somebody else's typing"
+        );
+    }
+}
+
+#[test]
+fn left_and_right_fold_different_tokens() {
+    // What this catches is the two folding *alike*. What it cannot catch
+    // is the two being **exchanged**, and that is worth stating rather
+    // than attempting again: a swap preserves distinctness, so no test
+    // comparing digests to each other can see one. Exchanging two tokens
+    // changes a fingerprint only against a previously recorded value —
+    // which is what the crate's pinned digest run is for, and where that
+    // guard belongs. Two attempts were spent here before the shape of
+    // the mutation was read properly.
+    use renew_frame::StateHash;
+    let digest_after = |op: EditOp| {
+        let mut ui = tree(4);
+        let _ = focused_field(&mut ui);
+        for ch in "abc".chars() {
+            ui.handle(UiEvent::TextEntered { ch: u32::from(ch) });
+        }
+        ui.handle(UiEvent::Edit { op: EditOp::Home });
+        ui.handle(UiEvent::Edit { op: EditOp::Right });
+        // Cursor is at 1 of 3: both directions are a real change, and
+        // each folds exactly one token more than the other.
+        ui.handle(UiEvent::Edit { op });
+        ui.absorb(StateHash::new()).finish()
+    };
+    assert_ne!(
+        digest_after(EditOp::Left),
+        digest_after(EditOp::Right),
+        "a replay cannot tell the two apart if they fold alike"
+    );
+}

@@ -590,7 +590,14 @@ impl Ui {
             .position(|slot| slot.owner.is_none())
             .ok_or(UiRefused::Full)?;
         if let Some(slot) = self.fields.get_mut(free) {
-            *slot = field::Field::EMPTY;
+            // No clear here, and that is checked rather than assumed. A
+            // review flagged deleting one as a surviving mutation, which
+            // it was — because every path that frees a slot already
+            // clears it: `remove` empties it, the reclaim above empties
+            // it, and a slot never claimed starts empty. A second clear
+            // is a line no test can distinguish, which §15 calls dead.
+            // The property it protected is now asserted where it is
+            // real, on the reclaim path.
             slot.owner = Some(node);
         }
         Ok(())
