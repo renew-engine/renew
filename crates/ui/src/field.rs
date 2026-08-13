@@ -32,15 +32,23 @@ pub const MAX_FIELD_BYTES: usize = 64;
 /// caller send `F7` and force this crate to have an opinion about it.
 /// Which key means which operation is the driver's answer, and it
 /// differs per platform and per person.
+///
+/// **Every one of these moves and removes whole characters, never
+/// bytes.** A field holding `é` is two bytes and one character, and one
+/// `Left` steps over both — a caller sending two to skip two bytes
+/// would land two characters back. These docs said "byte" for four
+/// review passes while the code walked characters and a test pinned it;
+/// the enum is what a driver author reads, so it is what has to be
+/// right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditOp {
-    /// Remove the byte before the cursor.
+    /// Remove the character before the cursor.
     Backspace,
-    /// Remove the byte at the cursor.
+    /// Remove the character at the cursor.
     Delete,
-    /// Move the cursor one byte earlier.
+    /// Move the cursor one character earlier.
     Left,
-    /// Move the cursor one byte later.
+    /// Move the cursor one character later.
     Right,
     /// Move the cursor to the start.
     Home,

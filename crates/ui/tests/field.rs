@@ -71,6 +71,27 @@ fn making_a_field_twice_keeps_what_was_typed() {
 }
 
 #[test]
+fn making_a_field_twice_claims_one_slot() {
+    // The documented idempotence, tested for *contents* and not for the
+    // slot. Deleting the early return leaves every test green —
+    // `field_slot` finds the first duplicate, so the text looks right
+    // while a slot has quietly gone. A caller that rebuilds its screen
+    // calls `make_field` on the same node each pass and exhausts the
+    // pool on the eighth rebuild with one field on screen.
+    let mut ui = tree(32);
+    let root = ui.root();
+    let node = ui.insert(root).expect("room");
+    for _ in 0..MAX_FIELDS * 2 {
+        ui.make_field(node).expect("idempotent, so always free");
+    }
+    for round in 1..MAX_FIELDS {
+        let other = ui.insert(root).expect("room");
+        ui.make_field(other)
+            .unwrap_or_else(|_| panic!("re-claiming ate slot {round}"));
+    }
+}
+
+#[test]
 fn the_pool_fills_and_then_refuses_by_name() {
     let mut ui = tree(32);
     let root = ui.root();
@@ -430,6 +451,17 @@ fn two_different_texts_never_share_a_fingerprint() {
         digest_of("ab"),
         digest_of("ba"),
         "order is part of the record"
+    );
+    // **The chain, not just the last token.** Dropping the previous fold
+    // from the chain leaves the whole workspace green, because a digest
+    // then records only the final keystroke — and the leg above cannot
+    // see it, since "ab" and "ba" end in different characters, so it
+    // merely repeats the check below. Two strings ending alike are what
+    // test the chain.
+    assert_ne!(
+        digest_of("ab"),
+        digest_of("cb"),
+        "a fold that forgets its history keeps only the last keystroke"
     );
     assert_ne!(digest_of("a"), digest_of("b"), "so is what was typed");
     assert_eq!(

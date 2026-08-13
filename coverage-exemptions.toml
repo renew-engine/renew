@@ -217,5 +217,5 @@ reason = "The slot lookup in `edit_focused`, refused a line after `field_slot` r
 
 [[exempt]]
 file = "crates/ui/src/field.rs"
-lines = [118, 127, 133, 139, 229, 232]
+lines = [126, 135, 141, 147, 237, 240]
 reason = "The bounds arms of the two loops that move bytes inside a field, and the width check above them. Every one is refused by arithmetic the lines before it already did: a field is 64 bytes and a scalar is at most 4, so the `checked_add` cannot leave `usize`; the insert guard refuses anything past the ceiling before either loop runs, so every index the loops build is inside the array; and `remove` only ever walks the region between two cursor positions, both of which are `<= len`. They are written as refusals rather than indexing because the crate bans unchecked indexing outright — a widget tree takes its bytes from a driver, and an unchecked index there is a panic somebody else can cause. Kept rather than restructured: the two arms that were merely untested rather than unreachable — the forward character walk and backspace at position zero — were found by this same measurement and now have tests, which is the line between the two kinds."
