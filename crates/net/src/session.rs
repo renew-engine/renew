@@ -245,10 +245,6 @@ impl<'a> Outbound<'a> {
 pub enum SubmitError {
     /// The input is not the width every peer agreed on.
     WrongWidth { saw: usize, agreed: u8 },
-    /// This tick already has a local input. **First write wins**, here as
-    /// on the wire: a caller that could revise a submitted input after
-    /// seeing another peer's would be a caller that could cheat.
-    AlreadySubmitted { tick: u64 },
     /// The window is full: the local peer is `INPUT_WINDOW` ticks ahead
     /// of the slowest confirmed tick and may not run further ahead.
     WindowFull { tick: u64, pending: u64 },
@@ -443,6 +439,11 @@ impl Session {
     /// Offer this machine's input for the tick it is owed, returning that
     /// tick.
     ///
+    /// **Never rewrites.** Each call fills the next unsubmitted tick, so a
+    /// caller cannot revise an input after seeing another peer's — which
+    /// is the shape of lookahead cheating, closed here by the state
+    /// machine rather than by a rule.
+    ///
     /// # Errors
     ///
     /// [`SubmitError`] for a wrong width, a tick already submitted, a full
@@ -464,12 +465,14 @@ impl Session {
                 pending: self.pending,
             });
         }
+        // No "already submitted" refusal, and none is possible: this
+        // always fills `local_next`, which only ever advances, and no
+        // remote can write this seat's frame — a datagram claiming to be
+        // from us is refused as `FromSelf`. First-write-wins holds by
+        // construction rather than by a check, so a check here would
+        // advertise a protection that could never fire.
         let tick = self.local_next;
-        let local = self.params.local();
-        if self.held_by(tick).contains(local) {
-            return Err(SubmitError::AlreadySubmitted { tick });
-        }
-        self.write_frame(local, tick, input);
+        self.write_frame(self.params.local(), tick, input);
         self.local_next = self.local_next.saturating_add(1);
         self.maybe_start();
         Ok(tick)
