@@ -125,7 +125,14 @@ silently lost.
 
 `Ui::absorb` folds the discrete decisions into the engine's state
 fingerprint: pointer, pressed, focus, the activation ordinal, a
-running fold of every activated id in order, and the overflow count.
+running fold of every activated id in order, the overflow count, the
+count of accepted text edits, and a running fold of those in order.
+What the edit fold carries is the stream — which node, which operation,
+which character — and never the field's contents: folding the bytes on
+every keystroke is linear in the field's length for a property the
+stream already has. What it therefore leaves out, and this is the half
+worth naming, is a field's bytes, its cursor, and how much of the pool
+is occupied.
 What it leaves out is named in the source beside it — hover is
 computed fresh rather than stored, geometry reaches the digest only
 by changing a decision, and a test pins exactly that: a padding

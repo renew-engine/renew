@@ -488,3 +488,16 @@ fn one_keystroke_into_two_different_fields_is_two_histories() {
         "the same keystroke into two different fields must be two histories"
     );
 }
+
+#[test]
+fn the_pool_costs_what_the_documentation_says() {
+    // The first figure in the docs was 512, which was the bytes alone
+    // and forgot that a field also carries an owner and two cursors. A
+    // review caught it. The number is now the compilers, and this is
+    // where a reader can see it.
+    assert_eq!(
+        renew_ui::POOL_BYTES,
+        768,
+        "the pool size moved; update the module doc with it"
+    );
+}

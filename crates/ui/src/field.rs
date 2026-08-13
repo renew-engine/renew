@@ -224,3 +224,19 @@ impl Field {
         self.len = self.len.saturating_sub(u8::try_from(width).unwrap_or(0));
     }
 }
+
+/// What the pool costs, stated where it cannot drift.
+///
+/// A review found the first prose figure wrong — 512 was the arithmetic
+/// of the bytes alone, and a `Field` also carries an owner and two
+/// cursors, with `Option<NodeId>` paying a discriminant beside a `u32`
+/// and a `u64`. The number now comes from the compiler rather than from
+/// anyone's addition, and the assertion below fails the build if a field
+/// grows past what the docs claim.
+pub const POOL_BYTES: usize = core::mem::size_of::<Field>() * MAX_FIELDS;
+
+const _: () = assert!(
+    POOL_BYTES <= 1024,
+    "the field pool is meant to be a rounding error in every tree; past a kilobyte that stops \
+     being obviously true and the claim in the module doc needs re-arguing rather than editing"
+);

@@ -11,7 +11,7 @@
 //! **The v0 interaction vocabulary** is hover, press/release
 //! activation, and focus — focus follows activation, because the first
 //! consumer is a menu and a clicked button is the focused one. Keyboard
-//! traversal, scroll, and text input are cut until a consumer needs
+//! traversal and scroll are cut until a consumer needs
 //! them; each returns with its own quantization rule where floats are
 //! involved.
 //!

@@ -53,7 +53,7 @@ pub mod state;
 pub mod text;
 
 pub use document::{Document, DocumentError};
-pub use field::{EditOp, MAX_FIELD_BYTES, MAX_FIELDS};
+pub use field::{EditOp, MAX_FIELD_BYTES, MAX_FIELDS, POOL_BYTES};
 use input::Interaction;
 pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
@@ -212,7 +212,7 @@ pub struct Ui {
     limits: UiLimits,
     /// The text fields: a fixed pool, present in every tree.
     ///
-    /// 512 bytes whether the tree has a field or not, which is the price
+    /// [`POOL_BYTES`] whether the tree has a field or not, which is the price
     /// of asking no caller to declare a capacity. See [`field`] for the
     /// two designs this beat.
     fields: [field::Field; MAX_FIELDS],
