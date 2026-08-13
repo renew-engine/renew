@@ -111,10 +111,13 @@ const TYPING: [UiEvent; 10] = [
 /// folding the tree's digest after every event and the solved geometry
 /// after every solve, then hand the typed half to [`type_into`].
 ///
-/// `None` if the tree refuses its own construction, which the limits
-/// below make impossible, or if the field pool refuses a slot — which
-/// would silently empty the only part of this scenario that exercises
-/// text, so it ends the run rather than shrinking it.
+/// `None` on any of four roads, all of them unreachable under this
+/// file's own limits and all of them ending in main's nonzero exit
+/// rather than in a digest: the two inserts, the field pool refusing a
+/// slot — which would silently empty the only part of this scenario
+/// that exercises text, so it ends the run rather than shrinking it —
+/// and the style read-back, which answers `None` only for an id the
+/// tree does not know.
 fn run() -> Option<(u64, usize, u64)> {
     let mut ui = Ui::new(UiLimits { nodes: 16 });
     let root = ui.root();

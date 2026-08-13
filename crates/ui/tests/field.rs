@@ -521,12 +521,82 @@ fn one_keystroke_into_two_different_fields_is_two_histories() {
     );
 }
 
+/// Every editing operation, in the state where it does nothing.
+const ALL_OPS: [EditOp; 6] = [
+    EditOp::Backspace,
+    EditOp::Delete,
+    EditOp::Left,
+    EditOp::Right,
+    EditOp::Home,
+    EditOp::End,
+];
+
+#[test]
+fn an_operation_that_changes_nothing_moves_no_fingerprint() {
+    // **An empty field makes all six no-ops at once**: the cursor is at
+    // zero and at the end simultaneously, so every arrow has nowhere to
+    // go and both deletions have nothing to reach.
+    //
+    // The rule this pins is not tidiness. Two runs that reached the same
+    // text — one of them bumping a cursor against the start a few times
+    // on the way — must fingerprint alike, or the fold is recording the
+    // player's fidgeting instead of the field's contents. Five of these
+    // six determinations were untested; making any of them return true
+    // unconditionally now moves a digest that must not move.
+    use renew_frame::StateHash;
+    for op in ALL_OPS {
+        let mut ui = tree(4);
+        let _ = focused_field(&mut ui);
+        let before = ui.absorb(StateHash::new()).finish();
+        ui.handle(UiEvent::Edit { op });
+        assert_eq!(
+            ui.absorb(StateHash::new()).finish(),
+            before,
+            "{op:?} did nothing to an empty field but moved the fingerprint"
+        );
+    }
+}
+
+#[test]
+fn an_operation_that_changes_something_moves_the_fingerprint() {
+    // The other half, so the test above cannot pass by the tree having
+    // stopped listening: each op is put where it genuinely does
+    // something, and then it has to show.
+    use renew_frame::StateHash;
+    // `Home` first for the ops that need the cursor away from the end.
+    let setups: [(EditOp, bool); 6] = [
+        (EditOp::Backspace, false),
+        (EditOp::Delete, true),
+        (EditOp::Left, false),
+        (EditOp::Right, true),
+        (EditOp::Home, false),
+        (EditOp::End, true),
+    ];
+    for (op, from_start) in setups {
+        let mut ui = tree(4);
+        let _ = focused_field(&mut ui);
+        for ch in "ab".chars() {
+            ui.handle(UiEvent::TextEntered { ch: u32::from(ch) });
+        }
+        if from_start {
+            ui.handle(UiEvent::Edit { op: EditOp::Home });
+        }
+        let before = ui.absorb(StateHash::new()).finish();
+        ui.handle(UiEvent::Edit { op });
+        assert_ne!(
+            ui.absorb(StateHash::new()).finish(),
+            before,
+            "{op:?} changed the field but the fingerprint did not notice"
+        );
+    }
+}
+
 #[test]
 fn the_pool_costs_what_the_documentation_says() {
-    // The first figure in the docs was 512, which was the bytes alone
-    // and forgot that a field also carries an owner and two cursors. A
-    // review caught it. The number is now the compilers, and this is
-    // where a reader can see it.
+    // The first figure in the docs was 512, which counted the bytes
+    // alone and forgot that a field also carries an owner, a length and
+    // a cursor. The number is now the compiler's, and this is where a
+    // reader can see it.
     assert_eq!(
         renew_ui::POOL_BYTES,
         768,
