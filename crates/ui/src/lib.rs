@@ -332,6 +332,14 @@ impl Ui {
         if index == 0 {
             return false;
         }
+        if let Some(slot) = self.field_slot(node).and_then(|at| self.fields.get_mut(at)) {
+            *slot = field::Field::EMPTY;
+        }
+        // The field slot goes back to the pool with the node. Without
+        // this the pool leaks — a form torn down and rebuilt eight times
+        // refuses the ninth field while no live node holds any of them —
+        // and, worse, the departed id keeps naming live text, which is
+        // the one thing this crate's addressing promises cannot happen.
         self.unlink(index);
         self.free_subtree(index);
         self.dirty = true;
@@ -592,7 +600,16 @@ impl Ui {
     }
 
     /// Which pool slot a node owns, if any.
+    ///
+    /// **Liveness is checked here rather than trusted.** Releasing on
+    /// removal is what keeps the pool honest, and this is the second
+    /// half of the same promise: a stale id misses, the way it misses
+    /// everywhere else in this crate, even if a slot were ever left
+    /// behind.
     fn field_slot(&self, node: NodeId) -> Option<usize> {
+        if !self.is_live(node) {
+            return None;
+        }
         self.fields.iter().position(|slot| slot.owner == Some(node))
     }
 

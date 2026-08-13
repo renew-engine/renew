@@ -324,3 +324,45 @@ fn typing_into_a_focused_node_that_is_not_a_field_does_nothing() {
         "a keystroke must not reach a field that lost focus"
     );
 }
+
+#[test]
+fn removing_a_node_releases_its_field_slot() {
+    // The pool is eight slots and a screen gets rebuilt. If a removed
+    // node kept its slot, a form torn down and rebuilt eight times would
+    // refuse the ninth field with no node holding any of them — a leak
+    // that looks like a capacity that was too small.
+    let mut ui = tree(64);
+    let root = ui.root();
+    for round in 0..MAX_FIELDS * 3 {
+        let node = ui.insert(root).expect("room");
+        ui.make_field(node)
+            .unwrap_or_else(|_| panic!("the pool leaked by round {round}"));
+        assert!(ui.remove(node), "the node must go away");
+    }
+}
+
+#[test]
+fn a_stale_id_never_names_a_live_field() {
+    // Removing a node bumps its slot's generation, so every id that
+    // named it goes stale. A field slot still holding the old id must
+    // not answer to the new tenant, which would hand one node another
+    // node's typed text.
+    let mut ui = tree(8);
+    let root = ui.root();
+    let first = ui.insert(root).expect("room");
+    ui.make_field(first).expect("slot");
+    assert!(ui.remove(first));
+
+    let second = ui.insert(root).expect("room");
+    assert_ne!(first, second, "the reused slot must carry a new generation");
+    assert_eq!(
+        ui.field_text(first),
+        None,
+        "a stale id must not reach a field"
+    );
+    assert_eq!(
+        ui.field_text(second),
+        None,
+        "and the new tenant is not a field until it asks"
+    );
+}
