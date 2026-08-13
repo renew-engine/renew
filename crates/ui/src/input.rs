@@ -59,6 +59,22 @@ pub enum UiOutput {
     Activated(NodeId),
 }
 
+/// Which kind of event a folded token came from.
+///
+/// **Without this the two share a namespace and collide.** An edit
+/// operation's code is a small integer and so is a control character's
+/// scalar, so typing U+0003 and pressing the key bound to `Left` folded
+/// the same number — and Windows delivers U+0001..U+001A for Ctrl with a
+/// letter, so it is a keystroke a player can produce by accident. Two
+/// materially different fields, different bytes *and* different cursor,
+/// shared a fingerprint.
+///
+/// A review found it after the affine collision was fixed: routing
+/// through the hash made the arithmetic sound and left the domain
+/// unexamined.
+const KIND_TEXT: u64 = 1;
+const KIND_EDIT: u64 = 2;
+
 /// The interaction state one [`Ui`] carries between events.
 #[derive(Debug, Default)]
 pub(crate) struct Interaction {
@@ -112,11 +128,11 @@ impl Ui {
             // page with no cursor in it should do.
             UiEvent::TextEntered { ch } => {
                 if let Some(ch) = char::from_u32(ch) {
-                    self.edit_focused(|field| field.insert(ch), u64::from(ch as u32));
+                    self.edit_focused(KIND_TEXT, |field| field.insert(ch), u64::from(ch as u32));
                 }
             }
             UiEvent::Edit { op } => {
-                self.edit_focused(|field| field.edit(op), op.code());
+                self.edit_focused(KIND_EDIT, |field| field.edit(op), op.code());
             }
             UiEvent::PointerMoved { x, y } => {
                 self.interaction.pointer = (x, y);
@@ -172,7 +188,12 @@ impl Ui {
     /// does nothing, and an event that does nothing must not move the
     /// fingerprint — otherwise two runs that reached the same field
     /// contents by different amounts of cursor-bumping would disagree.
-    fn edit_focused(&mut self, apply: impl FnOnce(&mut crate::field::Field) -> bool, token: u64) {
+    fn edit_focused(
+        &mut self,
+        kind: u64,
+        apply: impl FnOnce(&mut crate::field::Field) -> bool,
+        token: u64,
+    ) {
         let Some(focus) = self.interaction.focus else {
             return;
         };
@@ -203,6 +224,7 @@ impl Ui {
             .absorb_u64(self.interaction.edit_fold)
             .absorb_u32(focus.index())
             .absorb_u64(focus.generation())
+            .absorb_u64(kind)
             .absorb_u64(token)
             .finish();
     }

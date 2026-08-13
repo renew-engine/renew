@@ -561,3 +561,39 @@ fn left_and_right_fold_different_tokens() {
         "a replay cannot tell the two apart if they fold alike"
     );
 }
+
+#[test]
+fn a_control_character_and_an_edit_key_never_fold_alike() {
+    // **The second collision a review found**, after the first was
+    // fixed. An edit operation's code is a small integer and so is a
+    // control character's scalar, so the two shared a namespace: typing
+    // U+0003 and pressing Left folded the same number. Windows delivers
+    // U+0001..U+001A for Ctrl with a letter, so it is a keystroke a
+    // player produces by accident, not an exotic input.
+    //
+    // The exact pair from the report: both runs accept both events, so
+    // every other counter matches and only the fold could tell them
+    // apart. It could not.
+    use renew_frame::StateHash;
+    let mut typed = tree(4);
+    let node_a = focused_field(&mut typed);
+    typed.handle(UiEvent::TextEntered { ch: u32::from('a') });
+    typed.handle(UiEvent::TextEntered { ch: 3 });
+
+    let mut edited = tree(4);
+    let node_b = focused_field(&mut edited);
+    edited.handle(UiEvent::TextEntered { ch: u32::from('a') });
+    edited.handle(UiEvent::Edit { op: EditOp::Left });
+
+    // Materially different: different bytes and a different cursor, both
+    // of which change what happens next.
+    assert_eq!(typed.field_text(node_a).map(<[u8]>::len), Some(2));
+    assert_eq!(edited.field_text(node_b).map(<[u8]>::len), Some(1));
+    assert_ne!(typed.field_cursor(node_a), edited.field_cursor(node_b));
+
+    assert_ne!(
+        typed.absorb(StateHash::new()).finish(),
+        edited.absorb(StateHash::new()).finish(),
+        "a typed control character and an edit key shared a fingerprint"
+    );
+}

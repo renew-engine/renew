@@ -595,7 +595,7 @@ impl Ui {
             // it was — because every path that frees a slot already
             // clears it: `remove` empties it, the reclaim above empties
             // it, and a slot never claimed starts empty. A second clear
-            // is a line no test can distinguish, which §15 calls dead.
+            // is a line no test can distinguish, which is dead code.
             // The property it protected is now asserted where it is
             // real, on the reclaim path.
             slot.owner = Some(node);

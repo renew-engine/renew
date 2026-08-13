@@ -1,10 +1,10 @@
 //! The field pool's invariants, over inputs nobody chose.
 //!
-//! §8's containers row asks for these, and the field pool shipped its
-//! first revision without them. A review then walked forty thousand
-//! pseudo-random operations by hand and found the invariants held —
-//! which established they were true that afternoon and guarded nothing
-//! afterwards. This is the guard.
+//! A container with editing operations wants these, and the field pool
+//! shipped its first revision without them. A review then walked forty
+//! thousand pseudo-random operations by hand and found the invariants
+//! held — which established they were true that afternoon and guarded
+//! nothing afterwards.
 
 use proptest::prelude::*;
 use renew_ui::{EditOp, Fixed, MAX_FIELD_BYTES, NodeId, Size, Style, Ui, UiEvent, UiLimits};
