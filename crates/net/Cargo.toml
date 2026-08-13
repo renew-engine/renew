@@ -29,8 +29,22 @@ workspace = true
 # seeded hasher, so there is nothing for a future edit to launder one
 # through.
 #
-# The session state machine arrives with `renew-frame`, for the digest
-# fold. It is not taken now, because nothing here folds one yet and a
-# dependency nothing depends on is a claim about the graph that is not
-# true.
+# The digest the session's agreement and input folds answer with — the
+# same explicit-order fingerprint every other simulation state in this
+# tree uses. Nothing else: a crate with one dependency, and that one
+# having none itself, is a determinism promise the graph can check.
 [dependencies]
+renew-frame = { version = "0.1.1", path = "../frame" }
+
+# Property tests for the session's invariants, and the counting allocator
+# behind the zero-allocation gate, which ships with the crate's first
+# per-tick code rather than after it.
+[dev-dependencies]
+proptest = "1.11"
+renew-memory = { path = "../core/memory" }
+
+# The switch the scheduled sanitizer workflow flips: allocation counting
+# is invalid under an instrumented allocator, so the gate ignores itself
+# there.
+[features]
+sanitized = []

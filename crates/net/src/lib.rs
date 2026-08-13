@@ -74,10 +74,19 @@
 // the root instead of at the two functions that obviously need them.
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+mod desync;
+mod params;
 mod peer;
+mod session;
 pub mod wire;
 
+pub use desync::{DesyncReport, DesyncReportJson};
+pub use params::{MIN_PEERS, ParamsError, SessionParams, ValidParams};
 pub use peer::{PeerId, PeerSet, peers};
+pub use session::{
+    Advance, CommitError, Delivery, Outbound, Outcome, Refusal, Session, SessionStats, Step,
+    SubmitError,
+};
 
 /// The most peers one session may hold.
 ///
@@ -120,6 +129,14 @@ pub const INPUT_REDUNDANCY: u8 = 8;
 /// index is `tick & (INPUT_WINDOW - 1)`, and `%` would trip this crate's
 /// arithmetic deny where a mask does not.
 pub const INPUT_WINDOW: u32 = 64;
+
+/// How many digested ticks each peer's fingerprints are retained for.
+///
+/// A power of two, for the same reason [`INPUT_WINDOW`] is: the ring
+/// index is a mask. It bounds how far behind a peer's digest may arrive
+/// and still be compared — beyond it the tick has been forgotten, and a
+/// comparison that cannot run says so rather than passing.
+pub const DIGEST_HISTORY: u32 = 16;
 
 /// The largest datagram this protocol can produce, in bytes.
 ///
