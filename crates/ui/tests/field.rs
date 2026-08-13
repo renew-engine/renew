@@ -147,6 +147,24 @@ fn a_multi_byte_character_is_removed_whole() {
         Some(0),
         "left steps the whole character"
     );
+
+    // Forward over it too. That is a separate walk in the code, and it
+    // was uncovered until this line existed — the earlier attempt to add
+    // it silently edited nothing, and the coverage report is what said
+    // so.
+    ui.handle(UiEvent::Edit { op: EditOp::Right });
+    assert_eq!(
+        ui.field_cursor(node),
+        Some(2),
+        "right steps the whole character too"
+    );
+    ui.handle(UiEvent::Edit { op: EditOp::Home });
+    ui.handle(UiEvent::Edit { op: EditOp::Delete });
+    assert_eq!(
+        ui.field_text(node),
+        Some(&[][..]),
+        "delete removes it whole as well"
+    );
 }
 
 #[test]
@@ -239,4 +257,70 @@ fn right_and_end_move_the_cursor_and_stop_at_the_end() {
     assert_eq!(ui.field_cursor(node), Some(2));
     ui.handle(UiEvent::Edit { op: EditOp::Delete });
     assert_eq!(ui.field_text(node), Some(&b"ab"[..]));
+}
+
+#[test]
+fn backspace_at_the_start_does_nothing() {
+    // The guard that stops a cursor at zero walking off the front. It is
+    // reachable, unlike its neighbours in that function, and it was
+    // uncovered until this test — every other backspace in the file has
+    // something in front of it.
+    let mut ui = tree(4);
+    let node = focused_field(&mut ui);
+    ui.handle(UiEvent::Edit {
+        op: EditOp::Backspace,
+    });
+    assert_eq!(ui.field_text(node), Some(&[][..]));
+
+    ui.handle(UiEvent::TextEntered { ch: u32::from('a') });
+    ui.handle(UiEvent::Edit { op: EditOp::Home });
+    ui.handle(UiEvent::Edit {
+        op: EditOp::Backspace,
+    });
+    assert_eq!(
+        ui.field_text(node),
+        Some(&b"a"[..]),
+        "backspace at the start must not eat the character after the cursor"
+    );
+}
+
+#[test]
+fn typing_into_a_focused_node_that_is_not_a_field_does_nothing() {
+    // Focus is given by clicking anything, not only a field, so this is
+    // the ordinary case of a player clicking a button and then typing.
+    // It must be silent rather than land somewhere.
+    let mut ui = tree(8);
+    let field = focused_field(&mut ui);
+    let root = ui.root();
+    let button = ui.insert(root).expect("room");
+    ui.set_style(
+        button,
+        Style {
+            width: Size::Px(Fixed::from_int(40)),
+            height: Size::Px(Fixed::from_int(20)),
+            ..Style::default()
+        },
+    );
+    ui.solve(Fixed::from_int(100), Fixed::from_int(100));
+    let rect = ui.rect(button).expect("a solved node has a box");
+    let x = i32::try_from(rect.x.trunc_int() + 1).unwrap_or(0);
+    let y = i32::try_from(rect.y.trunc_int() + 1).unwrap_or(0);
+    ui.handle(UiEvent::PointerMoved { x, y });
+    ui.handle(UiEvent::PointerPressed);
+    ui.handle(UiEvent::PointerReleased);
+    assert_eq!(
+        ui.focus(),
+        Some(button),
+        "the click moved focus off the field"
+    );
+
+    ui.handle(UiEvent::TextEntered { ch: u32::from('z') });
+    ui.handle(UiEvent::Edit {
+        op: EditOp::Backspace,
+    });
+    assert_eq!(
+        ui.field_text(field),
+        Some(&[][..]),
+        "a keystroke must not reach a field that lost focus"
+    );
 }
