@@ -4,8 +4,8 @@
 use core::num::NonZeroU64;
 
 use renew_net::{
-    Advance, CHAT_INBOX, CHAT_OUTBOX, ChatChannel, ChatRefusal, Delivery, MAX_DATAGRAM_BYTES,
-    PeerId, Refusal, Session, SessionParams, ValidParams, wire,
+    Advance, CHAT_INBOX, CHAT_OUTBOX, CHAT_REPEATS, ChatChannel, ChatRefusal, Delivery,
+    MAX_DATAGRAM_BYTES, PeerId, Refusal, Session, SessionParams, ValidParams, wire,
 };
 
 const SESSION: u64 = 0x0bad_c0de_0bad_c0de;
@@ -428,4 +428,53 @@ fn a_message_from_this_machine_arriving_from_the_network_is_refused() {
         there.deliver(seat(1), out.get(..len).unwrap_or_default()),
         Err(ChatRefusal::NotAPeer { .. })
     ));
+}
+
+#[test]
+fn a_healthy_channel_reports_no_refusals_however_many_repeats_arrive() {
+    // **The counter exists to answer one question — is something wrong —
+    // and it can only answer it if the healthy value is zero.** A message
+    // is repeated a fixed number of times and never acknowledged, so
+    // every message that arrives at all arrives several times over.
+    // Counting those as refusals gave the counter a healthy value of five
+    // per message, and two separate consumers downstream then read a
+    // clean run as a peer refusing nearly everything it heard.
+    let mut sender = ChatChannel::new(&params(0));
+    let mut receiver = ChatChannel::new(&params(1));
+    sender.send(b"hello").expect("a short message");
+
+    let from = PeerId::new(0).expect("seat zero");
+    let mut buffer = [0u8; MAX_DATAGRAM_BYTES];
+    let mut carried = 0usize;
+    // Every repeat the sender offers, delivered — which is what a link
+    // with no loss does, and the case the counter has to survive.
+    for _ in 0..CHAT_REPEATS {
+        while let Some(out) = sender.next_outbound(&mut buffer) {
+            let _ = receiver.deliver(from, out.bytes());
+            carried += 1;
+        }
+    }
+    assert!(carried > 1, "the redundancy must have actually repeated");
+
+    let stats = receiver.stats();
+    assert_eq!(stats.received, 1, "one message, however many datagrams");
+    assert!(
+        stats.duplicates > 0,
+        "the repeats must be counted somewhere"
+    );
+    assert_eq!(
+        stats.refused, 0,
+        "a channel that lost nothing and refused nothing must say so: {stats:?}"
+    );
+
+    // And the counter still moves for something genuinely wrong, or the
+    // fix above would have been to delete it.
+    let mut nonsense = [0u8; MAX_DATAGRAM_BYTES];
+    nonsense[0] = 0xff;
+    let _ = receiver.deliver(from, &nonsense[..32]);
+    assert_eq!(
+        receiver.stats().refused,
+        1,
+        "malformed bytes are still a refusal"
+    );
 }

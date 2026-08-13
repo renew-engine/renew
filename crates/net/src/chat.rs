@@ -89,7 +89,12 @@ pub struct ChatStats {
     pub duplicates: u64,
     /// Messages dropped because the inbox was full and nobody drained it.
     pub inbox_overflowed: u64,
-    /// Datagrams refused.
+    /// Datagrams refused, **not counting duplicates**.
+    ///
+    /// Zero on a healthy channel however much traffic crosses it, which
+    /// is what makes it worth reading: a rising count is a peer sending
+    /// something this one will not take, never the redundancy working.
+    /// Repeats live in [`ChatStats::duplicates`].
     pub refused: u64,
 }
 
@@ -279,7 +284,17 @@ impl ChatChannel {
     /// whole reason it lives out here.
     pub fn deliver(&mut self, source: PeerId, bytes: &[u8]) -> Result<(), ChatRefusal> {
         let refusal = self.absorb(source, bytes);
-        if refusal.is_err() {
+        // **A duplicate is not counted here.** It is a refusal in the
+        // return type, because nothing was delivered, and it is the
+        // protocol behaving rather than misbehaving: a message is
+        // repeated a fixed number of times and never acknowledged, so
+        // every message that arrives at all arrives several times over.
+        // Folding those into `refused` gave that counter a healthy value
+        // of five per message, which makes it useless for the one
+        // question it is asked — is something wrong? They are in
+        // [`ChatStats::duplicates`], which is where a reader looking for
+        // the redundancy working will look.
+        if matches!(refusal, Err(refused) if !matches!(refused, ChatRefusal::AlreadySeen { .. })) {
             self.stats.refused = self.stats.refused.saturating_add(1);
         }
         refusal
