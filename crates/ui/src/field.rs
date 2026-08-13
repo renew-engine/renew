@@ -52,6 +52,18 @@ impl EditOp {
     /// A small stable number, for the digest fold. Written out rather
     /// than derived from the discriminant, so reordering the variants
     /// cannot silently change a fingerprint.
+    ///
+    /// **Exchanging two of these numbers is caught by nothing**, and
+    /// that is now checked rather than deferred. A test comparing two
+    /// digests cannot see a swap, because a swap preserves every
+    /// distinction such a test makes; and the cross-target lane holds
+    /// its legs against each other rather than against a recorded
+    /// value, so a swap moves all of them alike. An earlier comment
+    /// here deferred the guard to that lane, which was wrong about what
+    /// the lane does. Catching it needs a digest pinned as a constant,
+    /// which this crate does not have and which is a decision of its
+    /// own — so these numbers are held by being written out and read,
+    /// and the gap is stated instead of covered over.
     pub(crate) const fn code(self) -> u64 {
         match self {
             Self::Backspace => 1,

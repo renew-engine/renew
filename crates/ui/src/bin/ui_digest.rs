@@ -23,7 +23,7 @@
 
 use renew_fixed::Fixed;
 use renew_frame::StateHash;
-use renew_ui::{Align, Direction, Edges, EditOp, Size, Style, Ui, UiEvent, UiLimits};
+use renew_ui::{Align, Direction, Edges, EditOp, NodeId, Size, Style, Ui, UiEvent, UiLimits};
 
 fn main() {
     // The scenario takes no arguments; being handed one means the
@@ -52,6 +52,50 @@ fn main() {
 /// folding the tree's digest after every event and the solved
 /// geometry after every solve. `None` only if the tree refuses its
 /// own construction, which the limits above make impossible.
+/// The typed half of the scenario, lifted out so `run` stays inside the
+/// line limit the canonical lint enforces.
+///
+/// **This is the only part of the scenario that exercises text**, and it
+/// covers both event kinds and the whole editing vocabulary. U+0003 is
+/// here on purpose: Windows delivers it for Ctrl and a letter, and a
+/// typed scalar once shared a token namespace with an operation code.
+///
+/// **What it does not do is catch an exchanged digest token**, and an
+/// earlier version of this comment claimed it did. This lane holds its
+/// legs against *each other*, never against a committed constant, so
+/// swapping two operation codes moves every target's digest by the same
+/// amount and the comparison still agrees. The claim was written into
+/// two files and a commit message before anyone checked it against what
+/// the lane compares. Nothing in this repository catches that mutation
+/// today; saying so is worth more than a guard that is not one.
+fn type_into(ui: &mut Ui, node: NodeId, mut hash: StateHash) -> Option<StateHash> {
+    // An error rather than a skip: silently dropping these would leave
+    // the reported event count claiming them.
+    ui.make_field(node).ok()?;
+    for &event in &TYPING {
+        ui.handle(event);
+        hash = ui.absorb(hash);
+    }
+    Some(hash)
+}
+
+/// The typed events, as a constant so `run` can count them without
+/// holding the array.
+const TYPING: [UiEvent; 10] = [
+    UiEvent::TextEntered { ch: 0x68 },
+    UiEvent::TextEntered { ch: 0x69 },
+    UiEvent::TextEntered { ch: 3 },
+    UiEvent::Edit { op: EditOp::Left },
+    UiEvent::TextEntered { ch: 0xe9 },
+    UiEvent::Edit { op: EditOp::Home },
+    UiEvent::Edit { op: EditOp::Right },
+    UiEvent::Edit { op: EditOp::Delete },
+    UiEvent::Edit { op: EditOp::End },
+    UiEvent::Edit {
+        op: EditOp::Backspace,
+    },
+];
+
 fn run() -> Option<(u64, usize, u64)> {
     let mut ui = Ui::new(UiLimits { nodes: 16 });
     let root = ui.root();
@@ -125,43 +169,7 @@ fn run() -> Option<(u64, usize, u64)> {
         hash = ui.absorb(hash);
     }
 
-    // Typing, into the button the last click focused. **This is the
-    // only guard against a digest token being exchanged**: swapping two
-    // editing operations' codes preserves every distinction a test can
-    // check by comparing two digests to each other, and changes a
-    // fingerprint only against a recorded one. That argument was made in
-    // a comment beside those codes and the guard was never placed here,
-    // which a review pointed out; a deferral to a place nothing was
-    // added to is a deferral to nowhere.
-    //
-    // The script covers both event kinds and the whole editing
-    // vocabulary, and includes a control character — U+0003, which
-    // Windows delivers for Ctrl+C — because a typed scalar and an
-    // operation code once shared a namespace and collided.
-    let typing = [
-        UiEvent::TextEntered { ch: u32::from('h') },
-        UiEvent::TextEntered { ch: u32::from('i') },
-        UiEvent::TextEntered { ch: 3 },
-        UiEvent::Edit { op: EditOp::Left },
-        UiEvent::TextEntered {
-            ch: u32::from('é')
-        },
-        UiEvent::Edit { op: EditOp::Home },
-        UiEvent::Edit { op: EditOp::Right },
-        UiEvent::Edit { op: EditOp::Delete },
-        UiEvent::Edit { op: EditOp::End },
-        UiEvent::Edit {
-            op: EditOp::Backspace,
-        },
-    ];
-    // A refusal here would silently drop ten events from the scenario
-    // while the count below still claimed them, so it is an error rather
-    // than a skip: the pool has eight slots and this asks for one.
-    ui.make_field(buttons[2]).ok()?;
-    for &event in &typing {
-        ui.handle(event);
-        hash = ui.absorb(hash);
-    }
+    hash = type_into(&mut ui, buttons[2], hash)?;
 
     // Mid-session restyle: the growing button stops growing, the tree
     // re-solves, and the pixel that hit the middle button before the
@@ -190,7 +198,7 @@ fn run() -> Option<(u64, usize, u64)> {
     let activations = ui.drain_outputs().count() as u64;
     Some((
         hash.finish(),
-        script.len() + typing.len() + coda.len(),
+        script.len() + TYPING.len() + coda.len(),
         activations,
     ))
 }

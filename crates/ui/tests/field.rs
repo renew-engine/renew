@@ -538,8 +538,9 @@ fn left_and_right_fold_different_tokens() {
     // than attempting again: a swap preserves distinctness, so no test
     // comparing digests to each other can see one. Exchanging two tokens
     // changes a fingerprint only against a previously recorded value —
-    // which is what the crate's pinned digest run is for, and where that
-    // guard belongs. Two attempts were spent here before the shape of
+    // which nothing here catches: the cross-target
+    // lane compares its legs to each other, not to a recorded value, so
+    // a swap moves all of them alike. Stated in the codes themselves. Two attempts were spent here before the shape of
     // the mutation was read properly.
     use renew_frame::StateHash;
     let digest_after = |op: EditOp| {

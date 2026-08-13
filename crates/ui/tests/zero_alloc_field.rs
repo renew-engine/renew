@@ -9,8 +9,18 @@
 //! down, and reading one screen further would have saved the round
 //! trip.
 
-use renew_memory::counters;
+use renew_memory::{CountingAllocator, counters};
 use renew_ui::{EditOp, Fixed, Size, Style, Ui, UiEvent, UiLimits};
+
+/// **Without this the gate measures nothing.** Integration tests are
+/// separate binaries, so a sibling file's allocator does not apply here:
+/// `counters` would be written by nobody, every snapshot would read
+/// zero, and the window would pass on its first attempt whatever the
+/// code did. The first version of this file omitted it and a review
+/// proved the point by allocating four kilobytes inside the measured
+/// closure — still green.
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// Claiming a field, typing into it, and editing it are heap-silent too.
 ///
@@ -20,6 +30,10 @@ use renew_ui::{EditOp, Fixed, Size, Style, Ui, UiEvent, UiLimits};
 /// after the code measures what the code grew into rather than what it
 /// promised, and text entry arrived after the gate did.
 #[test]
+#[cfg_attr(
+    feature = "sanitized",
+    ignore = "allocation counting is invalid under instrumented allocators"
+)]
 fn text_entry_stays_heap_silent() {
     let mut ui = Ui::new(UiLimits { nodes: 16 });
     let root = ui.root();
@@ -61,10 +75,15 @@ fn text_entry_stays_heap_silent() {
             ui.handle(UiEvent::Edit { op: EditOp::End });
         }
         // Reclaiming a slot walks the pool and asks the arena who is
-        // live; neither should touch the heap either.
-        assert!(ui.remove(node));
-        let fresh = ui.insert(root).expect("room");
-        ui.make_field(fresh).expect("the slot came back");
+        // live; neither should touch the heap either. **Re-runnable on
+        // purpose:** a loud attempt makes `quiet_window` call this
+        // closure again, so a body that consumed the tree would report
+        // its own broken setup instead of the allocation it measured. A
+        // review watched that happen. The node is re-made rather than
+        // assumed to survive.
+        let scratch = ui.insert(root).expect("room");
+        ui.make_field(scratch).expect("a free slot");
+        assert!(ui.remove(scratch));
     });
     verdict.expect("text entry stays heap-silent");
 }
