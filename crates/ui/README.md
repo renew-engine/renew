@@ -113,7 +113,19 @@ the replay harness before events get here — so a recorded trace
 replays into the same integers everywhere, and no float exists in
 this crate for a digest to see.
 
-The v0 vocabulary is hover, press/release activation, and focus.
+The vocabulary is hover, press/release activation, focus, and — for
+whichever node holds focus and is a text field — typed characters and a
+closed set of editing operations. A character arrives as a Unicode
+scalar rather than a key code, because what a keystroke means differs
+per platform and per person and is the driver's answer to give.
+
+Text fields are a fixed pool rather than a declared capacity:
+`MAX_FIELDS` nodes may hold text, `MAX_FIELD_BYTES` each, present in
+every tree at `POOL_BYTES` whether it has a field or not. `make_field`
+claims a slot, `field_text` and `field_cursor` read one, and removing a
+node returns its slot to the pool. A field always holds valid UTF-8:
+insertion refuses rather than truncating when the last byte will not
+fit, and deletion steps whole characters.
 Hit-testing walks the retained rectangles topmost-first (children
 over parents, later siblings over earlier); a press remembers its
 node, a release on the same node activates it — queueing

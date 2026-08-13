@@ -8,12 +8,20 @@
 //! [`crate::Ui::handle`]. No float enters this crate, so nothing here
 //! can put one where a digest sees it.
 //!
-//! **The v0 interaction vocabulary** is hover, press/release
-//! activation, and focus — focus follows activation, because the first
-//! consumer is a menu and a clicked button is the focused one. Keyboard
-//! traversal and scroll are cut until a consumer needs
-//! them; each returns with its own quantization rule where floats are
-//! involved.
+//! **The interaction vocabulary** is hover, press/release activation,
+//! focus, and — for whichever node holds focus and is a text field —
+//! typed characters and a closed set of editing operations. Focus
+//! follows activation, because the first consumer was a menu and a
+//! clicked button is the focused one; text arrived when a consumer
+//! needed a typed address and had nowhere to put it. Keyboard traversal
+//! and scroll are still cut until a consumer needs them; each returns
+//! with its own quantization rule where floats are involved.
+//!
+//! A typed character arrives as a Unicode scalar, never a key code.
+//! What a keystroke means — shift, layout, dead keys, composition — is
+//! the window system's answer and differs per platform and per person,
+//! so a tree deriving a character from a key would be wrong differently
+//! everywhere. It is the same line the pointer draws.
 //!
 //! **Hit-testing walks the retained rectangles** of the last
 //! [`crate::Ui::solve`], topmost first: children draw over their
@@ -277,6 +285,20 @@ impl Ui {
     ///   ids in order, and the decision fold above records that
     ///   sequence — so two states with equal digests hand their hosts
     ///   the same drained decisions.
+    /// - *A field's bytes, its cursor, and how much of the pool is
+    ///   occupied*: the edit fold above records the stream that
+    ///   produced them — which node, which kind of event, which
+    ///   character or operation, in order — so two states with equal
+    ///   digests were typed into identically and hold identical text.
+    ///   The bytes themselves stay out because folding them on every
+    ///   keystroke is linear in a field's length for a property the
+    ///   stream already has. **Pool occupancy is the weaker half and is
+    ///   named as such:** a slot freed by a removal is reclaimed
+    ///   lazily, so two states with equal digests can differ in how
+    ///   many fields they will accept next. Nothing observable today
+    ///   turns on that, and a review measured it rather than assuming
+    ///   — but it is a difference the digest does not see, and this is
+    ///   where that is said out loud.
     /// - *Worn state patches*: derived from the absorbed pointer and
     ///   press/focus state applied over the excluded geometry and
     ///   authored tables — like geometry, dress reaches this digest
