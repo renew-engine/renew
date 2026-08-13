@@ -57,6 +57,12 @@ pub mod audio;
 #[cfg(feature = "window")]
 pub mod window;
 
+/// UDP datagrams: bind, send, and a non-blocking receive. Behind the
+/// `net` feature, which is off by default — a build that talks to nobody
+/// compiles no socket at all.
+#[cfg(feature = "net")]
+pub mod net;
+
 pub use clock::Clock;
 /// The error-classification vocabulary, re-exported so consumers match
 /// on kinds without importing `std::io` themselves — the doorway stays

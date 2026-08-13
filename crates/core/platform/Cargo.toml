@@ -1,6 +1,6 @@
 [package]
 name = "renew-platform"
-description = "Operating-system seams: monotonic time, whole-file I/O, named threads, the window, and audio output"
+description = "Operating-system seams: monotonic time, whole-file I/O, named threads, the window, audio output, and UDP datagrams"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ readme = "README.md"
 homepage.workspace = true
 
 [package.metadata.renew]
-purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, window, and audio-output seams."
+purpose = "The engine's only doorway to the operating system: clock, filesystem, thread, window, audio-output, and UDP-socket seams."
 maturity = "internal"
 core = true
 extension_points = ["window-app"]
@@ -31,6 +31,13 @@ window = ["dep:winit", "dep:raw-window-handle"]
 # diagnostics crate with it, because the stream's error callback is the
 # one place in this crate that reports from a thread it does not own.
 audio-out = ["dep:cpal"]
+# UDP datagrams via the platform's net module. Default-OFF, on the same
+# terms as `audio-out`: a headless harness has a display server more
+# often than it has a port it is allowed to bind, and a build that talks
+# to nobody should compile no socket at all. Unlike `audio-out` it
+# carries no dependency — `std::net` is std — so it resolves no crate and
+# the minimal-core graph is unchanged by its existence.
+net = []
 
 [dependencies]
 # The event vocabulary this crate re-exports as its `event` module.
@@ -78,6 +85,14 @@ workspace = true
 name = "window_smoke"
 harness = false
 required-features = ["window"]
+
+# Compiled only where the seam is. A file-level `cfg` would be the
+# obvious spelling and the wrong one: the binary would still be built
+# with the feature off, contain zero tests, and report green — a pass
+# that measured nothing.
+[[test]]
+name = "net_loopback"
+required-features = ["net"]
 
 # Touching a real device: compiled only where the seam is, and written
 # so that a machine with a sound card and a machine without one are
