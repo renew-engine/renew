@@ -1031,3 +1031,50 @@ fn a_session_refuses_all_three_lobby_kinds_by_name() {
     assert_eq!(live.pending_tick(), 0);
     assert!(!live.is_playing());
 }
+
+#[test]
+fn a_peer_that_never_hears_a_roster_keeps_asking_and_takes_no_second_seat() {
+    // The failure this guards is not loud: the host seats a peer, every
+    // roster to it is lost, the host says go, and the session then holds a
+    // seat that will never submit an input. The lobby cannot fix that — a
+    // timeout needs a clock it may not read — but it must not make it
+    // worse by handing the same machine a second seat every time it asks
+    // again, which would quietly shrink everyone else's roster to nothing.
+    let mut world = World::new(&[2, 3]);
+    world.roster_deaf.push(endpoint(2));
+    world.pumps(6);
+    assert_eq!(
+        world.host.state(),
+        LobbyState::Hosting { seated: 3 },
+        "one deaf peer, one seat"
+    );
+
+    // And the deaf peer is still asking rather than having given up
+    // silently, so a driver watching its own outbox can see the state it
+    // is in.
+    let asking = world
+        .drain()
+        .into_iter()
+        .any(|packet| packet.from == endpoint(2));
+    assert!(asking, "a joiner with no roster has nothing to do but ask");
+}
+
+#[test]
+fn the_start_run_carries_the_roster_beside_it() {
+    // A joiner that lost every roster before `start` still has eight
+    // pumps to be seated and start, because the run keeps sending both.
+    // Without this a lost roster is unrecoverable the instant the host
+    // says go, which is the moment it is most likely to matter.
+    let mut world = World::new(&[2]);
+    world.roster_deaf.push(endpoint(2));
+    world.pumps(3);
+    assert_eq!(world.joiners[0].1.state(), LobbyState::Joining);
+
+    world.host.start().expect("start");
+    world.roster_deaf.clear();
+    world.pumps(3);
+    assert!(
+        world.joiners[0].1.agreed().is_some(),
+        "the roster rides with the start run so a late peer can still make it"
+    );
+}
