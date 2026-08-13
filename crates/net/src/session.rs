@@ -453,6 +453,25 @@ impl Session {
     /// is the shape of lookahead cheating, closed here by the state
     /// machine rather than by a rule.
     ///
+    /// # The tick is ahead of the world, and an input derived from the wrong one diverges
+    ///
+    /// Submissions run ahead of the confirmed frontier by the agreed
+    /// input delay, so **the tick filled here is not the tick the
+    /// simulation has reached.** A caller whose input depends on the tick
+    /// at all — a recorded trace, a bot, a test fixture, anything
+    /// scripted — must derive it from [`Session::next_local_tick`], which
+    /// says which tick the next call will fill *before* the input has to
+    /// exist. This function returns the number afterwards, which is
+    /// useful for a log and useless for that decision.
+    ///
+    /// Getting it wrong reads the caller's own loop rate instead: how
+    /// many times it spun before a tick was ready is wall-clock, so the
+    /// same seed produces a different run every time. **And no
+    /// peer-to-peer check catches it**, because peers exchange the inputs
+    /// they actually sent rather than recomputing them — every machine
+    /// agrees, and all of them agree on a different game than the last
+    /// run did. Only repeating one seed and comparing finds it.
+    ///
     /// # Errors
     ///
     /// [`SubmitError`] for a wrong width, a tick already submitted, a full
