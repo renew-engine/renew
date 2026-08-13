@@ -46,12 +46,14 @@
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::float_arithmetic)]
 
 pub mod document;
+mod field;
 mod input;
 mod layout;
 pub mod state;
 pub mod text;
 
 pub use document::{Document, DocumentError};
+pub use field::{EditOp, MAX_FIELD_BYTES, MAX_FIELDS};
 use input::Interaction;
 pub use input::{UiEvent, UiOutput};
 pub use layout::{Align, Direction, Edges, Rect, Size, Style};
@@ -208,6 +210,12 @@ pub struct Ui {
     free: u32,
     live: u32,
     limits: UiLimits,
+    /// The text fields: a fixed pool, present in every tree.
+    ///
+    /// 512 bytes whether the tree has a field or not, which is the price
+    /// of asking no caller to declare a capacity. See [`field`] for the
+    /// two designs this beat.
+    fields: [field::Field; MAX_FIELDS],
 }
 
 impl Ui {
@@ -241,6 +249,7 @@ impl Ui {
             dirty: true,
             solved_for: (Fixed::ZERO, Fixed::ZERO),
             interaction: Interaction::default(),
+            fields: [field::Field::EMPTY; MAX_FIELDS],
             outputs: Vec::with_capacity(capacity as usize),
             states: vec![state::StateSlot::default(); capacity as usize],
             patches: Vec::new(),
@@ -530,6 +539,61 @@ impl Ui {
         if moves {
             self.dirty = true;
         }
+    }
+
+    /// Make `node` a text field, claiming one of the pool's slots.
+    ///
+    /// Idempotent: a node that is already a field keeps its slot and its
+    /// contents, so a caller rebuilding a screen does not wipe what
+    /// somebody typed.
+    ///
+    /// # Errors
+    ///
+    /// [`UiRefused::Full`] when every slot in the pool is taken — the
+    /// same refusal a full arena gives, for the same reason. A ninth
+    /// simultaneous field is a different kind of interface.
+    pub fn make_field(&mut self, node: NodeId) -> Result<(), UiRefused> {
+        if !self.is_live(node) {
+            return Err(UiRefused::MissingParent);
+        }
+        if self.field_slot(node).is_some() {
+            return Ok(());
+        }
+        let free = self
+            .fields
+            .iter()
+            .position(|slot| slot.owner.is_none())
+            .ok_or(UiRefused::Full)?;
+        if let Some(slot) = self.fields.get_mut(free) {
+            *slot = field::Field::EMPTY;
+            slot.owner = Some(node);
+        }
+        Ok(())
+    }
+
+    /// What a field holds, as bytes.
+    ///
+    /// **Always valid UTF-8**, because insertion encodes a whole scalar
+    /// and deletion steps whole characters. [`None`] for a node that is
+    /// not a field.
+    #[must_use]
+    pub fn field_text(&self, node: NodeId) -> Option<&[u8]> {
+        self.fields
+            .get(self.field_slot(node)?)
+            .map(field::Field::text)
+    }
+
+    /// Where the cursor sits in a field, in bytes from the start.
+    #[must_use]
+    pub fn field_cursor(&self, node: NodeId) -> Option<u8> {
+        self.fields
+            .get(self.field_slot(node)?)
+            .map(field::Field::cursor)
+    }
+
+    /// Which pool slot a node owns, if any.
+    fn field_slot(&self, node: NodeId) -> Option<usize> {
+        self.fields.iter().position(|slot| slot.owner == Some(node))
     }
 
     /// The style `node` currently holds; `None` for stale ids.

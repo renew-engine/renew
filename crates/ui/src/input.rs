@@ -37,6 +37,18 @@ pub enum UiEvent {
     PointerPressed,
     /// The primary button came up at the current pointer position.
     PointerReleased,
+    /// One character was typed, as a Unicode scalar value.
+    ///
+    /// **A scalar, not a key.** Shift, layout, dead keys and IME
+    /// composition are the window system's answer and differ per
+    /// platform and per person; a tree deriving a character from a key
+    /// code would be wrong differently everywhere. The driver decides
+    /// what a keystroke means, exactly as it decides what a pointer
+    /// position is. A value that is not a scalar is ignored rather than
+    /// refused — this event carries no failure back to anyone.
+    TextEntered { ch: u32 },
+    /// One editing operation, from the closed set the tree understands.
+    Edit { op: crate::EditOp },
 }
 
 /// One decision the tree made, queued for the host to drain.
@@ -67,6 +79,15 @@ pub(crate) struct Interaction {
     /// different nodes, or the same nodes in a different order, hold
     /// different folds even after their queues drain.
     pub decisions: u64,
+    /// Accepted edits, ever — the ordinal a replay compares.
+    pub edits: u64,
+    /// A running fold of every accepted edit, in order.
+    ///
+    /// **The stream, not the contents.** Folding a field's bytes on
+    /// every keystroke is linear in its length for a property this
+    /// already has: two runs that typed different things, or the same
+    /// things in a different order, differ here.
+    pub edit_fold: u64,
     /// Decisions dropped because the output queue was full. Absorbed
     /// into the digest: a dropped decision is a behaviour difference,
     /// and a counter is how it stays visible rather than silent.
@@ -85,6 +106,18 @@ impl Ui {
     /// every toolkit lets a mis-click be dragged off a button.
     pub fn handle(&mut self, event: UiEvent) {
         match event {
+            // Typing reaches the focused node and nothing else. A tree
+            // with no focus, or a focus that is not a field, hears the
+            // event and does nothing — which is what a keystroke into a
+            // page with no cursor in it should do.
+            UiEvent::TextEntered { ch } => {
+                if let Some(ch) = char::from_u32(ch) {
+                    self.edit_focused(|field| field.insert(ch), u64::from(ch as u32));
+                }
+            }
+            UiEvent::Edit { op } => {
+                self.edit_focused(|field| field.edit(op), op.code());
+            }
             UiEvent::PointerMoved { x, y } => {
                 self.interaction.pointer = (x, y);
             }
@@ -131,6 +164,37 @@ impl Ui {
     /// the count.
     pub fn drain_outputs(&mut self) -> impl Iterator<Item = UiOutput> + '_ {
         self.outputs.drain(..)
+    }
+
+    /// Apply an edit to the focused field, folding it if it changed.
+    ///
+    /// **Only a change is folded.** A left arrow at the start of a field
+    /// does nothing, and an event that does nothing must not move the
+    /// fingerprint — otherwise two runs that reached the same field
+    /// contents by different amounts of cursor-bumping would disagree.
+    fn edit_focused(&mut self, apply: impl FnOnce(&mut crate::field::Field) -> bool, token: u64) {
+        let Some(focus) = self.interaction.focus else {
+            return;
+        };
+        let Some(slot) = self.field_slot(focus) else {
+            return;
+        };
+        let Some(field) = self.fields.get_mut(slot) else {
+            return;
+        };
+        if !apply(field) {
+            return;
+        }
+        self.interaction.edits = self.interaction.edits.saturating_add(1);
+        // The node is folded with the token so that the same keystroke
+        // into two different fields is two different histories.
+        let node = u64::from(focus.index());
+        self.interaction.edit_fold = self
+            .interaction
+            .edit_fold
+            .rotate_left(7)
+            .wrapping_add(node.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+            .wrapping_add(token);
     }
 
     /// The node under the pointer, against the rectangles of the last
@@ -197,6 +261,8 @@ impl Ui {
         hash.absorb_u64(self.interaction.activations)
             .absorb_u64(self.interaction.decisions)
             .absorb_u64(self.interaction.overflowed)
+            .absorb_u64(self.interaction.edits)
+            .absorb_u64(self.interaction.edit_fold)
     }
 
     /// The deepest, latest node containing the point, or `None` when
