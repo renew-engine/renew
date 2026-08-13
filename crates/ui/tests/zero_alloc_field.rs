@@ -70,6 +70,16 @@ fn text_entry_stays_heap_silent() {
             // reaching for memory.
             let ch = if round % 3 == 0 { 'é' } else { 'w' };
             ui.handle(UiEvent::TextEntered { ch: u32::from(ch) });
+            // **The window must work, and be seen to.** The first
+            // version typed and then deleted, so the field was empty
+            // every round and the gate would have gone quiet rather than
+            // red if focus or the pool broke. Its sibling states the
+            // policy: the measured window works something that genuinely
+            // churns, and the test asserts the churn happened.
+            assert!(
+                !ui.field_text(node).unwrap_or_default().is_empty(),
+                "round {round}: the keystroke did not reach the field"
+            );
             ui.handle(UiEvent::Edit { op: EditOp::Left });
             ui.handle(UiEvent::Edit { op: EditOp::Delete });
             ui.handle(UiEvent::Edit { op: EditOp::End });
@@ -83,7 +93,13 @@ fn text_entry_stays_heap_silent() {
         // assumed to survive.
         let scratch = ui.insert(root).expect("room");
         ui.make_field(scratch).expect("a free slot");
+        assert_eq!(
+            ui.field_text(scratch),
+            Some(&[][..]),
+            "a freshly claimed slot must be readable and empty"
+        );
         assert!(ui.remove(scratch));
+        assert_eq!(ui.field_text(scratch), None, "and gone once removed");
     });
     verdict.expect("text entry stays heap-silent");
 }

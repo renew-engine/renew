@@ -72,6 +72,21 @@ fn type_into(ui: &mut Ui, node: NodeId, mut hash: StateHash) -> Option<StateHash
         ui.handle(event);
         hash = ui.absorb(hash);
     }
+    // **The typed events must have landed somewhere.** Without this the
+    // whole block is decoration: replace the claim above with a no-op
+    // and all ten events reach a node that is not a field, doing
+    // nothing, while the reported count still says twenty-seven and
+    // every cross-target leg still agrees. Anything that moves focus off
+    // this node before the typing — a restyle, a layout change, a change
+    // to focus-follows-activation — would empty the only part of this
+    // scenario that exercises text, silently.
+    //
+    // The script leaves "hi" less its last character plus an inserted
+    // one, so a non-empty field is the evidence the events were taken.
+    let typed = ui.field_text(node)?;
+    if typed.is_empty() {
+        return None;
+    }
     Some(hash)
 }
 
