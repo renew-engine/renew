@@ -275,6 +275,14 @@ impl Socket {
 ///
 /// The layout is sixteen bytes of address, then the port, big-endian: two
 /// tags compare and sort without anyone deciding a byte order twice.
+///
+/// **This is an encoding, not a hash.** [`peer_addr`] reverses it, which
+/// is what lets a tag travel somewhere that may not name an address and
+/// come back somewhere that must send to one — a roster of peers, for
+/// instance, carried by a crate forbidden from knowing what an address
+/// is. Nothing is lost but the distinction between a v4 address and its
+/// v4-mapped spelling, which is the distinction this function exists to
+/// erase.
 #[must_use]
 pub fn peer_tag(addr: SocketAddr) -> [u8; 18] {
     let mut tag = [0u8; 18];
@@ -305,4 +313,46 @@ pub fn peer_tag(addr: SocketAddr) -> [u8; 18] {
         room.copy_from_slice(&addr.port().to_be_bytes());
     }
     tag
+}
+
+/// The address a tag names: the inverse of [`peer_tag`].
+///
+/// **A tag has to be routable again or it is only half a value.** The
+/// tag exists so an endpoint can cross a boundary that may not name a
+/// `SocketAddr` — a peer roster, a save file, a wire format written by a
+/// crate denied any path to this one. Every one of those hands the bytes
+/// back to something that must then *send* to them, and without this
+/// function that last step is impossible: the roster arrives, and there
+/// is nowhere to put a datagram.
+///
+/// **A v4-mapped tag comes back as a v4 address, not as the mapped v6
+/// spelling it was stored in.** That is deliberate and it is load-bearing
+/// rather than cosmetic: a socket bound to a v4 address refuses a send to
+/// `::ffff:a.b.c.d` on several platforms, so returning the literal
+/// sixteen bytes would produce an address that compares equal to the
+/// right one and cannot be sent to. Unfolding here means the pair reads
+/// as an encoding in one direction and a canonicalisation in the other:
+///
+/// - `peer_tag(peer_addr(t)) == t` for every tag, exactly.
+/// - `peer_addr(peer_tag(a)) == a` for every address already canonical,
+///   and equal to its v4 form for one written as v4-mapped v6 — which is
+///   the same folding [`peer_tag`] does, observed from the other side.
+///
+/// Both properties are held by tests rather than by this paragraph.
+#[must_use]
+pub fn peer_addr(tag: [u8; 18]) -> SocketAddr {
+    let mut address = [0u8; 16];
+    if let Some(bytes) = tag.get(..16) {
+        address.copy_from_slice(bytes);
+    }
+    let mut port = [0u8; 2];
+    if let Some(bytes) = tag.get(16..18) {
+        port.copy_from_slice(bytes);
+    }
+    let v6 = Ipv6Addr::from(address);
+    // The same fold `peer_tag` applies on the way in, so a round trip
+    // through the pair is idempotent rather than alternating between two
+    // spellings of one peer.
+    let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
+    SocketAddr::new(ip, u16::from_be_bytes(port))
 }
