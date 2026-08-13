@@ -141,7 +141,7 @@ reason = "The scale-factor and keyboard arms of the winit event translation. Nei
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1046]
+lines = [1096]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
 [[exempt]]
