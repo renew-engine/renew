@@ -121,12 +121,12 @@ reason = "The arm that clears a voice whose sound index is missing. A voice is o
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [86, 87, 88, 1201, 1202, 1203, 1204, 1210, 1211, 1213, 1214, 1215, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 1228, 1229, 1230, 1231, 1232, 1233, 1234, 1235, 1236, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1253, 1257, 1258]
+lines = [86, 87, 88, 1208, 1209, 1210, 1211, 1217, 1218, 1220, 1221, 1222, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1245, 1258, 1260, 1264, 1265]
 reason = "The emit half of determinism: it spawns a cargo run per pinned scenario and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. It is not untested — the three determinism legs execute every line of it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved into digests_from_output, which has five cases beside it. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero."
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [1264]
+lines = [1271]
 reason = "The comparison refusing to start because no workspace root is above it. Every other subcommand carries the same arm and reaches it the same way -- never, from a test, because a test runs inside the workspace it is testing. Reaching it would mean invoking the binary from outside any cargo project, which is a property of where a caller stands rather than of anything this code does."
 
 [[exempt]]
@@ -189,3 +189,8 @@ reason = "Five arms no input can drive. `render` cannot be called with the termi
 file = "crates/net/src/desync.rs"
 lines = [128, 133, 167]
 reason = "The error arms of `write!` inside a Display implementation. A formatter over a String cannot fail, so these propagate an error that never arrives; they exist because Display must be total and `?` is the only honest way to write that. Every one of them sits on a line whose successful path is covered by the JSON tests."
+
+[[exempt]]
+file = "crates/net/src/bin/net_digest.rs"
+lines = [99, 100, 105, 106, 195, 231, 245]
+reason = "The scenario binary's refusal arms, and the three ways it gives up. The argument guard exists so a drifted pinned-run row fails loudly rather than running a different scenario under the same name; the not-enough-ticks arm exists so a short run can never print a digest every target would agree on. Each is a message and a nonzero exit, and an exiting process does not reliably flush its coverage counters, so exercising them under instrumentation would hinge on an exit-path detail rather than prove anything — the same reason the widget tree's witness exempts its own pair. The remaining three are the give-up paths inside the run: a session that ends mid-scenario, and the pump ceiling running out. Reaching any of them means the scenario deadlocked, which is a failure the lane reports by exit code; a test that drove one would be asserting that a deliberately survivable link is not survivable. The happy path is executed by the lane's own run of the binary."
