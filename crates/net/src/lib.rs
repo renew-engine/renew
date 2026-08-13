@@ -74,12 +74,16 @@
 // the root instead of at the two functions that obviously need them.
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+mod chat;
 mod desync;
 mod params;
 mod peer;
 mod session;
 pub mod wire;
 
+pub use chat::{
+    CHAT_INBOX, CHAT_OUTBOX, CHAT_REPEATS, ChatChannel, ChatRefusal, ChatStats, Message,
+};
 pub use desync::{DesyncReport, DesyncReportJson};
 pub use params::{MIN_PEERS, ParamsError, SessionParams, ValidParams};
 pub use peer::{PeerId, PeerSet, peers};

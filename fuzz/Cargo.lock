@@ -115,6 +115,9 @@ dependencies = [
 [[package]]
 name = "renew-net"
 version = "0.1.1"
+dependencies = [
+ "renew-frame",
+]
 
 [[package]]
 name = "renew-trace"
