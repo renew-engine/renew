@@ -16,10 +16,12 @@ let text = renew_trace::write(&trace);   // a String, never a file
 let same = renew_trace::parse(&text)?;   // a Trace, or a refusal naming a line
 ```
 
-- `TraceEvent` — nine variants for the nine things a trace can say
-  happened, plus `TraceKey` and `TraceButton` for the two closed name
-  sets. Plain data: nothing here interprets an event, because what an
-  event *means* belongs to whatever is replaying it.
+- `TraceEvent` — one variant per thing a trace can say happened
+  (counted by the writer's exhaustive match, not by a number here, which
+  went stale twice), plus `TraceKey`, `TraceButton` and
+  `TraceTouchPhase` for the closed name sets. Plain data: nothing here
+  interprets an event, because what an event *means* belongs to
+  whatever is replaying it.
 - `FiniteF64` / `FiniteF32` — a float as its IEEE-754 bit pattern, with
   infinities and NaNs refused at construction. This is what makes the
   writer total.
@@ -121,6 +123,7 @@ reproducible from a tick index by anything.
 renew-trace <version> sample=<name> ticks=<u64> timestep_ns=<u64> budget=<u32> [key=value…]
 e <tick> key <name> <down|up> [repeat]
 e <tick> pointer <hex-f64> <hex-f64>
+e <tick> motion <hex-f64> <hex-f64>
 e <tick> button <name|other:<u16>> <down|up>
 e <tick> wheel <hex-f32> <hex-f32>
 e <tick> focus <in|out>
@@ -129,6 +132,7 @@ e <tick> resize <u32> <u32>
 e <tick> scale <hex-f64>
 e <tick> redraw
 e <tick> close
+e <tick> touch <u64> <start|move|end|cancel> <hex-f64> <hex-f64>
 ```
 
 The version is positional and first, because a reader has to know how to
@@ -309,20 +313,25 @@ writing the call and watching the lint fire.
   built in memory and a trace read from a file are held to one
   implementation of them, so a recorder cannot produce something its own
   reader would refuse.
-- **A header carries no version field.** There is exactly one format
-  version, so storing a number that can only hold one value would be
-  machinery pretending to be a decision. When a reader accepts an older
-  version as well as its own, whether rewriting preserves the older claim
-  becomes a real question, and it should be answered by a visible addition
-  rather than by a field that quietly upgraded every file it touched.
+- **A parsed header carries no version field, and the writer has one
+  spelling.** The version lives in the file's first line and gates what
+  the reader accepts; once read, a trace is just events, and writing it
+  back emits the current version — the canonical spelling, visibly, the
+  way leading zeros are respelled. The question that rule opened — that
+  a file claiming an old version while using a new word would be
+  laundered into a legitimate-looking newer file — is closed at the
+  reader instead: a word newer than the file's own claim is refused on
+  its line, naming both versions. Words predating the rule (`motion`
+  entered while the version stayed 0, `text` as it moved to 1) are
+  deliberately not gated, because genuinely mislabeled files from those
+  eras were blessed by the readers of their day.
 
 ## Known gaps
 
-- **No fuzz target.** The property suite hands the reader generated
-  garbage with a fixed budget, which is a small fuzzer and not a
-  substitute for one. A real target needs tooling this tree does not have
-  yet, and one is required before this crate could be considered stable —
-  which is among the reasons it has not been promoted.
+- **Fuzzing is scheduled, not gating.** The `trace_parse` fuzz target
+  and its committed corpus run on the scheduled lane; the property suite
+  remains the fixed-budget stand-in inside the merge gates. Promotion to
+  stable still owes a longer dedicated campaign.
 - **Nothing here records or replays.** This crate is the codec: the
   recorder that produces a trace from a live session, the driver that
   feeds one back into a run, and the command-line face of both are

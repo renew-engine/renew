@@ -20,7 +20,7 @@
 
 use renew_trace::{TraceError, TraceErrorKind, parse};
 
-const HEADER: &str = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+const HEADER: &str = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
 /// The refusal a text produces. Every test goes through here, so a text
 /// that is unexpectedly *accepted* fails loudly rather than quietly
@@ -881,6 +881,159 @@ fn a_resize_that_is_not_two_numbers_is_refused() {
         &TraceErrorKind::IntegerTooLarge {
             field: "the width (u32)",
             text: "4294967296".to_string(),
+        }
+    );
+}
+
+/// The touch phase table, probed to the file's own doctrine: a stranger,
+/// a word one character short of a legal one, a word one character past
+/// one, a case variant, and a word from a neighbouring table. An
+/// exact-match reader refuses all five; a prefix-matching one would
+/// accept `startx`, and that is the reader these near misses exist to
+/// unmask.
+#[test]
+fn a_touch_phase_is_refused_by_exact_match_not_by_distance() {
+    for text in ["hover", "star", "startx", "Start", "down"] {
+        let error = refuse_event(&format!(
+            "e 0 touch 1 {text} 0x0000000000000000 0x0000000000000000"
+        ));
+        assert_eq!(error.line(), 2, "{text}");
+        assert_eq!(
+            error.kind(),
+            &TraceErrorKind::NotATouchPhase {
+                text: text.to_string(),
+            },
+            "{text}"
+        );
+    }
+    let shown = refuse_event("e 0 touch 1 hover 0x0000000000000000 0x0000000000000000");
+    assert_eq!(
+        shown.to_string(),
+        "line 2: a touch phase is `start`, `move`, `end` or `cancel`, found `hover`"
+    );
+}
+
+/// A touch line's fields are as mandatory as anyone else's: the line
+/// stops early by name, a finger is digits, a coordinate is a bit
+/// pattern, and nothing may follow.
+#[test]
+fn a_touch_line_is_held_to_its_grammar() {
+    assert_eq!(
+        refuse_event("e 0 touch").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the finger id"
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch 1").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "`start`, `move`, `end` or `cancel`"
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch 1 start").kind(),
+        &TraceErrorKind::LineEndsEarly {
+            expected: "the touch's x coordinate"
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch one start 0x0000000000000000 0x0000000000000000").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the finger id",
+            text: "one".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch 18446744073709551616 start 0x0000000000000000 0x0000000000000000")
+            .kind(),
+        &TraceErrorKind::IntegerTooLarge {
+            field: "the finger id",
+            text: "18446744073709551616".to_string(),
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch 1 start 1.5 0x0000000000000000").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the touch's x coordinate",
+            text: "1.5".to_string(),
+            digits: 16,
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 touch 1 start 0x0000000000000000 0x0000000000000000 extra").kind(),
+        &TraceErrorKind::TrailingText {
+            text: "extra".to_string(),
+        }
+    );
+}
+
+/// A file that claims a version older than a word it uses is refused on
+/// the word's line, naming both versions: laundering the claim into a
+/// canonical newer header would forge a file the producer never wrote.
+#[test]
+fn a_touch_line_under_a_disclaiming_header_is_refused_by_version() {
+    let error = refuse(
+        "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n\
+         e 0 touch 1 start 0x0000000000000000 0x0000000000000000\n",
+    );
+    assert_eq!(error.line(), 2);
+    assert_eq!(
+        error.kind(),
+        &TraceErrorKind::EventFromANewerFormat {
+            kind: "touch".to_string(),
+            introduced: 2,
+            declared: 1,
+        }
+    );
+    assert!(error.to_string().contains("claims version 1"), "{error}");
+}
+
+/// The motion line's payloads are held to the same rules as the
+/// pointer's — pinned separately because for two format versions no
+/// malformed motion line existed anywhere in this suite, and the
+/// refusal edges a suite never takes are the ones free to rot.
+#[test]
+fn a_motion_line_is_held_to_its_grammar() {
+    assert_eq!(
+        refuse_event("e 0 motion 1.5 0x0000000000000000").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the pointer's rightward movement",
+            text: "1.5".to_string(),
+            digits: 16,
+        }
+    );
+    assert_eq!(
+        refuse_event("e 0 motion 0x0000000000000000 0xfff0000000000000").kind(),
+        &TraceErrorKind::NonFinite {
+            field: "the pointer's downward movement",
+            text: "0xfff0000000000000".to_string(),
+        }
+    );
+}
+
+/// The touch line's second coordinate is as guarded as its first: a
+/// probe that stopped at x would leave y's refusal edge untaken.
+#[test]
+fn a_touch_line_with_a_bad_second_coordinate_is_refused() {
+    assert_eq!(
+        refuse_event("e 0 touch 1 start 0x0000000000000000 nope").kind(),
+        &TraceErrorKind::NotAHexPattern {
+            field: "the touch's y coordinate",
+            text: "nope".to_string(),
+            digits: 16,
+        }
+    );
+}
+
+/// A typed character that is not even a number is a number refusal,
+/// not a text refusal — the field's two gates fire in order.
+#[test]
+fn a_typed_character_that_is_not_a_number_is_refused_as_one() {
+    assert_eq!(
+        refuse_event("e 0 text abc").kind(),
+        &TraceErrorKind::NotADecimalInteger {
+            field: "the typed character",
+            text: "abc".to_string(),
         }
     );
 }

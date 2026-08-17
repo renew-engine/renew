@@ -16,24 +16,31 @@
 //! a conversation rather than a rewrite of this constant.
 
 use renew_trace::{
-    FiniteF32, FiniteF64, Trace, TraceButton, TraceEvent, TraceHeader, TraceKey, parse, write,
+    FiniteF32, FiniteF64, Trace, TraceButton, TraceEvent, TraceHeader, TraceKey, TraceTouchPhase,
+    parse, write,
 };
 
-/// A short session: focus arrives, the pointer moves to (1.5, -2.0), the
-/// left button goes down and up, the wheel turns half a notch back, a key
-/// is held with one auto-repeat, the window is resized and rescaled, a
-/// redraw is served, and the window is closed after the final step.
+/// A short session: focus arrives, the pointer moves to (1.5, -2.0) and
+/// the device reports the same motion raw, the left button goes down and
+/// up, the wheel turns half a notch back, a key is held with one
+/// auto-repeat and an `a` is typed on its release tick, a native button
+/// goes down while a finger lands at the pointer's spot, the window is
+/// resized and rescaled, a redraw is served, and the window is closed
+/// after the final step.
 const GOLDEN: &str = "\
-renew-trace 1 sample=input_echo ticks=12 timestep_ns=16666667 budget=5 seed=3 extent=640x480
+renew-trace 2 sample=input_echo ticks=12 timestep_ns=16666667 budget=5 seed=3 extent=640x480
 e 0 focus in
 e 1 pointer 0x3ff8000000000000 0xc000000000000000
+e 1 motion 0x3ff8000000000000 0xc000000000000000
 e 1 button left down
 e 2 button left up
 e 2 wheel 0x00000000 0xbf000000
 e 3 key arrow-right down
 e 4 key arrow-right down repeat
 e 5 key arrow-right up
+e 5 text 97
 e 6 button other:9 down
+e 6 touch 7 start 0x3ff8000000000000 0xc000000000000000
 e 7 resize 1280 720
 e 7 scale 0x4000000000000000
 e 8 redraw
@@ -74,6 +81,13 @@ fn golden_trace() -> Trace {
             ),
             (
                 1,
+                TraceEvent::PointerMotion {
+                    dx: FiniteF64::new(1.5).unwrap(),
+                    dy: FiniteF64::new(-2.0).unwrap(),
+                },
+            ),
+            (
+                1,
                 TraceEvent::PointerButton {
                     button: TraceButton::Left,
                     pressed: true,
@@ -96,11 +110,21 @@ fn golden_trace() -> Trace {
             (3, arrow_right(true, false)),
             (4, arrow_right(true, true)),
             (5, arrow_right(false, false)),
+            (5, TraceEvent::TextEntered { ch: 97 }),
             (
                 6,
                 TraceEvent::PointerButton {
                     button: TraceButton::Other(9),
                     pressed: true,
+                },
+            ),
+            (
+                6,
+                TraceEvent::Touch {
+                    finger: 7,
+                    phase: TraceTouchPhase::Started,
+                    x: FiniteF64::new(1.5).unwrap(),
+                    y: FiniteF64::new(-2.0).unwrap(),
                 },
             ),
             (
@@ -133,21 +157,27 @@ fn the_reader_produces_the_golden_trace_from_the_golden_text() {
     assert_eq!(parse(GOLDEN), Ok(golden_trace()));
 }
 
-/// Every line shape the format defines appears above. If a tenth is ever
+/// Every line shape the format defines appears above. Whenever one is
 /// added, this is where it has to show up too — a shape with no golden
-/// line is a shape whose text nobody has ever read.
+/// line is a shape whose text nobody has ever read. (`motion` and
+/// `text` were each exactly that for as long as they had existed:
+/// defined, written, and absent from this file while its name promised
+/// otherwise.)
 #[test]
 fn the_golden_text_exercises_every_line_shape() {
     for shape in [
         " key ",
         " pointer ",
+        " motion ",
         " button ",
         " wheel ",
         " focus ",
+        " text ",
         " resize ",
         " scale ",
         " redraw",
         " close",
+        " touch ",
     ] {
         assert!(GOLDEN.contains(shape), "no {shape} line in the golden text");
     }
@@ -232,7 +262,7 @@ fn shifting_the_tick_column_produces_a_different_trace() {
 fn shifting_the_last_event_past_the_end_is_refused() {
     let past_end = GOLDEN.replace("e 12 close", "e 13 close");
     let error = parse(&past_end).unwrap_err();
-    assert_eq!(error.line(), 14);
+    assert_eq!(error.line(), 17);
     assert_eq!(
         error.kind(),
         &renew_trace::TraceErrorKind::TickBeyondHeader {

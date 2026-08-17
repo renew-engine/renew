@@ -1,4 +1,4 @@
-renew-trace 1 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=0
+renew-trace 2 sample=input_echo ticks=20 timestep_ns=16666667 budget=5 seed=0
 e 1 key arrow-right down
 e 1 pointer 0x4029000000000000 0x4041400000000000
 e 3 key arrow-down down

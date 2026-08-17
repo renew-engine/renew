@@ -26,8 +26,8 @@
 //! Adding a variant breaks the build there, and the test at the bottom of
 //! this file then fails until this translation learns the new shape.
 
-use renew_event::{KeyCode, PointerButton, WindowEvent};
-use renew_trace::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+use renew_event::{KeyCode, PointerButton, TouchPhase, WindowEvent};
+use renew_trace::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
 
 /// An event this build cannot write down.
 ///
@@ -155,8 +155,40 @@ pub fn to_trace(event: WindowEvent) -> Result<TraceEvent, Unencodable> {
             Some(scale) => TraceEvent::ScaleFactorChanged { scale },
             None => return Err(Unencodable { shape }),
         },
+        WindowEvent::Touch {
+            finger,
+            phase,
+            x,
+            y,
+        } => match (FiniteF64::new(x), FiniteF64::new(y)) {
+            (Some(x), Some(y)) => TraceEvent::Touch {
+                finger,
+                phase: phase_to_trace(phase),
+                x,
+                y,
+            },
+            _ => return Err(Unencodable { shape }),
+        },
     };
     Ok(encoded)
+}
+
+const fn phase_to_trace(phase: TouchPhase) -> TraceTouchPhase {
+    match phase {
+        TouchPhase::Started => TraceTouchPhase::Started,
+        TouchPhase::Moved => TraceTouchPhase::Moved,
+        TouchPhase::Ended => TraceTouchPhase::Ended,
+        TouchPhase::Cancelled => TraceTouchPhase::Cancelled,
+    }
+}
+
+const fn phase_from_trace(phase: TraceTouchPhase) -> TouchPhase {
+    match phase {
+        TraceTouchPhase::Started => TouchPhase::Started,
+        TraceTouchPhase::Moved => TouchPhase::Moved,
+        TraceTouchPhase::Ended => TouchPhase::Ended,
+        TraceTouchPhase::Cancelled => TouchPhase::Cancelled,
+    }
 }
 
 const fn key_from_trace(code: TraceKey) -> KeyCode {
@@ -234,6 +266,17 @@ pub const fn from_trace(event: TraceEvent) -> WindowEvent {
         },
         TraceEvent::ScaleFactorChanged { scale } => WindowEvent::ScaleFactorChanged {
             scale: scale.value(),
+        },
+        TraceEvent::Touch {
+            finger,
+            phase,
+            x,
+            y,
+        } => WindowEvent::Touch {
+            finger,
+            phase: phase_from_trace(phase),
+            x: x.value(),
+            y: y.value(),
         },
     }
 }
@@ -328,8 +371,8 @@ mod tests {
     /// Every key and every button survives the round trip.
     ///
     /// The shape list carries one key and one button, which is all it
-    /// needs to prove each *shape* is encodable — but it leaves twelve
-    /// key arms and five button arms unexercised, and a rename in either
+    /// needs to prove each *shape* is encodable — but it leaves every
+    /// other key arm and button arm unexercised, and a rename in either
     /// of the two mirrored vocabularies would go unnoticed. Naming them
     /// here is the only way to cover the mapping rather than the shape.
     #[test]
@@ -425,6 +468,55 @@ mod tests {
                 shape: shape_index(&scale)
             })
         );
+
+        // The fourth: a touch with a coordinate that is not a number.
+        let touch = WindowEvent::Touch {
+            finger: 1,
+            phase: renew_event::TouchPhase::Moved,
+            x: f64::NAN,
+            y: 0.0,
+        };
+        assert_eq!(
+            to_trace(touch),
+            Err(Unencodable {
+                shape: shape_index(&touch)
+            })
+        );
+    }
+
+    /// Every phase survives the round trip, and finger identity rides
+    /// along untouched — the shape list carries one phase, which proves
+    /// the shape and leaves three arms of the mirrored tables unread.
+    #[test]
+    fn every_touch_phase_maps_back_to_itself() {
+        use renew_event::TouchPhase;
+        for phase in [
+            TouchPhase::Started,
+            TouchPhase::Moved,
+            TouchPhase::Ended,
+            TouchPhase::Cancelled,
+        ] {
+            let event = WindowEvent::Touch {
+                finger: u64::MAX,
+                phase,
+                x: 4.5,
+                y: -0.0,
+            };
+            let encoded = to_trace(event).expect("every phase encodes");
+            let decoded = from_trace(encoded);
+            assert_eq!(decoded, event, "{phase:?} did not survive");
+            // Float equality is sign-blind at zero, so the assertion
+            // above would pass an implementation that lost the sign.
+            // Crossing back into the trace vocabulary compares bit
+            // patterns — its equality is on the bits by construction —
+            // so a stripped sign on any field turns this red, with no
+            // branch a test cannot take.
+            let re_encoded = to_trace(decoded).expect("the decoded event re-encodes");
+            assert_eq!(
+                re_encoded, encoded,
+                "{phase:?}: a bit changed crossing back"
+            );
+        }
     }
 
     /// The refusal says what a reader can act on.

@@ -94,6 +94,15 @@ pub enum TraceErrorKind {
     UnknownKeyword { keyword: String },
     /// An event line naming a kind of event this reader does not know.
     UnknownEventKind { kind: String },
+    /// An event kind newer than the version the file itself claims. The
+    /// reader knows the word; the file's header disclaims it, and a
+    /// header that lies about its vocabulary sends every older reader
+    /// into the wrong refusal.
+    EventFromANewerFormat {
+        kind: String,
+        introduced: u32,
+        declared: u64,
+    },
     /// Text after the end of a complete line.
     TrailingText { text: String },
     /// A number written in something other than plain ASCII digits.
@@ -122,6 +131,8 @@ pub enum TraceErrorKind {
     NotAPressedState { text: String },
     /// A focus state that is neither `in` nor `out`.
     NotAFocusState { text: String },
+    /// A touch phase outside the four the format names.
+    NotATouchPhase { text: String },
     /// Something other than the literal `repeat` where only that may go.
     NotTheRepeatFlag { text: String },
     /// A tick earlier than the one before it.
@@ -197,7 +208,16 @@ impl fmt::Display for TraceErrorKind {
             ),
             Self::UnknownEventKind { kind } => write!(
                 f,
-                "unknown event kind `{kind}`; this reader knows key, pointer, button, wheel, focus, resize, scale, redraw and close. The line is refused rather than skipped: if this file really is a version this reader accepts, then this reader's table is the thing that is incomplete",
+                "unknown event kind `{kind}`; this reader knows key, pointer, motion, button, wheel, focus, text, resize, scale, redraw, close and touch. The line is refused rather than skipped: if this file really is a version this reader accepts, then this reader's table is the thing that is incomplete",
+                kind = shown(kind),
+            ),
+            Self::EventFromANewerFormat {
+                kind,
+                introduced,
+                declared,
+            } => write!(
+                f,
+                "the event kind `{kind}` was introduced in format version {introduced}, and this file claims version {declared}; a header that disclaims its own vocabulary sends every older reader into the wrong refusal, so the claim is the thing to fix",
                 kind = shown(kind),
             ),
             Self::TrailingText { text } => write!(
@@ -256,6 +276,11 @@ impl fmt::Display for TraceErrorKind {
                 "focus is `in` or `out`, found `{text}`",
                 text = shown(text),
             ),
+            Self::NotATouchPhase { text } => write!(
+                f,
+                "a touch phase is `start`, `move`, `end` or `cancel`, found `{text}`",
+                text = shown(text),
+            ),
             Self::NotTheRepeatFlag { text } => write!(
                 f,
                 "the only thing a key line may carry after its state is the literal `repeat`, found `{text}`",
@@ -312,7 +337,7 @@ mod tests {
     ///
     /// The three tables below are one list split in three, because a
     /// single one outgrew what a person reads in one sitting. Together
-    /// they hold every refusal this crate can produce — 11 + 6 + 8 — and
+    /// they hold every refusal this crate can produce — 11 + 8 + 9 — and
     /// each says so, so a refusal added without a message here fails a
     /// count rather than going out into the world unread.
     fn all_of(count: usize, cases: Vec<(TraceErrorKind, &str)>) {
@@ -399,7 +424,7 @@ mod tests {
     #[test]
     fn every_refusal_about_a_line_shape_says_what_was_expected() {
         all_of(
-            6,
+            8,
             vec![
                 (
                     TraceErrorKind::UnknownKeyword {
@@ -411,7 +436,15 @@ mod tests {
                     TraceErrorKind::UnknownEventKind {
                         kind: "gamepad".to_string(),
                     },
-                    "unknown event kind `gamepad`; this reader knows key, pointer, button, wheel, focus, resize, scale, redraw and close. The line is refused rather than skipped: if this file really is a version this reader accepts, then this reader's table is the thing that is incomplete",
+                    "unknown event kind `gamepad`; this reader knows key, pointer, motion, button, wheel, focus, text, resize, scale, redraw, close and touch. The line is refused rather than skipped: if this file really is a version this reader accepts, then this reader's table is the thing that is incomplete",
+                ),
+                (
+                    TraceErrorKind::EventFromANewerFormat {
+                        kind: "touch".to_string(),
+                        introduced: 2,
+                        declared: 1,
+                    },
+                    "the event kind `touch` was introduced in format version 2, and this file claims version 1; a header that disclaims its own vocabulary sends every older reader into the wrong refusal, so the claim is the thing to fix",
                 ),
                 (
                     TraceErrorKind::TrailingText {
@@ -432,6 +465,12 @@ mod tests {
                     "focus is `in` or `out`, found `yes`",
                 ),
                 (
+                    TraceErrorKind::NotATouchPhase {
+                        text: "hover".to_string(),
+                    },
+                    "a touch phase is `start`, `move`, `end` or `cancel`, found `hover`",
+                ),
+                (
                     TraceErrorKind::NotTheRepeatFlag {
                         text: "again".to_string(),
                     },
@@ -446,8 +485,15 @@ mod tests {
     #[test]
     fn every_refusal_about_a_value_says_what_was_expected() {
         all_of(
-            8,
+            9,
             vec![
+                (
+                    TraceErrorKind::NotTypedText {
+                        field: "the typed character",
+                        text: "13".to_string(),
+                    },
+                    "the typed character is not typed text: `13` is a surrogate, past the last code point, or a control character",
+                ),
                 (
                     TraceErrorKind::NotADecimalInteger {
                         field: "the tick",
@@ -565,6 +611,11 @@ mod tests {
             TraceErrorKind::UnknownEventKind {
                 kind: hostile.to_string(),
             },
+            TraceErrorKind::EventFromANewerFormat {
+                kind: hostile.to_string(),
+                introduced: 2,
+                declared: 1,
+            },
             TraceErrorKind::TrailingText {
                 text: hostile.to_string(),
             },
@@ -591,10 +642,17 @@ mod tests {
             TraceErrorKind::UnknownButton {
                 name: hostile.to_string(),
             },
+            TraceErrorKind::NotTypedText {
+                field: "the typed character",
+                text: hostile.to_string(),
+            },
             TraceErrorKind::NotAPressedState {
                 text: hostile.to_string(),
             },
             TraceErrorKind::NotAFocusState {
+                text: hostile.to_string(),
+            },
+            TraceErrorKind::NotATouchPhase {
                 text: hostile.to_string(),
             },
             TraceErrorKind::NotTheRepeatFlag {
@@ -603,7 +661,7 @@ mod tests {
         ];
         assert_eq!(
             quoting.len(),
-            17,
+            20,
             "every refusal that quotes the file belongs in this table"
         );
         for kind in quoting {

@@ -44,13 +44,16 @@ impl Default for WindowConfig {
 /// Re-exported here too, so existing paths keep working.
 ///
 /// **Note for anyone extending the translation below.** This crate is
-/// now *downstream* of enums it used to define, and they are
-/// `#[non_exhaustive]` — an attribute that binds downstream crates and
-/// never the defining one. Constructing these values is still fine, and
-/// is all the translation does. **Matching on one exhaustively is not**,
-/// and will fail to compile with a message that looks baffling until you
-/// remember the types moved.
-pub use crate::event::{EVERY_EVENT_SHAPE, KeyCode, PointerButton, WindowEvent, shape_index};
+/// *downstream* of enums it used to define. They are deliberately
+/// exhaustive — the `#[non_exhaustive]` they once carried is gone
+/// (2026-08-04, recorded at the defining crate) — so a new variant
+/// breaks every downstream match at compile time, which is the
+/// vocabulary's designed forcing function. Constructing values here is
+/// unaffected; a match elsewhere failing to compile after a variant
+/// lands is that design working, not an accident to suppress.
+pub use crate::event::{
+    EVERY_EVENT_SHAPE, KeyCode, PointerButton, TouchPhase, WindowEvent, shape_index,
+};
 
 /// What the app tells the loop each iteration.
 ///
@@ -798,9 +801,30 @@ fn translate_event(event: &winit::event::WindowEvent) -> Option<WindowEvent> {
             WindowEvent::Wheel { dx, dy }
         }
         We::Focused(focused) => WindowEvent::Focused(*focused),
+        We::Touch(touch) => WindowEvent::Touch {
+            finger: touch.id,
+            phase: translate_touch_phase(touch.phase),
+            x: touch.location.x,
+            y: touch.location.y,
+        },
         _ => return None,
     };
     Some(translated)
+}
+
+/// One phase for each of the windowing library's four. Two payload
+/// fields are deliberately not carried, named here so neither drop is
+/// implicit: pressure (platform-variant, no consumer) and the device
+/// id — which no event at this seam keeps, the seam-wide convention,
+/// so finger identity is per-window rather than per-device.
+fn translate_touch_phase(phase: winit::event::TouchPhase) -> crate::event::TouchPhase {
+    use winit::event::TouchPhase as Wp;
+    match phase {
+        Wp::Started => crate::event::TouchPhase::Started,
+        Wp::Moved => crate::event::TouchPhase::Moved,
+        Wp::Ended => crate::event::TouchPhase::Ended,
+        Wp::Cancelled => crate::event::TouchPhase::Cancelled,
+    }
 }
 
 /// The characters one OS event committed, if any.
@@ -1125,6 +1149,40 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         });
         assert_eq!(wheel, Some(WindowEvent::Wheel { dx: 0.0, dy: 16.0 }));
+    }
+
+    /// A touch translates whole — finger identity, phase, and position —
+    /// and the pressure field is dropped by the named arm, not lost.
+    /// Driven through the full event path because, unlike a key event,
+    /// the windowing library's touch payload is constructible.
+    #[test]
+    fn a_touch_translates_with_its_finger_identity_and_phase() {
+        use winit::event::{DeviceId, Touch, TouchPhase as Wp, WindowEvent as We};
+        let touched = translate_event(&We::Touch(Touch {
+            device_id: DeviceId::dummy(),
+            phase: Wp::Started,
+            location: winit::dpi::PhysicalPosition::new(120.5, 96.25),
+            force: None,
+            id: 7,
+        }));
+        assert_eq!(
+            touched,
+            Some(WindowEvent::Touch {
+                finger: 7,
+                phase: TouchPhase::Started,
+                x: 120.5,
+                y: 96.25,
+            })
+        );
+        // Every phase maps to its namesake; four in, four out, no fold.
+        for (theirs, ours) in [
+            (Wp::Started, TouchPhase::Started),
+            (Wp::Moved, TouchPhase::Moved),
+            (Wp::Ended, TouchPhase::Ended),
+            (Wp::Cancelled, TouchPhase::Cancelled),
+        ] {
+            assert_eq!(translate_touch_phase(theirs), ours);
+        }
     }
 
     #[test]

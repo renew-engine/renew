@@ -28,7 +28,7 @@ pub(crate) const MAGIC: &str = "renew-trace";
 /// format however small the addition looked, and the number has to move
 /// with it. The alternative is a reader that blames its own table for a
 /// file it should simply have been told it was too old to read.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Fields are separated by exactly one space. Not by whitespace: a tab or
 /// a run of spaces is a different file from the one someone meant to
@@ -54,7 +54,8 @@ pub(crate) const RESERVED_KEYS: &[&str] = &[SAMPLE, TICKS, TIMESTEP_NS, BUDGET];
 /// The keyword every event line begins with.
 pub(crate) const EVENT: &str = "e";
 
-/// The nine kinds of event, one per line shape.
+/// The kinds of event, one token per line shape. Counted by the writer's
+/// exhaustive match rather than by a number here, which went stale twice.
 pub(crate) const KEY: &str = "key";
 pub(crate) const POINTER: &str = "pointer";
 
@@ -75,6 +76,30 @@ pub(crate) const RESIZE: &str = "resize";
 pub(crate) const SCALE: &str = "scale";
 pub(crate) const REDRAW: &str = "redraw";
 pub(crate) const CLOSE: &str = "close";
+/// A finger on the screen: its id, then its phase, then where.
+pub(crate) const TOUCH: &str = "touch";
+
+/// The version that introduced the `touch` word. The reader refuses a
+/// touch line in a file claiming an older version: a file that uses a
+/// word its own header disclaims is lying to every older reader —
+/// which would refuse it with the wrong message, blaming its own
+/// vocabulary table instead of being told the file is too new. The
+/// words that predate this constant are deliberately *not* gated:
+/// `motion` entered the format while the version number stayed 0 and
+/// `text` while it moved to 1, so genuinely mislabeled files from
+/// those eras exist and were blessed by the readers of their day;
+/// refusing them now would orphan recordings this format already
+/// accepted. From `touch` onward, every new word carries its
+/// introduction version and the reader holds files to it.
+pub(crate) const TOUCH_VERSION: u32 = 2;
+
+/// A touch's four phases. Not `down`/`up`: a touch that moved or was
+/// cancelled is neither, and borrowing the key words would leave the
+/// two extra states as strangers in someone else's vocabulary.
+pub(crate) const TOUCH_START: &str = "start";
+pub(crate) const TOUCH_MOVE: &str = "move";
+pub(crate) const TOUCH_END: &str = "end";
+pub(crate) const TOUCH_CANCEL: &str = "cancel";
 
 /// A key or a button is `down` or `up` — never `pressed`, `true` or `1`,
 /// which are three ways to say the same thing and therefore two ways too

@@ -12,7 +12,7 @@ use crate::event::{FiniteF32, FiniteF64, TraceEvent};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FOCUS, FOCUS_IN, FOCUS_OUT, FORMAT_VERSION,
     HEX_PREFIX, KEY, MAGIC, MOTION, POINTER, REDRAW, REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR,
-    TEXT, TICKS, TIMESTEP_NS, UP, WHEEL,
+    TEXT, TICKS, TIMESTEP_NS, TOUCH, UP, WHEEL,
 };
 use crate::trace::Trace;
 
@@ -103,6 +103,17 @@ fn event_line(tick: u64, event: &TraceEvent) -> String {
         }
         TraceEvent::RedrawRequested => format!("{EVENT} {tick} {REDRAW}"),
         TraceEvent::CloseRequested => format!("{EVENT} {tick} {CLOSE}"),
+        TraceEvent::Touch {
+            finger,
+            phase,
+            x,
+            y,
+        } => format!(
+            "{EVENT} {tick} {TOUCH} {finger} {phase} {x} {y}",
+            phase = phase.name(),
+            x = hex_f64(x),
+            y = hex_f64(y),
+        ),
     }
 }
 
@@ -132,7 +143,7 @@ fn hex_f32(value: FiniteF32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{event_line, write};
-    use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+    use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
     use crate::trace::{Trace, TraceHeader};
 
     fn line(event: TraceEvent) -> String {
@@ -148,7 +159,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
+            "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
         );
     }
 
@@ -163,7 +174,7 @@ mod tests {
         let trace = Trace::new(header, Vec::new()).unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 1 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
+            "renew-trace 2 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
         );
     }
 
@@ -240,6 +251,33 @@ mod tests {
         );
         assert_eq!(line(TraceEvent::RedrawRequested), "e 4 redraw");
         assert_eq!(line(TraceEvent::CloseRequested), "e 4 close");
+        assert_eq!(
+            line(TraceEvent::Touch {
+                finger: 7,
+                phase: TraceTouchPhase::Started,
+                x: FiniteF64::new(1.5).unwrap(),
+                y: FiniteF64::new(-2.0).unwrap(),
+            }),
+            "e 4 touch 7 start 0x3ff8000000000000 0xc000000000000000"
+        );
+        // Every phase word, because the four are one enum and a rename
+        // in either table would otherwise surface only on a real trace.
+        for (phase, word) in [
+            (TraceTouchPhase::Started, "start"),
+            (TraceTouchPhase::Moved, "move"),
+            (TraceTouchPhase::Ended, "end"),
+            (TraceTouchPhase::Cancelled, "cancel"),
+        ] {
+            assert_eq!(
+                line(TraceEvent::Touch {
+                    finger: 0,
+                    phase,
+                    x: FiniteF64::new(0.0).unwrap(),
+                    y: FiniteF64::new(0.0).unwrap(),
+                }),
+                format!("e 4 touch 0 {word} 0x0000000000000000 0x0000000000000000")
+            );
+        }
     }
 
     /// A bit pattern is padded to the full width of its type. Negative
@@ -276,7 +314,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 1 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
+            "renew-trace 2 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
              e 0 redraw\n\
              e 0 focus in\n\
              e 0 text 97\n\

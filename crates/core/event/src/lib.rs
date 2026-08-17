@@ -1,7 +1,9 @@
 //! The engine's event vocabulary: what happened, as plain data.
 //!
-//! Three enums, the list of every event shape, and the index function
-//! over it. No dependencies, no operating system, nothing that can make
+//! The event enums, the list of every event shape, and the index
+//! function over it — the enums counted by their declarations rather
+//! than by a number here, which went stale the day a fourth arrived.
+//! No dependencies, no operating system, nothing that can make
 //! anything happen — a set of types describing an event, and only that.
 //!
 //! # Contract
@@ -123,6 +125,45 @@ pub enum WindowEvent {
         /// The Unicode scalar value typed.
         ch: u32,
     },
+    /// A finger touched the screen, moved on it, or left it.
+    ///
+    /// **The finger is the identity.** Its id is unique for as long as
+    /// that finger stays in contact and may be recycled afterwards —
+    /// the platform's contract, restated here because two fingers with
+    /// one id would make multi-touch unexpressible. Which finger is
+    /// "the pointer" is a driver's decision, not this vocabulary's:
+    /// the seam reports what happened and nothing is synthesized.
+    ///
+    /// [`TouchPhase::Cancelled`] is deliberately not `Ended`: the
+    /// operating system stole the gesture (an edge swipe, a palm
+    /// rejection), and a consumer that treats an interrupted press as
+    /// a completed one must write that decision where it can be read.
+    ///
+    /// Coordinates follow [`Self::PointerMoved`]'s convention —
+    /// physical position within the window. Pressure is deliberately
+    /// absent: it is platform-variant payload with no consumer yet,
+    /// and adding it later is additive where dropping it silently
+    /// would not have been.
+    Touch {
+        /// Which finger, unique while it stays in contact.
+        finger: u64,
+        phase: TouchPhase,
+        x: f64,
+        y: f64,
+    },
+}
+
+/// Where in its life a touch is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TouchPhase {
+    /// The finger arrived.
+    Started,
+    /// It moved while in contact.
+    Moved,
+    /// It left the screen; the gesture completed.
+    Ended,
+    /// The system took the gesture away; nothing completed.
+    Cancelled,
 }
 
 /// Physical keys, the subset current consumers need — grows additively.
@@ -216,6 +257,12 @@ pub const EVERY_EVENT_SHAPE: &[WindowEvent] = &[
     WindowEvent::Wheel { dx: 0.0, dy: 1.0 },
     WindowEvent::Focused(true),
     WindowEvent::TextEntered { ch: 0x61 },
+    WindowEvent::Touch {
+        finger: 1,
+        phase: TouchPhase::Started,
+        x: 120.0,
+        y: 96.0,
+    },
 ];
 
 /// Where a shape sits in [`EVERY_EVENT_SHAPE`].
@@ -247,6 +294,7 @@ pub const fn shape_index(event: &WindowEvent) -> usize {
         WindowEvent::Wheel { .. } => 8,
         WindowEvent::Focused(_) => 9,
         WindowEvent::TextEntered { .. } => 10,
+        WindowEvent::Touch { .. } => 11,
     }
 }
 
