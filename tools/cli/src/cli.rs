@@ -75,6 +75,19 @@ impl Command {
         matches!(self, Self::Run | Self::Record | Self::Replay)
     }
 
+    /// Whether the subcommand runs cargo over the whole workspace and so
+    /// answers to `--features` and `--all-features` in cargo's own sense,
+    /// with the envelope's `coverage` field repeating what was enabled.
+    ///
+    /// `Lint` belongs here because `cargo clippy` compiles what it lints:
+    /// a default-feature run leaves feature-gated code unexamined and
+    /// still reports clean, which is the same silent gap the coverage
+    /// statement exists to expose on the other verbs.
+    #[must_use]
+    pub const fn takes_workspace_features(self) -> bool {
+        matches!(self, Self::Build | Self::Test | Self::Bench | Self::Lint)
+    }
+
     /// The sample-side flag this subcommand translates to, and the
     /// `renew` flag whose value fills it.
     ///
@@ -86,6 +99,19 @@ impl Command {
         match self {
             Self::Record => Some(("--output", "--record-trace")),
             Self::Replay => Some(("--input", "--replay-trace")),
+            _ => None,
+        }
+    }
+
+    /// How a missing trace flag is named when the parser reports it —
+    /// the flag together with the placeholder for the value it wants,
+    /// because [`ParseError::MissingOption`] renders the option text
+    /// whole and appends nothing to it.
+    #[must_use]
+    pub const fn trace_flag_text(self) -> Option<&'static str> {
+        match self {
+            Self::Record => Some("--output <path>"),
+            Self::Replay => Some("--input <path>"),
             _ => None,
         }
     }
@@ -123,6 +149,13 @@ impl Command {
 }
 
 /// A successfully parsed invocation.
+// Each bool mirrors one on/off flag of the command line, and the lint is
+// counting the flag set, not a design problem: folding them into state
+// enums would invent structure the command line does not have.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one bool per command-line switch; the struct mirrors the flag set"
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub command: Command,
@@ -179,8 +212,8 @@ pub struct Invocation {
     /// architecture, while on an iOS simulator the loader does it, by
     /// refusing outright a binary whose platform does not match.
     pub target: Option<String>,
-    /// Run, record and replay: cargo features to build the sample with,
-    /// each occurrence kept.
+    /// Run, record, replay — and the verbs that compile the workspace
+    /// (build, test, bench, lint): cargo features, each occurrence kept.
     ///
     /// **Cargo's own vocabulary, showing through deliberately.** A
     /// sample's optional capabilities are cargo features, and the one
@@ -190,10 +223,21 @@ pub struct Invocation {
     /// specifically built to avoid needing (samples are discovered, never
     /// written down).
     ///
+    /// On the workspace subcommands the flag means what it means to
+    /// cargo, and the envelope's `coverage` field repeats what was
+    /// enabled — because a default build can leave feature-gated code
+    /// uncompiled while reporting success, and a verdict that does not
+    /// say what it covered invites exactly that misreading.
+    ///
     /// Repeating accumulates, on the same reasoning as
     /// [`Invocation::compare`]: two occurrences mean the union, and
     /// keeping the last is how a caller silently loses one.
     pub features: Vec<String>,
+    /// The workspace-compiling verbs only — build, test, bench, lint
+    /// (parse enforces): enable every feature of every workspace member,
+    /// the coverage-complete mode a verifier asks for when "green over
+    /// what, exactly?" must have the widest answer this tool can give.
+    pub all_features: bool,
 }
 
 /// What parsing decided: run a subcommand, or show usage on request.
@@ -246,8 +290,11 @@ impl fmt::Display for ParseError {
                 write!(f, "unexpected argument `{argument}`")
             }
             Self::MissingValue(option) => write!(f, "`{option}` needs a value"),
+            // The option text is whole, placeholder included: appending
+            // one here read as `--emit <path> or --compare <path>...
+            // <path>` for the one case whose option is not a bare flag.
             Self::MissingOption { command, option } => {
-                write!(f, "`{command}` needs `{option} <path>`")
+                write!(f, "`{command}` needs `{option}`")
             }
             Self::MissingSample(command) => {
                 write!(f, "`{command}` needs a sample to run")
@@ -304,6 +351,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut verify = false;
     let mut compare: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
+    let mut all_features = false;
     let mut emit: Option<String> = None;
     let mut target: Option<String> = None;
     let mut sample: Option<String> = None;
@@ -363,6 +411,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let names = rest.next().ok_or(ParseError::MissingValue("--features"))?;
                 features.push(names.clone());
             }
+            "--all-features" => all_features = true,
             // Its own flag rather than `--output`, which belongs to
             // `record` and means "write the input you saw here". This
             // writes a target's digests, and a reader who had to know the
@@ -429,6 +478,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         trace.as_ref().map(|(flag, _)| *flag),
         sample.as_deref(),
         &features,
+        all_features,
     )?;
     check_file_combination(
         command,
@@ -456,6 +506,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             emit,
             target,
             features,
+            all_features,
         })),
         None => Err(ParseError::NoCommand),
     }
@@ -524,7 +575,8 @@ fn check_determinism_mode(
     // emits when it meant to compare.
     if emit.is_some() && !compare.is_empty() {
         return Err(ParseError::UnexpectedArgument(
-            "--emit with --compare: one run either reports a target or holds several              against each other"
+            "--emit with --compare: one run either reports a target or holds several \
+             against each other"
                 .to_string(),
         ));
     }
@@ -578,25 +630,25 @@ fn check_file_combination(
             } else {
                 "asset-inspect"
             },
-            option: "--pack",
+            option: "--pack <path>",
         });
     }
     if is_pack && from.is_none() {
         return Err(ParseError::MissingOption {
             command: "asset-pack",
-            option: "--from",
+            option: "--from <path>",
         });
     }
     if is_compile && from.is_none() {
         return Err(ParseError::MissingOption {
             command: "ui-compile",
-            option: "--from",
+            option: "--from <path>",
         });
     }
     if is_compile && out.is_none() {
         return Err(ParseError::MissingOption {
             command: "ui-compile",
-            option: "--out",
+            option: "--out <path>",
         });
     }
     Ok(())
@@ -620,13 +672,26 @@ fn check_combination(
     trace: Option<&'static str>,
     sample: Option<&str>,
     features: &[String],
+    all_features: bool,
 ) -> Result<(), ParseError> {
-    if !features.is_empty() && !command.is_some_and(Command::takes_sample) {
-        // Features name how a *sample* is built. `renew build` builds the
-        // whole workspace and `renew test` runs all of it, so a feature
-        // there would have to mean something this tool has not decided —
-        // refusing is what keeps the flag's meaning single.
+    // Features belong to the subcommands that hand them to cargo: the
+    // sample-takers, where they name a sample's optional capabilities,
+    // and the workspace verbs, where they mean exactly what cargo means
+    // and the envelope's `coverage` field repeats what was enabled. This
+    // rule once refused the workspace verbs because a feature there "would
+    // have to mean something this tool has not decided" — the coverage
+    // statement is that decision, made.
+    let takes_features =
+        command.is_some_and(|named| named.takes_sample() || named.takes_workspace_features());
+    if !features.is_empty() && !takes_features {
         return Err(ParseError::UnexpectedArgument("--features".to_string()));
+    }
+    // The everything switch is for the workspace verbs alone: a sample
+    // names its features because starting it *is* choosing a shape, where
+    // a verifier asking for the widest build is asking a workspace-wide
+    // question.
+    if all_features && !command.is_some_and(Command::takes_workspace_features) {
+        return Err(ParseError::UnexpectedArgument("--all-features".to_string()));
     }
     if smoke && command != Some(Command::Bench) {
         // The flag belongs to exactly one subcommand; anywhere else it is
@@ -652,13 +717,13 @@ fn check_combination(
         // without it, and guessing a path would be worse than refusing.
         return Err(ParseError::MissingOption {
             command: "coverage",
-            option: "--report",
+            option: "--report <path>",
         });
     }
     // The path is the whole input for these two, exactly as `--report`
     // is for coverage: there is nothing to record to, or replay from.
     if let Some(named) = command
-        && let Some((expected, _)) = named.trace_flags()
+        && let Some(expected) = named.trace_flag_text()
         && trace.is_none()
     {
         return Err(ParseError::MissingOption {
@@ -712,8 +777,12 @@ pub fn usage() -> String {
         "  --target <triple> (determinism --emit only) build and run the pinned\n",
         "                    simulations for this triple, through cargo's runner\n",
         "                    mechanism where one is configured\n",
-        "  --features <list> (run, record, replay; repeatable) cargo features to build\n",
-        "                    the sample with, e.g. `--features window` for a window\n",
+        "  --features <list> (run, record, replay, build, test, bench, lint;\n",
+        "                    repeatable) cargo features, e.g. `--features window` for\n",
+        "                    a window; the envelope's `coverage` field repeats what\n",
+        "                    was enabled\n",
+        "  --all-features    (build, test, bench, lint) enable every feature of every\n",
+        "                    member -- the coverage-complete build a verifier asks for\n",
         "  --help, -h        print this text; `renew help` does the same\n",
         "\nEverything after `run <sample>` goes to the sample untouched, including\n",
         "flags renew itself knows: `renew run hello_triangle --json` gives the sample\n",
@@ -760,6 +829,7 @@ mod tests {
             emit: None,
             target: None,
             features: Vec::new(),
+            all_features: false,
         }
     }
 
@@ -1085,7 +1155,7 @@ mod tests {
             parse(&arguments(&["coverage"])),
             Err(ParseError::MissingOption {
                 command: "coverage",
-                option: "--report",
+                option: "--report <path>",
             })
         );
     }
@@ -1202,14 +1272,14 @@ mod tests {
             parse(&arguments(&["ui-compile", "--out", "menu.uib"])),
             Err(ParseError::MissingOption {
                 command: "ui-compile",
-                option: "--from",
+                option: "--from <path>",
             })
         );
         assert_eq!(
             parse(&arguments(&["ui-compile", "--from", "menu.ui"])),
             Err(ParseError::MissingOption {
                 command: "ui-compile",
-                option: "--out",
+                option: "--out <path>",
             })
         );
     }
@@ -1218,7 +1288,9 @@ mod tests {
     fn a_trace_subcommand_without_its_flag_is_rejected() {
         for command in [Command::Record, Command::Replay] {
             let name = command.name();
-            let (flag, _) = command.trace_flags().expect("both carry a flag");
+            // The reported text, which carries the flag's placeholder —
+            // the message renders the option whole and appends nothing.
+            let flag = command.trace_flag_text().expect("both carry a flag");
             assert_eq!(
                 parse(&arguments(&[name, "input_echo"])),
                 Err(ParseError::MissingOption {
@@ -1430,17 +1502,47 @@ mod tests {
         );
     }
 
-    /// Features name how a sample is built, so a subcommand that builds
-    /// no sample refuses them rather than ignoring them.
+    /// Features belong to the subcommands that hand them to cargo — the
+    /// sample-takers and the workspace verbs — and are refused everywhere
+    /// else rather than ignored.
     #[test]
-    fn features_are_refused_where_no_sample_is_built() {
-        for command in ["build", "test", "lint", "coverage"] {
+    fn features_reach_cargo_where_cargo_is_what_runs() {
+        // Lint is here because clippy compiles what it lints.
+        for command in ["build", "test", "bench", "lint"] {
+            let parsed = parse(&arguments(&["--features", "window", command]));
+            assert!(
+                matches!(&parsed, Ok(Parsed::Run(invocation)) if invocation.features == ["window"]),
+                "{command} accepts --features now that the envelope states coverage: {parsed:?}"
+            );
+        }
+        for command in ["coverage", "check", "doctor", "modules"] {
             assert_eq!(
                 parse(&arguments(&["--features", "window", command])),
                 Err(ParseError::UnexpectedArgument("--features".to_string())),
-                "{command} builds no sample, so the flag has no meaning there"
+                "{command} runs no cargo verb that answers to features"
             );
         }
+    }
+
+    /// The everything switch is for the workspace verbs alone.
+    #[test]
+    fn all_features_belongs_to_the_workspace_verbs() {
+        for command in ["build", "test", "bench", "lint"] {
+            let parsed = parse(&arguments(&["--all-features", command]));
+            assert!(
+                matches!(&parsed, Ok(Parsed::Run(invocation)) if invocation.all_features),
+                "{command} accepts --all-features: {parsed:?}"
+            );
+        }
+        assert_eq!(
+            parse(&arguments(&["--all-features", "run", "glide"])),
+            Err(ParseError::UnexpectedArgument("--all-features".to_string())),
+            "a sample names its features; the everything switch is a workspace question"
+        );
+        assert_eq!(
+            parse(&arguments(&["--all-features", "doctor"])),
+            Err(ParseError::UnexpectedArgument("--all-features".to_string()))
+        );
     }
 
     #[test]
@@ -1565,11 +1667,51 @@ mod tests {
             ParseError::MissingValue("--report"),
             ParseError::MissingOption {
                 command: "coverage",
-                option: "--report",
+                option: "--report <path>",
             },
             ParseError::MissingSample("record"),
         ] {
             assert!(!error.to_string().is_empty(), "{error:?}");
+        }
+    }
+
+    /// The rendered wording, not merely its non-emptiness: these strings
+    /// are what a person reads at exit 2, and a message that appends a
+    /// placeholder to an option that already carries one — `--emit
+    /// <path> or --compare <path>... <path>` — is a defect no
+    /// structural comparison can see.
+    #[test]
+    fn a_missing_option_names_the_option_exactly_once() {
+        assert_eq!(
+            ParseError::MissingOption {
+                command: "coverage",
+                option: "--report <path>",
+            }
+            .to_string(),
+            "`coverage` needs `--report <path>`"
+        );
+        let rendered = ParseError::MissingOption {
+            command: "determinism",
+            option: "--emit <path> or --compare <path>...",
+        }
+        .to_string();
+        assert_eq!(
+            rendered,
+            "`determinism` needs `--emit <path> or --compare <path>...`"
+        );
+        assert!(
+            !rendered.contains("... <path>"),
+            "the option text is whole; nothing is appended to it: {rendered}"
+        );
+        // The one production site whose option is not a literal: the
+        // trace flags. Whole text there too, or the message tells a
+        // caller to pass a flag without saying it takes a value.
+        for (line, expected) in [
+            (["record", "input_echo"], "`record` needs `--output <path>`"),
+            (["replay", "input_echo"], "`replay` needs `--input <path>`"),
+        ] {
+            let error = parse(&arguments(&line)).expect_err("the flag is required");
+            assert_eq!(error.to_string(), expected);
         }
     }
 }

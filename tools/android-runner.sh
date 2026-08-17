@@ -12,9 +12,10 @@
 #   * a push or exec failure exits non-zero and adb's own message goes
 #     to this script's stderr, so the step fails as plumbing rather than
 #     as disagreement. Whether a caller shows that message is the
-#     caller's business: `renew determinism --emit` currently prints its
-#     own summary and not the child's stderr, so on that path the
-#     distinguishing detail is in the job log rather than in the error;
+#     caller's business: `renew determinism --emit` carries a failing
+#     child's stderr into its own report — the envelope's `stderr` field
+#     under `--json`, ahead of the summary otherwise — so this message
+#     reaches a reader of the error rather than only the job log;
 #   * the program's stdout is this script's stdout, and nothing else is
 #     written there, because the caller parses its last JSON line. Not
 #     byte-for-byte verbatim: adb is known to inject carriage returns

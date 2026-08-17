@@ -32,26 +32,54 @@ fn scratch(tag: &str) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// A report as `--emit` writes one, with the digests the caller names.
-fn report(arch: &str, digest: &str) -> String {
+/// A report as `--emit` writes one, with every digest the pinned list
+/// binds set to the value the caller names.
+///
+/// The whole set, not a stand-in: the comparison holds each leg against
+/// the pinned digest names, so a leg carrying one invented name is a leg
+/// that ran a fraction of the claim, and these tests are about the
+/// wiring rather than about that refusal. Each report claims its own
+/// (os, arch) row — a duplicated row is one target reported twice, and
+/// the comparison refuses that as inconclusive.
+fn report(os: &str, arch: &str, digest: &str) -> String {
+    let names = renew_cli::determinism::expected_digest_names();
+    let digests: Vec<String> = names
+        .iter()
+        .map(|name| format!("    \"{name}\": \"{digest}\""))
+        .collect();
     format!(
         concat!(
-            "{{\n  \"schema_version\": 1,\n  \"os\": \"any\",\n  \"arch\": \"{}\",\n",
-            "  \"toolchain\": \"rustc 1.0.0\",\n  \"digests\": {{\n",
-            "    \"sim/one\": \"{}\"\n  }}\n}}\n"
+            "{{\n  \"schema_version\": 1,\n  \"os\": \"{}\",\n  \"arch\": \"{}\",\n",
+            "  \"toolchain\": \"rustc 1.0.0\",\n  \"digests\": {{\n{}\n  }}\n}}\n"
         ),
-        arch, digest
+        os,
+        arch,
+        digests.join(",\n")
     )
+}
+
+/// One digest name the pinned list binds, for a test that needs to name
+/// one in an assertion. Empty if the list is somehow empty — which the
+/// assertion using it then reports as the mismatch it is.
+fn a_pinned_digest_name() -> String {
+    renew_cli::determinism::expected_digest_names()
+        .first()
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Write three reports and hand them to the comparison.
 fn compare_three(tag: &str, digests: [&str; 3]) -> std::io::Result<Output> {
     let dir = scratch(tag)?;
-    let arches = ["x86_64", "x86_64", "aarch64"];
+    let rows = [
+        ("linux", "x86_64"),
+        ("windows", "x86_64"),
+        ("macos", "aarch64"),
+    ];
     let mut paths = Vec::new();
-    for (index, (digest, arch)) in digests.iter().zip(arches).enumerate() {
+    for (index, (digest, (os, arch))) in digests.iter().zip(rows).enumerate() {
         let path = dir.join(format!("leg{index}.json"));
-        fs::write(&path, report(arch, digest))?;
+        fs::write(&path, report(os, arch, digest))?;
         paths.push(path.to_string_lossy().into_owned());
     }
     let mut arguments = vec!["determinism".to_string()];
@@ -87,7 +115,7 @@ fn one_disagreeing_report_exits_non_zero_and_names_the_digest() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(text.contains("sim/one"), "{text}");
+    assert!(text.contains(&a_pinned_digest_name()), "{text}");
     assert!(text.contains("0xdef"), "{text}");
 }
 
@@ -122,7 +150,7 @@ fn the_json_envelope_names_the_subcommand_that_ran() {
 
     let dir = scratch("envelope-json").expect("scratch");
     let path = dir.join("leg.json");
-    fs::write(&path, report("x86_64", "0xabc")).expect("write");
+    fs::write(&path, report("linux", "x86_64", "0xabc")).expect("write");
     let json = run(&[
         "--json",
         "determinism",

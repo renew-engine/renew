@@ -75,12 +75,14 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.json,
         ),
         Command::Run | Command::Record | Command::Replay => run_sample(invocation),
-        // Dispatched explicitly, and the wildcard below is why it has to
-        // be. A subcommand that falls through to `run_steps` runs an
-        // empty step list and reports `ok` in exit code and envelope
-        // alike — for a gate whose whole purpose is refusing to pass
-        // vacuously, being forgotten here is the worst available bug and
-        // the compiler cannot catch it.
+        // Every arm is named, and the last one is named rather than a
+        // wildcard on purpose. A subcommand that fell through to
+        // `run_steps` would run an empty step list and report `ok` in
+        // exit code and envelope alike — for a gate whose whole purpose
+        // is refusing to pass vacuously, being forgotten here is the
+        // worst available bug. Spelled out, the compiler catches it: a
+        // new variant fails to compile here exactly as it does in
+        // `plan::steps`.
         Command::Determinism => {
             if invocation.compare.is_empty() {
                 run_determinism_emit(
@@ -92,13 +94,47 @@ fn run(invocation: &Invocation) -> ExitCode {
                 run_determinism_compare(&invocation.compare, invocation.json)
             }
         }
-        _ => run_steps(invocation),
+        Command::Configure | Command::Build | Command::Test | Command::Bench | Command::Lint => {
+            run_steps(invocation)
+        }
     }
 }
 
+/// The one wording for the tree-less refusal, shared by every subcommand
+/// that anchors: since a standalone `[package]` manifest anchors as its
+/// own workspace-of-one root, this says the walk ran and found no
+/// manifest of either shape.
+///
+/// It is deliberately *not* the sentence for the two neighbouring
+/// failures, which are different claims and carry their own words: a
+/// manifest that is there and could not be read or named, and a working
+/// directory the process could not read at all. Folding any of them into
+/// this one would report a search that never happened.
+const ROOTLESS_MESSAGE: &str =
+    "no Cargo.toml declaring a workspace or a package was found above the current directory";
+
 fn run_check(json_mode: bool) -> ExitCode {
     let started = Instant::now();
-    let outcome = gather_findings();
+    let root = match workspace_root() {
+        Ok(root) => root,
+        Err(why) => {
+            return check_error(
+                json_mode,
+                started,
+                &why,
+                None,
+                vec![failure_entry("classification-failed", &why)],
+            );
+        }
+    };
+    if let Err((refusal, kind)) =
+        require_engine_workspace(&root, "check runs the engine's own structure rules")
+    {
+        let entry = failure_entry(refusal.code, &refusal.message);
+        let target = kind.map(|kind| target_field(kind, &root));
+        return check_error(json_mode, started, &refusal.message, target, vec![entry]);
+    }
+    let outcome = gather_findings(&root);
     match outcome {
         Ok(findings) => {
             let ok = findings.is_empty();
@@ -115,23 +151,19 @@ fn run_check(json_mode: bool) -> ExitCode {
                         ])
                     })
                     .collect();
-                let document = Value::Object(vec![
-                    ("schema_version".to_string(), Value::Number(1)),
-                    ("command".to_string(), Value::String("check".to_string())),
-                    (
-                        "status".to_string(),
-                        Value::String(if ok { "ok" } else { "failed" }.to_string()),
-                    ),
-                    ("exit_code".to_string(), Value::Number(i64::from(!ok))),
-                    (
-                        "duration_ms".to_string(),
-                        Value::Number(duration_ms(started)),
-                    ),
-                    ("stdout".to_string(), Value::String(String::new())),
-                    ("stderr".to_string(), Value::String(String::new())),
-                    ("findings".to_string(), Value::Array(items)),
-                ]);
-                emit_stdout_line(&document.render());
+                let mut fields = envelope_base(
+                    "check",
+                    if ok { "ok" } else { "failed" },
+                    i64::from(!ok),
+                    started,
+                    "",
+                );
+                fields.push(("findings".to_string(), Value::Array(items)));
+                // The guard above proved the tree is the engine's, on the
+                // same root this run then checked — never re-derived.
+                fields.push(target_field(workspace::TargetKind::EngineWorkspace, &root));
+                fields.push(("failures".to_string(), Value::Array(Vec::new())));
+                emit_stdout_line(&Value::Object(fields).render());
             } else {
                 let mut report = String::new();
                 for finding in &findings {
@@ -153,35 +185,72 @@ fn run_check(json_mode: bool) -> ExitCode {
         }
         Err(message) => {
             // A check that cannot run has failed — never pass vacuously.
-            if json_mode {
-                // Same shape as the success path: `findings` is always
-                // present, so consumers never see conditional keys.
-                let document = Value::Object(vec![
-                    ("schema_version".to_string(), Value::Number(1)),
-                    ("command".to_string(), Value::String("check".to_string())),
-                    ("status".to_string(), Value::String("error".to_string())),
-                    ("exit_code".to_string(), Value::Number(1)),
-                    (
-                        "duration_ms".to_string(),
-                        Value::Number(duration_ms(started)),
-                    ),
-                    ("stdout".to_string(), Value::String(String::new())),
-                    ("stderr".to_string(), Value::String(message)),
-                    ("findings".to_string(), Value::Array(Vec::new())),
-                ]);
-                emit_stdout_line(&document.render());
-                return ExitCode::FAILURE;
-            }
-            eprintln!("error: {message}");
-            ExitCode::FAILURE
+            // The failure here is the check's own machinery (metadata,
+            // rule evaluation), past classification, so no refusal code
+            // applies — but the invocation ended before a verdict, which
+            // is what `aborted` names everywhere else, so it says so
+            // here too rather than leaving a consumer that dispatches on
+            // the code with nothing. The envelope keeps the
+            // classification the guard proved.
+            check_error(
+                json_mode,
+                started,
+                &message,
+                Some(target_field(workspace::TargetKind::EngineWorkspace, &root)),
+                vec![failure_entry("aborted", &message)],
+            )
         }
     }
 }
 
-fn gather_findings() -> Result<Vec<structure::Finding>, String> {
-    let root = workspace_root()
-        .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
-    let metadata = cargo_metadata(&root)?;
+/// The modules error envelope: same shape as the success path — `modules`
+/// and `failures` always present, never conditional — with the reason in
+/// `stderr`, any refusal class in `failures`, and whatever classification
+/// the caller had established in `target`.
+fn modules_error(
+    json_mode: bool,
+    started: Instant,
+    message: &str,
+    target: Option<(String, Value)>,
+    failures: Vec<Value>,
+) -> ExitCode {
+    if json_mode {
+        let mut fields = envelope_base("modules", "error", 1, started, &format!("{message}\n"));
+        fields.push(("modules".to_string(), Value::Array(Vec::new())));
+        fields.extend(target);
+        fields.push(("failures".to_string(), Value::Array(failures)));
+        emit_stdout_line(&Value::Object(fields).render());
+        return ExitCode::FAILURE;
+    }
+    eprintln!("error: {message}");
+    ExitCode::FAILURE
+}
+
+/// The check's error envelope: same shape as the success path — `findings`
+/// and `failures` always present, never conditional — with the reason in
+/// `stderr`, any refusal class in `failures`, and whatever classification
+/// the caller had established in `target`.
+fn check_error(
+    json_mode: bool,
+    started: Instant,
+    message: &str,
+    target: Option<(String, Value)>,
+    failures: Vec<Value>,
+) -> ExitCode {
+    if json_mode {
+        let mut fields = envelope_base("check", "error", 1, started, &format!("{message}\n"));
+        fields.push(("findings".to_string(), Value::Array(Vec::new())));
+        fields.extend(target);
+        fields.push(("failures".to_string(), Value::Array(failures)));
+        emit_stdout_line(&Value::Object(fields).render());
+        return ExitCode::FAILURE;
+    }
+    eprintln!("error: {message}");
+    ExitCode::FAILURE
+}
+
+fn gather_findings(root: &Path) -> Result<Vec<structure::Finding>, String> {
+    let metadata = cargo_metadata(root)?;
     let mut findings = findings_from_metadata(&metadata)?;
     // The lint-file rule is the one rule that has to look at the disk, so
     // it is applied here rather than inside the pure rule set, and it is
@@ -264,24 +333,10 @@ fn run_asset_pack(from: &str, pack_path: &str, json_mode: bool) -> ExitCode {
     match build_pack(Path::new(from), Path::new(pack_path)) {
         Ok(count) => {
             if json_mode {
-                let document = Value::Object(vec![
-                    ("schema_version".to_string(), Value::Number(1)),
-                    (
-                        "command".to_string(),
-                        Value::String("asset-pack".to_string()),
-                    ),
-                    ("status".to_string(), Value::String("ok".to_string())),
-                    ("exit_code".to_string(), Value::Number(0)),
-                    (
-                        "duration_ms".to_string(),
-                        Value::Number(duration_ms(started)),
-                    ),
-                    ("stdout".to_string(), Value::String(String::new())),
-                    ("stderr".to_string(), Value::String(String::new())),
-                    ("entries".to_string(), Value::Number(count)),
-                    ("pack".to_string(), Value::String(pack_path.to_string())),
-                ]);
-                emit_stdout_line(&document.render());
+                let mut fields = envelope_base("asset-pack", "ok", 0, started, "");
+                fields.push(("entries".to_string(), Value::Number(count)));
+                fields.push(("pack".to_string(), Value::String(pack_path.to_string())));
+                emit_stdout_line(&Value::Object(fields).render());
             } else {
                 emit_stdout(&format!("packed {count} entries into {pack_path}\n"));
             }
@@ -364,31 +419,20 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
                 ])
             })
             .collect();
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            (
-                "command".to_string(),
-                Value::String("asset-inspect".to_string()),
-            ),
-            (
-                "status".to_string(),
-                Value::String(if ok { "ok" } else { "failed" }.to_string()),
-            ),
-            ("exit_code".to_string(), Value::Number(i64::from(!ok))),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(String::new())),
-            ("verified".to_string(), Value::Bool(verify)),
-            (
-                "mismatched".to_string(),
-                Value::Array(bad.iter().map(|n| Value::String(n.clone())).collect()),
-            ),
-            ("entries".to_string(), Value::Array(items)),
-        ]);
-        emit_stdout_line(&document.render());
+        let mut fields = envelope_base(
+            "asset-inspect",
+            if ok { "ok" } else { "failed" },
+            i64::from(!ok),
+            started,
+            "",
+        );
+        fields.push(("verified".to_string(), Value::Bool(verify)));
+        fields.push((
+            "mismatched".to_string(),
+            Value::Array(bad.iter().map(|n| Value::String(n.clone())).collect()),
+        ));
+        fields.push(("entries".to_string(), Value::Array(items)));
+        emit_stdout_line(&Value::Object(fields).render());
     } else {
         let widest = pack.entries().map(|e| e.name.len()).max().unwrap_or(0);
         let mut report = String::new();
@@ -455,25 +499,12 @@ fn run_ui_compile(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
     let nodes = i64::from(compiled.nodes);
     let size = i64::try_from(compiled.bytes.len()).unwrap_or(i64::MAX);
     if json_mode {
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            (
-                "command".to_string(),
-                Value::String("ui-compile".to_string()),
-            ),
-            ("status".to_string(), Value::String("ok".to_string())),
-            ("exit_code".to_string(), Value::Number(0)),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(String::new())),
-            ("errors".to_string(), Value::Array(Vec::new())),
-            ("nodes".to_string(), Value::Number(nodes)),
-            ("bytes".to_string(), Value::Number(size)),
-            ("out".to_string(), Value::String(out_path.to_string())),
-        ]);
+        let mut fields = envelope_base("ui-compile", "ok", 0, started, "");
+        fields.push(("errors".to_string(), Value::Array(Vec::new())));
+        fields.push(("nodes".to_string(), Value::Number(nodes)));
+        fields.push(("bytes".to_string(), Value::Number(size)));
+        fields.push(("out".to_string(), Value::String(out_path.to_string())));
+        let document = Value::Object(fields);
         emit_stdout_line(&document.render());
     } else {
         emit_stdout(&format!(
@@ -502,23 +533,9 @@ fn ui_compile_failure(
                 ])]
             })
             .unwrap_or_default();
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            (
-                "command".to_string(),
-                Value::String("ui-compile".to_string()),
-            ),
-            ("status".to_string(), Value::String("error".to_string())),
-            ("exit_code".to_string(), Value::Number(1)),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(message.to_string())),
-            ("errors".to_string(), Value::Array(errors)),
-        ]);
-        emit_stdout_line(&document.render());
+        let mut fields = envelope_base("ui-compile", "error", 1, started, message);
+        fields.push(("errors".to_string(), Value::Array(errors)));
+        emit_stdout_line(&Value::Object(fields).render());
     } else {
         eprintln!("error: {message}");
     }
@@ -528,20 +545,9 @@ fn ui_compile_failure(
 /// One refusal shape for both asset subcommands.
 fn asset_failure(command: &str, message: &str, json_mode: bool, started: Instant) -> ExitCode {
     if json_mode {
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            ("command".to_string(), Value::String(command.to_string())),
-            ("status".to_string(), Value::String("error".to_string())),
-            ("exit_code".to_string(), Value::Number(1)),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(message.to_string())),
-            ("entries".to_string(), Value::Array(Vec::new())),
-        ]);
-        emit_stdout_line(&document.render());
+        let mut fields = envelope_base(command, "error", 1, started, message);
+        fields.push(("entries".to_string(), Value::Array(Vec::new())));
+        emit_stdout_line(&Value::Object(fields).render());
     } else {
         eprintln!("error: {message}");
     }
@@ -617,35 +623,33 @@ fn module_rows(text: &str) -> Result<Vec<ModuleRow>, String> {
 /// the workspace cannot be read at all.
 fn run_modules(json_mode: bool) -> ExitCode {
     let started = Instant::now();
-    let outcome = workspace_root()
-        .ok_or_else(|| "no workspace root found above the current directory".to_string())
-        .and_then(|root| cargo_metadata(&root))
-        .and_then(|text| module_rows(&text));
-
-    let rows = match outcome {
+    let root = match workspace_root() {
+        Ok(root) => root,
+        Err(why) => {
+            let entry = failure_entry("classification-failed", &why);
+            return modules_error(json_mode, started, &why, None, vec![entry]);
+        }
+    };
+    if let Err((refusal, kind)) =
+        require_engine_workspace(&root, "modules reads the engine's own manifests")
+    {
+        let entry = failure_entry(refusal.code, &refusal.message);
+        let target = kind.map(|kind| target_field(kind, &root));
+        return modules_error(json_mode, started, &refusal.message, target, vec![entry]);
+    }
+    let rows = match cargo_metadata(&root).and_then(|text| module_rows(&text)) {
         Ok(rows) => rows,
+        // Past classification: the failure is the listing's own machinery,
+        // so no refusal code applies and the reason is prose — but the
+        // envelope keeps the classification the guard proved.
         Err(message) => {
-            if json_mode {
-                let document = Value::Object(vec![
-                    ("schema_version".to_string(), Value::Number(1)),
-                    ("command".to_string(), Value::String("modules".to_string())),
-                    ("status".to_string(), Value::String("error".to_string())),
-                    ("exit_code".to_string(), Value::Number(1)),
-                    (
-                        "duration_ms".to_string(),
-                        Value::Number(duration_ms(started)),
-                    ),
-                    ("stdout".to_string(), Value::String(String::new())),
-                    ("stderr".to_string(), Value::String(message)),
-                    // Always present, never conditional: a consumer that
-                    // reads `modules` must not have to test for the key.
-                    ("modules".to_string(), Value::Array(Vec::new())),
-                ]);
-                emit_stdout_line(&document.render());
-            } else {
-                eprintln!("error: {message}");
-            }
-            return ExitCode::FAILURE;
+            return modules_error(
+                json_mode,
+                started,
+                &message,
+                Some(target_field(workspace::TargetKind::EngineWorkspace, &root)),
+                vec![failure_entry("aborted", &message)],
+            );
         }
     };
 
@@ -670,20 +674,13 @@ fn run_modules(json_mode: bool) -> ExitCode {
                 Value::Object(fields)
             })
             .collect();
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            ("command".to_string(), Value::String("modules".to_string())),
-            ("status".to_string(), Value::String("ok".to_string())),
-            ("exit_code".to_string(), Value::Number(0)),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(String::new())),
-            ("modules".to_string(), Value::Array(items)),
-        ]);
-        emit_stdout_line(&document.render());
+        let mut fields = envelope_base("modules", "ok", 0, started, "");
+        fields.push(("modules".to_string(), Value::Array(items)));
+        // The guard above proved the tree is the engine's, on the same
+        // root this run then listed — never re-derived.
+        fields.push(target_field(workspace::TargetKind::EngineWorkspace, &root));
+        fields.push(("failures".to_string(), Value::Array(Vec::new())));
+        emit_stdout_line(&Value::Object(fields).render());
         return ExitCode::SUCCESS;
     }
 
@@ -717,11 +714,28 @@ fn run_modules(json_mode: bool) -> ExitCode {
 
 fn run_coverage(report_path: &str, json_mode: bool) -> ExitCode {
     let started = Instant::now();
-    match evaluate_coverage(report_path) {
+    // The ratchet reads this repository's exemption manifest; holding a
+    // game's report against the engine's exemptions would be a verdict
+    // from the wrong ledger.
+    let root = match workspace_root() {
+        Ok(root) => root,
+        Err(why) => {
+            let entry = failure_entry("classification-failed", &why);
+            return coverage_error(json_mode, started, &why, None, vec![entry]);
+        }
+    };
+    if let Err((refusal, kind)) =
+        require_engine_workspace(&root, "coverage holds this repository's own ratchet")
+    {
+        let entry = failure_entry(refusal.code, &refusal.message);
+        let target = kind.map(|kind| target_field(kind, &root));
+        return coverage_error(json_mode, started, &refusal.message, target, vec![entry]);
+    }
+    match evaluate_coverage(report_path, &root) {
         Ok(outcome) => {
             let ok = outcome.passes();
             if json_mode {
-                emit_stdout_line(&coverage_envelope(&outcome, started).render());
+                emit_stdout_line(&coverage_envelope(&outcome, started, &root).render());
             } else {
                 emit_stdout(&coverage_report(&outcome));
             }
@@ -731,40 +745,50 @@ fn run_coverage(report_path: &str, json_mode: bool) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Err(message) => {
-            // A gate that cannot read its inputs has failed — an empty
-            // uncovered set is never a pass.
-            if json_mode {
-                // Same shape as the success path: every coverage key is
-                // present, so consumers never see a conditional one.
-                let document = Value::Object(vec![
-                    ("schema_version".to_string(), Value::Number(1)),
-                    ("command".to_string(), Value::String("coverage".to_string())),
-                    ("status".to_string(), Value::String("error".to_string())),
-                    ("exit_code".to_string(), Value::Number(1)),
-                    (
-                        "duration_ms".to_string(),
-                        Value::Number(duration_ms(started)),
-                    ),
-                    ("stdout".to_string(), Value::String(String::new())),
-                    ("stderr".to_string(), Value::String(message)),
-                    ("measured_files".to_string(), Value::Number(0)),
-                    ("exempt_lines".to_string(), Value::Number(0)),
-                    ("uncovered".to_string(), Value::Array(Vec::new())),
-                    ("stale".to_string(), Value::Array(Vec::new())),
-                ]);
-                emit_stdout_line(&document.render());
-                return ExitCode::FAILURE;
-            }
-            eprintln!("error: {message}");
-            ExitCode::FAILURE
-        }
+        // A gate that cannot read its inputs has failed — an empty
+        // uncovered set is never a pass. Past classification, the failure
+        // is the gate's own machinery, so no refusal code applies — but
+        // the envelope keeps the classification the guard proved.
+        Err(message) => coverage_error(
+            json_mode,
+            started,
+            &message,
+            Some(target_field(workspace::TargetKind::EngineWorkspace, &root)),
+            vec![failure_entry("aborted", &message)],
+        ),
     }
 }
 
+/// The coverage error envelope: same shape as the success path — every
+/// coverage key present, so consumers never see a conditional one — with
+/// the reason in `stderr`, any refusal class in `failures`, and whatever
+/// classification the caller had established in `target`.
+fn coverage_error(
+    json_mode: bool,
+    started: Instant,
+    message: &str,
+    target: Option<(String, Value)>,
+    failures: Vec<Value>,
+) -> ExitCode {
+    if json_mode {
+        let mut fields = envelope_base("coverage", "error", 1, started, &format!("{message}\n"));
+        fields.push(("measured_files".to_string(), Value::Number(0)));
+        fields.push(("exempt_lines".to_string(), Value::Number(0)));
+        fields.push(("uncovered".to_string(), Value::Array(Vec::new())));
+        fields.push(("stale".to_string(), Value::Array(Vec::new())));
+        fields.extend(target);
+        fields.push(("failures".to_string(), Value::Array(failures)));
+        emit_stdout_line(&Value::Object(fields).render());
+        return ExitCode::FAILURE;
+    }
+    eprintln!("error: {message}");
+    ExitCode::FAILURE
+}
+
 /// The same envelope prefix as every other subcommand, plus one array per
-/// direction of the ratchet.
-fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
+/// direction of the ratchet. `root` is the engine root the caller's guard
+/// already proved, named in the envelope's `target`.
+fn coverage_envelope(outcome: &Outcome, started: Instant, root: &Path) -> Value {
     let ok = outcome.passes();
     let uncovered: Vec<Value> = outcome.gaps.iter().map(site_fields).collect();
     let stale: Vec<Value> = outcome
@@ -780,31 +804,26 @@ fn coverage_envelope(outcome: &Outcome, started: Instant) -> Value {
             Value::Object(fields)
         })
         .collect();
-    Value::Object(vec![
-        ("schema_version".to_string(), Value::Number(1)),
-        ("command".to_string(), Value::String("coverage".to_string())),
-        (
-            "status".to_string(),
-            Value::String(if ok { "ok" } else { "failed" }.to_string()),
-        ),
-        ("exit_code".to_string(), Value::Number(i64::from(!ok))),
-        (
-            "duration_ms".to_string(),
-            Value::Number(duration_ms(started)),
-        ),
-        ("stdout".to_string(), Value::String(String::new())),
-        ("stderr".to_string(), Value::String(String::new())),
-        (
-            "measured_files".to_string(),
-            Value::Number(count(outcome.measured_files)),
-        ),
-        (
-            "exempt_lines".to_string(),
-            Value::Number(count(outcome.exempt_lines)),
-        ),
-        ("uncovered".to_string(), Value::Array(uncovered)),
-        ("stale".to_string(), Value::Array(stale)),
-    ])
+    let mut fields = envelope_base(
+        "coverage",
+        if ok { "ok" } else { "failed" },
+        i64::from(!ok),
+        started,
+        "",
+    );
+    fields.push((
+        "measured_files".to_string(),
+        Value::Number(count(outcome.measured_files)),
+    ));
+    fields.push((
+        "exempt_lines".to_string(),
+        Value::Number(count(outcome.exempt_lines)),
+    ));
+    fields.push(("uncovered".to_string(), Value::Array(uncovered)));
+    fields.push(("stale".to_string(), Value::Array(stale)));
+    fields.push(target_field(workspace::TargetKind::EngineWorkspace, root));
+    fields.push(("failures".to_string(), Value::Array(Vec::new())));
+    Value::Object(fields)
 }
 
 /// The unexempted gaps in one file, rendered as the parenthetical a
@@ -988,9 +1007,12 @@ fn coverage_report(outcome: &Outcome) -> String {
 /// Read the manifest and the report, then hold them against each other.
 /// Split out from the rendering half so every way the gate can fail to run
 /// is nameable in one place.
-fn evaluate_coverage(report_path: &str) -> Result<Outcome, String> {
-    let root = workspace_root()
-        .ok_or_else(|| "no workspace root found above the current directory".to_string())?;
+///
+/// `root` is the tree the caller's guard already proved — passed in
+/// rather than walked for again, so the exemption manifest is read from
+/// the same tree the envelope's `target` names rather than from one that
+/// merely resolves the same way a second time.
+fn evaluate_coverage(report_path: &str, root: &Path) -> Result<Outcome, String> {
     let manifest_path = root.join(coverage::MANIFEST);
     let manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?;
@@ -1030,23 +1052,56 @@ struct Runner<'a> {
     started: Instant,
     stdout_all: String,
     stderr_all: String,
+    /// Fields every envelope this runner emits carries — the `target`
+    /// classification, and the `coverage` statement where the subcommand
+    /// has one. Set right after anchoring, so the failure envelopes say
+    /// where they failed just as the success envelope says where it ran.
+    extra_base: Vec<(String, Value)>,
 }
 
 impl<'a> Runner<'a> {
     /// Anchor a runner at the enclosing workspace. `Err` carries the exit
     /// code of an invocation that has no tree to run in — a refusal,
     /// because a command that never found its workspace has not passed.
-    fn anchored(name: &'a str, json: bool) -> Result<Self, ExitCode> {
+    ///
+    /// `established` holds fields that depend only on the parsed
+    /// invocation — the coverage statement, where the subcommand has one.
+    /// They are handed in rather than pushed after anchoring so that even
+    /// the rootless refusal carries them: what a run *would have* covered
+    /// does not depend on finding a tree to run it in.
+    fn anchored(
+        name: &'a str,
+        json: bool,
+        established: Vec<(String, Value)>,
+    ) -> Result<Self, ExitCode> {
         let started = Instant::now();
-        let Some(root) = workspace_root() else {
-            return Err(report_error(
-                name,
-                json,
-                started,
-                "",
-                "",
-                "no workspace root found above the current directory",
-            ));
+        let root = match workspace_root() {
+            Ok(root) => root,
+            // The same condition check and modules code the same way: the
+            // tool could not establish what tree it stands in — whether
+            // because there is no manifest above the caller or because
+            // one is there and cannot be read.
+            Err(message) => {
+                let message = message.as_str();
+                if json {
+                    let mut extra = established;
+                    extra.push((
+                        "failures".to_string(),
+                        Value::Array(vec![failure_entry("classification-failed", message)]),
+                    ));
+                    return Err(finish_json_with(
+                        name,
+                        "error",
+                        1,
+                        started,
+                        "",
+                        &format!("{message}\n"),
+                        extra,
+                    ));
+                }
+                eprintln!("error: {message}");
+                return Err(ExitCode::FAILURE);
+            }
         };
         Ok(Self {
             name,
@@ -1055,7 +1110,68 @@ impl<'a> Runner<'a> {
             started,
             stdout_all: String::new(),
             stderr_all: String::new(),
+            extra_base: established,
         })
+    }
+
+    /// The tree refused this invocation before any child ran: an envelope
+    /// whose `failures` entry names the class, or the plain-mode line.
+    /// The reason lands in `stderr` as well as the failure's summary —
+    /// [`Runner::fail`] does the same, so a consumer that displays
+    /// `stderr` on error sees every refusal shaped alike.
+    fn refuse(&self, code: &str, reason: &str) -> ExitCode {
+        if self.json {
+            let mut extra = self.extra_base.clone();
+            extra.push((
+                "failures".to_string(),
+                Value::Array(vec![failure_entry(code, reason)]),
+            ));
+            return finish_json_with(
+                self.name,
+                "error",
+                1,
+                self.started,
+                &self.stdout_all,
+                &format!("{}{reason}\n", self.stderr_all),
+                extra,
+            );
+        }
+        eprintln!("error: {reason}");
+        ExitCode::FAILURE
+    }
+
+    /// A verdict was delivered and it is red: status `failed`, with the
+    /// finding's own code. Distinct from [`Runner::fail`] because a
+    /// consumer that retries aborts must never be handed a real finding
+    /// wearing an abort's code. `exit_code` is the failing child's raw
+    /// code where a child delivered the verdict, and `1` where the
+    /// verdict is this tool's own (a determinism comparison).
+    fn deliver_failed(&self, code: &str, report: &str, exit_code: i32) -> ExitCode {
+        if self.json {
+            let mut extra = self.extra_base.clone();
+            extra.push((
+                "failures".to_string(),
+                Value::Array(vec![failure_entry(code, report)]),
+            ));
+            return finish_json_with(
+                self.name,
+                "failed",
+                exit_code,
+                self.started,
+                &self.stdout_all,
+                &format!("{}{report}\n", self.stderr_all),
+                extra,
+            );
+        }
+        // Whatever child output was captured on the way here (the
+        // determinism emit path probes rather than inheriting) reaches
+        // the caller ahead of the summary — a red whose only prose is
+        // the summary sentence leaves nothing to diagnose with, in
+        // either mode.
+        emit_stdout(&self.stdout_all);
+        eprint!("{}", self.stderr_all);
+        eprintln!("{report}");
+        ExitCode::FAILURE
     }
 
     /// Run one child from the workspace root. `Ok(())` means it succeeded
@@ -1083,13 +1199,22 @@ impl<'a> Runner<'a> {
                     // Raw child code in the envelope (-1 for signal
                     // deaths); the process exit stays within 0/1/2.
                     let code = output.status.code().unwrap_or(-1);
-                    Err(finish_json(
+                    let mut extra = self.extra_base.clone();
+                    extra.push((
+                        "failures".to_string(),
+                        Value::Array(vec![failure_entry(
+                            "step-failed",
+                            &format!("{} exited with code {code}", step_name(program, args)),
+                        )]),
+                    ));
+                    Err(finish_json_with(
                         self.name,
                         "failed",
                         code,
                         self.started,
                         &self.stdout_all,
                         &self.stderr_all,
+                        extra,
                     ))
                 }
                 Err(error) => Err(self.fail(&format!("failed to run {program}: {error}"))),
@@ -1106,16 +1231,35 @@ impl<'a> Runner<'a> {
     }
 
     /// The invocation is over without a child having finished — nothing
-    /// ran, or nothing could.
+    /// ran, or nothing could. The envelope keeps whatever target and
+    /// coverage were already established and carries the abort as a
+    /// structured failure, so this path claims no less than the others.
     fn fail(&self, message: &str) -> ExitCode {
-        report_error(
-            self.name,
-            self.json,
-            self.started,
-            &self.stdout_all,
-            &self.stderr_all,
-            message,
-        )
+        if self.json {
+            let mut extra = self.extra_base.clone();
+            extra.push((
+                "failures".to_string(),
+                Value::Array(vec![failure_entry("aborted", message)]),
+            ));
+            return finish_json_with(
+                self.name,
+                "error",
+                1,
+                self.started,
+                &self.stdout_all,
+                &format!("{}{message}\n", self.stderr_all),
+                extra,
+            );
+        }
+        // Whatever a child said before this abort reaches the caller
+        // ahead of the reason, as [`Runner::deliver_failed`] does: the
+        // paths that capture a child's output capture it for both modes,
+        // and a plain-mode reader is the one most likely to be
+        // diagnosing by eye.
+        emit_stdout(&self.stdout_all);
+        eprint!("{}", self.stderr_all);
+        eprintln!("error: {message}");
+        ExitCode::FAILURE
     }
 
     /// Every child succeeded.
@@ -1128,6 +1272,9 @@ impl<'a> Runner<'a> {
     /// where the child's own output already reached the caller.
     fn finish_with(&self, extra: Vec<(String, Value)>) -> ExitCode {
         if self.json {
+            let mut all = self.extra_base.clone();
+            all.extend(extra);
+            all.push(("failures".to_string(), Value::Array(Vec::new())));
             return finish_json_with(
                 self.name,
                 "ok",
@@ -1135,7 +1282,7 @@ impl<'a> Runner<'a> {
                 self.started,
                 &self.stdout_all,
                 &self.stderr_all,
-                extra,
+                all,
             );
         }
         ExitCode::SUCCESS
@@ -1149,149 +1296,240 @@ impl<'a> Runner<'a> {
     }
 }
 
-/// Say why an invocation could not run, the way the running mode says it.
-/// `stdout`/`stderr` are whatever earlier children produced; `message`
-/// joins the reported stderr, because in JSON mode the envelope is the
-/// only place a reader can find it.
-fn report_error(
+/// The shared envelope prefix with this binary's timing plumbing filled
+/// in. Delegates to [`json::envelope_fields`] — the single spelling of
+/// the prefix — so no emission site here can drift from the one there.
+fn envelope_base(
     command: &str,
-    json_mode: bool,
+    status: &str,
+    exit_code: i64,
     started: Instant,
-    stdout: &str,
     stderr: &str,
-    message: &str,
-) -> ExitCode {
-    if json_mode {
-        return finish_json(
-            command,
-            "error",
-            1,
-            started,
-            stdout,
-            &format!("{stderr}{message}\n"),
-        );
+) -> Vec<(String, Value)> {
+    json::envelope_fields(command, status, exit_code, duration_ms(started), "", stderr)
+}
+
+/// The step a failure summary names: the program and the arguments that
+/// say which of a subcommand's children it was.
+///
+/// `lint` runs two cargo children and only the second compiles anything,
+/// so "cargo exited with code 1" leaves a reader unable to tell a
+/// formatting drift from a clippy finding — and, where the envelope also
+/// carries a coverage statement, unable to tell whether the compiling
+/// child ran at all. Everything after a `--` belongs to the child's own
+/// child and is left off; the verb and its flags are what identify the
+/// step.
+fn step_name<A: AsRef<OsStr>>(program: &str, args: &[A]) -> String {
+    let mut named = program.to_string();
+    for argument in args {
+        let text = argument.as_ref().to_string_lossy().into_owned();
+        if text == "--" {
+            break;
+        }
+        named.push(' ');
+        named.push_str(&text);
     }
-    eprintln!("error: {message}");
-    ExitCode::FAILURE
+    named
+}
+
+/// One structured failure for an envelope's `failures` array.
+fn failure_entry(code: &str, summary: &str) -> Value {
+    Value::Object(vec![
+        ("code".to_string(), Value::String(code.to_string())),
+        ("summary".to_string(), Value::String(summary.to_string())),
+    ])
+}
+
+/// The envelope's `target` field: what tree this invocation ran in.
+fn target_field(kind: workspace::TargetKind, root: &Path) -> (String, Value) {
+    (
+        "target".to_string(),
+        Value::Object(vec![
+            ("kind".to_string(), Value::String(kind.name().to_string())),
+            (
+                "root".to_string(),
+                Value::String(root.display().to_string()),
+            ),
+            (
+                "manifest".to_string(),
+                Value::String(root.join("Cargo.toml").display().to_string()),
+            ),
+        ]),
+    )
+}
+
+/// The envelope's `coverage` statement: what the cargo invocation this run
+/// issued actually enabled. Descriptive, never aspirational — `features`
+/// and `all_features` are the very values [`plan::workspace_steps`] hands
+/// the child, so a verdict's reader can see which feature flags a green
+/// was built with. `packages` and `profile` restate the scope and plan
+/// the subcommand fixes rather than reading the child's argv back. The
+/// `--workspace` pairing is asserted against the argv `plan.rs` builds;
+/// the profile names are asserted only as the *values the envelope
+/// carries* (`tests/targets.rs`), not against cargo's own choice, so
+/// they are this table's claim about cargo rather than a reading of it.
+fn coverage_field(
+    command: Command,
+    features: &[String],
+    all_features: bool,
+    packages: &str,
+) -> (String, Value) {
+    // Cargo's own profile names: `cargo test` compiles the `test`
+    // profile, not `dev`, and the one field that promises to describe
+    // the invocation exactly must not round that off.
+    let profile = match command {
+        Command::Bench => "bench",
+        Command::Test => "test",
+        _ => "dev",
+    };
+    (
+        "coverage".to_string(),
+        Value::Object(vec![
+            (
+                "features".to_string(),
+                Value::Array(
+                    features
+                        .iter()
+                        .map(|names| Value::String(names.clone()))
+                        .collect(),
+                ),
+            ),
+            ("all_features".to_string(), Value::Bool(all_features)),
+            ("packages".to_string(), Value::String(packages.to_string())),
+            ("profile".to_string(), Value::String(profile.to_string())),
+        ]),
+    )
+}
+
+/// A refusal with its structured class: what the `failures` entry carries
+/// and what the prose says. Every refusal path emits both, so a consumer
+/// can dispatch on the code and a person can read the reason.
+struct Refusal {
+    code: &'static str,
+    message: String,
+}
+
+/// Why a tree could not be classified. The two cases are different claims
+/// and carry different codes: `CannotTell` means the tool failed to
+/// establish anything (unreadable manifest, broken metadata, a toolchain
+/// that would not answer); `NotARenewProject` means the metadata was read
+/// clean and no member depends on a renew crate. Folding them together
+/// would stamp a verdict onto a question that was never answered.
+enum ClassifyError {
+    CannotTell(String),
+    NotARenewProject,
+}
+
+impl ClassifyError {
+    fn refusal(self) -> Refusal {
+        match self {
+            Self::CannotTell(detail) => Refusal {
+                code: "classification-failed",
+                message: format!("cannot tell what this workspace is: {detail}"),
+            },
+            Self::NotARenewProject => Refusal {
+                code: "not-a-renew-project",
+                message: "this workspace neither is the engine nor depends on a renew \
+                          crate; there is nothing here this tool can honestly report on"
+                    .to_string(),
+            },
+        }
+    }
+}
+
+/// Refuse anything but the engine's own tree, naming what the subcommand
+/// is for. The engine-only subcommands read manifests, samples, and rules
+/// that exist nowhere else; running them in a game and reporting *anything*
+/// would be a verdict about a question the tree never asked.
+///
+/// The refusal carries the classification where one succeeded — a
+/// project tree's refusal knows the kind it established, and the caller
+/// puts it in the envelope: an envelope keeps what it knows.
+fn require_engine_workspace(
+    root: &Path,
+    purpose: &str,
+) -> Result<(), (Refusal, Option<workspace::TargetKind>)> {
+    match classify_target(root) {
+        Ok(workspace::TargetKind::EngineWorkspace) => Ok(()),
+        Ok(workspace::TargetKind::Project) => Err((
+            Refusal {
+                code: "engine-only-subcommand",
+                message: format!(
+                    "{purpose}; this workspace is a project that uses the engine, not the \
+                     engine itself"
+                ),
+            },
+            Some(workspace::TargetKind::Project),
+        )),
+        Err(error) => Err((error.refusal(), None)),
+    }
+}
+
+/// Classify the tree at `root`. Engine detection is one manifest read;
+/// only a foreign tree pays for `cargo metadata`. Refusing is the
+/// contract; guessing would hand a verdict about somebody's unrelated
+/// code to a reader who asked about a game.
+fn classify_target(root: &Path) -> Result<workspace::TargetKind, ClassifyError> {
+    let manifest = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|error| ClassifyError::CannotTell(format!("cannot read the manifest: {error}")))?;
+    if workspace::manifest_declares_engine(&manifest) {
+        return Ok(workspace::TargetKind::EngineWorkspace);
+    }
+    let metadata = cargo_metadata(root)
+        .and_then(|text| parsed_metadata(&text))
+        .map_err(ClassifyError::CannotTell)?;
+    if workspace::metadata_names_renew_dependency(&metadata) {
+        Ok(workspace::TargetKind::Project)
+    } else {
+        Err(ClassifyError::NotARenewProject)
+    }
 }
 
 fn run_steps(invocation: &Invocation) -> ExitCode {
-    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json) {
+    // The coverage statement depends only on the parsed invocation, so it
+    // is established before anchoring, let alone classification: even the
+    // rootless refusal says what the run would have covered.
+    let mut established = Vec::new();
+    if invocation.command.takes_workspace_features() {
+        established.push(coverage_field(
+            invocation.command,
+            &invocation.features,
+            invocation.all_features,
+            "workspace",
+        ));
+    }
+    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json, established)
+    {
         Ok(runner) => runner,
         Err(exit) => return exit,
     };
-    for step in plan::steps(invocation.command, invocation.smoke) {
-        if let Err(exit) = runner.execute(step.program, step.args) {
+    // What tree is this? The engine and a game are both welcome here; a
+    // workspace that is neither is refused before any child runs, so a
+    // verdict about nothing is never emitted.
+    let kind = match classify_target(&runner.root) {
+        Ok(kind) => kind,
+        Err(error) => {
+            let refusal = error.refusal();
+            return runner.refuse(refusal.code, &refusal.message);
+        }
+    };
+    runner.extra_base.push(target_field(kind, &runner.root));
+    for step in plan::workspace_steps(
+        invocation.command,
+        invocation.smoke,
+        &invocation.features,
+        invocation.all_features,
+    ) {
+        if let Err(exit) = runner.execute(&step.program, &step.args) {
             return exit;
         }
     }
     runner.finish()
 }
 
-/// The simulations the cross-platform lane compares, and the exact
-/// arguments that pin them.
-///
-/// Each entry names a run whose every output is a function of the flags
-/// beside it. Widening this list widens what the claim covers; it is a
-/// list rather than one run because a single configuration
-/// exercises one path through the world, and a divergence in a path the
-/// list never walks is a divergence the lane never sees.
-/// One simulation the lane pins: what to call it, which package answers,
-/// what to pass, and which fields of the answer carry a digest.
-type PinnedRun = (
-    &'static str,
-    &'static str,
-    &'static [&'static str],
-    &'static [&'static str],
-);
-
-/// Glide reports two hashes; every run added since reports one.
-const GLIDE_FIELDS: &[&str] = &["schedule_hash", "state_hash"];
-const ONE_DIGEST: &[&str] = &["digest"];
-
-const PINNED_RUNS: [PinnedRun; 11] = [
-    // The widget tree: a scripted menu session through the fixed-point
-    // solver, the hit-tester, and the decision fold. Everything in it
-    // is integer arithmetic, and this row is what turns that claim
-    // into three targets agreeing rather than one target asserting.
-    ("ui/menu-16", "renew-ui", &[], ONE_DIGEST),
-    // Four lockstep peers played against a scripted hostile link: loss,
-    // duplication, reordering, one-way blackouts and a silent peer. The
-    // digest folds the confirmed input stream and nothing else, so what
-    // three targets are being asked to agree about is that arrival was
-    // unobservable — not that their networks behaved the same, which
-    // they did not even within one process.
-    ("net/lockstep-4x600", "renew-net", &[], ONE_DIGEST),
-    (
-        "glide/seed-7-600",
-        "renew-sample-glide",
-        &["--seed", "7", "--frames", "600", "--json"],
-        GLIDE_FIELDS,
-    ),
-    (
-        "glide/seed-7-2000",
-        "renew-sample-glide",
-        &["--seed", "7", "--frames", "2000", "--json"],
-        GLIDE_FIELDS,
-    ),
-    (
-        "glide/seed-99-600",
-        "renew-sample-glide",
-        &["--seed", "99", "--frames", "600", "--json"],
-        GLIDE_FIELDS,
-    ),
-    (
-        "glide/sink-1500",
-        "renew-sample-glide",
-        &[
-            "--seed",
-            "3",
-            "--frames",
-            "1500",
-            "--input-trace",
-            "sink",
-            "--json",
-        ],
-        GLIDE_FIELDS,
-    ),
-    // The platformer: swept motion against geometry, where a divergence would
-    // come from the collision arithmetic rather than from a generator.
-    (
-        "leap/dash-600",
-        "renew-sample-leap",
-        &["--script", "dash", "--ticks", "600", "--json"],
-        ONE_DIGEST,
-    ),
-    (
-        "leap/hop-900",
-        "renew-sample-leap",
-        &["--script", "hop", "--ticks", "900", "--json"],
-        ONE_DIGEST,
-    ),
-    // The voxel world: the same arithmetic in three dimensions, plus terrain
-    // that the run itself edits.
-    (
-        "cube/patrol-600",
-        "renew-sample-cube",
-        &["--script", "patrol", "--ticks", "600", "--json"],
-        ONE_DIGEST,
-    ),
-    (
-        "cube/build-900",
-        "renew-sample-cube",
-        &["--script", "build", "--ticks", "900", "--json"],
-        ONE_DIGEST,
-    ),
-    // Chess: no floating point and no geometry at all, so a divergence here
-    // would be in the integer state itself rather than in any arithmetic the
-    // other three share. A different kind of witness for the same claim.
-    (
-        "chess/play-60",
-        "renew-sample-chess",
-        &["--play", "--depth", "60", "--json"],
-        ONE_DIGEST,
-    ),
-];
+/// Why a comparison that cannot name its compiler is not a passing one.
+const TOOLCHAIN_UNREADABLE: &str = "could not read `rustc --version`, and a comparison that cannot name its compiler is \
+     inconclusive rather than passing";
 
 /// Run the pinned simulations and write this target's report.
 ///
@@ -1301,10 +1539,34 @@ const PINNED_RUNS: [PinnedRun; 11] = [
 /// shape would tell the others their report was missing a field, which is
 /// true and useless.
 fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool) -> ExitCode {
-    let runner = match Runner::anchored("determinism", json_mode) {
+    let mut runner = match Runner::anchored("determinism", json_mode, Vec::new()) {
         Ok(runner) => runner,
         Err(exit) => return exit,
     };
+    match classify_target(&runner.root) {
+        Ok(workspace::TargetKind::EngineWorkspace) => {
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::EngineWorkspace, &root));
+        }
+        Ok(workspace::TargetKind::Project) => {
+            // The classification succeeded; the refusal keeps what it knows.
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::Project, &root));
+            return runner.refuse(
+                "engine-only-subcommand",
+                "determinism runs the engine's pinned simulations and is not available \
+                 for a project workspace",
+            );
+        }
+        Err(error) => {
+            let refusal = error.refusal();
+            return runner.refuse(refusal.code, &refusal.message);
+        }
+    }
 
     // **Before a single build, because the answer cannot change and the
     // builds are expensive.** A triple the table has never been taught
@@ -1332,39 +1594,22 @@ fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool
     // the compiler rather than from a file, because a file records an
     // intention and this has to record what actually ran.
     let toolchain = match probe("rustc", &["--version"], Some(&runner.root)) {
-        Ok((true, text)) => text.trim().to_string(),
-        Ok((false, _)) | Err(_) => {
-            return runner.fail(
-                "could not read `rustc --version`, and a comparison that cannot name its \
-                 compiler is inconclusive rather than passing",
-            );
+        Ok(probed) if probed.success => probed.stdout.trim().to_string(),
+        Ok(probed) => {
+            // Whatever the compiler said about its own failure is the
+            // evidence for this abort; every other emit failure keeps
+            // the child's words for the same reason.
+            runner.stdout_all.push_str(&probed.stdout);
+            runner.stderr_all.push_str(&probed.stderr);
+            return runner.fail(TOOLCHAIN_UNREADABLE);
         }
+        Err(_) => return runner.fail(TOOLCHAIN_UNREADABLE),
     };
 
-    let mut digests = BTreeMap::new();
-    for (name, package, args, fields) in PINNED_RUNS {
-        // Cargo runs the built binary through whatever
-        // `CARGO_TARGET_<TRIPLE>_RUNNER` names, so a device leg is this
-        // same command with a runner that pushes and executes somewhere
-        // else. Nothing below learns that a device exists. Built by a
-        // function rather than inline so the pass-through is asserted by
-        // tests instead of only by a lane that cannot fail the build.
-        let invocation = determinism::pinned_invocation(package, args, target);
-        let (ok, stdout) = match probe("cargo", &invocation, Some(&runner.root)) {
-            Ok(result) => result,
-            Err(error) => return runner.fail(&format!("could not start `{name}`: {error}")),
-        };
-        if !ok {
-            return runner.fail(&format!(
-                "the pinned run `{name}` failed, so this target contributes nothing and \
-                 the comparison must not be told otherwise"
-            ));
-        }
-        match determinism::digests_from_output(name, &stdout, fields) {
-            Ok(pairs) => digests.extend(pairs),
-            Err(message) => return runner.fail(&message),
-        }
-    }
+    let digests = match collect_pinned_digests(&mut runner, target) {
+        Ok(digests) => digests,
+        Err(exit) => return exit,
+    };
 
     // **Whose platform this leg describes.** With a target, the runs
     // executed somewhere this process is not, so reading this process's
@@ -1391,13 +1636,100 @@ fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool
     if let Err(error) = fs::write(output_path, &rendered) {
         return runner.fail(&format!("could not write `{output_path}`: {error}"));
     }
-    println!(
+    let note = format!(
         "wrote {} digests for {}/{} to {output_path}",
         leg.digests.len(),
         leg.os,
         leg.arch
     );
+    emit_note(&note, runner.json, &mut runner.stdout_all);
     runner.finish()
+}
+
+/// Run every pinned simulation and gather what they reported.
+///
+/// Split from the emit half so each stays readable: this is the loop
+/// that spawns children and reads their reports, and every way it can
+/// end early is a finished envelope its caller returns unchanged.
+fn collect_pinned_digests(
+    runner: &mut Runner<'_>,
+    target: Option<&str>,
+) -> Result<BTreeMap<String, String>, ExitCode> {
+    let mut digests = BTreeMap::new();
+    for (name, package, args, fields) in determinism::PINNED_RUNS {
+        // Cargo runs the built binary through whatever
+        // `CARGO_TARGET_<TRIPLE>_RUNNER` names, so a device leg is this
+        // same command with a runner that pushes and executes somewhere
+        // else. Nothing here learns that a device exists. Built by a
+        // function rather than inline so the pass-through is asserted by
+        // tests instead of only by a lane that cannot fail the build.
+        let invocation = determinism::pinned_invocation(package, args, target);
+        let probed = match probe("cargo", &invocation, Some(&runner.root)) {
+            Ok(probed) => probed,
+            Err(error) => return Err(runner.fail(&format!("could not start `{name}`: {error}"))),
+        };
+        if !probed.success {
+            // The child ran and failed: a step failure with a delivered
+            // outcome, not an abort. Its output and raw exit code go into
+            // the envelope — a red lane whose envelope carried only a
+            // summary sentence would leave its reader nothing to
+            // diagnose with.
+            runner.stdout_all.push_str(&probed.stdout);
+            runner.stderr_all.push_str(&probed.stderr);
+            return Err(runner.deliver_failed(
+                "step-failed",
+                &format!(
+                    "the pinned run `{name}` failed, so this target contributes nothing \
+                     and the comparison must not be told otherwise"
+                ),
+                probed.code,
+            ));
+        }
+        match determinism::digests_from_output(name, &probed.stdout, fields) {
+            Ok(pairs) => {
+                for (key, digest) in pairs {
+                    // Inserting over an existing key would drop a digest
+                    // and shrink what this leg proves — silently, and
+                    // identically on every target, so the comparison
+                    // would agree over the narrower set and report the
+                    // breadth the list claims. Two rows sharing a name
+                    // is the ordinary way that happens.
+                    if let Some(previous) = digests.insert(key.clone(), digest) {
+                        return Err(runner.fail(&format!(
+                            "two pinned runs both report `{key}` (the earlier value was \
+                             {previous}) — one would overwrite the other and this leg \
+                             would prove less than the pinned list claims"
+                        )));
+                    }
+                }
+            }
+            Err(message) => {
+                // What the run printed is the evidence for why its report
+                // could not be read; the step-failure branch above keeps
+                // it for the same reason.
+                runner.stdout_all.push_str(&probed.stdout);
+                runner.stderr_all.push_str(&probed.stderr);
+                return Err(runner.fail(&message));
+            }
+        }
+    }
+    Ok(digests)
+}
+
+/// Where a human-facing note goes: into the envelope's captured stdout
+/// under `--json`, straight to stdout otherwise.
+///
+/// A function rather than an `if` at the call site so both halves are
+/// reachable from a unit test: `--json` promises exactly one document on
+/// stdout, and a loose line printed ahead of the envelope breaks that
+/// promise in a way only a consumer notices.
+fn emit_note(note: &str, json: bool, captured: &mut String) {
+    if json {
+        captured.push_str(note);
+        captured.push('\n');
+    } else {
+        println!("{note}");
+    }
 }
 
 /// Hold several targets' reports against each other.
@@ -1407,19 +1739,48 @@ fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool
 /// reached, because comparison reads legs that were already emitted and
 /// each one names the platform it ran on.
 fn run_determinism_compare(paths: &[String], json_mode: bool) -> ExitCode {
-    let runner = match Runner::anchored("determinism", json_mode) {
+    let mut runner = match Runner::anchored("determinism", json_mode, Vec::new()) {
         Ok(runner) => runner,
         Err(exit) => return exit,
     };
+    // Compare holds legs against the engine's own expected-target list, so
+    // it is as engine-only as emit: the same guard, the same refusals.
+    match classify_target(&runner.root) {
+        Ok(workspace::TargetKind::EngineWorkspace) => {
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::EngineWorkspace, &root));
+        }
+        Ok(workspace::TargetKind::Project) => {
+            // The classification succeeded; the refusal keeps what it knows.
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::Project, &root));
+            return runner.refuse(
+                "engine-only-subcommand",
+                "determinism compares the engine's pinned simulations and is not \
+                 available for a project workspace",
+            );
+        }
+        Err(error) => {
+            let refusal = error.refusal();
+            return runner.refuse(refusal.code, &refusal.message);
+        }
+    }
 
-    let arches = determinism::expected_arches();
+    let rows = determinism::expected_rows();
+    let digests = determinism::expected_digest_names();
 
     let mut legs = Vec::new();
     for path in paths {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
-            // A missing artifact is a leg that did not report, which is
-            // an untested target — never an absent objection.
+            // A leg file that cannot be read is an abort: the comparison
+            // never received its inputs, so no verdict — not even the
+            // inconclusive one, which is reserved for legs that were read
+            // and judged — was delivered.
             Err(error) => return runner.fail(&format!("could not read `{path}`: {error}")),
         };
         match determinism::parse_leg(path, &text) {
@@ -1428,13 +1789,31 @@ fn run_determinism_compare(paths: &[String], json_mode: bool) -> ExitCode {
         }
     }
 
-    let verdict = determinism::compare(&legs, &arches);
+    let verdict = determinism::compare(&legs, &rows, &digests);
     let report = determinism::describe(&verdict);
-    if verdict.is_pass() {
-        println!("{report}");
-        runner.finish()
-    } else {
-        runner.fail(&report)
+    // A delivered verdict is a finding, never an abort: divergence and
+    // inconclusiveness each get their own code, because a consumer that
+    // retries aborts must never retry away the one red this lane exists
+    // to produce.
+    match &verdict {
+        determinism::Verdict::Agree { .. } => {
+            // The agreeing verdict's prose rides inside the envelope in
+            // JSON mode — stdout carries exactly one document, and a
+            // consumer of that mode should not lose the report either.
+            if runner.json {
+                runner.stdout_all.push_str(&report);
+                runner.stdout_all.push('\n');
+            } else {
+                println!("{report}");
+            }
+            runner.finish()
+        }
+        determinism::Verdict::Diverged(_) => {
+            runner.deliver_failed("determinism-diverged", &report, 1)
+        }
+        determinism::Verdict::Inconclusive(_) => {
+            runner.deliver_failed("determinism-inconclusive", &report, 1)
+        }
     }
 }
 
@@ -1448,10 +1827,40 @@ fn run_sample(invocation: &Invocation) -> ExitCode {
     // Parsing guarantees the name; an empty one would simply match no
     // sample, which is the same answer by a shorter road.
     let requested = invocation.sample.as_deref().unwrap_or_default();
-    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json) {
+    let mut runner = match Runner::anchored(invocation.command.name(), invocation.json, Vec::new())
+    {
         Ok(runner) => runner,
         Err(exit) => return exit,
     };
+    match classify_target(&runner.root) {
+        Ok(workspace::TargetKind::EngineWorkspace) => {
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::EngineWorkspace, &root));
+        }
+        Ok(workspace::TargetKind::Project) => {
+            // The classification succeeded; the refusal keeps what it knows.
+            let root = runner.root.clone();
+            runner
+                .extra_base
+                .push(target_field(workspace::TargetKind::Project, &root));
+            // The reason names the subcommand that was refused — a
+            // consumer renders the summary verbatim, and `record` being
+            // told about `run` reads as an answer to a different ask.
+            return runner.refuse(
+                "engine-only-subcommand",
+                &format!(
+                    "{} starts the engine's own samples; it cannot run a project's binaries",
+                    invocation.command.name()
+                ),
+            );
+        }
+        Err(error) => {
+            let refusal = error.refusal();
+            return runner.refuse(refusal.code, &refusal.message);
+        }
+    }
     let known = match cargo_metadata(&runner.root).and_then(|text| samples_from_metadata(&text)) {
         Ok(known) => known,
         // A list that cannot be read is not an empty list: refuse, rather
@@ -1469,6 +1878,19 @@ fn run_sample(invocation: &Invocation) -> ExitCode {
         );
         return ExitCode::from(2);
     };
+    // The sample is known now, and with it the package cargo will be
+    // told to build — so the coverage statement can name it. Established
+    // here rather than at anchoring for that reason: before the name
+    // resolves there is no package to state. A replay's digest is a
+    // machine-consumed artifact, and two digests from differently
+    // featured builds must not look alike to the consumer comparing
+    // them.
+    runner.extra_base.push(coverage_field(
+        invocation.command,
+        &invocation.features,
+        invocation.all_features,
+        &sample.package,
+    ));
     // Parsing guarantees the path whenever the subcommand carries a
     // flag, so the pair is either wholly present or wholly absent.
     let lead = invocation
@@ -1504,25 +1926,6 @@ fn run_sample(invocation: &Invocation) -> ExitCode {
         Ok(()) => runner.finish(),
         Err(exit) => exit,
     }
-}
-
-fn finish_json(
-    command: &str,
-    status: &str,
-    child_code: i32,
-    started: Instant,
-    stdout: &str,
-    stderr: &str,
-) -> ExitCode {
-    finish_json_with(
-        command,
-        status,
-        child_code,
-        started,
-        stdout,
-        stderr,
-        Vec::new(),
-    )
 }
 
 /// The same envelope with subcommand-specific fields appended, so a
@@ -1572,23 +1975,15 @@ fn run_doctor(json_mode: bool) -> ExitCode {
             .collect();
         // Same envelope prefix as every other subcommand, plus the
         // doctor-specific `checks` array.
-        let document = Value::Object(vec![
-            ("schema_version".to_string(), Value::Number(1)),
-            ("command".to_string(), Value::String("doctor".to_string())),
-            (
-                "status".to_string(),
-                Value::String(if ok { "ok" } else { "failed" }.to_string()),
-            ),
-            ("exit_code".to_string(), Value::Number(i64::from(!ok))),
-            (
-                "duration_ms".to_string(),
-                Value::Number(duration_ms(started)),
-            ),
-            ("stdout".to_string(), Value::String(String::new())),
-            ("stderr".to_string(), Value::String(String::new())),
-            ("checks".to_string(), Value::Array(items)),
-        ]);
-        emit_stdout_line(&document.render());
+        let mut fields = envelope_base(
+            "doctor",
+            if ok { "ok" } else { "failed" },
+            i64::from(!ok),
+            started,
+            "",
+        );
+        fields.push(("checks".to_string(), Value::Array(items)));
+        emit_stdout_line(&Value::Object(fields).render());
     } else {
         let mut report = String::new();
         for check in &checks {
@@ -1612,19 +2007,22 @@ fn run_doctor(json_mode: bool) -> ExitCode {
 }
 
 fn gather_facts() -> Facts {
-    let root = workspace_root();
+    // Doctor diagnoses environments that may have no workspace at all,
+    // and a manifest it cannot read is, for its purposes, the same as
+    // none: it probes tools rather than reporting on a tree.
+    let root = workspace_root().ok();
     let (rustup_found, active_toolchain, rustup_unavailable) =
         match probe("rustup", &["show", "active-toolchain"], root.as_deref()) {
-            Ok((true, stdout)) => (true, doctor::first_token(&stdout), None),
-            Ok((false, _)) => (true, None, None),
+            Ok(probed) if probed.success => (true, doctor::first_token(&probed.stdout), None),
+            Ok(_) => (true, None, None),
             Err(error) => (false, None, Some(doctor::probe_failure(error.kind()))),
         };
     let cargo_version = probe("cargo", &["--version"], root.as_deref())
         .ok()
-        .filter(|(success, _)| *success)
-        .and_then(|(_, stdout)| doctor::parse_cargo_version(&stdout));
+        .filter(|probed| probed.success)
+        .and_then(|probed| doctor::parse_cargo_version(&probed.stdout));
     let (git_found, git_unavailable) = match probe("git", &["--version"], root.as_deref()) {
-        Ok((success, _)) => (success, None),
+        Ok(probed) => (probed.success, None),
         Err(error) => (false, Some(doctor::probe_failure(error.kind()))),
     };
     let toolchain_file_channel = root
@@ -1649,34 +2047,68 @@ fn gather_facts() -> Facts {
     }
 }
 
+/// What a probe's child reported: everything a failure envelope needs to
+/// carry, so a red probe is diagnosable from the envelope alone.
+struct Probed {
+    success: bool,
+    /// The child's raw exit code, `-1` for signal deaths.
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
 /// Run a probe command, from the workspace root when one exists so toolchain
 /// overrides resolve consistently with the build steps.
 ///
 /// The spawn error is returned rather than discarded: "could not run" and
 /// "is not installed" are different answers, and a report that cannot tell
 /// them apart sends its reader to fix the wrong thing.
-fn probe(
-    program: &str,
-    args: &[&str],
-    root: Option<&Path>,
-) -> Result<(bool, String), std::io::Error> {
+fn probe(program: &str, args: &[&str], root: Option<&Path>) -> Result<Probed, std::io::Error> {
     let mut process = Process::new(program);
     process.args(args);
     if let Some(directory) = root {
         process.current_dir(directory);
     }
-    process.output().map(|output| {
-        (
-            output.status.success(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        )
+    process.output().map(|output| Probed {
+        success: output.status.success(),
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
-fn workspace_root() -> Option<PathBuf> {
-    env::current_dir()
-        .ok()
-        .and_then(|directory| workspace::find_root(&directory))
+/// The tree to work in, or the reason there is none.
+///
+/// `Err` carries the sentence the caller reports: either no manifest of
+/// any shape above the working directory, or one that is there and
+/// could not be read. The two are different claims and are told apart
+/// here rather than folded into "not found" — walking past a manifest
+/// this tool cannot name would anchor somewhere the caller never asked
+/// about, and report on that tree instead.
+fn workspace_root() -> Result<PathBuf, String> {
+    // Its own sentence, not the rootless one: nothing was looked for,
+    // because the tool could not establish where it stands. Reusing
+    // "no manifest was found above the current directory" would be a
+    // verdict about a question never asked — the distinction this whole
+    // surface is built on.
+    let directory = match env::current_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            return Err(format!(
+                "the working directory could not be read, so no tree could be located: {error}"
+            ));
+        }
+    };
+    match workspace::find_root(&directory) {
+        workspace::Anchor::Root(root) => Ok(root),
+        workspace::Anchor::Unreadable(manifest) => Err(format!(
+            "`{}` is not a manifest this tool can read: it declares neither a workspace nor \
+             a package in a spelling the scan knows. Refusing rather than looking further up, \
+             because a verdict from a tree above it would be about a different question",
+            manifest.display()
+        )),
+        workspace::Anchor::None => Err(ROOTLESS_MESSAGE.to_string()),
+    }
 }
 
 /// Write to stdout without panicking on a closed pipe (the machine-readable
@@ -1733,5 +2165,121 @@ mod tests {
     fn well_shaped_metadata_runs_the_structure_rules() {
         let findings = findings_from_metadata(METADATA).expect("metadata is readable");
         assert_eq!(findings, Vec::new());
+    }
+
+    /// Two rows sharing a name, or a field listed twice, would have one
+    /// digest overwrite another: the leg would prove less than the list
+    /// claims, identically on every target, so the comparison would
+    /// agree over the narrower set and report the wider one. The emit
+    /// path refuses the collision at runtime; this catches it at the
+    /// table, where it is a one-line edit to make and to see.
+    #[test]
+    fn every_pinned_run_has_its_own_name_and_no_repeated_field() {
+        let mut names: Vec<&str> = determinism::PINNED_RUNS
+            .iter()
+            .map(|(name, ..)| *name)
+            .collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), before, "two pinned runs share a name");
+        for (name, _, _, fields) in determinism::PINNED_RUNS {
+            // A row naming no fields contributes nothing to the leg and
+            // says so nowhere: every target would narrow identically,
+            // the anti-vacuity check would not fire because the other
+            // rows still fill the map, and the comparison would agree
+            // over the smaller set while reporting the list's breadth.
+            assert!(
+                !fields.is_empty(),
+                "`{name}` names no digest field, so it would contribute nothing to the leg"
+            );
+            let mut seen: Vec<&str> = fields.to_vec();
+            let listed = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), listed, "`{name}` lists a digest field twice");
+        }
+    }
+
+    /// The statement names the scope it was given, not a fixed one: the
+    /// sample runners build one package, and a `replay` digest produced
+    /// by a differently featured build of that package must not look
+    /// like any other to the consumer comparing them.
+    #[test]
+    fn the_coverage_statement_names_the_scope_it_was_given() {
+        let (_, workspace) = coverage_field(Command::Build, &[], false, "workspace");
+        assert_eq!(
+            workspace.get("packages").and_then(Value::as_str),
+            Some("workspace")
+        );
+        let (_, sample) = coverage_field(
+            Command::Replay,
+            &["window".to_string()],
+            false,
+            "renew-sample-glide",
+        );
+        assert_eq!(
+            sample.get("packages").and_then(Value::as_str),
+            Some("renew-sample-glide")
+        );
+        assert_eq!(
+            sample.get("profile").and_then(Value::as_str),
+            Some("dev"),
+            "a sample runner compiles the dev profile"
+        );
+        assert_eq!(
+            sample
+                .get("features")
+                .and_then(Value::as_array)
+                .map(<[Value]>::len),
+            Some(1)
+        );
+    }
+
+    /// A step is named by its verb and flags, and stops at the `--`:
+    /// what follows belongs to the child's own child, and the two steps
+    /// that carry one (clippy's lint level, bench's harness flag) would
+    /// otherwise read as though those flags were the step's.
+    #[test]
+    fn a_step_is_named_by_its_verb_and_stops_at_the_separator() {
+        assert_eq!(
+            step_name("cargo", &["build", "--workspace"]),
+            "cargo build --workspace"
+        );
+        assert_eq!(
+            step_name("cargo", &["bench", "--workspace", "--", "--test"]),
+            "cargo bench --workspace"
+        );
+        assert_eq!(
+            step_name(
+                "cargo",
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings"
+                ]
+            ),
+            "cargo clippy --workspace --all-targets"
+        );
+        // A program with no arguments is its own name.
+        assert_eq!(step_name("rustup", &[] as &[&str]), "rustup");
+    }
+
+    /// The mode's promise: exactly one document on stdout. A note that
+    /// went to stdout under `--json` would be a second one.
+    #[test]
+    fn a_note_rides_inside_the_envelope_in_json_mode() {
+        let mut captured = String::new();
+        emit_note("wrote 15 digests", true, &mut captured);
+        assert_eq!(captured, "wrote 15 digests\n");
+
+        // Outside that mode the note is the output, and nothing is
+        // captured for an envelope that will not be written.
+        let mut plain = String::new();
+        emit_note("wrote 15 digests", false, &mut plain);
+        assert!(plain.is_empty());
     }
 }

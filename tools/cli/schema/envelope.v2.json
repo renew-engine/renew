@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "envelope.v2.json",
+  "title": "renew result envelope, schema version 2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "status",
+    "exit_code",
+    "duration_ms",
+    "stdout",
+    "stderr"
+  ],
+  "x-known-codes": [
+    "not-a-renew-project",
+    "classification-failed",
+    "engine-only-subcommand",
+    "step-failed",
+    "aborted",
+    "determinism-diverged",
+    "determinism-inconclusive"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "command": { "type": "string" },
+    "status": { "type": "string", "enum": ["ok", "failed", "error"] },
+    "exit_code": { "type": "integer" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" },
+    "target": {
+      "type": "object",
+      "required": ["kind", "root", "manifest"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["engine-workspace", "project"] },
+        "root": { "type": "string" },
+        "manifest": { "type": "string" }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["features", "all_features", "packages", "profile"],
+      "properties": {
+        "features": { "type": "array", "items": { "type": "string" } },
+        "all_features": { "type": "boolean" },
+        "packages": { "type": "string" },
+        "profile": { "type": "string", "enum": ["dev", "test", "bench"] }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "summary"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "An open set within a schema version; the known values are listed in x-known-codes above."
+          },
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  }
+}

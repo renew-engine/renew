@@ -41,7 +41,7 @@ fn envelope(text: &str, command: &str) -> Result<Value, String> {
     if document.get("command").and_then(Value::as_str) != Some(command) {
         return Err(format!("envelope is not `{command}`: {text}"));
     }
-    if document.get("schema_version") != Some(&Value::Number(1)) {
+    if document.get("schema_version") != Some(&Value::Number(2)) {
         return Err(format!("envelope carries no schema_version: {text}"));
     }
     Ok(document)
