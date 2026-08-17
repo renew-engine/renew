@@ -2,7 +2,9 @@
 //! feature. The operating system owns the event loop (that is how every
 //! desktop platform wants it); the engine's frame logic stays a plain
 //! library the [`WindowApp`] callbacks drive. No windowing-library type
-//! crosses this boundary: consumers see only the vocabulary below.
+//! crosses this boundary — consumers see only the vocabulary below —
+//! with one documented exception at the Android entry seam, where the
+//! OS hands the process a handle before any engine code runs.
 //!
 //! Threading: [`run_window_app`] must be called on the main thread —
 //! every desktop platform imposes it and macOS has no escape hatch.
@@ -143,9 +145,6 @@ impl WindowRef<'_> {
         self.window.scale_factor()
     }
 
-    /// An owned, opaque handle to this window for the renderer's surface
-    /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
-    /// as it (or anything owning it) exists — surface validity is
     /// Hold the cursor inside the window and hide it, or let it go.
     ///
     /// **Answers rather than refuses.** Cursor confinement is one of the
@@ -168,7 +167,17 @@ impl WindowRef<'_> {
         grab_on(self.window, held)
     }
 
-    /// ownership, not convention.
+    /// An owned, opaque handle to this window for the renderer's surface
+    /// creation. The returned value KEEPS THE WINDOW ALIVE for as long
+    /// as it (or anything owning it) exists — within the surface epoch,
+    /// surface validity is ownership, not convention.
+    ///
+    /// **Within the epoch** is the load-bearing qualifier: a platform
+    /// that revokes windows (a mobile OS backgrounding the process)
+    /// invalidates the underlying surface no matter who holds a clone,
+    /// which is exactly why [`WindowApp::surface_lost`] obliges the
+    /// application to drop every one of these before it returns — and
+    /// why the loop verifies that it did.
     #[must_use]
     pub fn native(&self) -> NativeWindow {
         NativeWindow {
@@ -180,7 +189,11 @@ impl WindowRef<'_> {
 /// An owned window handle: the value the renderer's window target takes
 /// and holds. Opaque — it exposes nothing but the two standard
 /// window-handle traits the graphics stack consumes. Cloning shares the
-/// same OS window; the window stays alive while any clone exists.
+/// same OS window; the window stays alive while any clone exists —
+/// until the platform closes the surface epoch, at which point
+/// [`WindowApp::surface_lost`] obliges every clone to be dropped,
+/// because the OS invalidates the underlying surface regardless of who
+/// still holds one.
 #[derive(Clone)]
 pub struct NativeWindow {
     window: std::sync::Arc<winit::window::Window>,
@@ -229,15 +242,38 @@ impl raw_window_handle::HasWindowHandle for NativeWindow {
 /// The application the window loop drives — the module's designed
 /// extension point.
 pub trait WindowApp {
-    /// The window exists. On the success path this fires exactly once,
-    /// before any other callback; if window creation fails, no callback
-    /// fires and the failure surfaces through [`run_window_app`].
+    /// The window exists. Fires once per **surface epoch** — the tenure
+    /// between the platform granting a window and taking it away —
+    /// before any other callback of that epoch. Desktop platforms grant
+    /// exactly one epoch, so there this still fires exactly once; a
+    /// platform that revokes the window (Android backgrounding the
+    /// process) closes the epoch through [`surface_lost`] and announces
+    /// the next one here. If window creation fails, no callback of
+    /// that epoch fires and the failure surfaces through
+    /// [`run_window_app`].
+    ///
+    /// [`surface_lost`]: Self::surface_lost
     fn ready(&mut self, window: &WindowRef<'_>);
     /// A translated OS event.
     fn event(&mut self, event: WindowEvent);
     /// Once per loop iteration, after events: tick simulation here,
     /// request redraws and exit through `control`.
     fn update(&mut self, control: &mut LoopControl);
+    /// The platform is invalidating the window: the surface epoch is
+    /// closing. Every [`NativeWindow`] clone — and every renderer
+    /// target built from one — must be dropped before this returns,
+    /// because the operating system is about to destroy what they point
+    /// at; the loop verifies the release and treats a survivor as a
+    /// contract violation (fatal in dev builds). The next window, if
+    /// one comes, is announced by [`ready`](Self::ready) again.
+    ///
+    /// Defaulted to a no-op because desktop platforms never revoke a
+    /// window, so a desktop-only application has nothing to release —
+    /// an application holding window-derived values that targets a
+    /// platform which does revoke them must implement this. Today the
+    /// one revoking platform is Android; iOS suspends without revoking
+    /// and deliberately does not reach this callback.
+    fn surface_lost(&mut self) {}
 }
 
 /// Why the window loop could not run.
@@ -276,15 +312,51 @@ impl std::error::Error for WindowError {}
 /// [`WindowError::LoopUnavailable`] when the loop cannot be created —
 /// on Linux this is the recoverable no-display-server case;
 /// [`WindowError::Loop`] when the running loop reports failure.
+#[cfg(not(target_os = "android"))]
 pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<(), WindowError> {
     let event_loop = EventLoop::new().map_err(|error| WindowError::LoopUnavailable {
         message: error.to_string(),
     })?;
+    drive(event_loop, config, app)
+}
+
+/// Android's spelling of "the loop cannot be created here".
+///
+/// On Android the event loop can only be built around the activity
+/// handle the OS glue passes to `android_main` — the windowing stack
+/// panics without it — so this entry point cannot work there and says
+/// so recoverably instead of reaching the panic: the same
+/// [`WindowError::LoopUnavailable`] a headless Linux box reports, for
+/// the same reason, which keeps every caller of this function compiling
+/// and behaving on every target. The working doorway is
+/// [`android::run_window_app_android`].
+///
+/// # Errors
+///
+/// Always [`WindowError::LoopUnavailable`].
+#[cfg(target_os = "android")]
+pub fn run_window_app(_config: &WindowConfig, _app: &mut dyn WindowApp) -> Result<(), WindowError> {
+    Err(WindowError::LoopUnavailable {
+        message: "the Android loop exists only around the activity handle; \
+                  enter through window::android::run_window_app_android"
+            .to_string(),
+    })
+}
+
+/// The loop's second half, shared by every entry point: how the loop
+/// was *built* differs per platform (a plain `new` on desktop, around
+/// an activity handle on Android), but what happens once it exists must
+/// not.
+fn drive(
+    event_loop: EventLoop<()>,
+    config: &WindowConfig,
+    app: &mut dyn WindowApp,
+) -> Result<(), WindowError> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut adapter = Adapter {
         config,
         app,
-        window: None,
+        epoch: SurfaceEpoch::new(),
         failure: None,
         commanding: false,
         cursor_wanted: core::cell::Cell::new(false),
@@ -293,11 +365,130 @@ pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<
     adapter.outcome(run)
 }
 
+/// The Android doorway: the entry seam for a process the OS enters
+/// through `android_main` rather than `main`.
+#[cfg(target_os = "android")]
+pub mod android {
+    use winit::event_loop::EventLoop;
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+    /// The activity handle the OS glue passes to `android_main` — the
+    /// Android spelling of `main`'s arguments.
+    ///
+    /// **The documented exception to "no windowing-library type crosses
+    /// this boundary."** The value exists before any engine code runs
+    /// and only the entry point touches it: an application receives it
+    /// in `android_main`, hands it here, and never names it again.
+    pub use winit::platform::android::activity::AndroidApp;
+
+    use super::{WindowApp, WindowConfig, WindowError, drive};
+
+    /// Android's [`run_window_app`](super::run_window_app): the same
+    /// adapter and the same contract, with the loop built around the
+    /// activity handle — without which the windowing stack refuses to
+    /// build one at all.
+    ///
+    /// # Errors
+    ///
+    /// [`WindowError::LoopUnavailable`] when the loop cannot be built;
+    /// [`WindowError::Loop`] when the running loop reports failure.
+    pub fn run_window_app_android(
+        activity: AndroidApp,
+        config: &WindowConfig,
+        app: &mut dyn WindowApp,
+    ) -> Result<(), WindowError> {
+        let event_loop = EventLoop::builder()
+            .with_android_app(activity)
+            .build()
+            .map_err(|error| WindowError::LoopUnavailable {
+                message: error.to_string(),
+            })?;
+        drive(event_loop, config, app)
+    }
+}
+
+/// The window's tenure between the platform granting it and taking it
+/// away — the state the adapter keeps per surface epoch.
+///
+/// Extracted so its rules — the app is notified *before* the window
+/// drops, a close with nothing open notifies nobody, an open into a
+/// live epoch is a bug, a released epoch verifies that every clone was
+/// dropped — are driven by tests directly: a real window cannot be
+/// constructed without a running OS loop, and the rules must not go
+/// untested for that reason. Generic for the same purpose the
+/// [`WindowSource`] trait object serves — the tested path and the real
+/// path are literally the same instructions.
+struct SurfaceEpoch<W> {
+    window: Option<std::sync::Arc<W>>,
+}
+
+impl<W> SurfaceEpoch<W> {
+    const fn new() -> Self {
+        Self { window: None }
+    }
+
+    /// The live window, while an epoch is open.
+    fn window(&self) -> Option<&std::sync::Arc<W>> {
+        self.window.as_ref()
+    }
+
+    /// Open an epoch around a freshly created window.
+    fn open(&mut self, window: std::sync::Arc<W>) {
+        debug_assert!(
+            self.window.is_none(),
+            "an epoch must close before the next opens"
+        );
+        self.window = Some(window);
+    }
+
+    /// Close the epoch: tell the app first, verify every clone was
+    /// released, then drop the platform's own reference — in that
+    /// order, because [`WindowApp::surface_lost`] is the app's only
+    /// chance to release before the OS invalidates what the clones
+    /// point at. The call happens *here*, inside the tested machine,
+    /// so the unit tests drive the exact instruction the live suspend
+    /// path executes rather than a stand-in closure.
+    /// Returns whether there was an epoch to close: a redundant close
+    /// is tolerated silently and notifies nobody, because Android may
+    /// emit back-to-back suspends.
+    fn close(&mut self, app: &mut dyn WindowApp) -> bool {
+        let Some(window) = self.window.take() else {
+            return false;
+        };
+        app.surface_lost();
+        debug_assert!(
+            std::sync::Arc::strong_count(&window) == 1,
+            "surface_lost returned while a NativeWindow clone (or a renderer \
+             target holding one) was still alive; every window-derived value \
+             must be dropped before the callback returns"
+        );
+        drop(window);
+        true
+    }
+}
+
+/// Everything a suspend does, in one function generic over the window
+/// type — the whole reason it is not a method on the adapter. The
+/// adapter's epoch is concretely a winit window, which no unit test can
+/// construct, so any instruction living only on the adapter's path is
+/// an instruction no test can reach; this function is shared between
+/// that path and the tests, which drive it with a plain `W` and an
+/// epoch genuinely open (the [`WindowSource`] precedent again).
+fn close_epoch<W>(epoch: &mut SurfaceEpoch<W>, app: &mut dyn WindowApp, commanding: &mut bool) {
+    epoch.close(app);
+    // A modifier held across the suspend releases while no window
+    // exists, so its release event can never arrive — a remembered
+    // press with a dead invalidation channel would silently swallow
+    // the next epoch's first keystrokes as shortcuts. The cursor
+    // request survives on purpose (it is the app's intent, reapplied
+    // on the new window); this is derived OS state, so it resets.
+    *commanding = false;
+}
+
 /// The bridge between the OS loop and the engine app.
 struct Adapter<'a> {
     config: &'a WindowConfig,
     app: &'a mut dyn WindowApp,
-    window: Option<std::sync::Arc<winit::window::Window>>,
+    epoch: SurfaceEpoch<winit::window::Window>,
     /// Failure inside a callback (window creation): carried out of the
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
@@ -341,14 +532,17 @@ type WindowSource<'a> =
     dyn Fn(winit::window::WindowAttributes) -> Result<winit::window::Window, String> + 'a;
 
 impl Adapter<'_> {
-    /// Bring the window up and hand it to the app.
+    /// Bring the window up and hand it to the app — opening a surface
+    /// epoch.
     ///
-    /// Does nothing once a window exists — desktop platforms emit
-    /// exactly one resume, but a second must never recreate it — and
-    /// nothing after a refusal, which is final: the loop is on its way
-    /// out and the reason already recorded is the one to report.
+    /// Does nothing while an epoch is open — a resume with a live
+    /// window (desktop platforms can emit one) must never recreate it;
+    /// recreation happens only after the platform closed the previous
+    /// epoch through [`Adapter::close_surface`]. And nothing after a
+    /// refusal, which is final: the loop is on its way out and the
+    /// reason already recorded is the one to report.
     fn open(&mut self, create: &WindowSource<'_>) {
-        if self.window.is_some() || self.failure.is_some() {
+        if self.epoch.window().is_some() || self.failure.is_some() {
             return;
         }
         let attributes = winit::window::Window::default_attributes()
@@ -365,12 +559,28 @@ impl Adapter<'_> {
                     window: &window,
                     cursor_wanted: &self.cursor_wanted,
                 });
-                self.window = Some(window);
+                self.epoch.open(window);
             }
             Err(message) => {
                 self.failure = Some(format!("window creation failed: {message}"));
             }
         }
+    }
+
+    /// Close the surface epoch: the platform is taking the window away.
+    /// The app hears [`WindowApp::surface_lost`] first and must release
+    /// every window-derived value; the release is verified before the
+    /// platform's own reference drops. With no epoch open this is a
+    /// tolerated no-op that reaches no app — Android may emit redundant
+    /// suspends.
+    fn close_surface(&mut self) {
+        let Self {
+            epoch,
+            app,
+            commanding,
+            ..
+        } = self;
+        close_epoch(epoch, &mut **app, commanding);
     }
 
     /// Deliver one OS event to the app. Events with no engine meaning
@@ -405,15 +615,17 @@ impl Adapter<'_> {
     /// The request itself is remembered by the caller; this is only the
     /// asking. A window that has gone away has nothing to hold.
     fn apply_cursor_grab(&self, held: bool) -> bool {
-        self.window
-            .as_ref()
+        self.epoch
+            .window()
             .is_some_and(|window| grab_on(window, held))
     }
 
     /// One loop iteration's app work, after the events. Returns whether
-    /// the loop must now leave: because the app asked, or because the
-    /// window never came up — the app never saw `ready`, so it must not
-    /// see `update` either, and there is nothing left to wait for.
+    /// the loop must now leave: because the app asked, or because a
+    /// window refused to come up — on the first epoch the app never saw
+    /// `ready` and must not see `update` either; on a later epoch the
+    /// refusal is just as final, and a loop that cannot show anything
+    /// again has nothing left to wait for.
     fn tick(&mut self) -> bool {
         if self.failure.is_some() {
             return true;
@@ -428,7 +640,7 @@ impl Adapter<'_> {
             let _refused = self.apply_cursor_grab(held);
         }
         if control.redraw
-            && let Some(window) = &self.window
+            && let Some(window) = self.epoch.window()
         {
             window.request_redraw();
         }
@@ -461,6 +673,24 @@ impl ApplicationHandler for Adapter<'_> {
                 .create_window(attributes)
                 .map_err(|error| error.to_string())
         });
+    }
+
+    /// A suspend means different things on the platforms that emit one,
+    /// and only Android's revokes the window: there the surface dies
+    /// with the backgrounded activity and every render surface must be
+    /// dropped before this returns, so the epoch closes here, inside
+    /// the callback. iOS also fires this — on *every* interruption (an
+    /// incoming call, the app switcher, a pulled-down notification
+    /// shade) — with the surface still valid, so closing the epoch
+    /// there would tear a live renderer down many times per session;
+    /// iOS keeps its window until its lifecycle gets its own deliberate
+    /// treatment. Desktop platforms never call this at all. `cfg!`
+    /// rather than an attribute so every target compiles every path —
+    /// the branch is decided at compile time either way.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if cfg!(target_os = "android") {
+            self.close_surface();
+        }
     }
 
     fn window_event(
@@ -1080,6 +1310,8 @@ mod tests {
     struct Recorder {
         events: Vec<WindowEvent>,
         updates: u32,
+        /// How many times the loop said the surface was lost.
+        losses: u32,
         ask_redraw: bool,
         ask_exit: bool,
         /// What to ask of the cursor, if anything. `None` asks nothing,
@@ -1091,7 +1323,7 @@ mod tests {
         // Unreachable from here, and nothing can change that: a
         // `WindowRef` borrows a live OS window, which needs a running
         // event loop no unit test can host. The callback's own contract
-        // — fires exactly once, before the rest — is proven by the
+        // — once per surface epoch, before the rest — is proven by the
         // windowed smoke test instead.
         fn ready(&mut self, _window: &WindowRef<'_>) {}
 
@@ -1111,6 +1343,10 @@ mod tests {
                 control.hold_cursor(held);
             }
         }
+
+        fn surface_lost(&mut self) {
+            self.losses += 1;
+        }
     }
 
     /// An adapter over a fresh app, in the state the loop starts in.
@@ -1118,7 +1354,7 @@ mod tests {
         Adapter {
             config,
             app,
-            window: None,
+            epoch: SurfaceEpoch::new(),
             failure: None,
             commanding: false,
             cursor_wanted: core::cell::Cell::new(false),
@@ -1160,6 +1396,205 @@ mod tests {
             "window loop failed: window creation failed: no display"
         );
         assert_eq!(app.updates, 0, "a failed bring-up must not drive the app");
+    }
+
+    /// **The app is told before the window drops, and the platform's
+    /// own reference does not survive the close.** The order is the
+    /// contract: `surface_lost` is the app's only chance to release
+    /// clones of a window the OS is about to invalidate, so a close
+    /// that dropped first would notify about a corpse. The app here is
+    /// a real [`WindowApp`] heard through `surface_lost` itself — the
+    /// same instruction the live suspend path executes.
+    #[test]
+    fn a_close_notifies_the_app_before_the_window_drops() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Tattle(std::sync::Arc<AtomicBool>);
+        impl Drop for Tattle {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        /// Records what the world looked like when the loss arrived.
+        struct Probe {
+            dropped: std::sync::Arc<AtomicBool>,
+            alive_at_notify: bool,
+            losses: u32,
+        }
+        impl WindowApp for Probe {
+            fn ready(&mut self, _window: &WindowRef<'_>) {}
+            fn event(&mut self, _event: WindowEvent) {}
+            fn update(&mut self, _control: &mut LoopControl) {}
+            fn surface_lost(&mut self) {
+                self.losses += 1;
+                self.alive_at_notify = !self.dropped.load(Ordering::Relaxed);
+            }
+        }
+
+        let dropped = std::sync::Arc::new(AtomicBool::new(false));
+        let mut epoch = SurfaceEpoch::new();
+        epoch.open(std::sync::Arc::new(Tattle(std::sync::Arc::clone(&dropped))));
+
+        let mut probe = Probe {
+            dropped: std::sync::Arc::clone(&dropped),
+            alive_at_notify: false,
+            losses: 0,
+        };
+        let closed = epoch.close(&mut probe);
+
+        assert!(closed, "there was an epoch to close");
+        assert_eq!(probe.losses, 1, "one epoch, one loss");
+        assert!(
+            probe.alive_at_notify,
+            "the app must hear it while it can still act"
+        );
+        assert!(
+            dropped.load(Ordering::Relaxed),
+            "the platform reference must not outlive the close"
+        );
+        assert!(epoch.window().is_none(), "a closed epoch holds nothing");
+    }
+
+    /// A redundant close is tolerated silently — Android may emit
+    /// back-to-back suspends — and tolerating it must not mean telling
+    /// the app its surface was lost twice.
+    #[test]
+    fn a_redundant_close_is_tolerated_and_notifies_nobody() {
+        let mut epoch: SurfaceEpoch<()> = SurfaceEpoch::new();
+        let mut app = Recorder::default();
+        assert!(!epoch.close(&mut app), "nothing was open");
+        assert_eq!(app.losses, 0, "nobody to notify when nothing was open");
+    }
+
+    /// Recreation is the point of the epoch shape: after a close, the
+    /// next open must succeed — that is a backgrounded app coming back.
+    #[test]
+    fn a_new_epoch_can_open_after_the_last_closed() {
+        let mut epoch = SurfaceEpoch::new();
+        let mut app = Recorder::default();
+        epoch.open(std::sync::Arc::new(1_u8));
+        assert!(epoch.close(&mut app));
+        assert_eq!(app.losses, 1, "the first epoch's loss was heard");
+        epoch.open(std::sync::Arc::new(2_u8));
+        assert_eq!(
+            epoch.window().map(|w| **w),
+            Some(2),
+            "the new window is live"
+        );
+    }
+
+    /// An app that holds no window-derived values and takes the trait's
+    /// defaulted `surface_lost` satisfies the release contract as-is —
+    /// the default is a real answer for such apps, not a trap.
+    #[test]
+    fn the_defaulted_surface_lost_satisfies_the_release_contract() {
+        struct Holdless;
+        impl WindowApp for Holdless {
+            fn ready(&mut self, _window: &WindowRef<'_>) {}
+            fn event(&mut self, _event: WindowEvent) {}
+            fn update(&mut self, _control: &mut LoopControl) {}
+            // surface_lost deliberately not implemented: the default.
+        }
+        let mut epoch = SurfaceEpoch::new();
+        epoch.open(std::sync::Arc::new(()));
+        assert!(
+            epoch.close(&mut Holdless),
+            "a holdless app passes the release verification unchanged"
+        );
+    }
+
+    /// Opening into a live epoch is a bug in the loop, not a state to
+    /// tolerate: the first window would leak unverified.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "an epoch must close before the next opens")]
+    fn opening_into_a_live_epoch_is_a_contract_violation() {
+        let mut epoch = SurfaceEpoch::new();
+        epoch.open(std::sync::Arc::new(()));
+        epoch.open(std::sync::Arc::new(()));
+    }
+
+    /// A clone surviving `surface_lost` is a dangling surface in
+    /// waiting — the OS destroys what it points at regardless of the
+    /// strong count — so the close treats it as a contract violation
+    /// rather than trusting the release.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "surface_lost returned while")]
+    fn a_clone_surviving_the_close_is_a_contract_violation() {
+        let mut epoch = SurfaceEpoch::new();
+        let window = std::sync::Arc::new(());
+        epoch.open(std::sync::Arc::clone(&window));
+        epoch.close(&mut Recorder::default());
+        drop(window);
+    }
+
+    /// **A suspend forgets a held command modifier.** Its release event
+    /// can only be delivered to a window, and the suspend takes the
+    /// window away — a press remembered across the gap would swallow
+    /// the next epoch's first keystrokes as shortcuts. The cursor
+    /// request deliberately survives the same boundary: it is the
+    /// app's intent, not the OS's state.
+    #[test]
+    fn a_suspend_forgets_a_held_modifier_and_keeps_the_cursor_request() {
+        use winit::event::WindowEvent as We;
+        use winit::keyboard::ModifiersState as Ms;
+
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        adapter.dispatch(&We::ModifiersChanged(Ms::CONTROL.into()));
+        adapter.cursor_wanted.set(true);
+        assert!(adapter.commanding, "the press was remembered");
+
+        adapter.close_surface();
+        assert!(
+            !adapter.commanding,
+            "the release can never arrive, so the press must not outlive the epoch"
+        );
+        assert!(
+            adapter.cursor_wanted.get(),
+            "the app's cursor intent survives to be reapplied on the next window"
+        );
+    }
+
+    /// **The whole suspend, through the shared function, with an epoch
+    /// genuinely open.** This is the test that owns the live path's
+    /// instructions: the notification, the release verification, the
+    /// drop, and the modifier reset all execute here on the exact code
+    /// `close_surface` delegates to — severing any one of them turns
+    /// this red. What remains outside every test is the two-line
+    /// delegation chain above the shared function (the suspend handler
+    /// and `close_surface` itself), each of which is pinned elsewhere:
+    /// the modifier test fails if `close_surface` stops delegating, and
+    /// the handler's body waits on an execution lane no desktop can
+    /// host, whose first suspend cycle is its regression test.
+    #[test]
+    fn a_full_suspend_notifies_releases_and_forgets_the_modifier() {
+        let mut epoch = SurfaceEpoch::new();
+        let mut app = Recorder::default();
+        let mut commanding = true;
+        epoch.open(std::sync::Arc::new(7_u8));
+
+        close_epoch(&mut epoch, &mut app, &mut commanding);
+
+        assert_eq!(app.losses, 1, "the open epoch's loss must be heard");
+        assert!(epoch.window().is_none(), "the window must not survive");
+        assert!(!commanding, "a held modifier must not cross the epoch");
+    }
+
+    /// The adapter's close with no epoch open reaches no app — the
+    /// redundant-suspend case, one level up through the real
+    /// `close_surface`. (The open-epoch half of that path is owned by
+    /// the shared-function test above, because a real window cannot
+    /// exist under a unit test.)
+    #[test]
+    fn a_suspend_with_no_window_reaches_no_app() {
+        let config = WindowConfig::default();
+        let mut app = Recorder::default();
+        let mut adapter = new_adapter(&config, &mut app);
+        adapter.close_surface();
+        adapter.close_surface();
+        assert_eq!(app.losses, 0, "no epoch was open, so none was lost");
     }
 
     #[test]

@@ -135,8 +135,12 @@ their `Drop` cannot run while a set still points at them — and the
 binding itself is held by the retention table of any frame that named
 it, released only after that frame's work provably ended, so its own
 `Drop` cannot run while a submit could still read the set. The
-`WindowTarget` owns a keep-alive handle to its window: the OS window
-cannot be torn down under a live surface, by construction.
+`WindowTarget` owns a keep-alive handle to its window: for as long as
+the target lives, the OS window cannot be torn down under its surface,
+by construction. On a platform that revokes windows, the platform
+layer's surface-epoch contract obliges the target's owner to drop the
+whole target when the epoch closes — the keep-alive covers the
+target's own lifetime, and the epoch decides how long that may be.
 
 ## Testing note
 
