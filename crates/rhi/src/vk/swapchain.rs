@@ -2,9 +2,9 @@
 //! record-passes-then-present loop, `FRAMES_IN_FLIGHT` frames in
 //! flight.
 //!
-//! The target owns a keep-alive handle to the native window (boxed,
-//! opaque) — the platform window cannot be torn down under a live
-//! surface, by ownership rather than by discipline.
+//! The target owns a keep-alive handle to the native window — so no
+//! window is torn down under a live surface while its surface epoch
+//! lasts; a platform ending the epoch has the owner drop the target.
 //!
 //! Error discipline: a mid-frame driver failure quiesces the GPU and
 //! tears the swapchain down (the target goes dormant, exactly like a
@@ -230,8 +230,8 @@ impl Device {
         // implementation of the handle traits can produce a handle that
         // outlives the window it borrows from without itself using
         // `unsafe` incorrectly. (For the intended argument — the
-        // platform's `NativeWindow`, an owning keep-alive — validity is
-        // direct.)
+        // platform's `NativeWindow`, an owning keep-alive within its
+        // surface epoch — validity is direct for the surface's life.)
         let surface = unsafe {
             ash_window::create_surface(
                 &shared.entry,

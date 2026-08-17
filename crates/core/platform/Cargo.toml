@@ -75,6 +75,17 @@ cpal = { version = "=0.18.1", optional = true, default-features = false }
 # this line used to be optional.
 renew-diag = { version = "0.1.1", path = "../diag" }
 
+# Android resolves the same pinned winit with its activity glue compiled
+# in — the NativeActivity flavor: pure Rust, no Java build step (the
+# GameActivity flavor is deliberately not chosen; it buys only a text
+# path nothing here ships yet). Target-scoped so desktop and headless
+# builds resolve exactly what they always did; the glue crate is winit's
+# own, already in the lockfile, and versions in lockstep with it.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "=0.30.13", optional = true, default-features = false, features = [
+    "android-native-activity",
+] }
+
 [lints]
 workspace = true
 

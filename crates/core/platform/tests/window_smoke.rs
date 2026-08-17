@@ -26,6 +26,7 @@ struct SmokeApp {
     updates: u32,
     redraws_seen: u32,
     physical_size: (u32, u32),
+    losses: u32,
 }
 
 impl SmokeApp {
@@ -35,6 +36,7 @@ impl SmokeApp {
             updates: 0,
             redraws_seen: 0,
             physical_size: (0, 0),
+            losses: 0,
         }
     }
 }
@@ -82,6 +84,10 @@ impl WindowApp for SmokeApp {
             control.exit();
         }
     }
+
+    fn surface_lost(&mut self) {
+        self.losses += 1;
+    }
 }
 
 /// The windowed half: run one loop to completion where a display exists.
@@ -94,6 +100,15 @@ fn one_window_runs_and_exits(config: &WindowConfig) -> bool {
             assert!(
                 app.physical_size.0 > 0 && app.physical_size.1 > 0,
                 "the window must have a real size at ready"
+            );
+            // Desktop platforms grant exactly one surface epoch: a run
+            // that ends by the app's own request must never have been
+            // told its surface was lost. This is the claim the whole
+            // epoch model rests on for desktop, pinned where a real
+            // window exists to disprove it.
+            assert_eq!(
+                app.losses, 0,
+                "a desktop run must close no surface epoch mid-flight"
             );
             println!(
                 "window smoke: ok (size {:?}, redraws delivered: {})",

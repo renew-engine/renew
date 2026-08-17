@@ -42,6 +42,21 @@ datagrams — each a thin, explicit seam.
   the point of the split; headless environments at runtime get a
   recoverable `LoopUnavailable`. The loop runs on the main thread only
   (every desktop platform requires it).
+  The window's lifetime is a **surface epoch**: `ready` fires once per
+  epoch, and a platform that revokes the window (a mobile OS
+  backgrounding the process) closes the epoch through
+  `WindowApp::surface_lost`, where the application must drop every
+  `NativeWindow` clone and renderer target before returning — verified
+  by the loop, fatal in dev builds if a clone survives. Desktop
+  platforms grant exactly one epoch, so nothing changes for them, and
+  the defaulted no-op keeps desktop apps unwritten. On Android the loop
+  can only be built around the activity handle the OS passes to
+  `android_main`, so the entry point there is
+  `window::android::run_window_app_android` — the plain entry reports a
+  recoverable `LoopUnavailable` on that target, and the `AndroidApp`
+  handle re-export is the one documented exception to the
+  no-windowing-library-type rule, because the value exists before any
+  engine code runs.
 - `audio` (default-**off** `audio-out` feature) — the default output
   device, a negotiated stream shape, and a fill callback the OS audio
   thread drives. Bring-up is two phases because the shape has to be
@@ -61,6 +76,13 @@ datagrams — each a thin, explicit seam.
   `std::time`/`std::fs`/`std::thread` directly — thread creation belongs
   in this crate alone, and even the error-kind vocabulary is re-exported
   here so consumers never import `std::io`.
+- **The surface-epoch release obligation.** When the platform closes a
+  surface epoch (`WindowApp::surface_lost`), the application must drop
+  every `NativeWindow` clone and every renderer target built from one
+  before the callback returns. The loop verifies the release; a
+  survivor is a contract violation, fatal in dev builds. Desktop
+  platforms close no epochs, so desktop-only applications inherit no
+  obligation.
 - **No ambient state.** No global clock, no environment reads; everything
   is a value or an explicit call.
 - **Errors carry context** — paths and thread names, in crate-local

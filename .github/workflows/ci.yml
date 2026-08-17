@@ -654,6 +654,52 @@ jobs:
         env:
           RENEW_AUDIO_ABSENT: "1"
 
+  # The mobile cross-targets, compile-only. The platform crate carries
+  # code behind cfg(target_os = "android") that no other lane compiles
+  # — without a leg naming the target, any commit could break it with
+  # every gate green, and the Apple pair keeps the whole workspace
+  # honest about a target it must stay portable to. Check, not test:
+  # nothing here runs on the runner's own OS, and execution lanes are a
+  # separate decision with separate machinery (an emulator, a
+  # simulator, an app harness). No SDK or NDK is needed to type-check:
+  # nothing links.
+  mobile-check:
+    name: Mobile targets (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: aarch64-linux-android,x86_64-linux-android
+            # Clippy rides along here because the Android-gated module
+            # exists on these targets alone — the canonical lint never
+            # compiles it, exactly the audio job's reasoning. Library
+            # and binary targets only: the bench harness's dependency
+            # tree compiles C through a build script, which needs the
+            # NDK's compiler that a type-check lane deliberately does
+            # not wire up. The gated module is library code, so the
+            # narrower lint sees everything this lane exists to guard.
+            lint: "true"
+          - os: macos-latest
+            targets: aarch64-apple-ios,aarch64-apple-ios-sim
+            lint: "false"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - name: Check the workspace for each mobile target
+        shell: bash
+        run: |
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            cargo check --workspace --target "$target"
+            if [ "${{ matrix.lint }}" = "true" ]; then
+              cargo clippy --workspace --target "$target" -- -D warnings
+            fi
+          done
+
   rendering:
     name: Rendering (software Vulkan)
     # Pinned runner image: the golden images attest bytes from exactly
