@@ -1302,6 +1302,99 @@ jobs:
               sys.exit(1)
           COMPARE
 
+  # The same eleven pinned simulations, executed on an iOS simulator.
+  # Advisory for the same reason the Android lane is: whether this
+  # platform belongs in the determinism claim is a decision with a
+  # signature attached, and a lane that could redden `main` before that
+  # signature would be asserting the answer rather than gathering it.
+  #
+  # **A simulator is not a device, and the row this lane eventually
+  # proposes has to say so.** Both `aarch64-apple-ios` and
+  # `aarch64-apple-ios-sim` map to the same platform words, so a leg
+  # cannot tell the two apart - the mapping is a table keyed by triple,
+  # which is what a `--target` run labels a leg from. That is a naming
+  # decision owed before the row exists, not before the lane does: the
+  # lane's job today is to find out whether the numbers agree at all.
+  determinism-ios:
+    name: Determinism (ios simulator, advisory)
+    runs-on: macos-latest
+    continue-on-error: true
+    # Only so the Linux leg exists to print a comparison against, as in
+    # the Android lane.
+    needs: [determinism-emit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Run the pinned simulations on a simulator
+        run: bash tools/ci/ios-determinism.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-ios-simulator-aarch64
+          path: ios-leg.json
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          name: determinism-macos-latest
+          path: macos-leg
+      - uses: actions/download-artifact@v4
+        with:
+          name: determinism-ubuntu-latest
+          path: linux-leg
+      # Printed, never decisive - see the Android lane's twin step.
+      #
+      # **Two partners, and the macOS one is the informative half.** It
+      # runs on this same instruction set, so a disagreement with it can
+      # only come from the platform - which is the variable this lane
+      # adds. Linux differs in both OS and instruction set at once, so
+      # agreement there says more while disagreement there says less.
+      - name: Hold the simulator leg against the macOS and Linux ones
+        shell: bash
+        run: |
+          python3 - <<'COMPARE'
+          import json, sys
+
+          def leg(path):
+              with open(path, encoding='utf-8') as handle:
+                  document = json.load(handle)
+              return document['digests'], f"{document['os']}/{document['arch']}"
+
+          ios, ios_name = leg('ios-leg.json')
+          empty = []
+          for path in ('macos-leg/leg.json', 'linux-leg/leg.json'):
+              other, other_name = leg(path)
+              names = sorted(set(ios) | set(other))
+              agree, diverge, missing = [], [], []
+              for name in names:
+                  if name not in ios or name not in other:
+                      missing.append(name)
+                  elif ios[name] == other[name]:
+                      agree.append(name)
+                  else:
+                      diverge.append((name, ios[name], other[name]))
+
+              print(f'{ios_name} (simulator) against {other_name}')
+              for name, mine, theirs in diverge:
+                  print(f'  DIVERGE {name}: {mine} here, {theirs} there')
+              for name in missing:
+                  print(f'  ONLY ONE LEG RAN {name}')
+              print(f'  {len(agree)} agree, {len(diverge)} diverge, '
+                    f'{len(missing)} ran on one leg only')
+              # Per partner, not summed. A total would let one partner
+              # carry the other: the macOS leg could share no digest
+              # names at all and the job would still pass on Linux's
+              # strength, while the log claimed both were held.
+              if not agree and not diverge:
+                  print(f'  NOTHING WAS COMPARED against {other_name} - '
+                        f'do not read this as agreement')
+                  empty.append(other_name)
+
+          if empty:
+              print(f'compared nothing against: {", ".join(empty)}')
+              sys.exit(1)
+          COMPARE
+
   determinism-compare:
     name: Determinism (cross-platform comparison)
     runs-on: ubuntu-latest

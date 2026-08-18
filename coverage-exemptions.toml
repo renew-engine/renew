@@ -141,12 +141,12 @@ reason = "The arm that clears a voice whose sound index is missing. A voice is o
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [86, 87, 88, 89, 1303, 1304, 1305, 1306, 1317, 1318, 1319, 1321, 1322, 1323, 1324, 1325, 1328, 1334, 1335, 1337, 1338, 1339, 1344, 1345, 1352, 1353, 1354, 1355, 1357, 1358, 1359, 1360, 1361, 1362, 1363, 1364, 1365, 1376, 1377, 1378, 1380, 1381, 1382, 1383, 1384, 1385, 1386, 1387, 1388, 1389, 1390, 1391, 1393, 1397, 1398]
+lines = [86, 87, 88, 89, 1303, 1304, 1305, 1306, 1317, 1318, 1319, 1321, 1322, 1323, 1324, 1325, 1328, 1334, 1335, 1337, 1338, 1339, 1344, 1345, 1352, 1353, 1354, 1355, 1357, 1358, 1359, 1360, 1361, 1362, 1363, 1364, 1365, 1379, 1380, 1381, 1383, 1384, 1385, 1386, 1387, 1388, 1389, 1390, 1391, 1392, 1393, 1394, 1396, 1400, 1401]
 reason = "The emit half of determinism: it spawns a cargo run per pinned scenario and reads what they printed, so reaching it from a test would mean building and running whole samples under instrumentation. Most of it is not untested — the three determinism legs execute it on Linux, Windows and macOS on every push, and a failure there is what a broken emit looks like. Everything in it that can be tested without a subprocess was moved out: digests_from_output has five cases beside it, and platform_of_triple is a table with its own unit test covering both the triples it knows and two it must refuse. What is left is process orchestration and the paths taken when a child cannot start or exits non-zero. What no GATING lane executes is named here rather than left inside that sentence. The refusal arm - the runner.fail reporting a triple platform_of_triple could not name - is reached by nothing at all: every lane passes either a triple the table carries or none. It exists so that a target added to CI and forgotten in that table fails loudly instead of emitting a leg labelled by a guess; its condition is what carries the test, and the arm itself is three lines of message. The rest of the --target path - the arm that labels the leg from the triple, and the branch that builds each cargo invocation with it - is executed only by the Android emulator lane, which is advisory and cannot redden main; the three legs that do gate main pass no --target and reach neither. Those lines are held by a lane whose red is visible only to somebody reading it, which is the honest description until the row is signed and the lane gates. The argv that branch produces is pinned by a unit test instead, which needs no device."
 
 [[exempt]]
 file = "tools/cli/src/main.rs"
-lines = [1409]
+lines = [1412]
 reason = "The comparison refusing to start because no workspace root is above it. Every other subcommand carries the same arm and reaches it the same way -- never, from a test, because a test runs inside the workspace it is testing. Reaching it would mean invoking the binary from outside any cargo project, which is a property of where a caller stands rather than of anything this code does."
 
 [[exempt]]
@@ -156,37 +156,37 @@ reason = "The two places a window resize is acted on: rebuilding the crosshair f
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [798, 799]
+lines = [824, 825]
 reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1396]
+lines = [1422]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1492, 1493, 1494, 1560, 1561, 1562]
+lines = [1518, 1519, 1520, 1586, 1587, 1588]
 reason = "Required trait methods of two single-purpose test doubles (the epoch-ordering probe and the defaulted-release app), whose tests drive only the surface-release path. ready cannot be called for the same reason as the double above; event and update are empty stubs a test could call but only to color lines while asserting nothing, which is the vacuity this suite exists to refuse."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707]
+lines = [723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733]
 reason = "The suspend handler's body. No desktop platform ever emits a suspend, the windowing crate's callback argument has no public constructor, and the harness cannot host the loop that would produce one — so no lane that runs on a desktop can enter it. The epoch half IS covered: close_epoch is driven by the unit suite with an epoch genuinely open, and close_surface's delegation to it is pinned by the modifier-reset test. The residue — the platform branch, the delegation call, and the park that stops a backgrounded loop polling — waits on the first execution lane, whose opening suspend cycle is its regression test; none of it is assumed covered."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [853, 856]
+lines = [879, 882]
 reason = "The key arm of typed_characters: the only arm that reads text off an OS key event. winit's KeyEvent carries a pub(crate) platform_specific field, so it cannot be constructed outside that crate and this arm cannot be entered from a test - checked in the pinned source rather than assumed. What the arm decides is covered without it: committed is a free function driven directly with both press and release, printable is driven over the control range, and the synthetic-event filter is a pattern in the match rather than a branch of its own. Deliberately narrow: the `_ => None` arm below is NOT exempted, because every non-key event a test dispatches enters it."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [611, 612]
+lines = [637, 638]
 reason = "Delivering the characters an OS key event committed - the delivery line and the loop close the gate attributes with it. Unreachable for the same root cause as the typed_characters key arm below: the loop only has a body to run when that arm yields text, and that needs an unconstructible KeyEvent. The narrowness is measured rather than asserted: the guard above and the loop head itself are entered by every dispatched non-commanding event and the gate reports both covered. What is exempt here is the delivery, not the decision to deliver."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [726, 727, 728, 729, 730, 731, 732, 733, 734, 735]
+lines = [752, 753, 754, 755, 756, 757, 758, 759, 760, 761]
 reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run. Note for local runs: a machine with a real mouse enters this callback during the window smoke test and most of these lines then report as stale exemptions; under CI's virtual display they are stable."
 
 [[exempt]]

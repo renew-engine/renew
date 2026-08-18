@@ -174,8 +174,10 @@ pub struct Invocation {
     /// not: a leg that read its own `env::consts` would label an
     /// Android run as the desktop that launched it. What the triple
     /// cannot check is that the runs truly executed there — that is the
-    /// runner's job, and the lane prints the device's own architecture
-    /// beside the leg so the two can be read together.
+    /// runner's job, and each lane answers it in the terms its platform
+    /// allows: the Android one asserts the attached device's own
+    /// architecture, while on an iOS simulator the loader does it, by
+    /// refusing outright a binary whose platform does not match.
     pub target: Option<String>,
     /// Run, record and replay: cargo features to build the sample with,
     /// each occurrence kept.

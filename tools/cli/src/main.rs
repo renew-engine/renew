@@ -1371,8 +1371,11 @@ fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool
     // own constants would label a device's digests with the desktop
     // that launched them. The triple is what the binaries were built
     // for and what the runner executed; what it cannot prove is that
-    // the runner truly went there, which is why the lane prints the
-    // device's own architecture beside the leg.
+    // the runner truly went there. Each lane answers that in the terms
+    // its platform allows: the Android one asserts the attached
+    // device's own architecture, and the iOS one leans on the loader,
+    // which refuses a binary whose platform does not match the
+    // simulator's - so digests coming back at all prove the match.
     let (os, arch) = match platform {
         Some(pair) => pair,
         None => (env::consts::OS.to_string(), env::consts::ARCH.to_string()),
