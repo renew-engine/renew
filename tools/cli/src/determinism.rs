@@ -36,10 +36,11 @@ use std::fmt::Write as _;
 /// Widening it is not a code change in spirit even though it is one in
 /// fact: adding a row changes what the engine promises, and the row and
 /// its lane leg land together or the lane starts lying.
-pub const TARGETS: [(&str, &str); 3] = [
+pub const TARGETS: [(&str, &str); 4] = [
     ("linux", "x86_64"),
     ("windows", "x86_64"),
     ("macos", "aarch64"),
+    ("android", "x86_64"),
 ];
 
 /// The rows [`TARGETS`] binds, in the shape [`compare`] wants.

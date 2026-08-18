@@ -624,11 +624,13 @@ fn a_delivered_determinism_verdict_is_never_an_abort() {
     )
     .expect("root manifest");
 
-    // Three legs matching the expected target set, one digest differing:
-    // the flagship red, and it must wear its own code.
+    // One leg per expected target row, one digest differing: the
+    // flagship red, and it must wear its own code rather than the
+    // inconclusive one a short leg set would earn.
     fs::write(directory.join("a.json"), leg("linux", "x86_64", "0xaaaa")).expect("leg");
     fs::write(directory.join("b.json"), leg("windows", "x86_64", "0xaaaa")).expect("leg");
     fs::write(directory.join("c.json"), leg("macos", "aarch64", "0xbbbb")).expect("leg");
+    fs::write(directory.join("g.json"), leg("android", "x86_64", "0xaaaa")).expect("leg");
     let (envelope, ok) = renew_json(
         &directory,
         &[
@@ -639,6 +641,8 @@ fn a_delivered_determinism_verdict_is_never_an_abort() {
             "b.json",
             "--compare",
             "c.json",
+            "--compare",
+            "g.json",
         ],
     )
     .expect("an envelope");
@@ -716,6 +720,7 @@ fn legs_that_all_ran_less_than_the_pinned_list_are_inconclusive() {
         ("n1.json", "linux", "x86_64"),
         ("n2.json", "windows", "x86_64"),
         ("n3.json", "macos", "aarch64"),
+        ("n4.json", "android", "x86_64"),
     ] {
         fs::write(
             directory.join(name),
@@ -736,6 +741,8 @@ fn legs_that_all_ran_less_than_the_pinned_list_are_inconclusive() {
             "n2.json",
             "--compare",
             "n3.json",
+            "--compare",
+            "n4.json",
         ],
     )
     .expect("an envelope");
@@ -775,6 +782,7 @@ fn an_agreeing_comparison_carries_its_report_inside_the_envelope() {
         ("d.json", "linux", "x86_64"),
         ("e.json", "windows", "x86_64"),
         ("f.json", "macos", "aarch64"),
+        ("h.json", "android", "x86_64"),
     ] {
         fs::write(directory.join(name), leg(os, arch, "0xcccc")).expect("leg");
     }
@@ -788,10 +796,12 @@ fn an_agreeing_comparison_carries_its_report_inside_the_envelope() {
             "e.json",
             "--compare",
             "f.json",
+            "--compare",
+            "h.json",
         ],
     )
     .expect("an envelope");
-    assert!(ok, "three agreeing rows agree: {}", envelope.render());
+    assert!(ok, "every bound row agreeing agrees: {}", envelope.render());
     assert_eq!(envelope.get("status").and_then(Value::as_str), Some("ok"));
     assert!(
         envelope
