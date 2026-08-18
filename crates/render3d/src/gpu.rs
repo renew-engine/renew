@@ -624,32 +624,129 @@ impl core::fmt::Debug for MeshRenderer {
     }
 }
 
-/// Both matrices a shadowed draw pushes: the camera's, then the
-/// light's, in one 128-byte block — exactly the guaranteed push
-/// ceiling, packed like [`Camera`] twice over.
+/// Everything a shadowed draw pushes: the camera's view-projection, the
+/// light's first three rows, and how brightly the scene is lit — 128
+/// bytes, exactly the guaranteed push ceiling, and read by BOTH halves
+/// of the path.
+///
+/// # Three things where two used to be, in the same budget
+///
+/// The naive union is 144 bytes: two full matrices and a colour. That
+/// does not fit, and it is the whole reason no path here carried a scene
+/// light and a shadow at once — a consumer wanting a time of day and a
+/// sun had to choose.
+///
+/// The sixteen bytes come from the light's matrix. Its projection is
+/// orthographic and its view is rigid, so the product is affine and its
+/// bottom row is exactly `(0, 0, 0, 1)`; carrying that row is carrying a
+/// constant. Three rows are three tight `vec4`s — 48 bytes — and both
+/// shaders write the fourth as a literal one.
+///
+/// **Rows, and not a `mat4x3`.** That type looks like the same saving
+/// and is not: std430 pads each of its four three-component columns back
+/// to sixteen bytes, so it is still 64 and the block is still 144, while
+/// silently reading padding if the host packed 48.
+///
+/// # One record for both halves
+///
+/// The caster reads this same value and takes its light rows from it, so
+/// the map cannot be written with one light and sampled with another.
+/// That was reachable while the light was packed twice, and it also made
+/// a host-side row/column mistake hard to see: with two encodings such a
+/// mistake moves the cast slightly, which a golden can miss; with one it
+/// makes every surface self-compare and the shadow vanish, which a
+/// golden refuses loudly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ShadowMatrices {
+pub struct ShadowedCamera {
     bytes: [u8; 128],
 }
 
-impl ShadowMatrices {
-    /// Pack the camera's columns, then the light's.
+impl ShadowedCamera {
+    /// Pack the camera's columns and the light's rows, fully lit.
+    ///
+    /// White leaves a scene exactly as it was, so a caller with nothing
+    /// to say about light gets the picture it got before there was
+    /// anything to say — [`Camera::from_columns`]'s rule, one path over.
+    ///
+    /// # Panics
+    ///
+    /// If `light`'s bottom row is not `(0, 0, 0, 1)`. See [`Self::lit`].
     #[must_use]
     pub fn from_columns(camera: [[f32; 4]; 4], light: [[f32; 4]; 4]) -> Self {
+        Self::lit(camera, light, [1.0; 3])
+    }
+
+    /// The same, under a scene light.
+    ///
+    /// `brightness` means what [`Camera::lit`]'s light means and is
+    /// applied in the same stage, so a world drawn half by this pipeline
+    /// and half by [`CameraRenderer`]'s dims alike rather than showing a
+    /// seam between them.
+    ///
+    /// # Panics
+    ///
+    /// If `light`'s bottom row is not `(0, 0, 0, 1)`, because this pack
+    /// does not transmit that row and both shaders write a literal one
+    /// in its place — a projective light would draw a plausible wrong
+    /// picture rather than fail. The same refusal covers a second
+    /// mistake: the fragment stage's depth bias is a single constant
+    /// only because an orthographic light's depth is linear in distance.
+    /// Both signed zeroes satisfy the zero test.
+    #[must_use]
+    pub fn lit(camera: [[f32; 4]; 4], light: [[f32; 4]; 4], brightness: [f32; 3]) -> Self {
+        // Retained, not debug-only: the failure it prevents is a picture
+        // that looks composed rather than an error anything reports.
+        // **Exact, and an epsilon here would be wrong.** The question is
+        // not whether the light is nearly affine but whether the row
+        // this pack DROPS is the row both shaders assume — a tolerance
+        // would admit a matrix whose bottom row does something, and the
+        // shaders would go on writing a literal one over it. Every light
+        // this engine composes lands on exact zeroes and an exact one,
+        // which the camera crate's own contract test holds it to; both
+        // signed zeroes compare equal, which is the one slack wanted.
+        #[expect(
+            clippy::float_cmp,
+            reason = "the dropped row must be exactly the row the shaders assume, not near it"
+        )]
+        let affine =
+            light[0][3] == 0.0 && light[1][3] == 0.0 && light[2][3] == 0.0 && light[3][3] == 1.0;
+        assert!(
+            affine,
+            "a shadowed camera's light must be affine — its bottom row must be (0, 0, 0, 1), \
+             because the pack drops that row and both shaders write a literal one for it"
+        );
         let mut bytes = [0u8; 128];
         let mut at = 0;
-        for columns in [camera, light] {
-            for column in columns {
-                for value in column {
-                    bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
-                    at += 4;
-                }
+        let mut put = |value: f32, at: &mut usize| {
+            bytes[*at..*at + 4].copy_from_slice(&value.to_ne_bytes());
+            *at += 4;
+        };
+        // The camera, column-major, byte-identical to `Camera`'s first
+        // sixty-four.
+        for column in camera {
+            for value in column {
+                put(value, &mut at);
             }
         }
+        // The light, ROW-major and three rows only: `light` is columns,
+        // so row `r` is the `r`th element of each column in turn.
+        for row in 0..3 {
+            for column in light {
+                put(column[row], &mut at);
+            }
+        }
+        // Brightness, with alpha pinned to one and unread — a light that
+        // touched alpha would dissolve cutout geometry as a scene
+        // darkened, which is `Camera::lit`'s reasoning too.
+        for value in brightness {
+            put(value, &mut at);
+        }
+        put(1.0, &mut at);
+        debug_assert_eq!(at, 128, "the pack must fill the declared range exactly");
         Self { bytes }
     }
 
-    /// The packed bytes, exactly the shadowed pipeline's declared
+    /// The packed bytes, exactly both shadowed pipelines' declared
     /// push-constant range.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
@@ -657,13 +754,15 @@ impl ShadowMatrices {
     }
 }
 
-/// The shadowed pipelines' push-constant range: two column-major
-/// matrices, and the length [`ShadowMatrices::bytes`] always is.
-const SHADOW_PUSH_BYTES: u32 = 128;
+/// The shadowed pipelines' push-constant range: a camera matrix, the
+/// light's three rows, and a scene light — the length
+/// [`ShadowedCamera::bytes`] always is, and exactly the guaranteed
+/// ceiling.
+const SHADOW_PUSH_BYTES: u32 = renew_rhi::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES;
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
-const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowMatrices>());
+const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowedCamera>());
 
 /// Draws a world with a shadow: a depth-only caster pass renders the
 /// scene from the light into a depth image, and the lit pipeline
@@ -673,9 +772,12 @@ const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowM
 /// pipeline, and both bindings — because they only mean anything
 /// together: a caster without the lit pass renders depth nobody reads,
 /// and the lit pipeline without the caster samples undefined pixels
-/// (which the frame contract refuses by name). The caster reuses the
-/// camera mesh vertex stage through a depth-only pipeline; no shadow
-/// shader exists for it, deliberately.
+/// (which the frame contract refuses by name). The caster has a
+/// depth-only stage of its own, reading the SAME push block the lit
+/// pipeline reads and using only its light rows — one record for both
+/// halves, so the map cannot be written with a light it is not sampled
+/// with, and a host-side row/column mistake makes the shadow vanish
+/// where two encodings would have let it merely shift.
 ///
 /// The frame shape this type serves:
 ///
@@ -752,8 +854,8 @@ impl ShadowedCameraRenderer {
             &sampler,
         ))?;
         let caster = device.create_pipeline(
-            &PipelineDesc::depth_mesh(builtin::MESH_CAMERA_VS_SPV, LAYOUT)
-                .push_constant_size(CAMERA_PUSH_BYTES)
+            &PipelineDesc::depth_mesh(builtin::MESH_CAMERA_SHADOW_CASTER_VS_SPV, LAYOUT)
+                .push_constant_size(SHADOW_PUSH_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
         let lit = device.create_pipeline(
@@ -782,11 +884,13 @@ impl ShadowedCameraRenderer {
     }
 
     /// The caster's draw: `mesh` as the LIGHT sees it, depth only.
-    /// `light` packs the light's view-projection, exactly as a camera
-    /// packs its own — it is one.
+    ///
+    /// **Takes the same value [`Self::item`] takes**, and reads only its
+    /// light rows. One record for both halves is what stops the map
+    /// being written with one light and sampled with another.
     #[must_use]
-    pub fn caster_item<'a>(&'a self, mesh: &'a Mesh, light: &'a Camera) -> Item<'a> {
-        Item::new(&self.caster).mesh(mesh).push_data(light.bytes())
+    pub fn caster_item<'a>(&'a self, mesh: &'a Mesh, camera: &'a ShadowedCamera) -> Item<'a> {
+        Item::new(&self.caster).mesh(mesh).push_data(camera.bytes())
     }
 
     /// The depth pass that fills the shadow map with `items`, cleared
@@ -801,12 +905,13 @@ impl ShadowedCameraRenderer {
         )
     }
 
-    /// The lit draw: `mesh` through the camera, dimmed by the map.
+    /// The lit draw: `mesh` through the camera, dimmed by the map, under
+    /// the scene light.
     #[must_use]
-    pub fn item<'a>(&'a self, mesh: &'a Mesh, matrices: &'a ShadowMatrices) -> Item<'a> {
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a ShadowedCamera) -> Item<'a> {
         Item::new(&self.lit)
             .mesh(mesh)
-            .push_data(matrices.bytes())
+            .push_data(camera.bytes())
             .bindings(&[&self.atlas_binding, &self.shadow_binding])
     }
 }
@@ -876,15 +981,35 @@ pub fn pass<'a>(color: &'a [Attachment], items: &'a [Item<'a>]) -> Pass<'a> {
 mod tests {
     use super::*;
 
-    /// **The shadowed pack carries the camera FIRST and the light
-    /// second, and a swap is what this proves.** The two matrices are
-    /// the same type and the same size, so the compiler cannot tell
-    /// them apart: a transposed argument order draws a whole world
-    /// lit from the wrong place, which reads as a plausible picture
-    /// rather than a failure. Thirty-two distinct values (1..=32, all
-    /// exact in `f32`), so a swap, a reversal or an offset shows.
+    /// The identity, column-major and affine — the shape every light in
+    /// these tests starts from.
+    const IDENTITY: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+
+    /// **The camera comes first, then the light's ROWS, then the
+    /// brightness — and each of those three is a way to get it wrong.**
+    /// The camera and the light are the same type and the same size, so
+    /// the compiler cannot tell a swapped argument order from a correct
+    /// one, and a swap draws a whole world lit from the wrong place: a
+    /// plausible picture rather than a failure. Packing the light's
+    /// columns where its rows belong is the same kind of mistake one
+    /// level down, and it is the tidy this layout invites.
+    ///
+    /// Distinct values throughout, all exact in `f32`, so a swap, a
+    /// reversal or an offset shows — except in the light's bottom row,
+    /// which is forced to `(0, 0, 0, 1)` because the pack refuses
+    /// anything else. Every one of the block's thirty-two words is
+    /// pinned, which is also what proves the dropped row is absent:
+    /// nothing else fits in thirty-two words.
+    ///
+    /// Probed by packing columns instead of rows, by dropping the alpha
+    /// pin, and by swapping the camera and light halves.
     #[test]
-    fn the_shadow_pack_puts_the_camera_first_and_the_light_second() {
+    fn the_shadow_pack_carries_the_camera_then_the_lights_rows_then_a_brightness() {
         let mut value = 1.0f32;
         let mut next = || {
             let taken = value;
@@ -892,36 +1017,130 @@ mod tests {
             [taken, taken + 100.0, taken + 200.0, taken + 300.0]
         };
         let camera = [next(), next(), next(), next()];
-        let light = [next(), next(), next(), next()];
-        let packed = ShadowMatrices::from_columns(camera, light);
+        // Twelve distinct values in rows 0..2, and the bottom row forced
+        // affine so the pack accepts it. `light[c][3]` IS row three.
+        let mut light = [next(), next(), next(), next()];
+        for (index, column) in light.iter_mut().enumerate() {
+            column[3] = if index == 3 { 1.0 } else { 0.0 };
+        }
+        let packed = ShadowedCamera::lit(camera, light, [0.25, 0.5, 0.75]);
         let bytes = packed.bytes();
         assert_eq!(bytes.len(), SHADOW_PUSH_BYTES as usize);
-        let mut at = 0;
-        for (half, columns) in [("camera", camera), ("light", light)] {
-            for (index, column) in columns.iter().enumerate() {
-                for (row, expected) in column.iter().enumerate() {
-                    let found = f32::from_ne_bytes([
-                        bytes[at],
-                        bytes[at + 1],
-                        bytes[at + 2],
-                        bytes[at + 3],
-                    ]);
-                    assert_eq!(
-                        found.to_bits(),
-                        expected.to_bits(),
-                        "{half} column {index} row {row} at byte {at}"
-                    );
-                    at += 4;
-                }
+
+        let read = |at: usize| {
+            f32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+
+        // The camera half is byte-identical to what the unshadowed path
+        // packs, so a world drawn half by each cannot disagree about
+        // where it is being seen from. Survives from the previous shape
+        // of this test verbatim.
+        assert_eq!(
+            &bytes[..64],
+            &Camera::from_columns(camera).bytes()[..64],
+            "the camera half is not the camera path's own packing"
+        );
+
+        // **Rows, not columns.** Row `r` is the `r`th element of each
+        // column in turn; packing the columns instead is the tidy this
+        // layout invites and the reason this assertion is spelled out
+        // rather than looped over the input shape.
+        for row in 0..3usize {
+            for (index, column) in light.iter().enumerate() {
+                let at = 64 + row * 16 + index * 4;
+                assert_eq!(
+                    read(at).to_bits(),
+                    column[row].to_bits(),
+                    "light row {row}, column {index}, at byte {at}"
+                );
             }
         }
-        // The camera half is byte-identical to what the single-matrix
-        // pack produces, so the two push blocks agree where they
-        // overlap and a shader reading either finds the same bytes.
-        // The matrix half only: the camera block carries a light after
-        // its matrix and the shadow block carries a second matrix, so
-        // they agree for sixty-four bytes and diverge deliberately after.
-        assert_eq!(&bytes[..64], &Camera::from_columns(camera).bytes()[..64]);
+
+        // Brightness, with alpha pinned.
+        for (index, expected) in [0.25f32, 0.5, 0.75, 1.0].into_iter().enumerate() {
+            let at = 112 + index * 4;
+            assert_eq!(read(at).to_bits(), expected.to_bits(), "brightness at {at}");
+        }
+
+        // **Row three is nowhere in the block, and the assertions above
+        // are what prove it.** They pin all thirty-two words — sixteen
+        // camera, twelve light rows, four brightness — so nothing else
+        // can be in a block that is exactly thirty-two words long. A
+        // separate "row three is absent" check was tried and deleted: it
+        // could never run, because affineness requires that row to be
+        // zeroes and a one, leaving no distinctive value to search for.
+        // The coverage gate is what noticed it never executed.
+    }
+
+    /// A shadowed camera with nothing said about light is a white one,
+    /// so every picture committed before there was a light to say
+    /// anything about stays exactly where it was.
+    ///
+    /// Probed by defaulting to anything else: every shadowed golden
+    /// moves at once.
+    #[test]
+    fn an_unlit_shadowed_draw_is_a_white_one() {
+        let camera = IDENTITY;
+        let light = IDENTITY;
+        // **Not compared against `lit(.., [1.0; 3])`**, which is what
+        // `from_columns` delegates to — that would be a function against
+        // its own body, unable to fail while the delegation exists. The
+        // brightness slots are read directly instead, and a non-white
+        // light is required to differ, which is what makes "white" mean
+        // something rather than "whatever the default happens to be".
+        let packed = ShadowedCamera::from_columns(camera, light);
+        assert_ne!(
+            packed.bytes(),
+            ShadowedCamera::lit(camera, light, [0.5; 3]).bytes(),
+            "the default is indistinguishable from a half light"
+        );
+        for index in 0..4usize {
+            let at = 112 + index * 4;
+            let found = f32::from_ne_bytes([
+                packed.bytes()[at],
+                packed.bytes()[at + 1],
+                packed.bytes()[at + 2],
+                packed.bytes()[at + 3],
+            ]);
+            assert_eq!(found.to_bits(), 1.0f32.to_bits(), "brightness slot {index}");
+        }
+    }
+
+    /// **A projective light is refused, because the pack drops the row
+    /// that would make it projective.** Both shaders write a literal one
+    /// where row three belongs, so a light whose bottom row says
+    /// otherwise draws a plausible wrong picture rather than failing —
+    /// and the fragment stage's single constant depth bias is constant
+    /// only because an orthographic light's depth is linear in distance.
+    /// One refusal covers both mistakes.
+    ///
+    /// Written by hand rather than built from `renew-camera`: this crate
+    /// depends on the rendering crate alone, deliberately.
+    ///
+    /// Probed by deleting the assertion: this stops panicking.
+    #[test]
+    #[should_panic(expected = "affine")]
+    fn a_non_affine_light_is_refused_by_the_shadow_pack() {
+        // Bottom row (0, 0, 1, 0): the shape a perspective divide takes.
+        let mut light = IDENTITY;
+        light[2][3] = 1.0;
+        light[3][3] = 0.0;
+        let _ = ShadowedCamera::from_columns(IDENTITY, light);
+    }
+
+    /// And a negative zero is accepted, because composing two legitimate
+    /// matrices can produce one and refusing it would reject a light
+    /// nothing is wrong with.
+    ///
+    /// Probed by comparing the bottom row's bits instead of its value:
+    /// this fails.
+    #[test]
+    fn a_negatively_signed_zero_is_still_affine() {
+        let mut light = IDENTITY;
+        light[0][3] = -0.0;
+        light[1][3] = -0.0;
+        light[2][3] = -0.0;
+        let _ = ShadowedCamera::from_columns(IDENTITY, light);
     }
 
     /// **An unlit camera is a white one**, so every caller that has

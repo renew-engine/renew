@@ -205,8 +205,8 @@ pub mod builtin {
         fragment: MESH_CAMERA_CUTOUT_FS_SPV,
     };
 
-    /// Vertex stage SPIR-V for the shadowed camera mesh path: two
-    /// matrices in one 128-byte push block, light-space position out.
+    /// Vertex stage SPIR-V for the shadowed camera mesh path: the
+    /// shared 128-byte push block in, light-space position out.
     pub static MESH_CAMERA_SHADOW_VS_SPV: &[u8] =
         include_bytes!("../shaders/mesh_camera_shadow.vert.spv");
     /// Fragment stage SPIR-V sampling the atlas at set 0 and the
@@ -215,23 +215,49 @@ pub mod builtin {
         include_bytes!("../shaders/mesh_camera_shadow.frag.spv");
 
     /// The shadowed camera mesh pair: [`MESH_CAMERA_TEXTURED`] plus a
-    /// shadow term. World-space positions, colours and coordinates per
-    /// vertex; the camera's AND the light's matrices as one 128-byte
-    /// push block (exactly [`MAX_PUSH_CONSTANT_BYTES`], camera first);
-    /// the atlas at sampled slot 0 and a depth-kinded render image —
-    /// the shadow map a depth-only pass rendered this frame — at
-    /// slot 1. Fade constants identical to the textured pair's: two
-    /// pipelines drawing one world must fade alike or the seam shows.
+    /// shadow term AND a scene light. World-space positions, colours and
+    /// coordinates per vertex; one 128-byte push block, exactly
+    /// [`MAX_PUSH_CONSTANT_BYTES`], holding `mat4 view_projection`, the
+    /// light's `vec4 light_row_0/1/2`, and `vec4 light`; the atlas at
+    /// sampled slot 0 and a depth-kinded render image — the shadow map a
+    /// depth-only pass rendered this frame — at slot 1. Fade constants
+    /// identical to the textured pair's: two pipelines drawing one world
+    /// must fade alike or the seam shows.
     ///
-    /// The CASTER that fills the shadow map is [`MESH_CAMERA`]'s
-    /// vertex stage through a depth-only pipeline — no new shader,
-    /// its colour output simply has no consumer.
+    /// **Three rows, not four columns, and that is what makes the light
+    /// fit.** An orthographic projection over a rigid view is affine, so
+    /// the light's fourth row is exactly `(0, 0, 0, 1)` and is not sent;
+    /// both stages write a literal one. `mat4x3` would not do: std430
+    /// pads each of its four three-component columns back to sixteen
+    /// bytes, so the block would be 144 again and would not fit.
+    ///
+    /// The CASTER that fills the shadow map is
+    /// [`MESH_CAMERA_SHADOW_CASTER_VS_SPV`], reading **this same block**
+    /// and using only its light rows. One record for both halves means
+    /// the map cannot be written with a light it is not sampled with.
     ///
     /// [`MAX_PUSH_CONSTANT_BYTES`]: crate::MAX_PUSH_CONSTANT_BYTES
     pub const MESH_CAMERA_SHADOW: crate::MeshShaders<'static> = crate::MeshShaders {
         vertex: MESH_CAMERA_SHADOW_VS_SPV,
         fragment: MESH_CAMERA_SHADOW_FS_SPV,
     };
+
+    /// Vertex stage SPIR-V for the shadow CASTER: the world as the light
+    /// sees it, depth only, read from the same push block the lit stage
+    /// reads.
+    ///
+    /// **A stage of its own, where the caster used to reuse the ordinary
+    /// camera vertex stage.** Sharing one block with the lit half is what
+    /// stops the map being written with one light and sampled with
+    /// another, and it drops a colour and a fade that a depth-only pass
+    /// throws away.
+    pub static MESH_CAMERA_SHADOW_CASTER_VS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_shadow_caster.vert.spv");
+
+    /// The bytes both shadowed pipelines declare: a camera matrix, the
+    /// light's three rows, and a scene light. Exactly
+    /// [`MAX_PUSH_CONSTANT_BYTES`](crate::MAX_PUSH_CONSTANT_BYTES).
+    pub const MESH_CAMERA_SHADOW_PUSH_BYTES: u32 = 128;
 
     /// Vertex stage SPIR-V for a full-target textured quad.
     pub static TEXTURED_VS_SPV: &[u8] = include_bytes!("../shaders/textured.vert.spv");
@@ -529,6 +555,223 @@ mod horizon_tests {
         assert_eq!(
             declaring, listed,
             "the shaders declaring HORIZON and the list the drift check walks have diverged"
+        );
+    }
+
+    /// The two shadowed vertex stages that share one push block, and the
+    /// members they must both declare, in order, with the bytes each
+    /// costs.
+    ///
+    /// **The block is exactly the guaranteed push ceiling, and the fit is
+    /// the whole design.** A camera matrix, the light's three rows, and a
+    /// scene light come to 128; the naive layout — two full matrices and
+    /// a colour — is 144 and does not fit, which is why no path carried a
+    /// light and a shadow at once before. Anything that grows a member
+    /// breaks the path silently, so the shape is pinned here rather than
+    /// left to two files agreeing by habit.
+    const SHADOW_BLOCK_MEMBERS: [(&str, &str, u32); 5] = [
+        ("mat4", "view_projection", 64),
+        ("vec4", "light_row_0", 16),
+        ("vec4", "light_row_1", 16),
+        ("vec4", "light_row_2", 16),
+        ("vec4", "light", 16),
+    ];
+
+    /// Both stages reading that block.
+    const SHADOW_BLOCK_SHADERS: [(&str, &str); 2] = [
+        (
+            "mesh_camera_shadow.vert",
+            include_str!("../shaders/mesh_camera_shadow.vert"),
+        ),
+        (
+            "mesh_camera_shadow_caster.vert",
+            include_str!("../shaders/mesh_camera_shadow_caster.vert"),
+        ),
+    ];
+
+    /// The `type name;` pairs inside a shader's `push_constant` block, in
+    /// declaration order, with comments and blank lines dropped.
+    fn declared_push_members(name: &str, source: &str) -> Vec<(String, String)> {
+        let open = source
+            .find("layout(push_constant) uniform Matrices {")
+            .unwrap_or_else(|| panic!("{name} must declare a push_constant block named Matrices"));
+        // `unwrap_or_else` rather than `let ... else`, matching the
+        // sibling parser above: the refusal is the same, and this shape
+        // keeps the never-taken arm inside the expression rather than on
+        // a line of its own that no well-formed shader can reach.
+        let body_start = open
+            + source[open..]
+                .find('{')
+                .unwrap_or_else(|| panic!("{name}'s push block must have a body"))
+            + 1;
+        let body_end = body_start
+            + source[body_start..]
+                .find('}')
+                .unwrap_or_else(|| panic!("{name}'s push block must be closed"));
+        source[body_start..body_end]
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .map(|line| {
+                let statement = line.trim_end_matches(';');
+                let (kind, member) = statement
+                    .split_once(char::is_whitespace)
+                    .unwrap_or_else(|| panic!("{name}: `{line}` is not `type name;`"));
+                (kind.trim().to_owned(), member.trim().to_owned())
+            })
+            .collect()
+    }
+
+    /// **Both shadowed stages declare one block, member for member, in
+    /// one order.**
+    ///
+    /// They are two files that must agree byte for byte: the caster
+    /// rasterizes the depth the lit stage compares against, so a member
+    /// that moved in one and not the other would put the comparison at
+    /// the wrong offset and shift every shadow. Nothing else in the
+    /// toolchain checks it — SPIR-V is embedded as bytes and no stage
+    /// reflection exists here.
+    ///
+    /// Probed by reordering two members in one stage, by renaming one,
+    /// and by replacing the three rows with a `mat4x3`: each fails.
+    #[test]
+    fn the_shadowed_shaders_declare_one_push_block() {
+        let expected: Vec<(String, String)> = SHADOW_BLOCK_MEMBERS
+            .iter()
+            .map(|(kind, member, _)| ((*kind).to_owned(), (*member).to_owned()))
+            .collect();
+        for (name, source) in SHADOW_BLOCK_SHADERS {
+            assert_eq!(
+                declared_push_members(name, source),
+                expected,
+                "{name}'s push block is not the shared shadow block"
+            );
+        }
+        let total: u32 = SHADOW_BLOCK_MEMBERS.iter().map(|(_, _, bytes)| bytes).sum();
+        assert_eq!(
+            total,
+            crate::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES,
+            "the members do not sum to the declared push range"
+        );
+        assert_eq!(
+            total,
+            crate::MAX_PUSH_CONSTANT_BYTES,
+            "the block is meant to be exactly the guaranteed ceiling"
+        );
+
+        // **Where the light is applied, pinned in text — with the
+        // comments stripped first.** No pixel probe can tell a light
+        // multiplied in the vertex stage from one multiplied in the
+        // fragment stage, so this substring is the only guard. Searching
+        // the raw source would let a commented-out line satisfy it:
+        // `// fragment_colour = vertex_colour * matrices.light;` above a
+        // line that drops the multiply keeps a naive `contains` green.
+        //
+        // Both halves of the family are pinned, not just the shadowed
+        // one. They are spelled differently — one parenthesises the
+        // vertex colour — so each is matched on the parts that carry the
+        // meaning: the destination, the source, and the light.
+        for (name, source, receiver) in [
+            (
+                "mesh_camera_shadow.vert",
+                SHADOW_BLOCK_SHADERS[0].1,
+                "matrices.light",
+            ),
+            (
+                "mesh_camera.vert",
+                include_str!("../shaders/mesh_camera.vert"),
+                "camera.light",
+            ),
+        ] {
+            let code: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let applied = code
+                .split_once("fragment_colour =")
+                .is_some_and(|(_, rest)| {
+                    let statement = rest.split(';').next().unwrap_or("");
+                    statement.contains("vertex_colour") && statement.contains(receiver)
+                });
+            assert!(
+                applied,
+                "{name} must apply the scene light to the vertex colour in the vertex \
+                 stage, as every camera path does — a world drawn half by each must dim \
+                 alike"
+            );
+        }
+    }
+
+    /// Every shader that reads the shared shadow block is on the list
+    /// above, and none of them spells the light's rows as a `mat4x3`.
+    ///
+    /// **A directory read, because a list is only as good as its
+    /// completeness** — the sibling of `every_shader_declaring_horizon_is_on_the_list`,
+    /// for the same reason. The `mat4x3` ban is the trap this layout
+    /// invites: that type looks like the same saving and is not, because
+    /// std430 pads each of its four three-component columns back to
+    /// sixteen bytes — 64 again, and the block back to 144, while the
+    /// host packs 48 and the shader reads padding.
+    ///
+    /// Probed by adding a third shader that reads `light_row_0` without
+    /// listing it, and by writing `mat4x3` in any shader: each fails.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reading its own crate's sources is not the renderer reading files"
+    )]
+    fn every_shader_reading_the_shadow_block_is_on_the_list() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let mut reading: Vec<String> = Vec::new();
+        let mut with_mat4x3: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("the shader directory is beside the crate") {
+            let path = entry.expect("a readable directory entry").path();
+            let is_source = path
+                .extension()
+                .is_some_and(|kind| kind == "vert" || kind == "frag");
+            if !is_source {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .expect("a named file")
+                .to_string_lossy()
+                .into_owned();
+            let source = std::fs::read_to_string(&path).expect("a readable shader");
+            if source.contains("light_row_0") {
+                reading.push(name.clone());
+            }
+            // The word, not a comment mentioning it: the bans below are
+            // about declarations, and this file's own comments explain
+            // why the type is wrong.
+            // A filter rather than an `if` that pushes: the push can only
+            // run when a shader breaks the ban, so as a branch it is
+            // untaken by design and reads as uncovered forever. Collected
+            // this way the predicate runs on every shader and the result
+            // is simply empty.
+            with_mat4x3.extend(
+                source
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .any(|line| line.contains("mat4x3"))
+                    .then_some(name),
+            );
+        }
+        reading.sort();
+        let mut listed: Vec<String> = SHADOW_BLOCK_SHADERS
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        listed.sort();
+        assert_eq!(
+            reading, listed,
+            "every shader reading the shadow block must be on SHADOW_BLOCK_SHADERS"
+        );
+        assert!(
+            with_mat4x3.is_empty(),
+            "mat4x3 saves nothing under std430 — each of its four columns pads back to \
+             sixteen bytes — and using it here silently returns the block to 144: {with_mat4x3:?}"
         );
     }
 }

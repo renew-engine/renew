@@ -16,7 +16,7 @@
 
 use renew_render3d::{
     Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
-    ShadowMatrices, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
+    ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -858,8 +858,13 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     );
     let mut light_columns = IDENTITY;
     light_columns[2][0] = 0.5;
-    let camera = Camera::from_columns(light_columns);
-    let matrices = ShadowMatrices::from_columns(IDENTITY, light_columns);
+    // **One value, both halves.** The caster reads its light rows and
+    // the lit pass reads all of it, so the map cannot be written with a
+    // light the lit pass does not sample. Packing the light twice — a
+    // `Camera` for the caster and a second copy here — was how a
+    // row/column mistake used to move the cast a little instead of
+    // making the shadow vanish.
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns);
 
     let renderer = ShadowedCameraRenderer::new(
         &device,
@@ -891,7 +896,7 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
             } else {
                 renderer.shadow_pass(&empty)
             };
-            let items = [renderer.item(&mesh, &matrices)];
+            let items = [renderer.item(&mesh, &camera)];
             let passes = [shadow, pass(&clear, &items)];
             target.render(&RenderDesc::new(&passes))?;
             let mut pixels = vec![0u8; target.byte_len()];
@@ -953,6 +958,170 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     drop(mesh);
     drop(renderer);
     assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A scene light dims a shadowed world without moving its shadow** —
+/// the thing this path could not do until the light and the light's
+/// matrix fitted in one push block together.
+///
+/// No golden here could be this before: the shadowed path carried no
+/// light, and the lit path carried no shadow, so a consumer wanting a
+/// time of day *and* a sun had to pick one. The failure this refuses is
+/// the plausible one — a picture that is correctly lit and wrongly
+/// shadowed, or the reverse.
+///
+/// It asserts three things about the same two frames, drawn identically
+/// but for the brightness:
+///
+/// 1. **The light dims.** Every probe is darker under a half light.
+/// 2. **The light dims by the light's amount, and does so everywhere.**
+///    Shadowed and open floor scale by the same ratio, so the light is a
+///    multiplier over the whole scene rather than something folded into
+///    the shadow term.
+/// 3. **The shadow does not move.** The shadowed pixel is still darker
+///    than its lit neighbour under the dimmer light, in the same places.
+///
+/// Ratios rather than absolute values, with the tolerance set from what
+/// the adapter actually produced: the target is sRGB, so a half light is
+/// not half a byte, and predicting the encoded value would be asserting
+/// arithmetic nobody performed.
+///
+/// Probed by dropping the light multiply from the vertex stage (nothing
+/// dims), by applying it to the shadow term instead of the surface (the
+/// ratios diverge between shadowed and open floor), and by packing the
+/// light where the rows belong (the shadow vanishes and assertion 3
+/// fails).
+#[test]
+fn a_scene_light_dims_a_shadowed_world_without_moving_its_shadow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white = [0xffu8; 16];
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+
+    // The same scene the shadow golden uses: a floor, and a bounded
+    // blocker between it and the light.
+    let mut scene = Scene::new();
+    scene.quad(
+        [
+            [-1.0, -1.0, 0.3],
+            [1.0, -1.0, 0.3],
+            [1.0, 1.0, 0.3],
+            [-1.0, 1.0, 0.3],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    scene.quad(
+        [
+            [-0.25, -1.0, 0.8],
+            [0.25, -1.0, 0.8],
+            [0.25, 0.0, 0.8],
+            [-0.25, 0.0, 0.8],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let mut light_columns = IDENTITY;
+    light_columns[2][0] = 0.5;
+
+    let renderer = ShadowedCameraRenderer::new(
+        &device,
+        TargetFormat::Rgba8Srgb,
+        texture_extent,
+        &white,
+        256,
+    )?;
+    let mesh = renderer.upload(&device, &scene)?;
+    let mut target = device.create_offscreen_target(extent)?;
+
+    let mut draw = |brightness: [f32; 3]| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        // One record, both halves — the caster reads its light rows.
+        let camera = ShadowedCamera::lit(IDENTITY, light_columns, brightness);
+        let casting = [renderer.caster_item(&mesh, &camera)];
+        let items = [renderer.item(&mesh, &camera)];
+        let passes = [renderer.shadow_pass(&casting), pass(&clear, &items)];
+        target.render(&RenderDesc::new(&passes))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        Ok(pixels)
+    };
+
+    let bright = draw([1.0, 1.0, 1.0])?;
+    let dim = draw([0.5, 0.5, 0.5])?;
+
+    // The shadow golden's own probe positions, for the same reasons.
+    let shadowed_x = 11 * SIZE / 16;
+    let open_x = SIZE / 4;
+    let shadow_y = SIZE / 4;
+
+    let bright_shadowed = at(&bright, shadowed_x, shadow_y);
+    let bright_open = at(&bright, open_x, shadow_y);
+    let dim_shadowed = at(&dim, shadowed_x, shadow_y);
+    let dim_open = at(&dim, open_x, shadow_y);
+
+    // 1 · The light dims, and the frames are not the same picture.
+    assert_ne!(
+        bright, dim,
+        "a half light drew the same frame as a full one"
+    );
+    assert!(
+        dim_open[0] < bright_open[0],
+        "open floor did not dim: {dim_open:?} against {bright_open:?}"
+    );
+    assert!(
+        dim_shadowed[0] < bright_shadowed[0],
+        "shadowed floor did not dim: {dim_shadowed:?} against {bright_shadowed:?}"
+    );
+
+    // 2 · **By the amount asked for, measured in linear light.**
+    //
+    // An earlier version compared the shadowed ratio against the open
+    // ratio and could not fail: both reduce to the same function of
+    // brightness for any multiplicative light, so folding the light into
+    // the shadow term instead of the surface renders bit-identically —
+    // `shade * b` and `surface * b` are one product. That assertion was
+    // unfalsifiable and its documented probe was wrong.
+    //
+    // Asking whether HALF a light halves the surface is falsifiable: a
+    // light applied at the wrong strength, applied twice, or applied to
+    // an already-encoded value all fail it. The target is sRGB, so the
+    // bytes are decoded first — halving a light does not halve a byte,
+    // and comparing the encoded values would be asserting a curve nobody
+    // applied.
+    let linear = |byte: u8| f64::from(renew_rhi::srgb::decode(byte));
+    for (what, bright, dim) in [
+        ("open floor", bright_open[0], dim_open[0]),
+        ("shadowed floor", bright_shadowed[0], dim_shadowed[0]),
+    ] {
+        let ratio = linear(dim) / linear(bright);
+        assert!(
+            (ratio - 0.5).abs() < 0.03,
+            "{what}: a half light scaled linear surface by {ratio:.3}, not by a half \
+             ({dim} against {bright} encoded)"
+        );
+    }
+
+    // 3 · And the shadow is still a shadow under the dimmer light: same
+    // relationship, same places. A light that moved the cast would break
+    // this while leaving 1 and 2 intact.
+    assert!(
+        u32::from(dim_shadowed[0]) * 10 < u32::from(dim_open[0]) * 8,
+        "under a half light the shadowed patch {dim_shadowed:?} is not darker than the \
+         open floor {dim_open:?}"
+    );
+    assert!(
+        dim_shadowed[0] > 40,
+        "a shadow is a dimming, not a hole, even under a dim light: {dim_shadowed:?}"
+    );
     Ok(())
 }
 

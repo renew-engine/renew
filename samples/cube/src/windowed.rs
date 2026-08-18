@@ -52,9 +52,7 @@ use renew_platform::Clock;
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowRef, run_window_app,
 };
-use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, ShadowMatrices, ShadowedCameraRenderer, pass,
-};
+use renew_render3d::{MeshRenderer, ShadowedCamera, ShadowedCameraRenderer, pass};
 use renew_rhi::{
     Device, DeviceDesc, DeviceError, Extent, ItemList, Mesh, PresentOutcome, RenderDesc,
     Validation, WindowTarget, color_attachment,
@@ -257,8 +255,6 @@ struct Gpu {
     /// The sun's view-projection, packed for the caster's push and
     /// kept as columns for the lit block — a constant of the arena,
     /// computed once at bring-up because neither the sun nor the
-    /// arena's bounds ever move.
-    light: RenderCamera,
     light_columns: [[f32; 4]; 4],
     /// Which edit count the caster mesh was built from. Its own
     /// counter rather than sharing the world mesh's: the caster is a
@@ -527,7 +523,6 @@ impl CubeApp {
             crate::render::high_corner(grid),
         )
         .columns();
-        let light = RenderCamera::from_columns(light_columns);
         let mesh = renderer
             .upload(
                 &device,
@@ -561,7 +556,6 @@ impl CubeApp {
             device,
             target,
             renderer,
-            light,
             light_columns,
             mesh,
             caster_mesh,
@@ -644,7 +638,7 @@ impl CubeApp {
             gpu.crosshair_aspect = wanted;
         }
 
-        let packed = ShadowMatrices::from_columns(camera.columns(), gpu.light_columns);
+        let packed = ShadowedCamera::from_columns(camera.columns(), gpu.light_columns);
         let color = [color_attachment(SKY)];
         // The frame's particles, packed into the scratch sized at
         // bring-up — a burst costs the steady-state loop no allocation.
@@ -660,7 +654,7 @@ impl CubeApp {
         let world = gpu.renderer.item(&gpu.mesh, &packed);
         // The caster pass leads every frame: the same world mesh as the
         // light sees it, depth only, into the map the lit item samples.
-        let casting = [gpu.renderer.caster_item(&gpu.caster_mesh, &gpu.light)];
+        let casting = [gpu.renderer.caster_item(&gpu.caster_mesh, &packed)];
         let shadow = gpu.renderer.shadow_pass(&casting);
 
         // **The outcome is the recovery signal, not noise.** `render`

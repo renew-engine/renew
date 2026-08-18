@@ -258,6 +258,37 @@ impl Orthographic {
 
 /// A viewpoint and an orthographic projection: what a directional
 /// light needs to render a shadow map, in [`Camera`]'s shape.
+///
+/// # Contract
+///
+/// **A light camera's view-projection is affine: its bottom row is
+/// exactly `(0, 0, 0, 1)`, for any FINITE eye and target.** The view is
+/// rigid and the projection is orthographic, so the product's fourth row
+/// is the view's fourth row unchanged, and no arithmetic reaches it.
+///
+/// The finiteness qualifier is not a formality. `View::axes` guards its
+/// basis against a non-finite input and falls back; the translation
+/// column does not, and `0.0 * NaN` is NaN — so a light built from a
+/// non-finite eye produces a bottom row that is not `(0, 0, 0, 1)`, and
+/// a consumer asserting this contract will refuse it rather than draw.
+/// That is the better failure of the two available, because the picture
+/// such a light draws is meaningless either way, but it is a refusal and
+/// callers should know it is there. Guarding the translation as the
+/// basis is guarded would remove the asymmetry; it is a change to this
+/// crate's behaviour rather than to its documentation, and is recorded
+/// as debt rather than made in passing.
+///
+/// This is a promise, not an accident, because a consumer relies on it:
+/// a renderer that must fit a camera matrix, a light matrix and a scene
+/// light into the guaranteed 128-byte push range drops this row and
+/// writes a literal one in its place. Without the promise stated here,
+/// that renderer's refusal would be a trap sprung on a producer that
+/// never agreed to anything; `a_light_cameras_view_projection_is_affine`
+/// holds this side to it.
+///
+/// Giving [`Orthographic`] a perspective term, or changing the fourth
+/// column of [`View::matrix`], breaks the promise and must be a
+/// deliberate change to this paragraph as well as to the code.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightCamera {
     pub view: View,
@@ -345,6 +376,68 @@ mod tests {
         // the perspective's hyperbola.
         let mid = matrix.transform(super::Vec4::new(0.0, 0.0, 5.0, 1.0));
         assert!((mid.z - 0.5).abs() < 1e-6, "{}", mid.z);
+    }
+
+    /// **A light camera's view-projection is affine**, which is the
+    /// promise the type's Contract makes and a renderer downstream
+    /// depends on: it drops this row to fit three things into 128 bytes
+    /// and writes a literal one where it belonged.
+    ///
+    /// Bit-exact rather than near, because the consumer's refusal is
+    /// bit-exact — and because nothing here does arithmetic on the fourth
+    /// row, so anything but exactness would mean the composition changed
+    /// shape.
+    ///
+    /// **Both degenerate branches of `View::axes` are included.** A view
+    /// whose eye sits on its own target, and one looking straight along
+    /// world up, take fallback paths that build their basis differently;
+    /// a fallback that returned a non-rigid basis would break affineness
+    /// exactly where nobody was looking.
+    ///
+    /// Probed by giving `Orthographic::matrix` a perspective term in the
+    /// fourth row: every case fails.
+    #[test]
+    fn a_light_cameras_view_projection_is_affine() {
+        let projection = super::Orthographic::new(8.0, 8.0, 0.5, 20.0);
+        let cases = [
+            (
+                "an ordinary light looking down",
+                super::Vec3::new(0.0, 10.0, 0.0),
+                super::Vec3::new(0.0, 0.0, 0.0),
+            ),
+            (
+                "a light off to one side",
+                super::Vec3::new(-3.0, 7.0, 4.0),
+                super::Vec3::new(1.0, 0.0, -2.0),
+            ),
+            (
+                // Degenerate: no direction to look in at all.
+                "an eye at its own target",
+                super::Vec3::new(2.0, 2.0, 2.0),
+                super::Vec3::new(2.0, 2.0, 2.0),
+            ),
+            (
+                // Degenerate: the look direction is world up, so the
+                // usual right-vector cross product vanishes.
+                "a light looking straight down world up",
+                super::Vec3::new(0.0, 5.0, 0.0),
+                super::Vec3::new(0.0, -5.0, 0.0),
+            ),
+        ];
+        for (what, eye, target) in cases {
+            let light = super::LightCamera {
+                view: super::View::look_at(eye, target),
+                projection,
+            };
+            let columns = light.columns();
+            for (index, expected) in [0.0f32, 0.0, 0.0, 1.0].into_iter().enumerate() {
+                assert_eq!(
+                    columns[index][3].to_bits(),
+                    expected.to_bits(),
+                    "{what}: bottom row, column {index} — a light camera must be affine"
+                );
+            }
+        }
     }
 
     /// The light camera composes exactly as the perspective camera

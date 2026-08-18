@@ -32,7 +32,7 @@
 //! stopped casting fails rather than passing quietly.
 
 use renew_memory::{CountingAllocator, counters};
-use renew_render3d::{Camera, Render3dError, Scene, ShadowMatrices, ShadowedCameraRenderer, pass};
+use renew_render3d::{Render3dError, Scene, ShadowedCamera, ShadowedCameraRenderer, pass};
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, ItemList, RenderDesc, TargetFormat, Validation,
 };
@@ -202,11 +202,11 @@ fn the_steady_state_shadowed_frame_allocates_nothing() {
     let mut draw = |shear: f32, pixels: &mut Vec<u8>| {
         let mut light = IDENTITY;
         light[2][0] = shear;
-        let camera = Camera::from_columns(light);
-        let matrices = ShadowMatrices::from_columns(IDENTITY, light);
+        // One record, both halves — see the shadowed golden.
+        let camera = ShadowedCamera::from_columns(IDENTITY, light);
         let casting = [renderer.caster_item(&mesh, &camera)];
         let shadow = renderer.shadow_pass(&casting);
-        let items = ItemList::<1>::new(renderer.item(&mesh, &matrices));
+        let items = ItemList::<1>::new(renderer.item(&mesh, &camera));
         let passes = [shadow, pass(&clear, items.as_slice())];
         target
             .render(&RenderDesc::new(&passes))
