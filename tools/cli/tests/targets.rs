@@ -631,6 +631,11 @@ fn a_delivered_determinism_verdict_is_never_an_abort() {
     fs::write(directory.join("b.json"), leg("windows", "x86_64", "0xaaaa")).expect("leg");
     fs::write(directory.join("c.json"), leg("macos", "aarch64", "0xbbbb")).expect("leg");
     fs::write(directory.join("g.json"), leg("android", "x86_64", "0xaaaa")).expect("leg");
+    fs::write(
+        directory.join("i.json"),
+        leg("ios-simulator", "aarch64", "0xaaaa"),
+    )
+    .expect("leg");
     let (envelope, ok) = renew_json(
         &directory,
         &[
@@ -643,6 +648,8 @@ fn a_delivered_determinism_verdict_is_never_an_abort() {
             "c.json",
             "--compare",
             "g.json",
+            "--compare",
+            "i.json",
         ],
     )
     .expect("an envelope");
@@ -721,6 +728,7 @@ fn legs_that_all_ran_less_than_the_pinned_list_are_inconclusive() {
         ("n2.json", "windows", "x86_64"),
         ("n3.json", "macos", "aarch64"),
         ("n4.json", "android", "x86_64"),
+        ("n5.json", "ios-simulator", "aarch64"),
     ] {
         fs::write(
             directory.join(name),
@@ -743,6 +751,8 @@ fn legs_that_all_ran_less_than_the_pinned_list_are_inconclusive() {
             "n3.json",
             "--compare",
             "n4.json",
+            "--compare",
+            "n5.json",
         ],
     )
     .expect("an envelope");
@@ -783,6 +793,7 @@ fn an_agreeing_comparison_carries_its_report_inside_the_envelope() {
         ("e.json", "windows", "x86_64"),
         ("f.json", "macos", "aarch64"),
         ("h.json", "android", "x86_64"),
+        ("j.json", "ios-simulator", "aarch64"),
     ] {
         fs::write(directory.join(name), leg(os, arch, "0xcccc")).expect("leg");
     }
@@ -798,6 +809,8 @@ fn an_agreeing_comparison_carries_its_report_inside_the_envelope() {
             "f.json",
             "--compare",
             "h.json",
+            "--compare",
+            "j.json",
         ],
     )
     .expect("an envelope");
