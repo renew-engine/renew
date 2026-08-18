@@ -164,9 +164,15 @@ Two commands produce an installable debug APK (run the second from
 `android/`):
 
 ```
-cargo ndk -t arm64-v8a -o samples/input_echo/android/app/src/main/jniLibs build -p renew-sample-input-echo --release
+cargo ndk -t arm64-v8a -t x86_64 -o samples/input_echo/android/app/src/main/jniLibs build -p renew-sample-input-echo --release
 ./gradlew assembleDebug
 ```
+
+Two ABIs, because an APK with only `arm64-v8a` can be installed on a
+phone and on nothing else. `x86_64` is what an emulator runs, and it is
+what makes the app's lifecycle testable without hardware: install it,
+send it to the background, bring it back, and the surface epochs are
+observable in the log this sample writes.
 
 `cargo-ndk` (pinned 4.1.2) needs `ANDROID_NDK_HOME` pointing at an
 r28+ NDK — r28 aligns segments to the 16 KB pages newer devices

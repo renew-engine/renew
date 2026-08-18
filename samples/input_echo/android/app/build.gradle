@@ -20,8 +20,12 @@ android {
         versionCode 1
         versionName "0.1.1"
         ndk {
-            // The device ABI. The emulator ABI joins when its lane does.
-            abiFilters "arm64-v8a"
+            // Both, and the second one is why an APK can be exercised at
+            // all without hardware: arm64-v8a is every phone worth
+            // shipping to, and x86_64 is what an emulator runs. The
+            // comment here used to say the emulator ABI would join when
+            // its lane did, and it has.
+            abiFilters "arm64-v8a", "x86_64"
         }
     }
 
