@@ -7,6 +7,12 @@ exclude = ["fuzz"]
 members = ["bench/suite", "crates/asset", "crates/audio", "crates/camera", "crates/core/diag", "crates/core/event", "crates/core/math", "crates/core/memory", "crates/core/platform", "crates/ecs", "crates/fixed", "crates/frame", "crates/physics2d",
     "crates/net", "crates/png", "crates/physics3d", "crates/input", "crates/jobs", "crates/particles", "crates/render2d", "crates/render3d", "crates/replay", "crates/rhi", "crates/rng", "crates/scene", "crates/snapshot", "crates/trace", "crates/ui", "crates/ui-render", "crates/volume", "hello-engine", "samples/chess", "samples/chess/rules", "samples/cube", "samples/cube/world", "samples/glide", "samples/leap", "samples/leap/world", "samples/glide/world", "samples/hello_triangle", "samples/input_echo", "tools/cli", "tools/vk-fault-layer"]
 
+# The marker the renew tool reads to tell this workspace apart from a
+# game project. Explicit rather than inferred from layout, so a
+# reorganized tree cannot be misread as somebody's game — or vice versa.
+[workspace.metadata.renew]
+engine = true
+
 [workspace.package]
 version = "0.1.1"
 edition = "2024"

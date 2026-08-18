@@ -133,6 +133,21 @@ impl Value {
     }
 }
 
+/// One string's contents, escaped for a JSON document — the quotes are
+/// the caller's to add.
+///
+/// Public because this crate writes one document by hand beside the
+/// ones it builds through [`Value`] (a determinism leg), and a second
+/// spelling of the rule is a second thing to get wrong: an escaper that
+/// handled only `\` and `"` emitted an invalid document the moment a
+/// value carried a newline, behind an exit code of zero.
+#[must_use]
+pub fn escaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    escape_into(text, &mut out);
+    out
+}
+
 fn escape_into(text: &str, out: &mut String) {
     for character in text.chars() {
         match character {
@@ -152,6 +167,36 @@ fn escape_into(text: &str, out: &mut String) {
     }
 }
 
+/// The version of the result-document schema this binary emits. Version 2
+/// added the `target` classification, the `coverage` statement on the
+/// compile-and-test subcommands, and structured `failures`; the shared
+/// leading fields are unchanged from version 1.
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// The seven leading fields of every result document, in their fixed
+/// order. This is the single spelling of the prefix: [`result_envelope`]
+/// wraps it, and callers that build envelopes field-by-field start from
+/// it, so no site can drift from another.
+#[must_use]
+pub fn envelope_fields(
+    command: &str,
+    status: &str,
+    exit_code: i64,
+    duration_ms: i64,
+    stdout: &str,
+    stderr: &str,
+) -> Vec<(String, Value)> {
+    vec![
+        ("schema_version".to_string(), Value::Number(SCHEMA_VERSION)),
+        ("command".to_string(), Value::String(command.to_string())),
+        ("status".to_string(), Value::String(status.to_string())),
+        ("exit_code".to_string(), Value::Number(exit_code)),
+        ("duration_ms".to_string(), Value::Number(duration_ms)),
+        ("stdout".to_string(), Value::String(stdout.to_string())),
+        ("stderr".to_string(), Value::String(stderr.to_string())),
+    ]
+}
+
 /// Build the standard result document every subcommand emits in `--json`
 /// mode. `schema_version` is always the first field.
 #[must_use]
@@ -164,15 +209,7 @@ pub fn result_envelope(
     stderr: &str,
     extra: Vec<(String, Value)>,
 ) -> Value {
-    let mut fields = vec![
-        ("schema_version".to_string(), Value::Number(1)),
-        ("command".to_string(), Value::String(command.to_string())),
-        ("status".to_string(), Value::String(status.to_string())),
-        ("exit_code".to_string(), Value::Number(exit_code)),
-        ("duration_ms".to_string(), Value::Number(duration_ms)),
-        ("stdout".to_string(), Value::String(stdout.to_string())),
-        ("stderr".to_string(), Value::String(stderr.to_string())),
-    ];
+    let mut fields = envelope_fields(command, status, exit_code, duration_ms, stdout, stderr);
     // Appended, never interleaved, so a reader finds the shared keys in
     // the same place whatever ran. Taken as a parameter rather than
     // patched into the returned value by the caller, because that needs
@@ -715,10 +752,10 @@ mod tests {
     }
 
     #[test]
-    fn envelope_leads_with_schema_version_one() {
+    fn envelope_leads_with_the_current_schema_version() {
         let document = result_envelope("test", "ok", 0, 42, "out", "err", Vec::new()).render();
         assert!(
-            document.starts_with("{\"schema_version\":1,\"command\":\"test\""),
+            document.starts_with("{\"schema_version\":2,\"command\":\"test\""),
             "unexpected prefix: {document}"
         );
         assert!(document.contains("\"status\":\"ok\""));

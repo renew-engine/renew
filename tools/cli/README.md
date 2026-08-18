@@ -45,8 +45,12 @@ options:
   --target <triple> (determinism --emit only) build and run the pinned
                     simulations for this triple, through cargo's runner
                     mechanism where one is configured
-  --features <list> (run, record, replay; repeatable) cargo features to build
-                    the sample with, e.g. `--features window` for a window
+  --features <list> (run, record, replay, build, test, bench, lint;
+                    repeatable) cargo features, e.g. `--features window` for
+                    a window; the envelope's `coverage` field repeats what
+                    was enabled
+  --all-features    (build, test, bench, lint) enable every feature of every
+                    member -- the coverage-complete build a verifier asks for
   --help, -h        print this text; `renew help` does the same
 
 Everything after `run <sample>` goes to the sample untouched, including
@@ -73,6 +77,30 @@ executes once — the fast run-proof mode CI's benchmark stage uses), not a
 pass-through: the flag is rejected on every other subcommand. The JSON
 envelope does not distinguish smoke from a full bench run — the caller
 knows which mode it invoked, and the envelope shape stays uniform.
+
+## Which trees this tool works in
+
+Every subcommand that anchors to a workspace first decides what tree it is
+standing in, and says so in the machine-readable envelope's `target`:
+
+- **The engine** — this repository, named by an explicit
+  `[workspace.metadata.renew]` table with `engine = true` in its root
+  manifest. A marker rather than a heuristic, so a reorganized tree
+  cannot be misread.
+- **A project** — any other workspace with at least one member depending
+  on a `renew-` crate. A standalone `[package]` manifest counts as its own
+  workspace of one, which is the shape `cargo new` produces.
+- **Anything else** is refused, in both output modes: exit 1 with the
+  reason on stderr, and a coded failure in the envelope. The tool does not
+  report on a tree it cannot place.
+
+`build`, `test`, `bench`, `lint` and `configure` work in either kind of
+tree. **`check`, `modules`, `coverage`, `run`, `record`, `replay` and
+`determinism` are the engine's own** — they read this repository's
+samples, manifests, structure rules and exemption ledger, which exist
+nowhere else — and refuse a project tree rather than reporting something
+that would be about a different question. The refusal is the same in
+plain and `--json` mode; only its shape differs.
 
 ## Running a sample
 
@@ -220,8 +248,10 @@ Early-stage (`bootstrap` maturity — see the `[package.metadata.renew]` table
 in [Cargo.toml](Cargo.toml), which is authoritative for maturity and
 manifest metadata): the flag surface and JSON schema may still change
 without a deprecation cycle. The parsers here — the toolchain-pin and
-manifest-field readers, the JSON parser behind `check` and `coverage`, and
-the exemption-manifest reader — are covered by unit tests today (the JSON
+manifest-field readers, the JSON parser behind `check` and `coverage`, the
+manifest structural scanner that decides what tree a run is standing in
+(it reads a stranger's `Cargo.toml` on every tree-anchored invocation),
+and the exemption-manifest reader — are covered by unit tests today (the JSON
 parser also bounds nesting depth so hostile input errors instead of
 exhausting the stack); fuzz coverage is planned as the tool matures toward
 a stable interface.
@@ -232,28 +262,71 @@ Every subcommand accepts `--json` and then emits exactly one JSON document
 on stdout:
 
 ```json
-{"schema_version":1,"command":"test","status":"ok","exit_code":0,
- "duration_ms":8421,"stdout":"…","stderr":"…"}
+{"schema_version":2,"command":"test","status":"ok","exit_code":0,
+ "duration_ms":8421,"stdout":"…","stderr":"…", "…":"…"}
 ```
 
-- `status` is `ok`, `failed` (the underlying command ran and failed), or
-  `error` (it could not run).
-- `exit_code` is the child's raw exit code (`-1` for signal deaths); the
-  `renew` process itself always exits `0` (ok), `1` (failed/error), or `2`
-  (usage error).
-- `doctor --json` adds a `checks` array of `{name, ok, detail}` objects to
-  the same envelope; `check --json` adds a `findings` array of
-  `{rule, message}` objects (empty when the workspace is healthy).
+**The authoritative contract for the envelope — the shared leading fields,
+the version-2 fields (`target`, `coverage`, `failures`), and their
+per-subcommand rollout — is the schema registry in
+[`schema/`](schema/README.md).** The per-subcommand payload fields are
+documented here, below. The short version:
+
+- `status` is `ok`, `failed` (a verdict was delivered and it is red — a
+  child that ran and failed, or a judgement this tool made itself, as the
+  determinism comparison and the two gate subcommands do), or `error` (no
+  verdict was delivered: it could not run, or refused to).
+- `exit_code` is the failing child's raw exit code (`-1` for signal
+  deaths) where a child delivered the outcome, and this tool's own `0` or
+  `1` where the verdict is `renew`'s — a refusal, an abort, or the
+  determinism comparison. The `renew` process itself always exits `0`
+  (ok), `1` (failed/error), or `2` (usage error).
+- Version 2 added three fields: `target` (an object `{kind, root,
+  manifest}` naming the tree the run classified — the engine, or a
+  project that depends on it — and the directory its children ran from),
+  `coverage` (what the cargo invocation actually enabled), and `failures`
+  (structured `{code, summary}` entries). Which subcommands carry which field is the
+  registry's rollout table; it is the one place that list lives. A
+  workspace that is neither the engine nor a renew project is refused
+  with a coded failure, never reported on.
+- **Most subcommands are the engine's own.** `check`, `modules`,
+  `coverage`, `run`, `record`, `replay`, and `determinism` read surfaces
+  that exist only in this repository — its samples, its manifests, its
+  structure rules, its exemption ledger — and refuse a project tree with
+  `engine-only-subcommand`. `build`, `test`, `bench`, `lint` and
+  `configure` work in either.
+- `doctor --json` adds a `checks` array of `{name, ok, detail}` objects;
+  `check --json` adds a `findings` array of `{rule, message}` objects
+  (empty when the workspace is healthy).
+- `modules --json` adds a `modules` array of `{name, maturity, core,
+  problem}` rows (`core` and `problem` are `null` where undeclared or
+  healthy); the array is present and empty on the error path.
+- `asset-pack --json` adds, on success, `entries` (a count) and `pack`
+  (the path written); `asset-inspect --json` adds, on success or a
+  failed verification, `verified` (whether verification ran), a
+  `mismatched` array of names, and an `entries` array of
+  `{name, hash, bytes}`. On the error path both asset subcommands carry
+  only an empty `entries` array with the reason in `stderr`.
+  `ui-compile --json` adds an `errors` array and, on success, `nodes`,
+  `bytes`, and `out`.
 - `coverage --json` adds `measured_files` and `exempt_lines` counts, an
   `uncovered` array of `{file, line}` (new gaps) and a `stale` array of
   `{file, line, state, reason}`, where `state` is `now-covered` or
   `file-absent`. All four keys are unconditional, including on the
   `error` path, so consumers never see a conditional key.
-- `run --json` adds nothing: the sample's own stdout and stderr are what
-  the `stdout` and `stderr` fields carry, and `exit_code` is the sample's.
+- `run --json` carries the sample's own stdout, stderr, and exit code in
+  the shared fields, plus `target`, `failures`, and — once the sample
+  name resolves — a `coverage` statement whose `packages` names the
+  sample's own package. A **successful**
+  `replay --json` additionally lifts the sample's digest line — the line
+  beginning `renew-frame `, the shape the samples print — into a `digest`
+  field, `null` when the sample printed none. A failing replay carries no
+  `digest` key — a digest lifted off a run that failed is not a result
+  this tool hands on; the line, if the sample printed one before failing,
+  is still there in `stdout`.
 - A **usage error emits no document at all**, `--json` or not, because
-  nothing ran to report on. That includes `run` with a sample name that
-  matches nothing.
+  nothing ran to report on. That includes `run`, `record`, and `replay`
+  with a sample name that matches nothing.
 - `schema_version` increments on breaking changes to this shape.
 
 ## Key decisions
@@ -298,11 +371,15 @@ because the claim needs two machines.
 renew determinism --emit leg.json
 ```
 
-runs the pinned simulations — eleven of them, contributing fifteen digests,
-because a run reports whichever digests its own report carries and the four
-glide configurations each carry two (the frame schedule's and the world's)
-— and writes what this target saw, together with its architecture and the exact `rustc --version`
-that built it. Digests are hex **strings**, not JSON numbers: a `u64`
+runs the pinned simulations — the eleven runs listed in `PINNED_RUNS` in
+`src/determinism.rs`, spanning the UI, networking, glide, leap, cube, and
+chess packages, contributing fifteen digests because each run reports
+whichever digest fields its own report carries (two for the four glide
+configurations — the frame schedule's and the world's — one apiece for the
+rest) — and writes what this target saw, together with the platform and
+instruction set it ran on and the exact `rustc --version` that built it.
+That pair is the row the comparison then matches. Digests are hex
+**strings**, not JSON numbers: a `u64`
 exceeds what a JSON number is guaranteed to carry exactly, and a reader
 that silently rounded one would report two different states as identical,
 which is the single failure this gate exists to prevent.
@@ -344,18 +421,29 @@ holds them against each other. It exits 0 only when every target agrees
 over a non-empty digest set. Everything else is exit 1, and the reasons
 are deliberately separated:
 
-- **Diverged** — the targets ran the same inputs and reached different
-  state. This is the finding the gate exists to produce, and the message
-  names the digest, both values, and both architectures.
+- **Diverged** — the targets did not reach the same state. This is the
+  finding the gate exists to produce. Where two targets ran the same
+  simulation and disagree, the message names the digest, both values, and
+  both targets; where one target ran a simulation another did not, it
+  names the digest and the two legs, because a comparison narrowed to the
+  intersection would prove less than it claims.
 - **Inconclusive** — the comparison could not be made, and *this is a
-  failure, not a pass*. A leg is missing, a leg carries no digests, the
-  reported architecture set does not match the one the tool binds, or two
-  legs were built by different compilers. The toolchain check outranks the
-  digest comparison on purpose: two compilers producing two digests is not
-  evidence of a portability bug, and reporting it as one sends somebody
-  hunting something that is not there.
+  failure, not a pass*. A leg is missing, a leg carries no digests, a leg
+  ran only part of the pinned list — legs that all ran the same fraction
+  of it agree with each other perfectly while proving a fraction of the
+  claim — the reported set of (os, arch) targets does not match the one
+  the tool binds (a swapped runner keeps the architecture count intact
+  while a bound platform goes unexercised), two legs report the same
+  target, one counted twice proving one rather than two, or two legs were
+  built by different compilers.
+  The toolchain check outranks the digest comparison on purpose: two
+  compilers producing two digests is not evidence of a portability bug,
+  and reporting it as one sends somebody hunting something that is not
+  there.
 
-The architecture set is matched row for row rather than counted. Three
-legs on one instruction set satisfy a count of three and prove strictly
-less than the tool claims, so a runner fleet that quietly changes
-architecture fails here rather than passing while measuring less.
+The target set is matched row for whole row rather than counted or
+matched on one column. Three legs on one instruction set satisfy a count
+of three, and a fleet that swaps one platform's runner for another's
+keeps the architecture multiset intact — each proves strictly less than
+the tool claims, so either fails here rather than passing while
+measuring less.

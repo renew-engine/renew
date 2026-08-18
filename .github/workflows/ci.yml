@@ -1424,10 +1424,12 @@ jobs:
       # The comparison itself is a workspace subcommand, not shell in this
       # file: it is unit-tested, a developer can reproduce a red lane
       # locally with the same command, and its refusals — a missing leg, an
-      # empty digest set, an architecture set that does not match the
-      # target list, two legs on different compilers — live where tests can
-      # reach them. A gate whose logic exists only in CI configuration is a
-      # gate no test can hold to account.
+      # empty digest set, a leg that ran only part of the pinned list, a set
+      # of (os, arch) targets that does not match the target list, the same
+      # target reported twice, two legs on different compilers — live where
+      # tests can reach them. A gate whose
+      # logic exists only in CI configuration is a gate no test can hold to
+      # account.
       - name: Compare every target against every other
         run: |
           cargo run --package renew-cli --bin renew -- determinism \

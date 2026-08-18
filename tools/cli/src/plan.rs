@@ -83,6 +83,66 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
     }
 }
 
+/// One child process to run, with arguments built for this invocation
+/// rather than fixed in the table: [`workspace_steps`] produces these.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OwnedStep {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// The table's steps for one invocation, with the caller's feature
+/// selection folded into the cargo verbs that answer to it. Features go
+/// **before** any `--` — everything after that separator belongs to the
+/// child of the child (bench's own harness), and a feature landing there
+/// would arrive as an argument it never declared.
+///
+/// The verbs that compile the workspace take them: `build`, `test`,
+/// `bench`, and `clippy` — clippy compiles what it lints, so a
+/// default-feature lint leaves feature-gated code unexamined exactly as
+/// a default-feature build leaves it uncompiled. Steps whose program is
+/// not cargo, and cargo steps that compile nothing (`fmt`, `--version`),
+/// pass through untouched: what those run is not a feature question.
+#[must_use]
+pub fn workspace_steps(
+    command: Command,
+    smoke: bool,
+    features: &[String],
+    all_features: bool,
+) -> Vec<OwnedStep> {
+    steps(command, smoke)
+        .iter()
+        .map(|step| {
+            let mut args: Vec<String> = step.args.iter().map(ToString::to_string).collect();
+            let feature_verb = command.takes_workspace_features()
+                && step.program == "cargo"
+                && matches!(
+                    args.first().map(String::as_str),
+                    Some("build" | "test" | "bench" | "clippy")
+                );
+            if feature_verb {
+                let at = args
+                    .iter()
+                    .position(|argument| argument == "--")
+                    .unwrap_or(args.len());
+                let mut flags: Vec<String> = Vec::new();
+                for names in features {
+                    flags.push("--features".to_string());
+                    flags.push(names.clone());
+                }
+                if all_features {
+                    flags.push("--all-features".to_string());
+                }
+                args.splice(at..at, flags);
+            }
+            OwnedStep {
+                program: step.program.to_string(),
+                args,
+            }
+        })
+        .collect()
+}
+
 /// The cargo arguments `run`, `record` and `replay` spawn for one
 /// sample: build and start that binary, then hand it the rest of the
 /// command line.
@@ -198,6 +258,101 @@ mod tests {
         assert!(steps(Command::Run, false).is_empty());
         assert!(steps(Command::Record, false).is_empty());
         assert!(steps(Command::Replay, false).is_empty());
+    }
+
+    #[test]
+    fn workspace_steps_fold_features_into_the_cargo_verb() {
+        let steps = workspace_steps(
+            Command::Test,
+            false,
+            &["window".to_string(), "audio".to_string()],
+            false,
+        );
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].program, "cargo");
+        assert_eq!(
+            steps[0].args,
+            [
+                "test",
+                "--workspace",
+                "--features",
+                "window",
+                "--features",
+                "audio"
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_steps_put_features_before_bench_smokes_separator() {
+        let steps = workspace_steps(Command::Bench, true, &[], true);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].args,
+            ["bench", "--workspace", "--all-features", "--", "--test"],
+            "the everything switch belongs to cargo, ahead of the harness's half"
+        );
+    }
+
+    /// Lint runs two children and only one of them compiles: clippy takes
+    /// the features, `cargo fmt` — which reads text and compiles nothing —
+    /// must not, or cargo would refuse the flag it never declared.
+    #[test]
+    fn lint_folds_features_into_clippy_and_not_into_fmt() {
+        let lint = workspace_steps(Command::Lint, false, &["window".to_string()], true);
+        assert_eq!(lint.len(), 2);
+        assert_eq!(lint[0].args, ["fmt", "--all", "--check"]);
+        assert_eq!(
+            lint[1].args,
+            [
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--features",
+                "window",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings"
+            ],
+            "the flags belong to clippy, ahead of the lint level's own half"
+        );
+    }
+
+    /// The envelope's coverage statement says `"packages":"workspace"`.
+    /// That literal is only true because every compiling step in this
+    /// table passes `--workspace`; nothing else ties the two together,
+    /// so this does.
+    #[test]
+    fn every_feature_verb_scopes_its_child_to_the_whole_workspace() {
+        for command in Command::ALL {
+            if !command.takes_workspace_features() {
+                continue;
+            }
+            for step in workspace_steps(command, false, &[], false) {
+                if step.program == "cargo"
+                    && matches!(
+                        step.args.first().map(String::as_str),
+                        Some("build" | "test" | "bench" | "clippy")
+                    )
+                {
+                    assert!(
+                        step.args.iter().any(|argument| argument == "--workspace"),
+                        "{command:?}'s step compiles without --workspace, and the coverage \
+                         statement would keep claiming the whole workspace"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_steps_leave_non_feature_verbs_untouched() {
+        let configure = workspace_steps(Command::Configure, false, &[], true);
+        assert_eq!(configure[0].args, ["show"]);
+        assert_eq!(configure[1].args, ["--version"]);
+        let bare = workspace_steps(Command::Build, false, &[], false);
+        assert_eq!(bare[0].args, ["build", "--workspace"]);
     }
 
     /// Features are cargo's and land before the separator; the sample's
