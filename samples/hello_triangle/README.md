@@ -206,6 +206,38 @@ readout's text is a pure function of two numbers, so it is tested
 directly at both ends of the range: a frame too fast for the clock to
 resolve, and one of `u64::MAX` nanoseconds.
 
+## iOS
+
+The same shape as Android, with a doorway that never returns.
+`src/ios.rs` is entered from `main` when the run wants a window, and
+hands to the event loop, which enters `UIApplicationMain` and owns the
+process from then on. A run that asked for `--headless` takes the
+command line instead — `simctl spawn` executes this binary directly, and
+a windowed loop with no application around it traps.
+
+**No Xcode project.** An iOS application is a directory: an executable
+plus an `Info.plist` naming it, which `tools/ios-app-bundle.sh`
+assembles. A *device* build would differ — installing on hardware needs
+signing and provisioning — and this sample does not do one.
+
+```
+bash tools/ios-app-bundle.sh renew-sample-hello-triangle hello_triangle com.renewengine.hellotriangle target/ios-present
+xcrun simctl install booted target/ios-present/hello_triangle.app
+xcrun simctl launch booted com.renewengine.hellotriangle
+```
+
+Vulkan on this platform is MoltenVK, translating to Metal. The engine
+opens its runtime by dlopening `libvulkan.dylib`, so the library ships
+under that name and is found through `DYLD_LIBRARY_PATH`; the vendored
+copy and its provenance are in `third_party/moltenvk/`.
+
+**What presents today, and what does not look right yet.** A frame does
+reach the screen. It covers about a third of the window in each
+direction and sits against an edge, because the swapchain is built at
+the window's logical size rather than its physical one — a known defect,
+not a property of the platform. Both need macOS with Xcode's
+command-line tools; a simulator build needs no signing identity.
+
 ## Android
 
 The renderer's first phone build. The library gains a `cdylib` crate

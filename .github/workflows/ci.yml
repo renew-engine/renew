@@ -1412,6 +1412,36 @@ jobs:
           path: target/ios-triangle.png
           if-no-files-found: error
 
+  # A frame on the simulator's *screen*, which is a different claim from
+  # the lane above it.
+  #
+  # **The offscreen lane cannot answer this.** Headless rendering draws
+  # into an image: no surface, no swapchain, nothing acquired or
+  # presented. Everything in the RHI between a window handle and a
+  # presented frame is compiled for this target and, until this lane,
+  # exercised by nothing. So the evidence comes from the screen, which
+  # is the only place a presented frame exists.
+  #
+  # Advisory, like its neighbours: a translation layer presenting to a
+  # simulated display is the newest thing here, and a lane that gated on
+  # it before anyone had watched it behave would be asserting.
+  ios-present:
+    name: iOS presentation (simulator, advisory)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Present a frame and photograph the screen
+        run: bash tools/ci/ios-present.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-present
+          path: target/ios-present.png
+          if-no-files-found: error
+
   determinism-compare:
     name: Determinism (cross-platform comparison)
     runs-on: ubuntu-latest

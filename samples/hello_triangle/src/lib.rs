@@ -49,6 +49,8 @@ use std::process::ExitCode;
 mod android;
 mod cli;
 mod error;
+#[cfg(all(target_os = "ios", feature = "window"))]
+mod ios;
 mod offscreen;
 #[cfg(feature = "window")]
 mod readout;
@@ -58,7 +60,89 @@ mod windowed;
 mod world;
 
 pub use cli::{DEFAULT_FRAMES, Options, Report, SAMPLE, USAGE, parse_args};
+
 pub use error::SampleError;
+/// The iOS application entry, for the binary beside this library.
+///
+/// An iOS app starts at `main` like any other program, so there is no
+/// exported symbol for the OS to find - what there is instead is a
+/// `main` that hands straight off and never gets control back, because
+/// the loop it enters owns the process from then on.
+#[cfg(all(target_os = "ios", feature = "window"))]
+pub use ios::ios_main;
+
+/// Whether an invocation with these arguments needs an application.
+///
+/// **The question is not "did anyone pass arguments", and getting that
+/// wrong is what this function exists to prevent.** An earlier version
+/// entered the windowed doorway whenever the command line was empty,
+/// reasoning that an app launch passes nothing. True, but insufficient:
+/// this sample is *windowed by default*, so `--frames 4` with no
+/// `--headless` also asks for a window - and asking for one outside an
+/// application traps, because there is no application to put it in.
+///
+/// So the predicate is the one that matters: does this run want a
+/// window. A headless run never does and can proceed anywhere; anything
+/// else needs the OS to have started it. Arguments that do not parse are
+/// somebody's mistake at a command line, and belong to the usage
+/// message rather than to a window.
+#[cfg(all(target_os = "ios", feature = "window"))]
+#[must_use]
+pub fn ios_wants_a_window(arguments: &[String]) -> bool {
+    parse_args(arguments.iter().cloned()).is_ok_and(|options| !options.headless)
+}
+#[cfg(all(target_os = "ios", feature = "window"))]
+#[cfg(test)]
+mod ios_entry_tests {
+    //! The iOS dispatch predicate, which decides whether an invocation
+    //! needs an application to exist.
+    //!
+    //! Gated to the platform it runs on, like the doorway it guards, so
+    //! it is checked by the lane that compiles that target. The mistake
+    //! it pins is specific and was made: dispatching on "were there any
+    //! arguments" instead of "does this want a window", which sent a
+    //! windowed command line into `UIApplicationMain` with no
+    //! application around it.
+
+    use super::ios_wants_a_window;
+
+    fn line(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_string()).collect()
+    }
+
+    #[test]
+    fn an_empty_command_line_is_an_app_launch() {
+        assert!(
+            ios_wants_a_window(&line(&[])),
+            "a bundle launch passes nothing and wants a window"
+        );
+    }
+
+    #[test]
+    fn a_headless_run_never_wants_a_window() {
+        assert!(!ios_wants_a_window(&line(&["--headless"])));
+        assert!(!ios_wants_a_window(&line(&["--headless", "--frames", "4"])));
+    }
+
+    /// **The case the first version got wrong.** Arguments are present,
+    /// so an argument-count test would have run the command line; but
+    /// they ask for a window, and a window outside an application traps.
+    #[test]
+    fn arguments_that_ask_for_a_window_still_want_one() {
+        assert!(
+            ios_wants_a_window(&line(&["--frames", "4"])),
+            "a windowed run is windowed however it was invoked"
+        );
+    }
+
+    /// A command line nobody can parse belongs to the usage message, not
+    /// to a window: entering the doorway would replace an error with a
+    /// process that never returns.
+    #[test]
+    fn arguments_that_do_not_parse_go_to_the_command_line() {
+        assert!(!ios_wants_a_window(&line(&["--renew-not-a-real-flag"])));
+    }
+}
 pub use offscreen::{Draw, EXTENT, HeadlessRun, WARMUP_FRAMES};
 #[cfg(feature = "window")]
 pub use readout::Readout;
