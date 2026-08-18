@@ -68,13 +68,18 @@ fn a_pinned_digest_name() -> String {
         .unwrap_or_default()
 }
 
-/// Write three reports and hand them to the comparison.
-fn compare_three(tag: &str, digests: [&str; 3]) -> std::io::Result<Output> {
+/// One report per bound row, handed to the comparison.
+///
+/// The rows are spelled out rather than read from `TARGETS`, so that a
+/// row added to the claim without a leg to prove it fails here instead
+/// of quietly reshaping the fixture around itself.
+fn compare_every_row(tag: &str, digests: [&str; 4]) -> std::io::Result<Output> {
     let dir = scratch(tag)?;
     let rows = [
         ("linux", "x86_64"),
         ("windows", "x86_64"),
         ("macos", "aarch64"),
+        ("android", "x86_64"),
     ];
     let mut paths = Vec::new();
     for (index, (digest, (os, arch))) in digests.iter().zip(rows).enumerate() {
@@ -92,8 +97,9 @@ fn compare_three(tag: &str, digests: [&str; 3]) -> std::io::Result<Output> {
 }
 
 #[test]
-fn three_agreeing_reports_exit_zero() {
-    let output = compare_three("agree", ["0xabc", "0xabc", "0xabc"]).expect("the binary runs");
+fn every_row_agreeing_exits_zero() {
+    let output =
+        compare_every_row("agree", ["0xabc", "0xabc", "0xabc", "0xabc"]).expect("the binary runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -108,7 +114,8 @@ fn three_agreeing_reports_exit_zero() {
 /// a gate.
 #[test]
 fn one_disagreeing_report_exits_non_zero_and_names_the_digest() {
-    let output = compare_three("diverge", ["0xabc", "0xabc", "0xdef"]).expect("the binary runs");
+    let output = compare_every_row("diverge", ["0xabc", "0xabc", "0xdef", "0xabc"])
+        .expect("the binary runs");
     assert!(!output.status.success(), "divergence must not exit 0");
     let text = format!(
         "{}{}",
@@ -145,7 +152,8 @@ fn determinism_without_a_mode_is_a_usage_error() {
 /// dispatcher's last arm would give an unrecognised subcommand.
 #[test]
 fn the_json_envelope_names_the_subcommand_that_ran() {
-    let output = compare_three("envelope", ["0xabc", "0xabc", "0xabc"]).expect("the binary runs");
+    let output = compare_every_row("envelope", ["0xabc", "0xabc", "0xabc", "0xabc"])
+        .expect("the binary runs");
     assert!(output.status.success());
 
     let dir = scratch("envelope-json").expect("scratch");
