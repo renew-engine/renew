@@ -34,6 +34,8 @@
 
 use std::process::ExitCode;
 
+#[cfg(target_os = "android")]
+mod android;
 mod app;
 mod cli;
 /// The translation and the recorder moved to `renew-replay` — any game

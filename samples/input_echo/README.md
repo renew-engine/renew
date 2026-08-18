@@ -147,3 +147,37 @@ skips: on every machine and every lane, those assertions actually run.
 The unit tests beside the source drive the window callbacks directly —
 `event` and `update` with no window at all. Only `ready` needs one,
 because it borrows a live OS window.
+
+## Android
+
+The sample is also the engine's first APK. The library gains a second
+crate type (`cdylib`) and a second doorway beside `main.rs`:
+`src/android.rs` defines the `android_main` the activity looks up by
+name, wraps the same `EchoApp` in a logging adapter, and sends every
+line the desktop prints to a log in the app's internal storage instead —
+a phone has no terminal anyone watches, so the pulled file is the
+sample's report: `ready`, every event as its one-line description, each
+surface epoch closing as the app is backgrounded, and the loop's
+outcome if one comes.
+
+Two commands produce an installable debug APK (run the second from
+`android/`):
+
+```
+cargo ndk -t arm64-v8a -o samples/input_echo/android/app/src/main/jniLibs build -p renew-sample-input-echo --release
+./gradlew assembleDebug
+```
+
+`cargo-ndk` (pinned 4.1.2) needs `ANDROID_NDK_HOME` pointing at an
+r28+ NDK — r28 aligns segments to the 16 KB pages newer devices
+require, by default. Gradle needs `JAVA_HOME` and `ANDROID_HOME`; the
+committed wrapper pins Gradle itself, the shell's build file pins the
+Android plugin, and `assembleDebug` signs with the SDK's debug key, so
+the artifact under `android/app/build/outputs/apk/debug/` is ready for
+`adb install` with no further ceremony. The shell is owned source —
+edited, never regenerated. `jniLibs/` is a build product and ignored.
+
+The app draws nothing yet — rendering reaches Android in a later
+change — so the screen is the system's; the log is where the sample
+speaks: `adb shell run-as com.renewengine.inputecho cat
+files/input_echo.log`.

@@ -1,0 +1,33 @@
+// One module, no Java, no Kotlin: the application is the shared object
+// built by cargo into src/main/jniLibs, and this file exists to wrap it
+// in an installable APK. assembleDebug signs with the SDK's debug key,
+// so the artifact is adb-installable with zero signing configuration.
+plugins {
+    id "com.android.application" version "8.9.1"
+}
+
+android {
+    namespace "com.renewengine.inputecho"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.renewengine.inputecho"
+        // Vulkan 1.1 is a hard guarantee from API 29 on 64-bit devices;
+        // this sample draws nothing, but the floor is the engine's, set
+        // once, not renegotiated per sample.
+        minSdk 29
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.1"
+        ndk {
+            // The device ABI. The emulator ABI joins when its lane does.
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
