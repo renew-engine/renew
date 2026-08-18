@@ -1171,7 +1171,7 @@ jobs:
   # can prove the target did not matter, because both halves ran on one
   # target.
   #
-  # These two jobs are the only place that claim is actually tested. Each
+  # These jobs are the only place that claim is actually tested. Each
   # leg runs the pinned simulations on its own target and reports what it
   # saw; the comparison holds the reports against each other. A leg that
   # cannot run reports nothing, and reporting nothing is a failure rather
@@ -1201,6 +1201,106 @@ jobs:
           name: determinism-${{ matrix.os }}
           path: leg.json
           if-no-files-found: error
+
+  # The same eleven pinned simulations the three desktop legs run,
+  # executed on an Android emulator. Advisory, deliberately: whether
+  # this platform belongs in the determinism claim is a decision with a
+  # signature attached, and until it has one a lane that could redden
+  # `main` would be asserting the answer rather than gathering it.
+  #
+  # Nothing here teaches the emitter how to reach a device. It knows
+  # the triple — it carries a table naming this one, so that a leg can
+  # say where it ran — but not that a device exists: `--target` makes
+  # cargo build for Android and hand each binary to the runner named by
+  # CARGO_TARGET_*_RUNNER, which pushes and executes it, and the digests
+  # come back through the same stdout parsing every leg uses.
+  determinism-android:
+    name: Determinism (android emulator, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # Only so the Linux leg exists to print a comparison against. This
+    # lane cannot use `renew determinism --compare`: that verdict matches
+    # the reported set against TARGETS, and a fourth leg is a set that
+    # does not match the claim - the check working, not failing. So the
+    # comparison here is printed for a reader and decides nothing, which
+    # is what "evidence, not a gate" has to mean until the row is signed.
+    needs: [determinism-emit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      # The emulator needs hardware acceleration to boot in a usable
+      # time, and a hosted runner grants it only after this rule.
+      - name: Allow the runner to use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run the pinned simulations on an emulator
+        uses: reactivecircus/android-emulator-runner@v2.34.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          # Headless, no snapshots, no audio: this lane runs command-line
+          # binaries and never draws.
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          # **One line, because the action runs this input one line per
+          # `sh -c`.** Variables do not survive between them, `set -eu`
+          # applies to nothing after itself, and a multi-line `if` is a
+          # syntax error at the first line break. Two CI runs died on
+          # exactly that before the body moved into a file with a shell
+          # of its own.
+          script: bash tools/ci/android-determinism.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-android-x86_64
+          path: android-leg.json
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          name: determinism-ubuntu-latest
+          path: linux-leg
+      # Printed, never decisive. The question this lane exists to ask is
+      # whether a phone agrees with a desktop bit for bit; leaving four
+      # artifacts for somebody to diff by hand would be gathering the
+      # evidence and not reading it.
+      - name: Hold the Android leg against the Linux one
+        shell: bash
+        run: |
+          python3 - <<'COMPARE'
+          import json, sys
+
+          def digests(path):
+              with open(path, encoding='utf-8') as handle:
+                  document = json.load(handle)
+              return document['digests'], document['os'], document['arch']
+
+          android, a_os, a_arch = digests('android-leg.json')
+          linux, l_os, l_arch = digests('linux-leg/leg.json')
+
+          names = sorted(set(android) | set(linux))
+          agree, diverge, missing = [], [], []
+          for name in names:
+              if name not in android or name not in linux:
+                  missing.append(name)
+              elif android[name] == linux[name]:
+                  agree.append(name)
+              else:
+                  diverge.append((name, android[name], linux[name]))
+
+          print(f'{a_os}/{a_arch} against {l_os}/{l_arch}')
+          for name, mine, theirs in diverge:
+              print(f'  DIVERGE {name}: {mine} here, {theirs} there')
+          for name in missing:
+              print(f'  ONLY ONE LEG RAN {name}')
+          print(f'  {len(agree)} agree, {len(diverge)} diverge, '
+                f'{len(missing)} ran on one leg only')
+          if not agree and not diverge:
+              print('  NOTHING WAS COMPARED - do not read this as agreement')
+              sys.exit(1)
+          COMPARE
 
   determinism-compare:
     name: Determinism (cross-platform comparison)

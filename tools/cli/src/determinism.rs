@@ -59,7 +59,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub struct Leg {
     /// Where the report came from, for error messages — a file name.
     pub origin: String,
-    /// `target_os`, as the emitting build saw itself.
+    /// `target_os` for the platform this leg's runs executed on:
+    /// [`platform_of_triple`] of the emitting command's `--target` when
+    /// it had one, and `env::consts` of the emitting process otherwise.
+    /// The two agree for a host build, which its own test pins.
     pub os: String,
     /// `target_arch`, likewise. Compared against the expected set, so a
     /// runner fleet that quietly changes instruction set is caught
@@ -415,10 +418,235 @@ pub fn digests_from_output(
     Ok(digests)
 }
 
+/// The platform a target triple names, in the words a leg uses — or
+/// nothing, for a triple this lane has not been taught.
+///
+/// **Deliberately the same words `env::consts` produces**, because a
+/// leg emitted for the host and a leg emitted for a device are compared
+/// against one table: `x86_64-linux-android` has to read as
+/// `("android", "x86_64")` exactly as a binary running there would
+/// report itself, or the comparison would refuse a leg for spelling
+/// rather than for disagreeing.
+///
+/// **A table, not a parser, and the difference is the whole point.**
+/// Neither column can be read off a triple by position. `android` lives
+/// in the *environment* field of `x86_64-linux-android`, whose os field
+/// says `linux`. And the leading field is a spelling, not a
+/// `target_arch`: `armv7-linux-androideabi` builds with
+/// `target_arch = "arm"`, `i686-pc-windows-msvc` with `x86`, and the two
+/// disagree on **more than half** the targets rustc ships — 163 of the
+/// 322 the pinned toolchain lists, counted rather than estimated.
+/// Guessing either column mislabels a leg — and a mislabelled leg is
+/// worse than a refused one, because it is then compared against rows
+/// it does not belong to.
+///
+/// So an unknown triple is refused **here, where the label is made**,
+/// rather than left for a downstream check to catch: this function
+/// cannot answer for a target nobody has stated the answer for, and
+/// saying so is the only honest return. Teaching the lane a new target
+/// is one row below, added beside the row that puts it in CI.
+#[must_use]
+pub fn platform_of_triple(triple: &str) -> Option<(&'static str, &'static str)> {
+    KNOWN_TARGETS
+        .iter()
+        .find(|(known, _, _)| *known == triple)
+        .map(|(_, os, arch)| (*os, *arch))
+}
+
+/// Triple, then the `target_os` and `target_arch` a binary built for it
+/// reports — transcribed from the compiler, never derived from the text.
+///
+/// A module constant rather than a local one so that a test can walk it
+/// and hold every row against `rustc --print cfg`. Held only against a
+/// copy of itself, a table proves nothing: the copy would be wrong in
+/// the same way.
+pub const KNOWN_TARGETS: [(&str, &str, &str); 7] = [
+    ("x86_64-unknown-linux-gnu", "linux", "x86_64"),
+    ("x86_64-pc-windows-msvc", "windows", "x86_64"),
+    ("aarch64-apple-darwin", "macos", "aarch64"),
+    ("aarch64-linux-android", "android", "aarch64"),
+    ("x86_64-linux-android", "android", "x86_64"),
+    ("aarch64-apple-ios", "ios", "aarch64"),
+    ("aarch64-apple-ios-sim", "ios", "aarch64"),
+];
+
+/// Build one pinned run's cargo command line.
+///
+/// Split out of the emit loop so that **the pass-through can be
+/// asserted without a device**. It is the whole mechanism by which a
+/// leg comes from somewhere else — delete it and cargo builds for the
+/// host, the runner is never invoked, and the leg is still stamped with
+/// the triple's platform because the label comes from the flag rather
+/// than from the run. That failure is silent and looks exactly like
+/// success, so it is pinned here rather than left to a lane.
+///
+/// `--target` must precede the `--` separator: everything after it
+/// belongs to the program, not to cargo.
+#[must_use]
+pub fn pinned_invocation<'a>(
+    package: &'a str,
+    args: &[&'a str],
+    target: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut invocation = vec!["run", "--quiet", "--package", package];
+    if let Some(triple) = target {
+        invocation.push("--target");
+        invocation.push(triple);
+    }
+    invocation.push("--");
+    invocation.extend_from_slice(args);
+    invocation
+}
+
 #[cfg(test)]
 mod tests {
+    /// Every triple this project builds reads as the words a binary
+    /// running there would report about itself. The desktop three are
+    /// the check that matters most: they are already emitted from
+    /// `env::consts`, so the two paths must agree or one leg would be
+    /// refused for its spelling rather than its digests.
+    #[test]
+    fn a_triple_names_the_platform_the_way_a_binary_there_would() {
+        use super::platform_of_triple;
+
+        // The host's own triple, assembled from a constant the compiler
+        // picks. `#[cfg]` on three definitions rather than `cfg!` in
+        // three branches, because the branch form compiles all three and
+        // executes one — leaving the other two as regions no run on this
+        // platform can reach, and a coverage gap that lands on a
+        // different pair of lines on every platform that measures it.
+        #[cfg(windows)]
+        const HOST_REST: &str = "pc-windows-msvc";
+        #[cfg(target_os = "macos")]
+        const HOST_REST: &str = "apple-darwin";
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        const HOST_REST: &str = "unknown-linux-gnu";
+
+        for (triple, os, arch) in [
+            ("x86_64-unknown-linux-gnu", "linux", "x86_64"),
+            ("x86_64-pc-windows-msvc", "windows", "x86_64"),
+            ("aarch64-apple-darwin", "macos", "aarch64"),
+            ("x86_64-linux-android", "android", "x86_64"),
+            ("aarch64-linux-android", "android", "aarch64"),
+            ("aarch64-apple-ios", "ios", "aarch64"),
+            ("aarch64-apple-ios-sim", "ios", "aarch64"),
+        ] {
+            assert_eq!(platform_of_triple(triple), Some((os, arch)), "{triple}");
+        }
+
+        // The one this process can check against the real thing: the
+        // host's own triple must read as the host's own constants.
+        let host = format!("{}-{HOST_REST}", std::env::consts::ARCH);
+        assert_eq!(
+            platform_of_triple(&host),
+            Some((std::env::consts::OS, std::env::consts::ARCH)),
+            "the two identity paths disagree about this very machine"
+        );
+
+        // Every row held against the compiler, which is the authority
+        // on what a binary built for a triple reports about itself.
+        // Without this the table is checked against a copy of itself
+        // written in the same sitting, which is worth nothing: a row
+        // wrong in both columns passes, and the four mobile rows — the
+        // reason this function exists — are exercised by no lane that
+        // can fail. `--print cfg` answers for a target whether or not
+        // its standard library is installed, so this runs anywhere the
+        // suite does.
+        for (triple, os, arch) in super::KNOWN_TARGETS {
+            let printed = std::process::Command::new("rustc")
+                .args(["--print", "cfg", "--target", triple])
+                .output()
+                .unwrap_or_else(|error| panic!("could not ask rustc about {triple}: {error}"));
+            assert!(
+                printed.status.success(),
+                "rustc refused to describe {triple}, so this row is unverifiable"
+            );
+            let cfg = String::from_utf8_lossy(&printed.stdout);
+            // Compared as `Option`, so a key rustc did not print fails
+            // as `None` against the expected value rather than through
+            // an arm of its own. An arm no run can take is a coverage
+            // hole that has to be argued for, and this needs no arm.
+            let value = |key: &str| {
+                cfg.lines()
+                    .find_map(|line| line.strip_prefix(key))
+                    .map(|rest| rest.trim_matches('"'))
+            };
+            assert_eq!(value("target_os="), Some(os), "target_os for {triple}");
+            assert_eq!(
+                value("target_arch="),
+                Some(arch),
+                "target_arch for {triple}"
+            );
+        }
+
+        // A triple nobody has stated the answer for gets no answer.
+        // Both of these would have been mislabelled by reading the
+        // fields off by position: the first has no `target_arch` called
+        // `armv7` and no os field naming android, and the second is a
+        // target this lane does not build at all.
+        for unknown in ["armv7-linux-androideabi", "wasm32-unknown-unknown"] {
+            assert_eq!(platform_of_triple(unknown), None, "{unknown}");
+        }
+    }
+
     use super::{Leg, Verdict, compare, describe, parse_leg, render_leg};
     use std::collections::BTreeMap;
+
+    /// The pass-through is the whole mechanism by which a leg comes
+    /// from somewhere else, and it is invisible from the outside: with
+    /// it deleted, cargo builds for the host, the runner is never
+    /// invoked, and the leg is *still* stamped with the triple's
+    /// platform, because the label comes from the flag rather than from
+    /// the run. The artifact would be byte-identical to a desktop leg
+    /// and the lane would report agreement it never measured. So the
+    /// argv is asserted here, where no device is required.
+    #[test]
+    fn a_triple_reaches_cargo_ahead_of_the_program_s_own_arguments() {
+        use super::pinned_invocation;
+
+        let args = ["--play", "--json"];
+
+        assert_eq!(
+            pinned_invocation("renew-sample-chess", &args, None),
+            [
+                "run",
+                "--quiet",
+                "--package",
+                "renew-sample-chess",
+                "--",
+                "--play",
+                "--json"
+            ],
+            "without a triple the command must be exactly what it always was"
+        );
+
+        let targeted = pinned_invocation("renew-sample-chess", &args, Some("x86_64-linux-android"));
+        assert_eq!(
+            targeted,
+            [
+                "run",
+                "--quiet",
+                "--package",
+                "renew-sample-chess",
+                "--target",
+                "x86_64-linux-android",
+                "--",
+                "--play",
+                "--json"
+            ]
+        );
+
+        // Stated separately from the equality above, because this is the
+        // property rather than the spelling: everything after `--` is the
+        // program's, so a triple that drifted past it would be handed to
+        // the simulation as an argument instead of to cargo as a target.
+        let separator = targeted.iter().position(|word| *word == "--").unwrap();
+        let flag = targeted
+            .iter()
+            .position(|word| *word == "--target")
+            .unwrap();
+        assert!(flag < separator, "--target must precede the `--` separator");
+    }
 
     const ARCHES: [&str; 3] = ["aarch64", "x86_64", "x86_64"];
 

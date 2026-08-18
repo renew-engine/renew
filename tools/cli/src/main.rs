@@ -85,6 +85,7 @@ fn run(invocation: &Invocation) -> ExitCode {
             if invocation.compare.is_empty() {
                 run_determinism_emit(
                     invocation.emit.as_deref().unwrap_or_default(),
+                    invocation.target.as_deref(),
                     invocation.json,
                 )
             } else {
@@ -1299,10 +1300,32 @@ const PINNED_RUNS: [PinnedRun; 11] = [
 /// hash, and one apiece for every run added since. A lane that assumed one
 /// shape would tell the others their report was missing a field, which is
 /// true and useless.
-fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
+fn run_determinism_emit(output_path: &str, target: Option<&str>, json_mode: bool) -> ExitCode {
     let runner = match Runner::anchored("determinism", json_mode) {
         Ok(runner) => runner,
         Err(exit) => return exit,
+    };
+
+    // **Before a single build, because the answer cannot change and the
+    // builds are expensive.** A triple the table has never been taught
+    // would have to be labelled by reading its fields off by position,
+    // which is wrong for more than half the targets rustc ships —
+    // and a leg wearing the wrong platform is compared against rows it
+    // does not belong to. Asked here, the refusal names the flag that
+    // caused it; asked after the runs, it arrives eleven cargo
+    // invocations later wearing the last one's error message.
+    let platform = match target {
+        Some(triple) => match determinism::platform_of_triple(triple) {
+            Some((os, arch)) => Some((os.to_string(), arch.to_string())),
+            None => {
+                return runner.fail(&format!(
+                    "`{triple}` is not a target this lane knows how to label, so a leg \
+                     built for it could not say truthfully where it ran; add it to \
+                     `platform_of_triple` beside the row that puts it in CI"
+                ));
+            }
+        },
+        None => None,
     };
 
     // The toolchain that built the binaries being compared. Read from
@@ -1320,8 +1343,13 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
 
     let mut digests = BTreeMap::new();
     for (name, package, args, fields) in PINNED_RUNS {
-        let mut invocation = vec!["run", "--quiet", "--package", package, "--"];
-        invocation.extend_from_slice(args);
+        // Cargo runs the built binary through whatever
+        // `CARGO_TARGET_<TRIPLE>_RUNNER` names, so a device leg is this
+        // same command with a runner that pushes and executes somewhere
+        // else. Nothing below learns that a device exists. Built by a
+        // function rather than inline so the pass-through is asserted by
+        // tests instead of only by a lane that cannot fail the build.
+        let invocation = determinism::pinned_invocation(package, args, target);
         let (ok, stdout) = match probe("cargo", &invocation, Some(&runner.root)) {
             Ok(result) => result,
             Err(error) => return runner.fail(&format!("could not start `{name}`: {error}")),
@@ -1338,10 +1366,21 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
         }
     }
 
+    // **Whose platform this leg describes.** With a target, the runs
+    // executed somewhere this process is not, so reading this process's
+    // own constants would label a device's digests with the desktop
+    // that launched them. The triple is what the binaries were built
+    // for and what the runner executed; what it cannot prove is that
+    // the runner truly went there, which is why the lane prints the
+    // device's own architecture beside the leg.
+    let (os, arch) = match platform {
+        Some(pair) => pair,
+        None => (env::consts::OS.to_string(), env::consts::ARCH.to_string()),
+    };
     let leg = determinism::Leg {
         origin: output_path.to_string(),
-        os: env::consts::OS.to_string(),
-        arch: env::consts::ARCH.to_string(),
+        os,
+        arch,
         toolchain,
         digests,
     };
@@ -1359,6 +1398,11 @@ fn run_determinism_emit(output_path: &str, json_mode: bool) -> ExitCode {
 }
 
 /// Hold several targets' reports against each other.
+///
+/// No `target` parameter, and that is a rule rather than an omission:
+/// the parser refuses `--target` alongside `--compare` before this is
+/// reached, because comparison reads legs that were already emitted and
+/// each one names the platform it ran on.
 fn run_determinism_compare(paths: &[String], json_mode: bool) -> ExitCode {
     let runner = match Runner::anchored("determinism", json_mode) {
         Ok(runner) => runner,

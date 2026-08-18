@@ -522,6 +522,37 @@ fn cited_position(reason: &str) -> Option<String> {
             from = after;
         }
     }
+
+    // A parenthesised group made of nothing but numbers and separators.
+    // `(1321-1325)` carries exactly the information `lines 1321-1325`
+    // does and goes stale exactly as fast, while matching nothing above
+    // — the check was reading a spelling rather than a citation.
+    //
+    // The shape is narrow on purpose. Reasons legitimately talk about
+    // widths, bounds and byte counts, so a run of digits anywhere in
+    // the prose is not evidence of anything — an earlier, looser
+    // version of this check flagged four honest sentences about packet
+    // fields. This fires only when a reader put numbers in brackets
+    // *instead of* naming the code, which is the habit the header
+    // forbids.
+    let mut rest = reason;
+    while let Some(open) = rest.find('(') {
+        let inside = &rest[open + 1..];
+        let Some(close) = inside.find(')') else { break };
+        let group = &inside[..close];
+        let separators_only = !group.is_empty()
+            && group
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '-' | ',' | ' '));
+        let long_enough = group
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|run| run.len() >= 3);
+        if separators_only && long_enough {
+            return Some(format!("the bracketed positions `({group})`"));
+        }
+        rest = &inside[close + 1..];
+    }
+
     None
 }
 

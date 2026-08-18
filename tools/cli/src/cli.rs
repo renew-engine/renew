@@ -165,6 +165,18 @@ pub struct Invocation {
     /// the two modes are one subcommand because they are two halves of
     /// one claim, and parsing refuses both together and neither.
     pub emit: Option<String>,
+    /// `determinism --emit` only: the target triple the pinned runs are
+    /// built and executed for. Absent means the host, which is what
+    /// every desktop leg uses.
+    ///
+    /// **The leg's identity comes from this when it is given**, because
+    /// the emitting tool runs on the host while the runs it measures do
+    /// not: a leg that read its own `env::consts` would label an
+    /// Android run as the desktop that launched it. What the triple
+    /// cannot check is that the runs truly executed there — that is the
+    /// runner's job, and the lane prints the device's own architecture
+    /// beside the leg so the two can be read together.
+    pub target: Option<String>,
     /// Run, record and replay: cargo features to build the sample with,
     /// each occurrence kept.
     ///
@@ -291,6 +303,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut compare: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
     let mut emit: Option<String> = None;
+    let mut target: Option<String> = None;
     let mut sample: Option<String> = None;
     let mut sample_args: Vec<String> = Vec::new();
     // The separator, if it comes at all, comes immediately after the
@@ -357,6 +370,14 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--emit"))?;
                 emit = Some(path.clone());
             }
+            // Passed through to every pinned run's cargo invocation, so
+            // one code path produces every leg: what differs between a
+            // desktop leg and a device one is where the binaries run,
+            // not how they are measured.
+            "--target" => {
+                let triple = rest.next().ok_or(ParseError::MissingValue("--target"))?;
+                target = Some(triple.clone());
+            }
             // Same reason as `--report`: the value is consumed here so a
             // path can never be mistaken for a subcommand.
             "--pack" => {
@@ -398,7 +419,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     if help {
         return Ok(Parsed::Help { json });
     }
-    check_determinism_ownership(command, emit.as_deref(), &compare)?;
+    check_determinism_ownership(command, emit.as_deref(), &compare, target.as_deref())?;
     check_combination(
         command,
         smoke,
@@ -414,7 +435,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         out.as_deref(),
         verify,
     )?;
-    check_determinism_mode(command, emit.as_deref(), &compare)?;
+    check_determinism_mode(command, emit.as_deref(), &compare, target.as_deref())?;
 
     match command {
         Some(command) => Ok(Parsed::Run(Invocation {
@@ -431,13 +452,15 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             verify,
             compare,
             emit,
+            target,
             features,
         })),
         None => Err(ParseError::NoCommand),
     }
 }
 
-/// `--emit` and `--compare` belong to `determinism` and nothing else.
+/// `--emit`, `--compare` and `--target` belong to `determinism` and
+/// nothing else.
 ///
 /// Separate from [`check_combination`] for the reason its neighbour
 /// already records: that function carries five parameters and reads as a
@@ -446,6 +469,7 @@ fn check_determinism_ownership(
     command: Option<Command>,
     emit: Option<&str>,
     compare: &[String],
+    target: Option<&str>,
 ) -> Result<(), ParseError> {
     if command == Some(Command::Determinism) {
         return Ok(());
@@ -455,6 +479,12 @@ fn check_determinism_ownership(
     }
     if !compare.is_empty() {
         return Err(ParseError::UnexpectedArgument("--compare".to_string()));
+    }
+    // `build --target` reads like cargo's flag of the same name and is
+    // not one: nothing outside this subcommand passes it anywhere. Left
+    // accepted, it would be a flag that looks like it cross-compiled.
+    if target.is_some() {
+        return Err(ParseError::UnexpectedArgument("--target".to_string()));
     }
     Ok(())
 }
@@ -471,9 +501,21 @@ fn check_determinism_mode(
     command: Option<Command>,
     emit: Option<&str>,
     compare: &[String],
+    target: Option<&str>,
 ) -> Result<(), ParseError> {
     if command != Some(Command::Determinism) {
         return Ok(());
+    }
+    // `--target` selects what to build and run; `--compare` builds and
+    // runs nothing, reading reports that already exist and already say
+    // where they ran. Accepting the pair silently is how somebody comes
+    // to believe a comparison covered a target it never saw.
+    if target.is_some() && !compare.is_empty() {
+        return Err(ParseError::UnexpectedArgument(
+            "--target with --compare: a comparison reads legs that already ran, and each \
+             one names its own platform"
+                .to_string(),
+        ));
     }
     // Neither is a subcommand asked to do nothing; both is a subcommand
     // asked to do two things, and choosing one silently is how a lane
@@ -665,6 +707,9 @@ pub fn usage() -> String {
         "  --verify          (asset-inspect only) check each entry against its digest\n",
         "  --emit <path>     (determinism only) write this target's digests here\n",
         "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
+        "  --target <triple> (determinism --emit only) build and run the pinned\n",
+        "                    simulations for this triple, through cargo's runner\n",
+        "                    mechanism where one is configured\n",
         "  --features <list> (run, record, replay; repeatable) cargo features to build\n",
         "                    the sample with, e.g. `--features window` for a window\n",
         "  --help, -h        print this text; `renew help` does the same\n",
@@ -711,6 +756,7 @@ mod tests {
             verify: false,
             compare: Vec::new(),
             emit: None,
+            target: None,
             features: Vec::new(),
         }
     }
@@ -865,13 +911,18 @@ mod tests {
         );
     }
 
-    /// Both flags belong to `determinism` and to nothing else. Derived
-    /// from `Command::ALL` like the other ownership tests here, so a
-    /// subcommand added later cannot quietly escape the rejection.
+    /// All three flags belong to `determinism` and to nothing else.
+    /// Derived from `Command::ALL` like the other ownership tests here,
+    /// so a subcommand added later cannot quietly escape the rejection.
+    ///
+    /// `--target` is the one worth stating twice: it is spelled exactly
+    /// like cargo's flag, so `renew build --target aarch64-linux-android`
+    /// is a plausible thing to type and nothing in this tool would have
+    /// cross-compiled anything.
     #[test]
     fn the_determinism_flags_are_refused_on_every_other_subcommand() {
         for command in all_except(Command::Determinism) {
-            for flag in ["--emit", "--compare"] {
+            for flag in ["--emit", "--compare", "--target"] {
                 let line = vec![command.name(), flag, "leg.json"];
                 let parsed = parse(&arguments(&line));
                 let name = command.name();
@@ -895,6 +946,48 @@ mod tests {
         assert_eq!(
             parse(&arguments(&["determinism", "--compare"])),
             Err(ParseError::MissingValue("--compare"))
+        );
+        assert_eq!(
+            parse(&arguments(&["determinism", "--target"])),
+            Err(ParseError::MissingValue("--target"))
+        );
+    }
+
+    /// The triple reaches the invocation, and only in the mode that can
+    /// act on it.
+    ///
+    /// `--target` selects what to build and run. `--compare` builds and
+    /// runs nothing — it reads reports that already exist, each naming
+    /// the platform it ran on. Accepting the pair would leave a flag
+    /// that appears to have widened a comparison and did not, which is
+    /// the reading that turns an unexercised target into a green lane.
+    #[test]
+    fn a_target_triple_reaches_emit_and_is_refused_beside_compare() {
+        assert_eq!(
+            parse(&arguments(&[
+                "determinism",
+                "--emit",
+                "leg.json",
+                "--target",
+                "x86_64-linux-android",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                emit: Some("leg.json".to_string()),
+                target: Some("x86_64-linux-android".to_string()),
+                ..plain(Command::Determinism)
+            }))
+        );
+
+        let with_compare = parse(&arguments(&[
+            "determinism",
+            "--compare",
+            "a.json",
+            "--target",
+            "x86_64-linux-android",
+        ]));
+        assert!(
+            matches!(&with_compare, Err(ParseError::UnexpectedArgument(said)) if said.contains("--target") && said.contains("--compare")),
+            "the refusal should name both flags, got {with_compare:?}"
         );
     }
 

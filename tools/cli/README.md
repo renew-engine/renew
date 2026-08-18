@@ -42,6 +42,9 @@ options:
   --verify          (asset-inspect only) check each entry against its digest
   --emit <path>     (determinism only) write this target's digests here
   --compare <path>  (determinism only, repeatable) a target report to compare
+  --target <triple> (determinism --emit only) build and run the pinned
+                    simulations for this triple, through cargo's runner
+                    mechanism where one is configured
   --features <list> (run, record, replay; repeatable) cargo features to build
                     the sample with, e.g. `--features window` for a window
   --help, -h        print this text; `renew help` does the same
@@ -295,13 +298,36 @@ because the claim needs two machines.
 renew determinism --emit leg.json
 ```
 
-runs the pinned simulations — four glide configurations, each contributing
-both the frame schedule's digest and the world's — and writes what this
-target saw, together with its architecture and the exact `rustc --version`
+runs the pinned simulations — eleven of them, contributing fifteen digests,
+because a run reports whichever digests its own report carries and the four
+glide configurations each carry two (the frame schedule's and the world's)
+— and writes what this target saw, together with its architecture and the exact `rustc --version`
 that built it. Digests are hex **strings**, not JSON numbers: a `u64`
 exceeds what a JSON number is guaranteed to carry exactly, and a reader
 that silently rounded one would report two different states as identical,
 which is the single failure this gate exists to prevent.
+
+Adding `--target <triple>` builds and runs those same simulations for
+another target instead of this one:
+
+```
+renew determinism --emit leg.json --target x86_64-linux-android
+```
+
+**This needs a runner configured, and says so rather than assuming it.**
+Cargo executes a cross-built binary through whatever
+`CARGO_TARGET_<TRIPLE>_RUNNER` names — for the triple above, that is
+`CARGO_TARGET_X86_64_LINUX_ANDROID_RUNNER`, and `tools/android-runner.sh`
+is the one this repository ships: it pushes each binary to a connected
+device with `adb`, runs it there, and hands back its output and its exit
+code. With no runner set, cargo tries to execute the binary here, which
+fails rather than quietly measuring the wrong machine. A linker for the
+target is needed too; the CI lane sets both.
+
+The triple also decides what the leg calls itself, so only triples this
+tool has been taught are accepted — anything else is refused by name
+before a build starts, because a leg labelled by a guess would be
+compared against rows it does not belong to.
 
 ```
 renew determinism --compare linux.json --compare windows.json --compare macos.json
