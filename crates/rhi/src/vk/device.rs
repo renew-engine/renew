@@ -95,6 +95,31 @@ pub(crate) struct DeviceShared {
     /// object, created at bring-up, destroyed at teardown before the
     /// device.
     pub(crate) sampled_set_layout: vk::DescriptorSetLayout,
+    /// The one descriptor-set layout every uniform block shares: a
+    /// single dynamic uniform buffer at binding zero, visible to the
+    /// vertex and fragment stages.
+    ///
+    /// **A second layout rather than a second binding in the first.** A
+    /// set layout fixes the descriptor type at each binding index, so
+    /// one layout cannot serve both classes without every sampled set
+    /// carrying a uniform slot it never fills. Two layouts cost one
+    /// object; a merged one would cost every binding in the tree.
+    ///
+    /// **Dynamic, and both stages.** Dynamic because a per-frame buffer
+    /// holds one region per frame slot and the offset is chosen at bind
+    /// time — which is what keeps a set written once at creation and
+    /// never rewritten. Both stages because the first thing a block
+    /// carries is a camera, and a camera is read where vertices are
+    /// transformed; the sampled layout is fragment-only because a
+    /// texture is read where fragments are shaded.
+    pub(crate) uniform_set_layout: vk::DescriptorSetLayout,
+    /// `minUniformBufferOffsetAlignment`, read once at bring-up.
+    ///
+    /// Kept for the same reason `max_image_dimension_2d` is. A per-frame
+    /// buffer's slot regions are spaced by at least this, so the dynamic
+    /// offset a bind supplies is always legal — an unaligned one is a
+    /// usage violation the driver reports rather than a wrong picture.
+    pub(crate) uniform_offset_alignment: u64,
     /// `maxImageDimension2D`, read once at bring-up.
     ///
     /// Kept for the same reason `depth_format` is: it is a static
@@ -151,6 +176,8 @@ impl Drop for DeviceShared {
         unsafe {
             self.device
                 .destroy_descriptor_set_layout(self.sampled_set_layout, Some(&self.alloc_cbs()));
+            self.device
+                .destroy_descriptor_set_layout(self.uniform_set_layout, Some(&self.alloc_cbs()));
             self.device.destroy_device(Some(&self.alloc_cbs()));
             if let Some((utils, messenger)) = self.debug.take() {
                 utils.destroy_debug_utils_messenger(messenger, Some(&self.alloc_cbs()));
@@ -181,6 +208,88 @@ impl Drop for DeviceShared {
 #[derive(Clone)]
 pub struct Device {
     pub(crate) shared: Rc<DeviceShared>,
+}
+
+/// Both canonical descriptor-set layouts, or neither.
+///
+/// **One unwind, not one per layout.** Bring-up needs two layouts and each
+/// creation can fail, which naively means two failure arms — and the
+/// second, which destroys the first layout, is unreachable: the fault
+/// suite arms one quirk per scenario and faults the *first*
+/// `vkCreateDescriptorSetLayout`, so the second call is never made.
+/// Factoring the creation alone did not change that. Owning the pair here
+/// leaves bring-up a single arm the suite does drive, and shrinks the
+/// unreachable residue to the three lines below.
+fn make_set_layouts(
+    device: &ash::Device,
+    ledger: &AllocLedger,
+) -> Result<(vk::DescriptorSetLayout, vk::DescriptorSetLayout), DeviceError> {
+    let sampled = make_set_layout(
+        device,
+        ledger,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        vk::ShaderStageFlags::FRAGMENT,
+    )?;
+    // Visible to both stages, unlike the sampled layout: the first thing a
+    // block carries is a camera, read where vertices are transformed, and
+    // a texture is read where fragments are shaded.
+    match make_set_layout(
+        device,
+        ledger,
+        vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+    ) {
+        Ok(uniform) => Ok((sampled, uniform)),
+        Err(error) => {
+            // SAFETY: the layout the call above made, destroyed with the
+            // callbacks that made it; nothing references it, because the
+            // device it belongs to has not been returned to anyone.
+            unsafe {
+                device.destroy_descriptor_set_layout(
+                    sampled,
+                    Some(&crate::vk::alloc::callbacks(ledger)),
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// One canonical descriptor-set layout: a single descriptor of `kind` at
+/// binding zero, visible to `stages`.
+///
+/// Extracted because the crate makes two of these and they differ in
+/// exactly those two arguments. Returning the error rather than unwinding
+/// here keeps the teardown at the call site, where what has been built so
+/// far is known.
+///
+/// # Errors
+///
+/// The creation failure, already translated — out-of-host-memory named
+/// separately because callers distinguish it.
+fn make_set_layout(
+    device: &ash::Device,
+    ledger: &AllocLedger,
+    kind: vk::DescriptorType,
+    stages: vk::ShaderStageFlags,
+) -> Result<vk::DescriptorSetLayout, DeviceError> {
+    let bindings = [vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .descriptor_type(kind)
+        .descriptor_count(1)
+        .stage_flags(stages)];
+    let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+    // SAFETY: category 2: device live; the binding array is a local
+    // outliving the call.
+    unsafe {
+        device.create_descriptor_set_layout(&info, Some(&crate::vk::alloc::callbacks(ledger)))
+    }
+    .map_err(|code| match code {
+        vk::Result::ERROR_OUT_OF_HOST_MEMORY => DeviceError::OutOfHostMemory {
+            call: "vkCreateDescriptorSetLayout",
+        },
+        other => creation("vkCreateDescriptorSetLayout", other),
+    })
 }
 
 impl Device {
@@ -359,6 +468,10 @@ impl Device {
         // query has no failure mode and fills a caller-owned struct.
         let limits = unsafe { instance.get_physical_device_properties(physical) }.limits;
         let max_image_dimension_2d = limits.max_image_dimension2_d;
+        // The floor is the crate's own slot alignment, so a per-frame
+        // buffer is never spaced more tightly than a vertex attribute
+        // wants — the two constraints are a maximum, not a choice.
+        let uniform_offset_alignment = limits.min_uniform_buffer_offset_alignment;
 
         // SAFETY: category 2: instance and physical device live.
         let device_extensions = unsafe { instance.enumerate_device_extension_properties(physical) }
@@ -405,34 +518,19 @@ impl Device {
         // declared in the create info above.
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
-        // The crate's one sampled-binding set layout, created with the
-        // device because it lives and dies with it.
-        let bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        // SAFETY: category 2: device live; the binding array is a local
-        // outliving the call.
-        let sampled_set_layout = unsafe {
-            device.create_descriptor_set_layout(
-                &layout_info,
-                Some(&crate::vk::alloc::callbacks(&ledger)),
-            )
-        }
-        .map_err(|code| {
-            // SAFETY: device live, created just above with these same
-            // callbacks; nothing else references it yet.
-            unsafe { device.destroy_device(Some(&crate::vk::alloc::callbacks(&ledger))) };
-            teardown_early(&instance, debug.as_ref(), &ledger);
-            match code {
-                vk::Result::ERROR_OUT_OF_HOST_MEMORY => DeviceError::OutOfHostMemory {
-                    call: "vkCreateDescriptorSetLayout",
-                },
-                other => creation("vkCreateDescriptorSetLayout", other),
+        // The crate's two canonical set layouts, created with the device
+        // because they live and die with it.
+        let (sampled_set_layout, uniform_set_layout) = match make_set_layouts(&device, &ledger) {
+            Ok(pair) => pair,
+            Err(error) => {
+                // SAFETY: device live, created above with these callbacks;
+                // nothing references it yet, and the helper cleaned up
+                // whatever it had made before it failed.
+                unsafe { device.destroy_device(Some(&crate::vk::alloc::callbacks(&ledger))) };
+                teardown_early(&instance, debug.as_ref(), &ledger);
+                return Err(error);
             }
-        })?;
+        };
 
         renew_diag::info!(
             target: "renew-rhi",
@@ -454,6 +552,8 @@ impl Device {
                 adapter,
                 depth_format,
                 sampled_set_layout,
+                uniform_set_layout,
+                uniform_offset_alignment,
                 max_image_dimension_2d,
                 lost: PoisonFlag::default(),
                 validation: validation_counters,

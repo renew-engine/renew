@@ -380,3 +380,70 @@ Target: SPIR-V 1.0
 stage: it shares `mesh_camera_textured.vert.spv`, because the two paths
 differ only in what the fragment stage throws away. Fade constants are
 the textured pair's, for the same reason the shadowed pair's are.
+
+## uniform_tint.vert and .frag - compiled 2026-08-18
+
+**Test fixtures, not builtins**, for the reason `push_color` is one: the
+smallest consumer of a uniform block, embedded by the device suite alone
+(`tests/device.rs`) and deliberately absent from `builtin`, where an
+engine-facing export with no engine consumer would be dead public
+surface.
+
+The vertex stage covers the target with the classic oversized triangle
+from `gl_VertexIndex` and reads nothing. The fragment stage reads a
+**192-byte** `std140` block at set 0, binding 0 — eight `vec4` tints and
+a `mat4` — and answers with `tints[int(gl_FragCoord.x) & 7]` scaled by
+the matrix's last scalar.
+
+**192 bytes, and the size is the point.** The guaranteed push-constant
+ceiling is 128, so a readback that matches here could not have been
+served by the channel that already existed. Every pixel reads a
+different part of the block and the multiplier is its very last scalar,
+so a block bound at the wrong offset, a slot stride the driver disagrees
+with, or a copy that stopped short all show as a wrong image rather than
+a plausible one.
+
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O uniform_tint.vert -o uniform_tint.vert.spv
+> glslc -O uniform_tint.frag -o uniform_tint.frag.spv
+```
+
+852 bytes and 880 bytes, the exact blobs the device suite embeds.
+
+## uniform_tint_sampled.frag - compiled 2026-08-19
+
+**A test fixture, and the only one that samples *and* reads a block.** A
+uniform block is read at set `sampled_bindings`, after every sampled slot —
+so a pipeline with one sampler finds its block at set 1. Every other test
+declares zero sampled slots, which puts the block at set 0, where an
+off-by-one in the set index, the layout list, the class check or the order
+of `pDynamicOffsets` is the identity and cannot show.
+
+It shares `textured.vert`, whose blob is untouched: the vertex stage needs
+nothing from either channel. The atlas is sampled and the block scales it,
+so a correct readback proves both arrived; a white atlas makes the expected
+answer the block's own tints, byte for byte.
+
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O uniform_tint_sampled.frag -o uniform_tint_sampled.frag.spv
+```
+
+1132 bytes, the exact blob the device suite embeds.

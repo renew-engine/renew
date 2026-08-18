@@ -60,6 +60,43 @@ fn binding_fixture(device: &Device) -> Result<(Texture, Sampler, Binding), Strin
     Ok((texture, sampler, binding))
 }
 
+/// Run `body`, require it to panic, and require the panic to carry
+/// `needle`.
+///
+/// **By name, not merely by panicking.** A bare `catch_unwind(..).is_err()`
+/// is satisfied by *any* panic, including one from a rule other than the
+/// one under test — and that is not hypothetical here: the block-buffer
+/// size case in this file passed with its contract rule deleted, because
+/// the copy's own length assert was standing in for the refusal. Matching
+/// the clause's own words is what tells two rules apart.
+///
+/// The panic hook is suppressed and restored around the call, so a passing
+/// run does not print traces for panics it went looking for — the same
+/// courtesy `malformed_frames_are_refused_by_name` extends, and the reason
+/// its refusals were quiet while these were not.
+fn refused_by_name(label: &str, needle: &str, body: impl FnOnce()) {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    std::panic::set_hook(hook);
+    // `assert!` rather than `panic!`: clippy's allow-panic-in-tests reaches
+    // only functions marked `#[test]`, and this is a file-level helper the
+    // way `binding_fixture` beside it is.
+    assert!(outcome.is_err(), "{label}: the contract must refuse this");
+    let Err(payload) = outcome else {
+        return;
+    };
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains(needle),
+        "{label}: refused, but not by name — the payload {message:?} lacks {needle:?}"
+    );
+}
+
 /// `Ok(None)` is the graceful skip; other failures surface as `Err`
 /// for the calling test to unwrap (test-only panics live in `#[test]`
 /// bodies, where the lint allowance applies). Under `RENEW_GOLDEN=1`
@@ -630,7 +667,7 @@ fn malformed_frames_are_refused_by_name() {
     // second-copy-wins race, refused by name.
     refused(
         "two items with different data for one buffer",
-        "one buffer, one FrameData",
+        "one buffer, one write",
         &|target| {
             let color = clear(black);
             let other_bytes = [7u8; 24];
@@ -782,7 +819,7 @@ fn malformed_frames_are_refused_by_name() {
     );
     refused(
         "fewer bindings than declared slots",
-        "fills every declared sampled slot",
+        "fills every declared slot",
         &|target| {
             let color = clear(black);
             let items = [Item::new(&two_slot).bindings(&[&binding])];
@@ -795,7 +832,7 @@ fn malformed_frames_are_refused_by_name() {
     // lets one fixture overfill the count.
     refused(
         "more bindings than declared slots",
-        "fills every declared sampled slot",
+        "fills every declared slot",
         &|target| {
             let color = clear(black);
             let items = [Item::new(&one_slot).bindings(&[&binding, &binding])];
@@ -1406,4 +1443,653 @@ fn zero_capacity_buffer_is_a_retained_contract_check() {
         refused.is_err(),
         "a zero-capacity per-frame buffer must refuse, not allocate"
     );
+}
+
+/// The uniform-block test fixture: a full-target triangle whose every
+/// pixel answers with bytes read from a 192-byte block — past the
+/// 128-byte push ceiling, so a passing readback could not have come
+/// through the channel that already existed. A fixture rather than a
+/// builtin, for the reason the push-constant pair is one.
+static UNIFORM_TINT_VS_SPV: &[u8] = include_bytes!("../shaders/uniform_tint.vert.spv");
+static UNIFORM_TINT_FS_SPV: &[u8] = include_bytes!("../shaders/uniform_tint.frag.spv");
+
+/// The same block, read by a pipeline that also samples — so the block
+/// lands at set 1 rather than set 0. Shares the builtin textured vertex
+/// stage.
+static UNIFORM_TINT_SAMPLED_FS_SPV: &[u8] =
+    include_bytes!("../shaders/uniform_tint_sampled.frag.spv");
+
+/// How many bytes the fixture's block is: eight `vec4` tints and a
+/// `mat4`, std140.
+const BLOCK_BYTES: usize = 8 * 16 + 64;
+
+/// The same number the pipeline declares, as it declares it.
+///
+/// A function rather than a second constant so the two cannot disagree,
+/// and `try_from` rather than a cast so no lint has to be silenced for a
+/// value that is 192.
+fn block_size() -> u32 {
+    u32::try_from(BLOCK_BYTES).unwrap_or(u32::MAX)
+}
+
+/// The fixture's stage pair: three generated vertices, no buffers.
+fn uniform_tint_shaders() -> Shaders<'static> {
+    Shaders::new(UNIFORM_TINT_VS_SPV, UNIFORM_TINT_FS_SPV, 3)
+}
+
+/// The eight tints the fixture cycles through, as the shader will read
+/// them: every corner of the colour cube, opaque.
+///
+/// **Zero and one in every channel, deliberately.** The target is an
+/// sRGB format, so the shader's linear output is encoded on write — and
+/// those two values are the only ones that survive any transfer function
+/// exactly. The assertion can then be equality on bytes rather than a
+/// tolerance, which is what makes a one-off in the block's layout
+/// visible instead of absorbed.
+fn tint_of(index: usize) -> [f32; 4] {
+    [
+        f32::from(u8::from(index & 1 != 0)),
+        f32::from(u8::from(index & 2 != 0)),
+        f32::from(u8::from(index & 4 != 0)),
+        1.0,
+    ]
+}
+
+/// The fixture's block: eight tints, then a matrix whose last scalar is
+/// `scale`.
+///
+/// The shader multiplies the tint by that last scalar — byte 188 of 192,
+/// the very tail — so a copy that stopped short answers with whatever
+/// the tail held rather than with a plausible colour.
+fn tint_block(scale: f32) -> [u8; BLOCK_BYTES] {
+    let mut bytes = [0u8; BLOCK_BYTES];
+    for index in 0..8 {
+        for (channel, value) in tint_of(index).into_iter().enumerate() {
+            let at = index * 16 + channel * 4;
+            bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+    }
+    // A diagonal matrix, column-major like GLSL's own: only the last
+    // element is read, and the rest is written so the block is fully
+    // defined rather than partly whatever the array started as.
+    for diagonal in 0..4 {
+        let at = 128 + diagonal * 16 + diagonal * 4;
+        let value = if diagonal == 3 { scale } else { 1.0 };
+        bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
+/// The pixel at `(x, 0)` of a readback, as RGBA bytes.
+fn pixel_at(pixels: &[u8], x: usize) -> [u8; 4] {
+    let at = x * 4;
+    [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
+}
+
+/// **A uniform block reaches the shader, at the offsets std140 says.**
+///
+/// The gap this closes: before it, the only channels wider than a vertex
+/// attribute were a 128-byte push range and an instance stream, so
+/// anything per-draw and larger than 128 bytes had nowhere to live. The
+/// fixture's block is 192, and every pixel of the frame reads a
+/// different part of it — so the readback is a statement about the
+/// block's whole layout rather than about one value in it.
+///
+/// Probed by shortening the copy to 128 bytes: the matrix's last scalar
+/// is then whatever the buffer held, and every pixel comes back black.
+#[test]
+fn a_uniform_block_reaches_the_shader() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let extent = Extent {
+        width: 64,
+        height: 64,
+    };
+    let mut target = device
+        .create_offscreen_target(extent)
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let binding = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+
+    let bytes = tint_block(1.0);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let items = [Item::new(&pipeline)
+        .bindings(&[&binding])
+        .uniform_data(&bytes)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("uniform-block render");
+
+    let mut drawn = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut drawn);
+    // **Pixel zero is skipped, and that is the point.** `tint_of(0)` is
+    // black, byte-identical to this pass's clear colour — so that one
+    // pixel would answer correctly with no draw at all. Seven pixels carry
+    // the test; asserting the eighth would be asserting the clear.
+    for index in 1..8 {
+        let expected = tint_of(index).map(|channel| if channel > 0.5 { 255 } else { 0 });
+        assert_eq!(
+            pixel_at(&drawn, index),
+            expected,
+            "pixel {index} did not read tint {index} out of the block"
+        );
+    }
+    // **The layer is the oracle, not the readback.** Every question this
+    // change raises is a usage-validity question — a new descriptor type, a
+    // second set layout, a dynamic offset measured against a buffer size —
+    // and a permissive driver answers a readback correctly while a live
+    // violation goes unreported. The twelve tests above this one already
+    // take this posture.
+    assert_no_validation_errors(&device);
+}
+
+/// **And the bytes are re-read every frame, not cached with the set.**
+///
+/// The descriptor is written once at creation and never rewritten, which
+/// is the property the binding module is built on — so the thing that
+/// has to be proved is that changing the *buffer's* contents changes the
+/// picture. Two renders, one block, different tails.
+///
+/// Probed by rendering the second frame with the first frame's bytes:
+/// the two readbacks match and this fails.
+#[test]
+fn a_block_written_again_draws_again() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 64,
+            height: 64,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let binding = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+
+    let lit = tint_block(1.0);
+    let items = [Item::new(&pipeline)
+        .bindings(&[&binding])
+        .uniform_data(&lit)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("first render");
+    let mut first = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut first);
+
+    // The same tints, scaled to nothing by the block's last scalar. A
+    // frame that answered with the first frame's colours would be one
+    // reading bytes it was handed once.
+    let dark = tint_block(0.0);
+    let items = [Item::new(&pipeline)
+        .bindings(&[&binding])
+        .uniform_data(&dark)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("second render");
+    let mut second = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut second);
+
+    assert_ne!(first, second, "a rewritten block drew the same frame");
+    // Not merely different: black, which is what scaling by the tail
+    // says. Anything else would be a difference from the wrong cause.
+    for index in 0..8 {
+        assert_eq!(
+            pixel_at(&second, index),
+            [0, 0, 0, 0],
+            "pixel {index} did not read the second frame's tail"
+        );
+    }
+    assert_ne!(
+        pixel_at(&first, 7),
+        [0, 0, 0, 0],
+        "the first frame was already black, so this compares nothing"
+    );
+    assert_no_validation_errors(&device);
+}
+
+/// The frame contract refuses uniform data that does not match the
+/// declaration — the push range's rules, one channel over.
+///
+/// **Three ways to get it wrong, two assertions.** No data for a declared
+/// block (the shader reads the previous frame) and data for an undeclared
+/// one (nowhere to put it) are the two sides of one biconditional, so they
+/// drive the same assert from opposite directions; the wrong length (the
+/// tail holds whatever it held) is the second. Both directions are driven
+/// because the refusal's message promises both readings — the neighbouring
+/// binding refusals take the same posture about their own count clause.
+///
+/// Probed by deleting each of the two assertions in turn: the matching
+/// case stops panicking and this fails. An earlier version of this comment
+/// said "three assertions", which was a count of the cases rather than of
+/// the code they reach.
+#[test]
+fn the_contract_refuses_a_mismatched_uniform_block() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let declaring = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+    let plain = device
+        .create_pipeline(&PipelineDesc::new(
+            push_color_shaders(),
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("plain pipeline");
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let binding = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+    let bytes = tint_block(1.0);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+
+    // Declared and not carried.
+    let items = [Item::new(&declaring).bindings(&[&binding])];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "a declared block with no data",
+        "carries uniform data exactly when",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+
+    // Carried and not declared. `plain` declares no bindings either, so
+    // this reaches the uniform rule only if the binding is omitted too.
+    let items = [Item::new(&plain).uniform_data(&bytes)];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "uniform data for a pipeline with no block",
+        "carries uniform data exactly when",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+
+    // Declared, carried, wrong length.
+    let items = [Item::new(&declaring)
+        .bindings(&[&binding])
+        .uniform_data(&bytes[..BLOCK_BYTES - 16])];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "a short uniform block",
+        "carries exactly its pipeline's declared uniform block",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+}
+
+/// A sampled slot filled with a block, or the reverse, binds a set the
+/// pipeline's layout does not describe.
+///
+/// **Class, not just count**, and it is the failure a count check cannot
+/// see: both lists are one entry long. On a permissive driver the wrong
+/// class draws a picture rather than failing, which is the worst
+/// available outcome.
+///
+/// Probed by deleting the class loop in `check_binding_contract`: this
+/// stops panicking.
+#[test]
+fn the_contract_refuses_a_binding_of_the_wrong_class() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let (_texture, _sampler, sampled) = binding_fixture(&device).expect("fixture binding");
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let block = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+    let bytes = tint_block(1.0);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+
+    // The one declared slot is the block's; a sampled binding there is
+    // the wrong class at the right count.
+    let items = [Item::new(&pipeline)
+        .bindings(&[&sampled])
+        .uniform_data(&bytes)];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "a sampled binding filling a uniform slot",
+        "sampled slots come first and the uniform block last",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+
+    // The other direction of the same clause: a block bound where a
+    // sampler is declared. One shared assert, but its message promises
+    // both readings, so both are driven — the neighbouring binding
+    // refusals take the same posture about their count clause.
+    let sampling = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let items = [Item::new(&sampling).bindings(&[&block])];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "a uniform block filling a sampled slot",
+        "sampled slots come first and the uniform block last",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+
+    // **The third case this test used to carry is gone, and its absence
+    // is the improvement.** A block handed a sampler was once a runtime
+    // refusal here; the descriptor now keeps its source and its sampler
+    // in one private pairing, so `BindingDesc::new(Uniform(..), sampler)`
+    // does not name anything that exists. The state is unspellable rather
+    // than caught, which is why there is no assertion left to make.
+    assert_no_validation_errors(&device);
+}
+
+/// The block and the buffer that holds it are two statements of one
+/// size, and both directions of disagreement are refused.
+///
+/// **Too small** is a shader reading past what was written. **Too large**
+/// is the same hazard wearing different clothes: the descriptor's range is
+/// the buffer's whole per-frame capacity, so the tail beyond the block is
+/// bytes no frame writes. The frame contract catches both by name rather
+/// than leaving either to the copy, which would only notice once the frame
+/// was half built.
+///
+/// **Far too large** is a third thing — a descriptor range past
+/// `maxUniformBufferRange`, legal for a per-frame buffer read as an
+/// instance stream and invalid usage the moment it is bound as a block.
+/// Nothing else in the crate was holding a buffer to that limit.
+///
+/// Probed by deleting each assertion in turn: the matching case stops
+/// panicking and this fails.
+#[test]
+fn a_block_buffer_is_held_to_the_size_its_pipeline_declares() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 16,
+            height: 16,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+
+    // Too small: a buffer holding half the block.
+    let cramped = device
+        .create_buffer(BLOCK_BYTES / 2, BufferUsage::PerFrame)
+        .expect("cramped buffer");
+    let binding = device
+        .create_binding(&BindingDesc::uniform(&cramped))
+        .expect("cramped binding");
+    let bytes = tint_block(1.0);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let items = [Item::new(&pipeline)
+        .bindings(&[&binding])
+        .uniform_data(&bytes)];
+    let passes = [Pass::new(&color, &items)];
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(target.render(&RenderDesc::new(&passes)));
+    }));
+    let Err(payload) = outcome else {
+        panic!("a block buffer too small for its pipeline was accepted");
+    };
+    // **Refused by NAME, and the probe is why.** The copy into the
+    // buffer asserts its own length bound, so a test that only checked
+    // *that something panicked* passed with the contract rule deleted —
+    // it was proving the memory-safety assert, not the refusal. The
+    // clause's own words are what tell the two apart, and they are what
+    // a caller reads: the pipeline and the buffer disagree, rather than
+    // these particular bytes being too long.
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("buffer are one size, so a shader cannot read past what was written"),
+        "refused, but not by the contract's name — the payload {message:?}"
+    );
+
+    // Too large by a little: the block's own size is what the buffer
+    // holds, so a roomier buffer is refused for the tail it would leave
+    // unwritten.
+    let roomy = device
+        .create_buffer(BLOCK_BYTES + 16, BufferUsage::PerFrame)
+        .expect("roomy buffer");
+    let roomy_binding = device
+        .create_binding(&BindingDesc::uniform(&roomy))
+        .expect("roomy binding");
+    let items = [Item::new(&pipeline)
+        .bindings(&[&roomy_binding])
+        .uniform_data(&bytes)];
+    let passes = [Pass::new(&color, &items)];
+    refused_by_name(
+        "a block buffer larger than its pipeline's declaration",
+        "buffer are one size, so a shader cannot read past what was written",
+        || drop(target.render(&RenderDesc::new(&passes))),
+    );
+
+    // Too large: past the guaranteed uniform range, refused where the
+    // descriptor is written rather than where it is drawn.
+    let huge = device
+        .create_buffer(
+            usize::try_from(renew_rhi::MAX_UNIFORM_BLOCK_BYTES).unwrap_or(usize::MAX) + 16,
+            BufferUsage::PerFrame,
+        )
+        .expect("oversized buffer");
+    refused_by_name(
+        "a block buffer past the guaranteed uniform range",
+        "a uniform block reads at most",
+        || drop(device.create_binding(&BindingDesc::uniform(&huge))),
+    );
+}
+
+/// **One block, drawn twice in a frame, is one copy written twice.**
+///
+/// The one-buffer-one-write rule refuses two items carrying *different*
+/// bytes for one buffer, because the second copy would silently win
+/// before either draws. Pointer-identical bytes are the other half of
+/// that sentence and it is an ordinary thing to want: the same camera
+/// block read by two passes, or by two draws in one pass. Nothing pinned
+/// it for this channel until now.
+///
+/// Probed by making the rule refuse a repeat outright (dropping the
+/// signature comparison and always asserting): this goes red, and the
+/// refusal test beside it stays green — which is what tells the two
+/// halves of the clause apart.
+#[test]
+fn one_block_may_be_drawn_by_two_items() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 64,
+            height: 64,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(uniform_tint_shaders(), TargetFormat::Rgba8Srgb)
+                .uniform_block(block_size()),
+        )
+        .expect("uniform-block pipeline");
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let binding = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+
+    // One slice, named by both items: pointer identity is the rule, not
+    // equal contents, because two copies of one allocation cannot
+    // disagree about what they hold.
+    let bytes = tint_block(1.0);
+    let items = [
+        Item::new(&pipeline)
+            .bindings(&[&binding])
+            .uniform_data(&bytes),
+        Item::new(&pipeline)
+            .bindings(&[&binding])
+            .uniform_data(&bytes),
+    ];
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("two draws of one block");
+
+    // And the frame is the one frame either draw alone would have made:
+    // the second item covers the target with the same tints, so a copy
+    // that had gone wrong between them would show.
+    let mut drawn = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut drawn);
+    // From one, for the reason the first test records: tint zero is the
+    // clear colour.
+    for index in 1..8 {
+        let expected = tint_of(index).map(|channel| if channel > 0.5 { 255 } else { 0 });
+        assert_eq!(
+            pixel_at(&drawn, index),
+            expected,
+            "pixel {index} came out wrong after the block was drawn twice"
+        );
+    }
+    assert_no_validation_errors(&device);
+}
+
+/// **A block lands at the set after the sampled slots, and this is the
+/// only test that could notice otherwise.**
+///
+/// The rule is that a uniform block is descriptor set `sampled_bindings`.
+/// Every other test here declares zero sampled slots, so the block sits at
+/// set 0 and an off-by-one in the set index, in the layout list, in the
+/// class check, or in the order of `pDynamicOffsets` is invisible — each
+/// one is the identity at zero. With one sampler declared, all four have
+/// somewhere to go wrong.
+///
+/// A white atlas makes the expected answer the block's own tints, so a
+/// readback that matches proves both channels arrived: the texture (or the
+/// image would not be white) and the block (or the tints would not be
+/// these). The validation layer is the second oracle, because a descriptor
+/// bound behind the wrong layout is a usage error before it is a wrong
+/// picture.
+///
+/// Probed by swapping the layout list so the block goes first
+/// (`slot_layouts[0]` rather than `slot_layouts[sampled_slots]`): the
+/// readback breaks and the layer complains.
+#[test]
+fn a_block_lands_after_the_sampled_slots() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 64,
+            height: 64,
+        })
+        .expect("offscreen target");
+
+    // White, so the sampled half of the product is the identity and any
+    // difference in the readback belongs to the block.
+    let texture = device
+        .create_texture(&renew_rhi::TextureDesc::new(
+            Extent {
+                width: 2,
+                height: 2,
+            },
+            &[0xffu8; 16],
+        ))
+        .expect("white atlas");
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("atlas sampler");
+    let atlas_binding = device
+        .create_binding(&BindingDesc::new(
+            BindingSource::Texture(&texture),
+            &sampler,
+        ))
+        .expect("atlas binding");
+
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .expect("block buffer");
+    let block = device
+        .create_binding(&BindingDesc::uniform(&buffer))
+        .expect("uniform binding");
+
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(
+                Shaders::new(builtin::TEXTURED.vertex, UNIFORM_TINT_SAMPLED_FS_SPV, 6),
+                TargetFormat::Rgba8Srgb,
+            )
+            .sampled_bindings(1)
+            .uniform_block(block_size()),
+        )
+        .expect("sampled-and-block pipeline");
+
+    let bytes = tint_block(1.0);
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    // Sampled first, block last — the order the pipeline's layout list was
+    // built in, and the order the contract holds an item to.
+    let items = [Item::new(&pipeline)
+        .bindings(&[&atlas_binding, &block])
+        .uniform_data(&bytes)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("sampled-and-block render");
+
+    let mut drawn = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut drawn);
+    for index in 1..8 {
+        let expected = tint_of(index).map(|channel| if channel > 0.5 { 255 } else { 0 });
+        assert_eq!(
+            pixel_at(&drawn, index),
+            expected,
+            "pixel {index} did not read tint {index} from a block at set one"
+        );
+    }
+    assert_no_validation_errors(&device);
 }

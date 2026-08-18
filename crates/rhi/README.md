@@ -36,8 +36,10 @@ display server, and the golden-image tests attest the bytes.
   depth-testing pipeline in a depthless pass, two items carrying
   different data for one per-frame buffer, an item whose geometry and
   whose pipeline's per-vertex input disagree, a mesh whose stride the
-  pipeline does not pack to, push data or bindings missing or
-  mis-counted against the declaration, a frame that reads a render
+  pipeline does not pack to, push data or bindings missing,
+  mis-counted or of the wrong class against the declaration, uniform data
+  missing, surplus or mis-sized, a block buffer a different size from the
+  block its pipeline declares, a frame that reads a render
   image it never wrote or discarded — are refused by named assertions
   before any GPU call.
 - `RenderPipeline` — two SPIR-V stages (or one, for the depth-only
@@ -45,8 +47,11 @@ display server, and the golden-image tests attest the bytes.
   per-instance input, an optional vertex-stage push-constant range (at
   most 128 bytes, the guaranteed device minimum; items then carry
   exactly that many bytes per draw), optional sampled-binding slots
-  (at most 4; items then name exactly that many `Binding`s per draw,
-  which is how N textures share one pipeline), and optional
+  (items then name exactly that many `Binding`s per draw, which is how N
+  textures share one pipeline), an optional `uniform_block` read at the set
+  after them (items then name one more `Binding` and carry exactly that
+  many bytes) — the two share a budget of 4 bound sets, the guaranteed
+  device minimum — and optional
   `DepthState` (test/write, compare fixed
   `GREATER_OR_EQUAL` — depth is reversed: nearer is larger, the far
   plane is zero, depth clears to zero). Three pipeline shapes: `PipelineDesc::new` takes
@@ -61,15 +66,30 @@ display server, and the golden-image tests attest the bytes.
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in
   [shaders/](https://github.com/renew-engine/renew/blob/main/crates/rhi/shaders/README.md)).
-- `Binding` — one written descriptor set behind the device's one
-  canonical layout (a combined image sampler at binding 0): a texture
-  or render image, the sampler that reads it, and shared ownership of
-  both. Written once at creation, never rewritten — the
+- `Binding` — one written descriptor set behind one of the device's two
+  canonical layouts, and shared ownership of what it points at. Either a
+  **sampled** binding (a combined image sampler at binding 0: a texture
+  or render image, plus the sampler that reads it) or a **uniform
+  block** (a dynamic uniform buffer at binding 0, over a per-frame
+  buffer). Written once at creation, never rewritten — the
   write-while-outstanding rule a mutable set would need does not exist
-  here. Items name bindings per draw in slot order (slot *i* is set
-  *i*); a mismatch against the pipeline's declared count is a named
-  refusal before any GPU call, and a binding named by several items
-  costs one retention slot, like a mesh.
+  here, and a block's *contents* change without its descriptor moving.
+  Items name bindings per draw in slot order (slot *i* is set *i*),
+  sampled slots first and the block last; a mismatch against the
+  pipeline's declared count **or class** is a named refusal before any
+  GPU call, and a binding named by several items costs one retention
+  slot, like a mesh.
+- **Two per-draw data channels, and the second is the one with room.**
+  `PipelineDesc::push_constant_size` declares a vertex-stage push range,
+  capped at `MAX_PUSH_CONSTANT_BYTES` because that is what the device
+  guarantees; `PipelineDesc::uniform_block` declares a std140 block up
+  to `MAX_UNIFORM_BLOCK_BYTES` (16 KiB, the guaranteed
+  `maxUniformBufferRange`), read at set `sampled_bindings`. An item
+  supplies each with `push_data` and `uniform_data`; both are matched to
+  their declaration for presence and length before any GPU call. Push
+  bytes go into the command stream and retain nothing; block bytes are
+  copied into the frame's slot region of the buffer its binding reads,
+  under the same one-buffer-one-write rule instance data follows.
 - `RenderImage` — what one pass renders into and a later pass samples:
   one physical image, kinded Color (`Rgba8Unorm`) or Depth (the
   device's chosen format) at creation, with the format pre-checked
@@ -155,13 +175,14 @@ presents frames where a display exists.
 ## Status
 
 Early-stage: the surface is exactly device + two target kinds + the
-pass vocabulary + three pipeline shapes + per-draw sampled bindings +
-render images + geometry — per-vertex and per-instance input,
-vertex-stage push constants, indexed draws, target-owned depth, and
-render-to-texture with one shared barrier walk exist; no MSAA, no
-multiple render targets, one fixed descriptor-set layout (a combined
-image sampler at binding 0, repeated per declared slot) — grown only
-when a consumer demands it. Mesh memory is
+pass vocabulary + three pipeline shapes + per-draw sampled bindings and
+one uniform block + render images + geometry — per-vertex and
+per-instance input, vertex-stage push constants, indexed draws,
+target-owned depth, and render-to-texture with one shared barrier walk
+exist; no MSAA, no multiple render targets, no storage buffers and no
+compute, two fixed descriptor-set layouts (a combined image sampler at
+binding 0, repeated per declared slot; and a dynamic uniform buffer at
+binding 0, at most one) — grown only when a consumer demands it. Mesh memory is
 host-visible rather than device-local, which is a recorded decision with
 a written reopening trigger (a real-GPU frame-time measurement showing
 vertex fetch matters) and not an oversight. The `[package.metadata.renew]` table

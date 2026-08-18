@@ -249,14 +249,16 @@ pub struct PipelineDesc<'a> {
     /// zero for none.
     ///
     /// Slot `i` is descriptor set `i`, binding 0, one combined image
-    /// sampler each — the crate's one canonical layout, repeated. What
+    /// sampler each — the crate's sampled set layout, repeated. What
     /// fills the slots is not named here: an item names its
     /// [`Binding`](crate::Binding)s per draw, and the frame contract
     /// refuses a count mismatch by name before any GPU call. That is
     /// what lets N textures share one pipeline.
     ///
     /// At most [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS),
-    /// asserted at creation.
+    /// asserted at creation — and one fewer than that when the pipeline
+    /// also declares a [`Self::uniform_block`], because the block spends
+    /// one of the same guaranteed sets.
     pub sampled_bindings: u32,
     /// Depth testing, or `None` for the depth-free pipelines every
     /// depthless pass records. A pipeline carrying this can only draw
@@ -272,6 +274,23 @@ pub struct PipelineDesc<'a> {
     /// drawn through a declaring pipeline must carry exactly this many
     /// bytes; presence and length are both frame-contract refusals.
     pub push_constant_size: u32,
+    /// Uniform block size in bytes; zero for none.
+    ///
+    /// **The push range's larger sibling.** A push range is capped at
+    /// [`MAX_PUSH_CONSTANT_BYTES`] because that is what the device
+    /// guarantees; anything bigger — two matrices and a light, a light
+    /// list, a material table — has to travel in memory instead. A
+    /// declaring pipeline reads it as a dynamic uniform buffer at
+    /// **set [`Self::sampled_bindings`]**, after every sampled slot, so
+    /// a shader that samples nothing finds its block at set zero.
+    ///
+    /// At most [`MAX_UNIFORM_BLOCK_BYTES`] and a multiple of sixteen —
+    /// std140 rounds a block up to a vec4 boundary, so a size that is
+    /// not is one the shader does not agree with. An item drawn through
+    /// a declaring pipeline must carry exactly this many bytes of
+    /// uniform data; presence and length are both frame-contract
+    /// refusals, exactly as for push data.
+    pub uniform_block: u32,
 }
 
 /// The push-constant ceiling: Vulkan's guaranteed minimum
@@ -300,6 +319,41 @@ pub(crate) fn validate_push_constant_size(size: u32) {
     assert!(
         size.is_multiple_of(4),
         "a push-constant range is a multiple of four bytes (the spec's granularity), got {size}"
+    );
+}
+
+/// The largest uniform block a pipeline may declare.
+///
+/// `maxUniformBufferRange`'s guaranteed floor is 16384 bytes, so a
+/// declaration this accepts is one every conformant adapter accepts —
+/// the same reasoning [`MAX_SAMPLED_BINDINGS`] uses for bound sets and
+/// [`MAX_PUSH_CONSTANT_BYTES`] for the push range. It is 128 times the
+/// push ceiling, which is the whole point of the channel.
+pub const MAX_UNIFORM_BLOCK_BYTES: u32 = 16_384;
+
+/// Refuse a uniform-block declaration outside what the spec guarantees,
+/// or one std140 cannot describe.
+///
+/// A pure function so the rule is unit-tested without a device, like its
+/// two siblings.
+///
+/// # Panics
+///
+/// Over [`MAX_UNIFORM_BLOCK_BYTES`], or not a multiple of sixteen. Both
+/// are caller mistakes asserted rather than returned: the ceiling was
+/// never valid anywhere, and a block whose size is not a vec4 multiple
+/// is one the shader's own layout rules disagree with — which draws a
+/// wrong picture instead of raising anything.
+pub(crate) fn validate_uniform_block(bytes: u32) {
+    assert!(
+        bytes <= MAX_UNIFORM_BLOCK_BYTES,
+        "a pipeline declares at most {MAX_UNIFORM_BLOCK_BYTES} bytes of uniform block \
+         (the guaranteed device minimum for a uniform buffer range), got {bytes}"
+    );
+    assert!(
+        bytes.is_multiple_of(16),
+        "a uniform block is a multiple of sixteen bytes, because std140 rounds one up \
+         to a vec4 boundary and a shader would read the rounded size, got {bytes}"
     );
 }
 
@@ -450,6 +504,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_count: shaders.vertex_count,
             blend: Blend::Opaque,
             sampled_bindings: 0,
+            uniform_block: 0,
             vertex_input: None,
             instance_input: None,
             depth_state: None,
@@ -501,6 +556,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_count: 0,
             blend: Blend::Opaque,
             sampled_bindings: 0,
+            uniform_block: 0,
             vertex_input: Some(layout),
             instance_input: None,
             depth_state: None,
@@ -537,6 +593,7 @@ impl<'a> PipelineDesc<'a> {
             vertex_count: 0,
             blend: Blend::Opaque,
             sampled_bindings: 0,
+            uniform_block: 0,
             vertex_input: Some(layout),
             instance_input: None,
             depth_state: None,
@@ -566,14 +623,44 @@ impl<'a> PipelineDesc<'a> {
     /// those set indices; a declared slot the shader never reads is not
     /// an error, merely a set nothing samples. Every item drawn through
     /// this pipeline must then name exactly `count`
-    /// [`Binding`](crate::Binding)s — presence and count are frame-
-    /// contract refusals, the same way push data matches its range.
+    /// [`Binding`](crate::Binding)s — or `count + 1` when the pipeline
+    /// also declares a [`Self::uniform_block`], the extra one last.
+    /// Presence, count and class are frame-contract refusals, the same way
+    /// push data matches its range.
     ///
     /// At most [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS),
     /// refused at creation rather than quietly clamped.
     #[must_use]
     pub fn sampled_bindings(mut self, count: u32) -> Self {
         self.sampled_bindings = count;
+        self
+    }
+
+    /// Declare a uniform block of `bytes` bytes, read at set
+    /// [`Self::sampled_bindings`] — the per-draw channel for data too
+    /// large for a push range.
+    ///
+    /// The shader declares a matching `layout(std140) uniform` block at
+    /// that set, binding zero. Every item drawn through this pipeline
+    /// must then name one more [`Binding`](crate::Binding) than it has
+    /// sampled slots — the extra one built with
+    /// [`BindingDesc::uniform`](crate::BindingDesc::uniform) — and carry
+    /// exactly `bytes` bytes of
+    /// [`uniform_data`](crate::Item::uniform_data).
+    ///
+    /// **Visible to the vertex *and* fragment stages**, unlike the push
+    /// range beside it, which is vertex-only. A fragment shader can read a
+    /// block and cannot read a push constant, which is often the deciding
+    /// difference between the two channels.
+    ///
+    /// At most [`MAX_UNIFORM_BLOCK_BYTES`] and a multiple of sixteen;
+    /// anything else is refused at creation rather than quietly clamped.
+    /// Sampled slots and the block share the guaranteed four bound sets,
+    /// so a pipeline declaring the full complement of sampled slots cannot
+    /// also declare a block.
+    #[must_use]
+    pub fn uniform_block(mut self, bytes: u32) -> Self {
+        self.uniform_block = bytes;
         self
     }
 
@@ -832,6 +919,11 @@ pub struct RenderPipeline {
     /// contract asserts every item names exactly this many bindings,
     /// the same way push data matches its declared range.
     pub(crate) sampled_bindings: u32,
+    /// Declared uniform block size in bytes; zero for none. The frame
+    /// contract asserts every item's uniform data matches it exactly,
+    /// and that the item names a uniform binding exactly when this is
+    /// non-zero.
+    pub(crate) uniform_block: u32,
 }
 
 impl Drop for RenderPipeline {
@@ -859,13 +951,23 @@ impl Drop for RenderPipeline {
 }
 
 impl RenderPipeline {
-    /// Bind an item's named bindings as descriptor sets `0..count`.
+    /// Bind an item's named bindings as descriptor sets `0..count`,
+    /// with `slot`'s dynamic offset for any uniform block among them.
     ///
     /// **One implementation, called by both targets.** The two record
     /// paths are otherwise independent, and a bind duplicated across
     /// them is a correctness rule maintained in two places — the set
     /// indices and bind point have to agree with the pipeline layout
     /// built here, not with whichever target is being read.
+    ///
+    /// `slot` is the frame slot the caller is recording into: the
+    /// offscreen target is synchronous and always passes zero, and the
+    /// presentation target passes the frame it is about to record. A
+    /// uniform binding's descriptor covers one slot's worth of its
+    /// buffer starting at zero, so the offset is what selects the region
+    /// this frame's bytes were copied into — the same arithmetic the
+    /// copy phase used, kept here rather than in either target so the
+    /// two cannot drift.
     ///
     /// # Safety
     ///
@@ -874,11 +976,48 @@ impl RenderPipeline {
     /// count equals this pipeline's declared slot count, and the
     /// target's retention table holds every named binding alive past
     /// the submit.
-    pub(crate) unsafe fn bind_bindings(&self, cmd: vk::CommandBuffer, bindings: &Bindings<'_>) {
+    pub(crate) unsafe fn bind_bindings(
+        &self,
+        cmd: vk::CommandBuffer,
+        bindings: &Bindings<'_>,
+        slot: usize,
+    ) {
         let mut sets = [vk::DescriptorSet::null(); MAX_SAMPLED_BINDINGS];
+        // One entry per DYNAMIC descriptor, in set order — which here
+        // means at most one, and only when the pipeline declares a
+        // block. An array of the same width so the frame path allocates
+        // nothing.
+        let mut offsets = [0u32; MAX_SAMPLED_BINDINGS];
         let mut count = 0usize;
+        let mut dynamic = 0usize;
         for binding in bindings.iter() {
             sets[count] = binding.inner.set;
+            if let Some(buffer) = binding.inner.uniform_buffer() {
+                // **Asserted, not saturated.** An out-of-range dynamic
+                // offset is refused only where the validation layer is
+                // on; with it off — which is every shipping consumer —
+                // it is undefined behaviour, so a saturating cast trades
+                // a diagnosable panic for a silent wrong read. The bound
+                // is real: the stride is a rounded per-frame capacity and
+                // the slot count is `MAX_FRAME_SLOTS`, so the product is
+                // far inside u32 for any block this crate accepts.
+                let at = buffer.slot_stride * slot as u64;
+                let narrowed = u32::try_from(at);
+                // Retained, because it bounds a value handed straight to
+                // the driver — the rule this crate states wherever a
+                // length or an offset crosses that boundary. Asserted
+                // rather than saturated: an out-of-range dynamic offset is
+                // refused only where the validation layer is on, and with
+                // it off it is undefined behaviour, so saturating would
+                // trade a diagnosable stop for a silent wrong read. The
+                // fallback below is unreachable past this line.
+                assert!(
+                    narrowed.is_ok(),
+                    "a uniform block's slot offset ({at}) is past what a dynamic offset can                      address; the buffer's per-frame capacity is too large for the ring"
+                );
+                offsets[dynamic] = narrowed.unwrap_or_default();
+                dynamic += 1;
+            }
             count += 1;
         }
         // No empty-list arm: the record paths call this only for an
@@ -888,7 +1027,9 @@ impl RenderPipeline {
         // layout is live for as long as `self` is; each set is live via
         // the binding the item names, retained by the target; slot `i`
         // is set `i`, exactly the layout list `create_pipeline` built;
-        // the slice is non-empty by the contract argument above.
+        // the slice is non-empty by the contract argument above; the
+        // offset array has exactly one entry per dynamic descriptor in
+        // the bound sets, in set order, which is what the call requires.
         unsafe {
             self.shared.device.cmd_bind_descriptor_sets(
                 cmd,
@@ -896,7 +1037,7 @@ impl RenderPipeline {
                 self.layout,
                 0,
                 &sets[..count],
-                &[],
+                &offsets[..dynamic],
             );
         }
     }
@@ -1083,11 +1224,14 @@ impl Device {
     /// # Panics
     ///
     /// In a dev build, on a malformed declaration — a push-constant
-    /// range outside the guaranteed ceiling or granularity, or more
-    /// sampled slots than
-    /// [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS). Both are
-    /// contract violations valid on no adapter, asserted before
-    /// anything is created so the panic owns nothing.
+    /// range outside the guaranteed ceiling or granularity; more sampled
+    /// slots than
+    /// [`MAX_SAMPLED_BINDINGS`](crate::MAX_SAMPLED_BINDINGS); a uniform
+    /// block past [`MAX_UNIFORM_BLOCK_BYTES`] or not a multiple of
+    /// sixteen; or sampled slots and a block together spending more than
+    /// the guaranteed bound sets. All are contract violations valid on no
+    /// adapter, asserted before anything is created so the panic owns
+    /// nothing.
     #[expect(
         clippy::too_many_lines,
         reason = "the fixed-function state block is one declaration list; splitting it scatters what belongs together"
@@ -1106,7 +1250,18 @@ impl Device {
         // the same pure-validator shape — before anything is created,
         // so the panic owns nothing.
         validate_sampled_bindings(desc.sampled_bindings);
+        validate_uniform_block(desc.uniform_block);
         let sampled_slots = desc.sampled_bindings as usize;
+        let uniform_slots = usize::from(desc.uniform_block > 0);
+        // Bound sets are one budget, not two: the guaranteed floor for
+        // `maxBoundDescriptorSets` is what `MAX_SAMPLED_BINDINGS` names,
+        // and a block spends one of them.
+        assert!(
+            sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
+            "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
+             device minimum), and a uniform block spends one: {sampled_slots} sampled plus \
+             {uniform_slots} block"
+        );
         // The depth-only pairing: the format is what licenses the
         // missing fragment stage, and a depth-only pipeline without
         // depth state does nothing at all. One direction only — an
@@ -1196,12 +1351,21 @@ impl Device {
             }
         };
 
-        // A pipeline with no sampled slots keeps the empty layout it
-        // has always had; a declaring one lists the crate's one
-        // canonical set layout once per slot — set `i` is slot `i`,
-        // which is the agreement `bind_bindings` records against.
-        let slot_layouts = [shared.sampled_set_layout; MAX_SAMPLED_BINDINGS];
-        let set_layouts: &[vk::DescriptorSetLayout] = &slot_layouts[..sampled_slots];
+        // A pipeline with no sets keeps the empty layout it has always
+        // had; a declaring one lists the crate's canonical set layouts,
+        // sampled slots first and the uniform block last — set `i` is
+        // slot `i`, which is the agreement `bind_bindings` records
+        // against and the order a shader's set indices must follow.
+        //
+        // **Sampled first so no existing shader moves.** Every set index
+        // written in GLSL in this tree today is a sampler's, and putting
+        // the block after them leaves all of them where they are.
+        let mut slot_layouts = [shared.sampled_set_layout; MAX_SAMPLED_BINDINGS];
+        if uniform_slots > 0 {
+            slot_layouts[sampled_slots] = shared.uniform_set_layout;
+        }
+        let set_layouts: &[vk::DescriptorSetLayout] =
+            &slot_layouts[..sampled_slots + uniform_slots];
         // One vertex-stage range at offset zero, present exactly when
         // the descriptor declares a size — the record path pushes with
         // the same stage flags and offset, one definition apart.
@@ -1378,6 +1542,7 @@ impl Device {
             depth: desc.depth_state.is_some(),
             push_constant_size: desc.push_constant_size,
             sampled_bindings: desc.sampled_bindings,
+            uniform_block: desc.uniform_block,
         })
     }
 }
@@ -1661,6 +1826,39 @@ mod tests {
 
     /// The sampled-slot ceiling, both sides, with no device involved —
     /// the push-constant test's reasoning, one rule over.
+    /// **The block validator's two refusals, neither of which any device
+    /// test reaches.** Every `uniform_block` call in the tree passes the
+    /// same legal 192, and the coverage gate cannot see the gap: the happy
+    /// path runs on every pipeline creation, so both assertion lines count
+    /// as covered while neither failing branch is ever taken. Its sibling
+    /// below is unit-tested for exactly this reason, and this one's own
+    /// docstring claimed to be. It was not.
+    ///
+    /// Probed by widening each bound in turn — raising the ceiling, and
+    /// dropping the multiple-of-sixteen rule: the matching case stops
+    /// panicking and this fails.
+    #[test]
+    fn uniform_block_sizes_outside_the_spec_floor_are_refused() {
+        validate_uniform_block(0);
+        validate_uniform_block(16);
+        validate_uniform_block(MAX_UNIFORM_BLOCK_BYTES);
+        assert!(
+            std::panic::catch_unwind(|| validate_uniform_block(MAX_UNIFORM_BLOCK_BYTES + 16))
+                .is_err(),
+            "a block past the guaranteed uniform range was accepted"
+        );
+        // Not a multiple of sixteen: std140 rounds a block up to a vec4
+        // boundary, so the shader would read a size the declaration does
+        // not name. Two independent rules, so a legal-sized non-multiple
+        // and a small non-multiple are both refused.
+        for rounded in [24, 4, MAX_UNIFORM_BLOCK_BYTES - 8] {
+            assert!(
+                std::panic::catch_unwind(move || validate_uniform_block(rounded)).is_err(),
+                "a {rounded}-byte block, which std140 would round, was accepted"
+            );
+        }
+    }
+
     #[test]
     fn sampled_slot_counts_outside_the_spec_floor_are_refused() {
         // Legal: absent, one slot, and exactly the ceiling — the
