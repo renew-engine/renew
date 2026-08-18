@@ -117,4 +117,16 @@ impl WindowApp for Filed {
         self.note("surface lost: epoch closed, awaiting the next ready");
         self.echo.surface_lost();
     }
+
+    /// Android reports both: it backgrounds the app *and* takes the
+    /// window. Logging them separately is what lets the two platforms'
+    /// logs be read side by side — the pair here, only this pair on
+    /// iOS, where the window survives.
+    fn suspended(&mut self) {
+        self.note("suspended: the app is in the background");
+    }
+
+    fn resumed(&mut self) {
+        self.note("resumed: the app is in the foreground again");
+    }
 }

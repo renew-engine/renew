@@ -277,6 +277,38 @@ pub trait WindowApp {
     /// one revoking platform is Android; iOS suspends without revoking
     /// and deliberately does not reach this callback.
     fn surface_lost(&mut self) {}
+
+    /// The application has stopped being the one in front.
+    ///
+    /// **Deliberately not "backgrounded", because the platforms do not
+    /// agree on how much this means.** Android sends it when the
+    /// activity goes to the background. iOS sends it for every
+    /// interruption — an incoming call, the app switcher, a
+    /// notification shade pulled down — and the application may be
+    /// frontmost again a second later without ever having left. What is
+    /// common to both, and all this callback promises, is that nobody
+    /// is attending to it right now.
+    ///
+    /// **Separate from [`surface_lost`](Self::surface_lost), because on
+    /// one platform they are the same event and on another they are
+    /// not.** Android revokes the window when it backgrounds an app, so
+    /// both fire; iOS keeps the surface, so only this one does. An
+    /// application that wants to pause a clock or stop a sound wants
+    /// this callback; one that must release window-derived resources
+    /// wants the other.
+    ///
+    /// Delivered once per interruption: a platform that repeats itself
+    /// — Android emits back-to-back suspends — does not repeat this.
+    fn suspended(&mut self) {}
+
+    /// The application has come back to the foreground.
+    ///
+    /// Fires only after a [`suspended`](Self::suspended), so a launch is
+    /// not a resume — the first time an application is given a window
+    /// it hears [`ready`](Self::ready) and nothing else. On a platform
+    /// that revoked the surface, [`ready`](Self::ready) follows this
+    /// with the new one.
+    fn resumed(&mut self) {}
 }
 
 /// Why the window loop could not run.
@@ -365,6 +397,40 @@ pub fn run_window_app(_config: &WindowConfig, _app: &mut dyn WindowApp) -> Resul
     })
 }
 
+/// Tell an application it has been interrupted, once per interruption.
+///
+/// A free function for the reason [`close_epoch`] is one: the adapter's
+/// handlers take an `ActiveEventLoop`, which no test can build, so any
+/// rule living only on that path is a rule no test can reach. The state
+/// is passed in rather than owned so this is the whole transition and
+/// the caller keeps none of it.
+///
+/// **Idempotent, and that is not symmetry for its own sake.** Android
+/// emits back-to-back suspends — the epoch's own close tolerates a
+/// redundant one for exactly that reason — and an application told
+/// twice would pause a clock twice, or unbalance a refcount it had
+/// taken once. A second suspend without an intervening resume is the
+/// same interruption still in progress, so it is not news.
+fn note_suspend(was_suspended: &mut bool, app: &mut dyn WindowApp) {
+    if !*was_suspended {
+        *was_suspended = true;
+        app.suspended();
+    }
+}
+
+/// Tell an application it is back, if it ever left.
+///
+/// **Only a real return counts as one.** The windowing stack calls its
+/// resume handler once on the way up as well, and an application told
+/// it had "resumed" before it ever ran would have to second-guess the
+/// word. The flag is what makes the callback mean what its name says.
+fn note_resume(was_suspended: &mut bool, app: &mut dyn WindowApp) {
+    if *was_suspended {
+        *was_suspended = false;
+        app.resumed();
+    }
+}
+
 /// The loop's second half, shared by every entry point: how the loop
 /// was *built* differs per platform (a plain `new` on desktop, around
 /// an activity handle on Android), but what happens once it exists must
@@ -387,6 +453,7 @@ fn drive(
         app,
         epoch: SurfaceEpoch::new(),
         failure: None,
+        was_suspended: false,
         commanding: false,
         cursor_wanted: core::cell::Cell::new(false),
     };
@@ -522,6 +589,13 @@ struct Adapter<'a> {
     /// loop so it surfaces through `run_window_app`'s Result instead of
     /// a log line.
     failure: Option<String>,
+    /// Whether the platform has suspended this application since it
+    /// last had the foreground.
+    ///
+    /// The windowing stack calls its resume handler once on the way up
+    /// too, so without this a launch would be reported to the
+    /// application as a return from somewhere it had never been.
+    was_suspended: bool,
     /// Whether a command modifier is currently down.
     ///
     /// **Because a shortcut is not typing.** The windowing library
@@ -701,6 +775,7 @@ impl ApplicationHandler for Adapter<'_> {
         // platform granting a window back, and the poll cadence returns
         // with it. Idempotent on desktop, where nothing ever parked it.
         event_loop.set_control_flow(ControlFlow::Poll);
+        note_resume(&mut self.was_suspended, self.app);
         self.open(&|attributes| {
             event_loop
                 .create_window(attributes)
@@ -721,6 +796,11 @@ impl ApplicationHandler for Adapter<'_> {
     /// rather than an attribute so every target compiles every path —
     /// the branch is decided at compile time either way.
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        // Told first, and on every platform that emits a suspend,
+        // because "you have been interrupted" is true everywhere this
+        // fires — what differs is only whether the window survives it.
+        note_suspend(&mut self.was_suspended, self.app);
+
         if cfg!(target_os = "android") {
             self.close_surface();
             // A backgrounded app with no window has nothing to draw
@@ -1450,6 +1530,7 @@ mod tests {
             app,
             epoch: SurfaceEpoch::new(),
             failure: None,
+            was_suspended: false,
             commanding: false,
             cursor_wanted: core::cell::Cell::new(false),
         }
@@ -1594,6 +1675,93 @@ mod tests {
             epoch.close(&mut Holdless),
             "a holdless app passes the release verification unchanged"
         );
+    }
+
+    /// The suspend transition, in every order a platform can produce.
+    ///
+    /// Drives the defaulted callbacks too: an application that
+    /// implements neither is the common case, and a default that
+    /// nothing ever calls is a default nobody has checked.
+    #[test]
+    fn an_application_hears_about_an_interruption_once_and_a_return_only_after_one() {
+        #[derive(Default)]
+        struct Counting {
+            suspends: usize,
+            resumes: usize,
+        }
+        impl WindowApp for Counting {
+            fn ready(&mut self, _window: &WindowRef<'_>) {}
+            fn event(&mut self, _event: WindowEvent) {}
+            fn update(&mut self, _control: &mut LoopControl) {}
+            fn suspended(&mut self) {
+                self.suspends += 1;
+            }
+            fn resumed(&mut self) {
+                self.resumes += 1;
+            }
+        }
+
+        // A resume before anything suspended is the loop starting up,
+        // not an application coming back.
+        let mut flag = false;
+        let mut app = Counting::default();
+        note_resume(&mut flag, &mut app);
+        assert_eq!(
+            (app.suspends, app.resumes),
+            (0, 0),
+            "a launch is not a return"
+        );
+
+        note_suspend(&mut flag, &mut app);
+        assert_eq!((app.suspends, app.resumes), (1, 0));
+
+        // Android emits back-to-back suspends; the second is the same
+        // interruption still in progress.
+        note_suspend(&mut flag, &mut app);
+        assert_eq!(
+            (app.suspends, app.resumes),
+            (1, 0),
+            "a repeated suspend is not news"
+        );
+
+        note_resume(&mut flag, &mut app);
+        assert_eq!((app.suspends, app.resumes), (1, 1));
+
+        // And a second resume is not a second return.
+        note_resume(&mut flag, &mut app);
+        assert_eq!(
+            (app.suspends, app.resumes),
+            (1, 1),
+            "a repeated resume is not news"
+        );
+
+        // The cycle repeats cleanly, which is what a lane counting
+        // three of each depends on.
+        note_suspend(&mut flag, &mut app);
+        note_resume(&mut flag, &mut app);
+        assert_eq!((app.suspends, app.resumes), (2, 2));
+    }
+
+    /// The defaulted pair is a real answer, not an unimplemented one:
+    /// an application with no interest in interruptions must be able to
+    /// ignore them, and this drives the bodies that let it.
+    #[test]
+    fn the_defaulted_interruption_callbacks_do_nothing_and_that_is_allowed() {
+        struct Incurious;
+        impl WindowApp for Incurious {
+            fn ready(&mut self, _window: &WindowRef<'_>) {}
+            fn event(&mut self, _event: WindowEvent) {}
+            fn update(&mut self, _control: &mut LoopControl) {}
+            // suspended and resumed deliberately not implemented.
+        }
+        let mut flag = false;
+        note_suspend(&mut flag, &mut Incurious);
+        assert!(
+            flag,
+            "the transition is recorded even when the app ignores it"
+        );
+        note_resume(&mut flag, &mut Incurious);
+        assert!(!flag, "and cleared on the way back");
     }
 
     /// Opening into a live epoch is a bug in the loop, not a state to

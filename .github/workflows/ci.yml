@@ -682,7 +682,13 @@ jobs:
             lint: "true"
           - os: macos-latest
             targets: aarch64-apple-ios,aarch64-apple-ios-sim
-            lint: "false"
+            # Clippy rides along here for the same reason it does on the
+            # Android leg: there is now a module behind
+            # `cfg(target_os = "ios")`, and the canonical lint never
+            # compiles it. Without this, the first `pedantic` finding in
+            # a file only these targets build would land in `main`
+            # unseen.
+            lint: "true"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -1348,6 +1354,32 @@ jobs:
               print(f'compared nothing against: {", ".join(empty)}')
               sys.exit(1)
           COMPARE
+
+  # An iOS application, launched on a simulator and driven through
+  # background and foreground.
+  #
+  # **This is the only lane that can observe what happens to a window
+  # when iOS suspends an app.** The determinism lane runs headless
+  # command-line simulations: they never open a window, so no suspend
+  # event reaches the handler and nothing about it is testable there.
+  # The platform layer revokes the surface on Android alone, on the
+  # argument that iOS keeps it - argued, and until this lane, never
+  # observed.
+  #
+  # Advisory while the observation is new. A lane that gates on a
+  # platform assumption should first establish that the assumption
+  # holds, and this is the run that establishes it.
+  ios-lifecycle:
+    name: iOS app lifecycle (advisory)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Background and resume the app, and read its log
+        run: bash tools/ci/ios-lifecycle.sh
 
   determinism-compare:
     name: Determinism (cross-platform comparison)

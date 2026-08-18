@@ -174,6 +174,40 @@ what makes the app's lifecycle testable without hardware: install it,
 send it to the background, bring it back, and the surface epochs are
 observable in the log this sample writes.
 
+## iOS
+
+The same shape once more, with a doorway that never returns.
+`src/ios.rs` is entered from `main` on that target and hands straight to
+the event loop, which enters `UIApplicationMain` and owns the process
+from then on. It wraps the same `EchoApp` in the same kind of logging
+adapter, writing to `Documents` inside the app's sandbox — read back
+from the host, since a simulator's filesystem is this machine's.
+
+**No Xcode project, and that is a decision rather than an omission.** An
+iOS application is a directory: an executable plus an `Info.plist`
+naming it. A Rust `[[bin]]` built for `aarch64-apple-ios-sim` is that
+executable, so `tools/ios-app-bundle.sh` assembles the bundle and
+nothing generates or parses a `project.pbxproj`. A *device* build would
+be different — installing on hardware needs signing and provisioning,
+which is where a real project earns its keep — and this sample does not
+do one.
+
+```
+bash tools/ios-app-bundle.sh renew-sample-input-echo input_echo com.renewengine.inputecho target/ios-app
+xcrun simctl install booted target/ios-app/input_echo.app
+xcrun simctl launch booted com.renewengine.inputecho
+```
+
+The log is at `$(xcrun simctl get_app_container booted com.renewengine.inputecho
+data)/Documents/input_echo.log`. Launching another app (Settings, say)
+backgrounds this one, and relaunching brings it back: the log then
+carries `suspended` and `resumed` lines and — unlike Android — no
+`surface lost` between them, because iOS keeps the window across an
+interruption.
+
+Both of these need macOS with Xcode's command-line tools; a simulator
+build needs no signing identity.
+
 `cargo-ndk` (pinned 4.1.2) needs `ANDROID_NDK_HOME` pointing at an
 r28+ NDK — r28 aligns segments to the 16 KB pages newer devices
 require, by default. Gradle needs `JAVA_HOME` and `ANDROID_HOME`; the

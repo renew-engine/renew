@@ -57,6 +57,19 @@ datagrams — each a thin, explicit seam.
   handle re-export is the one documented exception to the
   no-windowing-library-type rule, because the value exists before any
   engine code runs.
+  **Losing the surface and losing the foreground are different events**,
+  and `WindowApp` has a callback for each: `surface_lost` says the window
+  is being destroyed, while `suspended` and `resumed` say only that
+  nobody is attending to the application. Android sends both when it
+  backgrounds an activity; iOS sends only the second pair, and sends it
+  for every interruption — a call, the app switcher, a notification
+  shade — with the surface still valid throughout. An application that
+  pauses a clock wants the interruption pair; one that holds
+  window-derived resources wants `surface_lost`. `resumed` fires only
+  after a `suspended`, so a launch is not a return, and a platform that
+  repeats itself gets one `suspended` per interruption rather than one
+  per message. All three are defaulted, so an application that does not
+  care writes nothing.
 - `audio` (default-**off** `audio-out` feature) — the default output
   device, a negotiated stream shape, and a fill callback the OS audio
   thread drives. Bring-up is two phases because the shape has to be
