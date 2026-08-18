@@ -226,7 +226,7 @@ Two commands produce an installable debug APK (the second from
 `android/`):
 
 ```
-cargo ndk -t arm64-v8a -o samples/hello_triangle/android/app/src/main/jniLibs build -p renew-sample-hello-triangle --release
+cargo ndk -t arm64-v8a -t x86_64 -o samples/hello_triangle/android/app/src/main/jniLibs build -p renew-sample-hello-triangle --release
 ./gradlew assembleDebug
 ```
 
