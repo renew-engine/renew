@@ -115,13 +115,23 @@ lines = [1133, 1134, 1135]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
+file = "samples/hello_triangle/src/windowed.rs"
+lines = [578]
+reason = "The no-adapter fallback of the device-reuse test. Every lane that measures coverage supplies a software adapter, so the skip is never taken there; it exists so a developer machine without one runs the suite rather than failing it. The test's substance - that a second surface epoch takes the device the first one built rather than building beside it - runs wherever an adapter exists, which is every measuring lane."
+
+[[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [519, 520, 521]
+lines = [435]
+reason = "The dormant answer of the surface-transform accessor, which mirrors the extent accessor's dormant answer beside it. Reachable only where dormancy RETAINS a chain - the failed-quiesce corner - because every other parking destroys the chain, and a chainless target already answers identity by the arm below. Reaching it therefore needs a rotated surface and a wait-idle fault at once, and the fault suite arms one quirk per scenario. Deliberately an exemption rather than an assertion inside a rotated scenario: parking a rotated target destroys its chain, so such an assertion holds whether the guard exists or not - measured, not assumed, by deleting the guard and watching all 48 scenarios still pass."
+
+[[exempt]]
+file = "crates/rhi/src/vk/swapchain.rs"
+lines = [561, 562, 563]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter, window side - same unreachability as the offscreen twin: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [1359]
+lines = [1402]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
 
 [[exempt]]

@@ -235,10 +235,18 @@ const QUIRK_ZERO_SURFACE_EXTENT: u32 = 1 << 10;
 /// maximum equals its minimum is ordinary; a surface that permits fewer
 /// than its own minimum is not.
 const QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM: u32 = 1 << 11;
+/// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` reports a quarter-turn
+/// current transform: the surface a handheld device presents when its
+/// panel's natural orientation is not the one being drawn to. Desktops
+/// report the identity always, so this is the only way a lane here can
+/// exercise a rotated surface at all — and a renderer that declares the
+/// transform it was handed while drawing unrotated content is wrong in
+/// a way no unrotated lane can see.
+const QUIRK_SURFACE_ROTATED_90: u32 = 1 << 12;
 
 /// Every `RENEW_QUIRK` name paired with its bit. The only place a quirk
 /// name is spelled, so parsing and documentation cannot drift.
-const QUIRK_NAMES: [(&str, u32); 12] = [
+const QUIRK_NAMES: [(&str, u32); 13] = [
     ("no-adapters", QUIRK_NO_ADAPTERS),
     ("no-swapchain-extension", QUIRK_NO_SWAPCHAIN_EXTENSION),
     ("no-surface-formats", QUIRK_NO_SURFACE_FORMATS),
@@ -260,6 +268,7 @@ const QUIRK_NAMES: [(&str, u32); 12] = [
         "max-image-count-at-minimum",
         QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM,
     ),
+    ("surface-rotated-90", QUIRK_SURFACE_ROTATED_90),
 ];
 
 /// The armed response mutations: a set, because quirks compose and each
@@ -1496,7 +1505,8 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
         || quirks.has(QUIRK_COMPOSITE_ALPHA_INHERIT_ONLY)
         || quirks.has(QUIRK_MAX_IMAGE_COUNT_ONE)
         || quirks.has(QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM)
-        || quirks.has(QUIRK_ZERO_SURFACE_EXTENT);
+        || quirks.has(QUIRK_ZERO_SURFACE_EXTENT)
+        || quirks.has(QUIRK_SURFACE_ROTATED_90);
     if !rewrites_caps || result != vk::Result::SUCCESS || p_surface_capabilities.is_null() {
         return result;
     }
@@ -1529,6 +1539,12 @@ unsafe extern "system" fn fault_get_physical_device_surface_capabilities_khr(
     }
     if quirks.has(QUIRK_MAX_IMAGE_COUNT_AT_MINIMUM) {
         caps.max_image_count = caps.min_image_count;
+    }
+    if quirks.has(QUIRK_SURFACE_ROTATED_90) {
+        caps.current_transform = vk::SurfaceTransformFlagsKHR::ROTATE_90;
+        // A surface reporting a rotation supports it, or the report
+        // would be one no swapchain could satisfy.
+        caps.supported_transforms |= vk::SurfaceTransformFlagsKHR::ROTATE_90;
     }
     if quirks.has(QUIRK_ZERO_SURFACE_EXTENT) {
         // A minimized window: the surface dictates an extent, and the
@@ -1874,8 +1890,36 @@ unsafe extern "system" fn fault_create_swapchain_khr(
     let Some(next) = next else {
         return vk::Result::ERROR_UNKNOWN;
     };
+    // The rotation quirk's other half, and the reason it needs one.
+    //
+    // This layer is enabled the way an implicit layer is, so it sits
+    // ABOVE the validation layer: the capabilities rewrite on the way
+    // back up is invisible to validation, which recorded the driver's
+    // real `supportedTransforms` — identity only, on every surface a
+    // desktop offers. An application that believes the rewrite then
+    // declares a transform the driver never advertised, and validation
+    // correctly refuses it.
+    //
+    // So the lie is undone here, on the way down: the caller above has
+    // already been told, and tested, what it was told, and what
+    // reaches the driver is the transform the surface really supports.
+    // The quirk exercises the caller's handling of a rotated surface,
+    // which is the whole point; it cannot make a desktop driver
+    // actually rotate, and pretending otherwise is what produced an
+    // invalid swapchain.
+    let mut patched;
+    let p_create_info = if quirks().has(QUIRK_SURFACE_ROTATED_90) && !p_create_info.is_null() {
+        // SAFETY: the caller's create-info is a live, initialized
+        // struct for the duration of the call; the copy is local.
+        patched = unsafe { *p_create_info };
+        patched.pre_transform = vk::SurfaceTransformFlagsKHR::IDENTITY;
+        &raw const patched
+    } else {
+        p_create_info
+    };
     // SAFETY: chaining to the next layer with the caller's own
-    // arguments.
+    // arguments, or with a copy differing only in a field this layer
+    // owns.
     unsafe { next(device, p_create_info, p_allocator, p_swapchain) }
 }
 

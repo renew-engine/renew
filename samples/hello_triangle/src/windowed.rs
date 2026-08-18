@@ -152,13 +152,17 @@ impl TriangleApp {
         }
     }
 
-    /// Everything the renderer needs, built against the live window.
+    /// Bring the renderer up against a window.
+    ///
+    /// **Called once per surface epoch, not once per run.** The device
+    /// is created only if there is none — on a platform that revokes
+    /// windows, the second and later epochs reuse the one that survived
+    /// [`WindowApp::surface_lost`], because a device costs on the order
+    /// of a hundred milliseconds and outlives any one surface. Every
+    /// desktop run has exactly one epoch, so this reads there as the
+    /// bring-up it always was.
     fn bring_up(&mut self, window: NativeWindow, size: Extent) -> Result<(), SampleError> {
-        let device = Device::new(&DeviceDesc {
-            app_name: "renew-hello-triangle",
-            validation: crate::validation_policy(),
-        })
-        .map_err(device_error)?;
+        let device = self.device_for_epoch()?;
         let target = device
             .create_window_target(window, size)
             .map_err(target_error)?;
@@ -170,6 +174,44 @@ impl TriangleApp {
         self.surface = Some(surface);
         self.pipeline = Some(pipeline);
         Ok(())
+    }
+
+    /// The device this epoch will use: the one that survived the last
+    /// epoch, or a fresh one.
+    ///
+    /// **Split out because the reuse arm is the whole claim and a
+    /// desktop cannot exercise it.** Every desktop run has exactly one
+    /// epoch, so the taken-Some branch is dead there; the platform that
+    /// revokes windows is the one that takes it, and no lane here hosts
+    /// that platform. Behind its own function, the decision is a pure
+    /// question about the field — "is there one already?" — which a
+    /// test can ask without a device existing at all, and the answer it
+    /// gives is the one the epoch path uses.
+    fn device_for_epoch(&mut self) -> Result<Device, SampleError> {
+        match self.device.take() {
+            Some(device) => Ok(device),
+            None => Device::new(&DeviceDesc {
+                app_name: "renew-hello-triangle",
+                validation: crate::validation_policy(),
+            })
+            .map_err(device_error),
+        }
+    }
+
+    /// Start the schedule for a surface epoch, at `now`.
+    ///
+    /// **Every clock this epoch is measured by starts here**, which is
+    /// the point of it being one function: the frame loop, the update
+    /// stamp, and the stall clock. A `ready` that anchored two of the
+    /// three left the third measuring from the previous epoch — which,
+    /// after a minute in a pocket, reads as a minute of failing to
+    /// present and exits the app on the first update back. Split out so
+    /// the unit suite can open an epoch the way the seam does; `ready`
+    /// itself needs a live window and no test can reach it.
+    fn open_epoch(&mut self, now: Timestamp) {
+        self.frame = Some(FrameLoop::new(Timestep::HZ_60, StepBudget::DEFAULT, now));
+        self.last_update = now;
+        self.last_progress = now;
     }
 
     /// Record an outcome: an environment that cannot host this run is a
@@ -262,7 +304,10 @@ impl TriangleApp {
     }
 
     /// The run's verdict, after the loop has returned.
-    fn finish(mut self, outcome: Result<(), WindowError>) -> Result<Report, SampleError> {
+    pub(crate) fn finish(
+        mut self,
+        outcome: Result<(), WindowError>,
+    ) -> Result<Report, SampleError> {
         // Teardown before the verdict: the renderer's objects go away
         // while the device is still here to destroy them cleanly.
         drop(self.surface.take());
@@ -327,8 +372,7 @@ impl WindowApp for TriangleApp {
         // a hundred milliseconds, and banking it as frame one would open
         // the run with a clamped burst.
         let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
-        self.frame = Some(FrameLoop::new(Timestep::HZ_60, StepBudget::DEFAULT, now));
-        self.last_update = now;
+        self.open_epoch(now);
     }
 
     fn event(&mut self, event: WindowEvent) {
@@ -346,6 +390,35 @@ impl WindowApp for TriangleApp {
         // timestamp rather than reading one.
         let now = Timestamp::from_nanos(self.clock.elapsed_nanos());
         self.update_at(now, control);
+    }
+
+    /// The platform is taking the window back: every value derived from
+    /// it goes now, before this returns.
+    ///
+    /// **The first renderer to honour the epoch contract.** The surface
+    /// holds the window target, which holds the window handle, and the
+    /// readout holds a second handle — on a platform that revokes
+    /// windows the operating system invalidates what all three point at
+    /// whoever still holds them, so they are dropped here rather than
+    /// kept and hoped for. The device survives: it is the expensive
+    /// half and it outlives any one surface, so the next epoch's `ready`
+    /// rebuilds only the target and the pipeline that names its format.
+    fn surface_lost(&mut self) {
+        // Order matters as much as the drop: the pipeline was created
+        // against the surface's format and the surface owns the target
+        // that owns the window, so they go outermost-first, leaving no
+        // handle alive when the platform's own reference goes.
+        self.pipeline = None;
+        self.surface = None;
+        self.window = None;
+        self.frame = None;
+        // A frame that was drawn but never counted belongs to the epoch
+        // that drew it: leaving the latch set would credit the next
+        // epoch's first update with a presentation from before the gap,
+        // mis-recording one timing sample. Hygiene, not the wedge fix —
+        // the stall measurement below is what the gap actually needs,
+        // and it is guarded on there being a frame loop at all.
+        self.drawn_since_update = false;
     }
 }
 
@@ -389,7 +462,15 @@ impl TriangleApp {
             self.drawn_since_update = false;
         }
         self.last_update = now;
-        let stalled = now.saturating_since(self.last_progress);
+        // Only while there is something to present. Between epochs the
+        // sample holds no surface and no frame loop, and a detector
+        // that counted that gap would report a wedge for the platform
+        // doing exactly what it promised.
+        let stalled = if self.frame.is_some() {
+            now.saturating_since(self.last_progress)
+        } else {
+            Nanos::from_nanos(0)
+        };
         if wedged(stalled, self.wedge_after, self.done()) {
             self.failure = Some(format!(
                 "wedged: {} of {} frames presented, and none in the last {} ms",
@@ -418,7 +499,10 @@ mod tests {
     /// An app with a schedule but no window: every callback below is the
     /// one the seam calls, driven directly. Only `ready` is out of reach
     /// — it borrows a live OS window — and the windowed CI lane covers
-    /// that.
+    /// that — `surface_lost` used to be out of reach as well and is
+    /// driven here now, because the platform emits a suspend on no
+    /// desktop, which makes this suite the only place the epoch gap is
+    /// ever exercised.
     fn fresh(frames: u64) -> TriangleApp {
         let mut app = TriangleApp::new(&Options {
             frames,
@@ -437,6 +521,122 @@ mod tests {
     /// Derived from the timestep rather than written out, so changing the
     /// rate cannot silently turn this back into zero steps.
     const ONE_STEP: Timestamp = Timestamp::from_nanos(Timestep::HZ_60.nanos().get());
+
+    /// **A background longer than the wedge window must not kill the
+    /// app.** The detector asks "nothing presented for five seconds" —
+    /// a question with no meaning while the platform holds the window,
+    /// because nothing *can* present. Left running across the gap, the
+    /// first update after the user came back reported a wedge and
+    /// exited: the app killing itself at the moment it became visible
+    /// again, on the one platform this whole seam exists for.
+    #[test]
+    fn a_long_background_is_not_a_wedge() {
+        let mut app = fresh(u64::MAX);
+        app.record_draw(Ok(true));
+        app.update_at(ONE_STEP, &mut LoopControl::default());
+        assert!(app.failure.is_none(), "the presenting run is healthy");
+
+        // The platform takes the window; a minute passes in a pocket.
+        app.surface_lost();
+        let waking = Timestamp::from_nanos(60_000_000_000);
+        let mut control = LoopControl::default();
+        app.update_at(waking, &mut control);
+        assert!(
+            app.failure.is_none(),
+            "a gap with no surface is not a stall: {:?}",
+            app.failure
+        );
+        assert!(!control.exiting(), "and the app must not exit itself");
+
+        // The next epoch is opened the way `ready` opens one — through
+        // the same call, so a `ready` that forgot to re-anchor the
+        // wedge clock fails here rather than only on a device.
+        app.open_epoch(waking);
+        app.update_at(
+            Timestamp::from_nanos(waking.get() + ONE_STEP.get()),
+            &mut LoopControl::default(),
+        );
+        assert!(app.failure.is_none(), "{:?}", app.failure);
+    }
+
+    /// **The device outlives the epoch that built it.** A platform that
+    /// revokes windows closes one epoch and opens another; rebuilding a
+    /// device each time would spend a hundred milliseconds where the
+    /// surface costs a fraction of one. No lane can host that platform,
+    /// so the decision is driven directly, with a real device from the
+    /// headless path — the same device a windowed run would have kept.
+    ///
+    /// Skips where no adapter exists, like every device-bearing test in
+    /// this tree. **Every lane that measures coverage supplies a
+    /// software adapter**, so the skip is dead there and exempted by
+    /// name; it exists for a developer machine that has none.
+    #[test]
+    fn a_second_epoch_reuses_the_device_the_first_one_built() {
+        use crate::offscreen::HeadlessRun;
+
+        let Ok(run) = HeadlessRun::start(0, crate::offscreen::Draw::Triangle) else {
+            return;
+        };
+        let mut app = fresh(u64::MAX);
+        app.device = Some(run.into_device());
+        let kept = app
+            .device
+            .as_ref()
+            .map(|device| device.adapter().name.clone());
+        assert!(kept.is_some(), "the epoch starts holding a device");
+
+        // The decision the next epoch makes, driven directly: it must
+        // take what is there rather than build beside it.
+        let taken = app
+            .device_for_epoch()
+            .expect("a device that exists is reused");
+        assert_eq!(
+            Some(taken.adapter().name.clone()),
+            kept,
+            "the second epoch built a new device instead of keeping the first"
+        );
+        assert!(
+            app.device.is_none(),
+            "the epoch takes the device rather than cloning it"
+        );
+    }
+
+    /// The epoch close releases every window-derived value, because on
+    /// the platform that revokes windows the operating system
+    /// invalidates what they point at whoever still holds them — and
+    /// the seam verifies the release before dropping its own reference.
+    /// The device is deliberately kept: it is the expensive half and it
+    /// outlives any one surface.
+    #[test]
+    fn the_epoch_close_releases_the_window_chain_and_keeps_the_device() {
+        let mut app = fresh(u64::MAX);
+        assert!(
+            app.frame.is_some(),
+            "the schedule is anchored to begin with"
+        );
+
+        app.surface_lost();
+
+        assert!(
+            app.pipeline.is_none(),
+            "the pipeline named the surface's format"
+        );
+        assert!(app.surface.is_none(), "the surface owns the window target");
+        assert!(
+            app.window.is_none(),
+            "the readout's handle is a window handle too"
+        );
+        assert!(
+            app.frame.is_none(),
+            "and the schedule waits for the next epoch"
+        );
+        // Nothing here can build a device, so the claim this pins is the
+        // negative one that matters: the close does not touch it.
+        assert!(
+            app.device.is_none(),
+            "no device was built, and none was invented"
+        );
+    }
 
     fn report() -> Report {
         Report {

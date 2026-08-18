@@ -71,7 +71,9 @@ mod spirv;
 pub mod srgb;
 mod vk;
 
-pub use config::{AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, Validation};
+pub use config::{
+    AdapterInfo, AdapterKind, Color, DeviceDesc, Extent, SurfaceTransform, Validation,
+};
 pub use error::{DeviceError, PipelineError, TargetError};
 pub use vk::binding::{Binding, BindingDesc, BindingSource, MAX_SAMPLED_BINDINGS};
 pub use vk::buffer::{Buffer, BufferUsage};

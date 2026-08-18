@@ -43,8 +43,8 @@ use renew_platform::window::{
 };
 use renew_rhi::{
     Attachment, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent, FrameData,
-    Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, StoreOp, TargetError, Validation,
-    WindowTarget, builtin,
+    Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, StoreOp, SurfaceTransform,
+    TargetError, Validation, WindowTarget, builtin,
 };
 
 const CLEAR: Color = Color::new(0.1, 0.2, 0.3, 1.0);
@@ -469,6 +469,13 @@ enum QuirkShape {
     /// exceptional to a caller: the target must build and present
     /// exactly as it always does, which is the whole assertion.
     ClampsImageCount,
+    /// The surface reports a quarter turn — the shape a handheld panel
+    /// presents and no desktop ever does. The target must build,
+    /// present, and **report the rotation it declared**, because a
+    /// renderer can only fold what it can ask about, and a target that
+    /// swallowed the transform would leave every caller drawing
+    /// sideways with no way to notice.
+    ReportsRotation,
 }
 
 /// Every quirk scenario: the name printed, the `RENEW_QUIRK` list
@@ -524,6 +531,11 @@ const QUIRKS: &[(&str, &str, QuirkShape)] = &[
         "D9 max-image-count-at-minimum",
         "max-image-count-at-minimum",
         QuirkShape::ClampsImageCount,
+    ),
+    (
+        "D10 surface-rotated-90",
+        "surface-rotated-90",
+        QuirkShape::ReportsRotation,
     ),
 ];
 
@@ -776,6 +788,7 @@ fn walk_quirk(
         QuirkShape::ApplicationChoosesExtent => application_chooses_extent(target, size),
         QuirkShape::AlwaysDormant => always_dormant(target, size),
         QuirkShape::ClampsImageCount => clamps_image_count(target, size),
+        QuirkShape::ReportsRotation => reports_rotation(target, size),
     }
 }
 
@@ -856,6 +869,36 @@ fn clamps_image_count(target: Result<WindowTarget, TargetError>, size: Extent) -
         .resize(size)
         .map_err(|error| format!("resize failed: {error}"))?;
     presents_at(&mut target, size, "after a rebuild")
+}
+
+/// A rotated surface builds and presents like any other, and the
+/// target says so: the transform it declared when building the chain
+/// is the transform it reports, across a rebuild too. (The layer
+/// restores a supported transform below us before the driver sees it —
+/// a desktop driver cannot be made to rotate, and what is under test
+/// here is the caller's handling of a surface that says it is.) This is
+/// the only lane anywhere that sees a non-identity transform — every
+/// real surface here is a desktop one — so it is also the only proof
+/// that the reported value tracks the surface rather than a default.
+fn reports_rotation(target: Result<WindowTarget, TargetError>, size: Extent) -> Verdict {
+    let mut target = built(target)?;
+    if target.transform() != SurfaceTransform::Rotate90 {
+        return Err(format!(
+            "expected the declared quarter turn to be reported, got {:?}",
+            target.transform()
+        ));
+    }
+    presents_at(&mut target, size, "on a rotated surface")?;
+    target
+        .resize(size)
+        .map_err(|error| format!("resize failed: {error}"))?;
+    if target.transform() != SurfaceTransform::Rotate90 {
+        return Err(format!(
+            "the rebuild lost the rotation: {:?}",
+            target.transform()
+        ));
+    }
+    presents_at(&mut target, size, "after a rebuild on a rotated surface")
 }
 
 fn presents_at(target: &mut WindowTarget, size: Extent, stage: &str) -> Verdict {

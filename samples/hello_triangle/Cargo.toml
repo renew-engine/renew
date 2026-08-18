@@ -26,6 +26,11 @@ window = ["renew-platform/window", "renew-rhi/present"]
 # invalid by construction when the runtime itself allocates.
 sanitized = []
 
+# The Android doorway loads the sample as a shared object; the desktop
+# artifact is unchanged. Same arrangement as the input sample's.
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [[bin]]
 name = "hello_triangle"
 path = "src/main.rs"

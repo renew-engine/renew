@@ -238,6 +238,21 @@ impl HeadlessRun {
         &self.world
     }
 
+    /// The run's device, handed over.
+    ///
+    /// **For the epoch-reuse claim and nothing else.** The windowed
+    /// path keeps its device across a surface epoch — the expensive
+    /// half, outliving any one surface — and no lane can host the
+    /// platform that closes an epoch, so the only way to test that
+    /// decision is to hand a real device to the code that makes it.
+    /// This is where a real device already exists on a machine that
+    /// has one, and where the suite already skips gracefully on a
+    /// machine that does not.
+    #[must_use]
+    pub fn into_device(self) -> Device {
+        self.device
+    }
+
     /// The adapter this ran on. Forensics for a test that disagrees with
     /// its oracle: "which GPU" is the first question.
     #[must_use]

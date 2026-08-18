@@ -17,13 +17,33 @@ use std::rc::Rc;
 use ash::vk;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use crate::config::Extent;
+use crate::config::{Extent, SurfaceTransform};
 use crate::error::TargetError;
 use crate::vk::depth::{self, DepthResources};
 use crate::vk::device::{Device, DeviceShared, FENCE_TIMEOUT_NS};
 use crate::vk::pass::{self, MAX_RETAINED_RESOURCES, RenderDesc, Retained};
 use crate::vk::pipeline::{INSTANCE_BINDING, TargetFormat, VERTEX_BINDING};
 use crate::vk::transition;
+
+/// The engine's spelling of a surface transform.
+///
+/// Anything that is not one of the four rotations — the mirrored
+/// variants, or an inherit that a driver leaves to the platform — reads
+/// as the identity, because a renderer that cannot fold it must not be
+/// told it has been folded. The narrowing is deliberate and stated: the
+/// four rotations are what handheld panels report, and the rest would
+/// be a promise no consumer here can keep.
+const fn from_vk_transform(transform: vk::SurfaceTransformFlagsKHR) -> SurfaceTransform {
+    if transform.as_raw() == vk::SurfaceTransformFlagsKHR::ROTATE_90.as_raw() {
+        SurfaceTransform::Rotate90
+    } else if transform.as_raw() == vk::SurfaceTransformFlagsKHR::ROTATE_180.as_raw() {
+        SurfaceTransform::Rotate180
+    } else if transform.as_raw() == vk::SurfaceTransformFlagsKHR::ROTATE_270.as_raw() {
+        SurfaceTransform::Rotate270
+    } else {
+        SurfaceTransform::Identity
+    }
+}
 
 fn creation(call: &'static str, code: vk::Result) -> TargetError {
     match code {
@@ -52,6 +72,11 @@ pub enum PresentOutcome {
 struct Chain {
     swapchain: vk::SwapchainKHR,
     extent: Extent,
+    /// The transform this chain was built declaring, which is the one
+    /// the surface reported at build time. Kept because a caller that
+    /// draws unrotated content into a chain declaring a rotation gets a
+    /// sideways image, and it can only avoid that if it can ask.
+    transform: SurfaceTransform,
     views: Vec<vk::ImageView>,
     images: Vec<vk::Image>,
     /// One acquire semaphore **per frame in flight**, not per image.
@@ -395,6 +420,23 @@ impl WindowTarget {
     #[must_use]
     pub fn format(&self) -> TargetFormat {
         self.format
+    }
+
+    /// The rotation this target's swapchain declares.
+    ///
+    /// **The presentation engine believes it**: content drawn without
+    /// the matching counter-rotation arrives on screen turned by this
+    /// much. Identity on every desktop surface and while dormant, so a
+    /// caller that folds it correctly is correct everywhere and a
+    /// caller that ignores it is only wrong where a panel rotates.
+    #[must_use]
+    pub fn transform(&self) -> SurfaceTransform {
+        if self.dormant {
+            return SurfaceTransform::Identity;
+        }
+        self.chain
+            .as_ref()
+            .map_or(SurfaceTransform::Identity, |chain| chain.transform)
     }
 
     /// The current drawable size; zero while dormant.
@@ -1285,6 +1327,7 @@ impl WindowTarget {
         let mut chain = Chain {
             swapchain,
             extent: chosen,
+            transform: from_vk_transform(caps.current_transform),
             views: Vec::new(),
             images: Vec::new(),
             image_available: [vk::Semaphore::null(); FRAMES_IN_FLIGHT],
@@ -1472,6 +1515,46 @@ impl Drop for WindowTarget {
 #[cfg(test)]
 mod tests {
     use super::{TargetFormat, choose_surface_format};
+    /// Every transform a surface can report, mapped.
+    ///
+    /// The four rotations are the ones a handheld panel produces and
+    /// the only ones a renderer can fold; everything else — the
+    /// mirrored variants a display wall might report, and the
+    /// `INHERIT` a driver uses to say "ask the platform" — reads as
+    /// the identity, because telling a caller a fold happened when it
+    /// cannot fold is worse than telling it nothing. Two of the four
+    /// rotations are unreachable in every lane here, which is exactly
+    /// why they are pinned by construction rather than by a surface.
+    #[test]
+    fn every_reported_transform_maps_to_what_a_renderer_can_fold() {
+        use super::from_vk_transform;
+        use crate::config::SurfaceTransform;
+        use ash::vk::SurfaceTransformFlagsKHR as Vk;
+
+        for (reported, expected) in [
+            (Vk::IDENTITY, SurfaceTransform::Identity),
+            (Vk::ROTATE_90, SurfaceTransform::Rotate90),
+            (Vk::ROTATE_180, SurfaceTransform::Rotate180),
+            (Vk::ROTATE_270, SurfaceTransform::Rotate270),
+        ] {
+            assert_eq!(from_vk_transform(reported), expected, "{reported:?}");
+        }
+
+        for unfoldable in [
+            Vk::HORIZONTAL_MIRROR,
+            Vk::HORIZONTAL_MIRROR_ROTATE_90,
+            Vk::HORIZONTAL_MIRROR_ROTATE_180,
+            Vk::HORIZONTAL_MIRROR_ROTATE_270,
+            Vk::INHERIT,
+        ] {
+            assert_eq!(
+                from_vk_transform(unfoldable),
+                SurfaceTransform::Identity,
+                "{unfoldable:?} is not foldable and must not be reported as a rotation"
+            );
+        }
+    }
+
     use ash::vk;
 
     fn offered(format: vk::Format, color_space: vk::ColorSpaceKHR) -> vk::SurfaceFormatKHR {
