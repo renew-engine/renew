@@ -38,11 +38,22 @@ use std::process::ExitCode;
 mod android;
 mod app;
 mod cli;
+#[cfg(target_os = "ios")]
+mod ios;
 /// The translation and the recorder moved to `renew-replay` — any game
 /// shipping a replay needs them, and a correctness property maintained
 /// in two copies is maintained in one and a half. Re-exported so every
 /// existing path through this crate keeps meaning what it meant.
 pub use renew_replay as convert;
+
+/// The iOS application entry, for the binary beside this library.
+///
+/// An iOS app starts at `main` like any other program, so there is no
+/// exported symbol for the OS to find - what there is instead is a
+/// `main` that hands straight off and never gets control back, because
+/// the loop it enters owns the process from then on.
+#[cfg(target_os = "ios")]
+pub use ios::ios_main;
 mod error;
 mod input;
 pub use renew_replay as record;
