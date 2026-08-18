@@ -25,7 +25,8 @@
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use renew_trace::{
-    FiniteF32, FiniteF64, Trace, TraceButton, TraceEvent, TraceHeader, TraceKey, parse, write,
+    FiniteF32, FiniteF64, Trace, TraceButton, TraceEvent, TraceHeader, TraceKey, TraceTouchPhase,
+    parse, write,
 };
 
 /// A header key: no whitespace, no control characters, no `=` — a reader
@@ -61,6 +62,13 @@ fn button() -> impl Strategy<Value = TraceButton> {
     ]
 }
 
+/// One arm per [`TraceEvent`] variant — kept in the enum's declaration
+/// order — and the count beside the list feeds the tripwire test below:
+/// a `prop_oneof` is a list, not a match, so a new variant cannot break
+/// the build here, and for as long as `PointerMotion` had existed it
+/// was exactly that — defined, written, and never once generated.
+const EVENT_STRATEGY_ARMS: usize = 12;
+
 fn event() -> impl Strategy<Value = TraceEvent> {
     prop_oneof![
         (key(), any::<bool>(), any::<bool>()).prop_map(|(code, pressed, repeat)| {
@@ -71,6 +79,7 @@ fn event() -> impl Strategy<Value = TraceEvent> {
             }
         }),
         (finite_f64(), finite_f64()).prop_map(|(x, y)| TraceEvent::PointerMoved { x, y }),
+        (finite_f64(), finite_f64()).prop_map(|(dx, dy)| TraceEvent::PointerMotion { dx, dy }),
         (button(), any::<bool>())
             .prop_map(|(button, pressed)| TraceEvent::PointerButton { button, pressed }),
         (finite_f32(), finite_f32()).prop_map(|(dx, dy)| TraceEvent::Wheel { dx, dy }),
@@ -87,7 +96,62 @@ fn event() -> impl Strategy<Value = TraceEvent> {
         finite_f64().prop_map(|scale| TraceEvent::ScaleFactorChanged { scale }),
         Just(TraceEvent::RedrawRequested),
         Just(TraceEvent::CloseRequested),
+        (any::<u64>(), touch_phase(), finite_f64(), finite_f64()).prop_map(
+            |(finger, phase, x, y)| TraceEvent::Touch {
+                finger,
+                phase,
+                x,
+                y,
+            }
+        ),
     ]
+}
+
+fn touch_phase() -> impl Strategy<Value = TraceTouchPhase> {
+    proptest::sample::select(TraceTouchPhase::ALL)
+}
+
+/// The tripwire behind the arm count: an exhaustive match the compiler
+/// re-checks on every new variant, which sends its author to this file.
+/// One limit, stated rather than implied: only the match is enforced —
+/// the strategy arm and the constant are still updated by hand, and an
+/// author who fed the match without feeding the generator would leave
+/// everything green. What the tripwire buys is the visit, standing
+/// beside the list that must grow, with this sentence in view.
+#[test]
+fn the_event_strategy_has_an_arm_for_every_variant() {
+    const fn arm_of(event: &TraceEvent) -> usize {
+        match event {
+            TraceEvent::Key { .. } => 0,
+            TraceEvent::PointerMoved { .. } => 1,
+            TraceEvent::PointerMotion { .. } => 2,
+            TraceEvent::PointerButton { .. } => 3,
+            TraceEvent::Wheel { .. } => 4,
+            TraceEvent::Focused(_) => 5,
+            TraceEvent::TextEntered { .. } => 6,
+            TraceEvent::Resized { .. } => 7,
+            TraceEvent::ScaleFactorChanged { .. } => 8,
+            TraceEvent::RedrawRequested => 9,
+            TraceEvent::CloseRequested => 10,
+            TraceEvent::Touch { .. } => 11,
+        }
+    }
+    // The match above is the real tripwire — a new variant refuses to
+    // compile until it gets an arm, and the person giving it one is
+    // standing beside the generator that must learn the same shape. The
+    // assertions pin the bookkeeping the compiler cannot: the newest
+    // variant sits on the last arm, and the constant names the count.
+    assert_eq!(arm_of(&TraceEvent::CloseRequested), 10);
+    assert_eq!(
+        arm_of(&TraceEvent::Touch {
+            finger: 0,
+            phase: TraceTouchPhase::Started,
+            x: FiniteF64::from_bits(0).expect("zero is finite"),
+            y: FiniteF64::from_bits(0).expect("zero is finite"),
+        }) + 1,
+        EVENT_STRATEGY_ARMS,
+        "a newer variant updates the strategy list, the constant, and this match"
+    );
 }
 
 /// A whole trace: a header with caller keys, and events on non-decreasing
@@ -186,7 +250,7 @@ proptest! {
         version in "[0-9]{0,3}",
         ticks in "[0-9a-z]{0,6}",
         tail in "( ?[a-z]{0,4}(=[a-z0-9=]{0,6})?){0,3}",
-        line in "e [0-9]{0,4} (key|pointer|button|wheel|focus|resize|scale|redraw|close|gamepad)( [0-9a-fx:-]{0,18}){0,3}",
+        line in "e [0-9]{0,4} (key|pointer|motion|button|wheel|focus|text|resize|scale|redraw|close|touch|gamepad)( [0-9a-fx:-]{0,18}){0,4}",
     ) {
         let text = format!(
             "renew-trace {version} sample=s ticks={ticks} timestep_ns=1 budget=1{tail}\n{line}\n"
@@ -209,7 +273,7 @@ proptest! {
 /// same thing.
 #[test]
 fn a_header_field_is_split_at_its_first_equals_sign() {
-    let text = "renew-trace 1 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
+    let text = "renew-trace 2 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
     let trace = parse(text).expect("a value may carry an equals sign");
     assert_eq!(
         trace.header().keys(),
@@ -221,7 +285,7 @@ fn a_header_field_is_split_at_its_first_equals_sign() {
 
     // The positional field is a value in the same sense, which is why
     // the no-equals rule binds keys only and cannot bind both halves.
-    let odd = "renew-trace 1 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
+    let odd = "renew-trace 2 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
     let trace = parse(odd).expect("the sample name is a value too");
     assert_eq!(trace.header().sample(), "a=b");
     assert_eq!(write(&trace), odd);

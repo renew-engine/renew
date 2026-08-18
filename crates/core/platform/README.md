@@ -19,8 +19,8 @@ datagrams — each a thin, explicit seam.
   naming it. Dropping the handle detaches the thread — deliberate, and
   the handle is `#[must_use]` so detaching is always a visible choice.
 - `event` — a re-export of **`renew-event`**, which owns the vocabulary:
-  `WindowEvent`, `KeyCode`, `PointerButton`, and the shape table that
-  forces a new variant to be handled. Naming a key is not the same as
+  `WindowEvent`, `KeyCode`, `PointerButton`, `TouchPhase`, and the shape
+  table that forces a new variant to be handled. Naming a key is not the same as
   opening a window, and a consumer that speaks only the vocabulary — an
   input layer, a replay harness, a headless server — should take
   `renew-event` directly and not this crate at all.
@@ -31,7 +31,7 @@ datagrams — each a thin, explicit seam.
   boundary is the version of that promise a graph can read.
   `window` re-exports it too, so every existing path works.
 - `window` (default-on feature) — one OS window, its event loop, and
-  keyboard/mouse input behind an engine-only vocabulary: the OS owns
+  keyboard, mouse and touch input behind an engine-only vocabulary: the OS owns
   the loop, a `WindowApp` receives translated events and drives exit
   and redraws (`WindowApp` is the manifest's `window-app` extension
   point), and no windowing-library type crosses the boundary. The

@@ -17,11 +17,12 @@
 //! cannot check.
 
 use crate::error::{TraceError, TraceErrorKind};
-use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
 use crate::grammar::{
     ASSIGN, BUDGET, BUTTON, CLOSE, DOWN, EVENT, FIRST_EVENT_LINE, FOCUS, FOCUS_IN, FOCUS_OUT,
     FORMAT_VERSION, HEADER_LINE, HEX_PREFIX, KEY, MAGIC, MOTION, OTHER_BUTTON, POINTER, REDRAW,
-    REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TEXT, TICKS, TIMESTEP_NS, UP, WHEEL,
+    REPEAT, RESIZE, SAMPLE, SCALE, SEPARATOR, TEXT, TICKS, TIMESTEP_NS, TOUCH, TOUCH_VERSION, UP,
+    WHEEL,
 };
 use crate::trace::{Trace, TraceHeader};
 
@@ -68,10 +69,10 @@ pub fn parse(text: &str) -> Result<Trace, TraceError> {
     // a reservation taken from a line count would be a caller-controlled
     // allocation — one that aborts rather than returns on a 32-bit
     // target, in a crate that promises nothing here panics.
-    let header = parse_header(header_line)?;
+    let (version, header) = parse_header(header_line)?;
     let mut events = Vec::new();
     for (index, line) in segments.enumerate() {
-        events.push(parse_event(index + FIRST_EVENT_LINE, line)?);
+        events.push(parse_event(index + FIRST_EVENT_LINE, line, version)?);
     }
     // The tick rules live in the constructor, so a trace built in memory
     // and a trace read from a file are held to one implementation of them
@@ -87,7 +88,9 @@ fn without_carriage_return(line: &str) -> &str {
     line.strip_suffix('\r').unwrap_or(line)
 }
 
-fn parse_header(line: &str) -> Result<TraceHeader, TraceError> {
+/// The header, plus the version the file claims — which the event
+/// lines are then held to, because a word can be newer than the claim.
+fn parse_header(line: &str) -> Result<(u64, TraceHeader), TraceError> {
     let mut cursor = Cursor::new(HEADER_LINE, line);
     let word = cursor.optional().unwrap_or_default();
     if word != MAGIC {
@@ -132,10 +135,10 @@ fn parse_header(line: &str) -> Result<TraceHeader, TraceError> {
         };
         header = header.with_key(key, value)?;
     }
-    Ok(header)
+    Ok((version, header))
 }
 
-fn parse_event(number: usize, line: &str) -> Result<(u64, TraceEvent), TraceError> {
+fn parse_event(number: usize, line: &str, version: u64) -> Result<(u64, TraceEvent), TraceError> {
     let mut cursor = Cursor::new(number, line);
     let keyword = cursor.optional().unwrap_or_default();
     if keyword == MAGIC {
@@ -210,6 +213,25 @@ fn parse_event(number: usize, line: &str) -> Result<(u64, TraceEvent), TraceErro
         },
         REDRAW => TraceEvent::RedrawRequested,
         CLOSE => TraceEvent::CloseRequested,
+        TOUCH => {
+            // A word newer than the file's own claim: the file is lying
+            // to every reader of the version it names, so the one reader
+            // able to notice refuses rather than laundering the header
+            // to a version the producer did not write.
+            if version < u64::from(TOUCH_VERSION) {
+                return Err(cursor.error(TraceErrorKind::EventFromANewerFormat {
+                    kind: TOUCH.to_string(),
+                    introduced: TOUCH_VERSION,
+                    declared: version,
+                }));
+            }
+            TraceEvent::Touch {
+                finger: cursor.decimal_u64("the finger id")?,
+                phase: cursor.touch_phase()?,
+                x: cursor.hex_f64("the touch's x coordinate")?,
+                y: cursor.hex_f64("the touch's y coordinate")?,
+            }
+        }
         other => {
             return Err(cursor.error(TraceErrorKind::UnknownEventKind {
                 kind: other.to_string(),
@@ -408,6 +430,15 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    fn touch_phase(&mut self) -> Result<TraceTouchPhase, TraceError> {
+        let text = self.expect("`start`, `move`, `end` or `cancel`")?;
+        TraceTouchPhase::from_name(text).ok_or_else(|| {
+            self.error(TraceErrorKind::NotATouchPhase {
+                text: text.to_string(),
+            })
+        })
+    }
+
     fn focused(&mut self) -> Result<bool, TraceError> {
         let text = self.expect("`in` or `out`")?;
         match text {
@@ -481,9 +512,9 @@ fn hex_digit(byte: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+    use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
 
-    const HEADER: &str = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+    const HEADER: &str = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
     /// A one-event trace, so a test can name the shape it cares about and
     /// nothing else.
@@ -610,6 +641,112 @@ mod tests {
         );
         assert_eq!(one("e 0 redraw"), TraceEvent::RedrawRequested);
         assert_eq!(one("e 0 close"), TraceEvent::CloseRequested);
+        assert_eq!(
+            one("e 0 touch 7 start 0x3ff8000000000000 0xc000000000000000"),
+            TraceEvent::Touch {
+                finger: 7,
+                phase: TraceTouchPhase::Started,
+                x: FiniteF64::new(1.5).unwrap(),
+                y: FiniteF64::new(-2.0).unwrap(),
+            }
+        );
+        // The other three phases, so the word table is read end to end.
+        for (word, phase) in [
+            ("move", TraceTouchPhase::Moved),
+            ("end", TraceTouchPhase::Ended),
+            ("cancel", TraceTouchPhase::Cancelled),
+        ] {
+            assert_eq!(
+                one(&format!(
+                    "e 0 touch 0 {word} 0x0000000000000000 0x0000000000000000"
+                )),
+                TraceEvent::Touch {
+                    finger: 0,
+                    phase,
+                    x: FiniteF64::new(0.0).unwrap(),
+                    y: FiniteF64::new(0.0).unwrap(),
+                }
+            );
+        }
+    }
+
+    /// A phase word outside the four is refused by name, and the refusal
+    /// says what would have been legal there.
+    #[test]
+    fn a_touch_phase_outside_the_four_is_refused() {
+        use crate::error::TraceErrorKind;
+        let text = format!("{HEADER}\ne 0 touch 1 hover 0x0000000000000000 0x0000000000000000\n");
+        let error = parse(&text).unwrap_err();
+        assert_eq!(
+            *error.kind(),
+            TraceErrorKind::NotATouchPhase {
+                text: "hover".to_string(),
+            }
+        );
+    }
+
+    /// A reader accepts every older version — the format's own stated
+    /// rule, pinned here so a version bump cannot silently orphan every
+    /// trace already recorded.
+    #[test]
+    fn an_older_version_is_still_read() {
+        let old = "renew-trace 1 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n\
+                   e 0 close\n";
+        let trace = parse(old).unwrap();
+        assert_eq!(trace.events(), [(0, TraceEvent::CloseRequested)]);
+    }
+
+    /// The deliberate carve-out under the version gate, pinned rather
+    /// than only stated: `motion` and `text` entered the format while
+    /// its version number lagged, so genuinely mislabeled files from
+    /// those eras exist and stay readable. A future generalization of
+    /// the gate that swept them in would orphan recordings this format
+    /// already blessed — and would turn this red first.
+    #[test]
+    fn the_pre_gate_words_stay_readable_under_the_versions_that_shipped_them() {
+        for (declared, line) in [
+            (0, "e 0 motion 0x3ff8000000000000 0xc000000000000000"),
+            (0, "e 0 text 97"),
+            (1, "e 0 motion 0x3ff8000000000000 0xc000000000000000"),
+            (1, "e 0 text 97"),
+        ] {
+            let text = format!(
+                "renew-trace {declared} sample=input_echo ticks=30 timestep_ns=16666667 budget=5
+{line}
+"
+            );
+            assert!(
+                parse(&text).is_ok(),
+                "version {declared} must keep reading `{line}`"
+            );
+        }
+    }
+
+    /// A file whose header claims a version older than a word it uses is
+    /// lying to every reader of that version, and the one reader able to
+    /// notice must not launder it: before this rule, such a file parsed
+    /// here and rewrote as canonical version 2 — a header the producer
+    /// never wrote.
+    #[test]
+    fn a_touch_line_under_an_older_claimed_version_is_refused() {
+        use crate::error::TraceErrorKind;
+        for declared in [0, 1] {
+            let text = format!(
+                "renew-trace {declared} sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n\
+                 e 0 touch 7 start 0x0000000000000000 0x0000000000000000\n"
+            );
+            let error = parse(&text).unwrap_err();
+            assert_eq!(
+                *error.kind(),
+                TraceErrorKind::EventFromANewerFormat {
+                    kind: "touch".to_string(),
+                    introduced: 2,
+                    declared,
+                },
+                "version {declared} must not admit a touch line"
+            );
+            assert_eq!(error.line(), 2, "the refusal names the touch line");
+        }
     }
 
     /// Every lowercase hexadecimal digit, so the digit-to-value step is

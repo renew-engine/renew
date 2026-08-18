@@ -26,7 +26,7 @@
 //! let text = write(&trace);
 //! assert_eq!(
 //!     text,
-//!     "renew-trace 1 sample=input_echo ticks=10 timestep_ns=16666667 budget=5 seed=0\n\
+//!     "renew-trace 2 sample=input_echo ticks=10 timestep_ns=16666667 budget=5 seed=0\n\
 //!      e 5 key arrow-right down\n\
 //!      e 10 close\n"
 //! );
@@ -129,14 +129,22 @@
 //! renew-trace <version> sample=<name> ticks=<u64> timestep_ns=<u64> budget=<u32> [key=value…]
 //! e <tick> key <name> <down|up> [repeat]
 //! e <tick> pointer <hex-f64> <hex-f64>
+//! e <tick> motion <hex-f64> <hex-f64>
 //! e <tick> button <name|other:<u16>> <down|up>
 //! e <tick> wheel <hex-f32> <hex-f32>
 //! e <tick> focus <in|out>
+//! e <tick> text <u32>
 //! e <tick> resize <u32> <u32>
 //! e <tick> scale <hex-f64>
 //! e <tick> redraw
 //! e <tick> close
+//! e <tick> touch <u64> <start|move|end|cancel> <hex-f64> <hex-f64>
 //! ```
+//!
+//! (The `motion` and `text` lines were each missing from this block for
+//! as long as they had existed in the format — the block is prose the
+//! writer's match cannot check, which is the reason the match, not this
+//! text, is the count of record.)
 //!
 //! The version is positional and first, because a reader has to know how
 //! to read the rest of a line before it reads it. A reader accepts its own
@@ -170,7 +178,7 @@ mod trace;
 mod write;
 
 pub use error::{TraceError, TraceErrorKind};
-pub use event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey};
+pub use event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
 pub use grammar::FORMAT_VERSION;
 pub use parse::parse;
 pub use trace::{Trace, TraceHeader};

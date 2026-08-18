@@ -25,7 +25,7 @@
 //! care; a bit pattern is an integer, compares exactly, and is what a
 //! determinism digest absorbs anyway.
 
-use crate::grammar::OTHER_BUTTON;
+use crate::grammar::{OTHER_BUTTON, TOUCH_CANCEL, TOUCH_END, TOUCH_MOVE, TOUCH_START};
 use core::fmt;
 
 /// A finite `f64`, carried as its IEEE-754 bit pattern.
@@ -286,11 +286,13 @@ impl fmt::Display for TraceButton {
 
 /// One thing that happened, in the codec's own vocabulary.
 ///
-/// Nine variants for the nine lines the format defines, and the names
-/// match the windowing layer's event names so that the conversion in an
-/// application reads as a rename rather than as a translation. Plain data
-/// throughout: no method here interprets an event, because what an event
-/// *means* belongs to the application replaying it.
+/// One variant per line the format defines — counted by the writer's
+/// exhaustive match, not by a number here, which went stale twice — and
+/// the names match the windowing layer's event names so that the
+/// conversion in an application reads as a rename rather than as a
+/// translation. Plain data throughout: no method here interprets an
+/// event, because what an event *means* belongs to the application
+/// replaying it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceEvent {
     Key {
@@ -345,6 +347,53 @@ pub enum TraceEvent {
     },
     RedrawRequested,
     CloseRequested,
+    /// A finger touched the screen, moved on it, or left it.
+    Touch {
+        /// Which finger, unique while it stays in contact.
+        finger: u64,
+        phase: TraceTouchPhase,
+        x: FiniteF64,
+        y: FiniteF64,
+    },
+}
+
+/// Where in its life a touch is, by the word the format writes it under.
+///
+/// Closed for the same reason as [`TraceKey`], and adding a word here
+/// bumps [`FORMAT_VERSION`](crate::FORMAT_VERSION) for the same reason
+/// too. `Cancelled` is deliberately not `Ended` wearing another name:
+/// the system took the gesture away and nothing completed, and a replay
+/// that folded the two would complete presses the session never did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceTouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+impl TraceTouchPhase {
+    /// Every phase, in the order the format documents them. The parser
+    /// reads this table rather than carrying a second one — the
+    /// [`TraceKey`] arrangement, for the same reason.
+    pub const ALL: &'static [Self] = &[Self::Started, Self::Moved, Self::Ended, Self::Cancelled];
+
+    /// The text this phase is written as.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Started => TOUCH_START,
+            Self::Moved => TOUCH_MOVE,
+            Self::Ended => TOUCH_END,
+            Self::Cancelled => TOUCH_CANCEL,
+        }
+    }
+
+    /// The phase written under this name, or `None` if no phase is.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|phase| phase.name() == name)
+    }
 }
 
 #[cfg(test)]
@@ -435,6 +484,30 @@ mod tests {
         assert_eq!(TraceKey::from_name(""), None);
         // The state words a key line already uses are not key names.
         assert_eq!(TraceKey::from_name("down"), None);
+    }
+
+    /// The phase table's tripwire, the key table's twin: four phases,
+    /// unique names, each reading back as itself.
+    #[test]
+    fn every_touch_phase_has_a_unique_name_that_reads_back() {
+        use super::TraceTouchPhase;
+        assert_eq!(TraceTouchPhase::ALL.len(), 4);
+        for phase in TraceTouchPhase::ALL {
+            assert_eq!(TraceTouchPhase::from_name(phase.name()), Some(*phase));
+        }
+        let mut names: Vec<&str> = TraceTouchPhase::ALL.iter().map(|p| p.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            TraceTouchPhase::ALL.len(),
+            "two phases share a name"
+        );
+        // The key line's state words are not phase words, and an unknown
+        // word names nothing.
+        assert_eq!(TraceTouchPhase::from_name("down"), None);
+        assert_eq!(TraceTouchPhase::from_name("hover"), None);
+        assert_eq!(TraceTouchPhase::from_name(""), None);
     }
 
     #[test]

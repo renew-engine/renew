@@ -1,1 +1,1 @@
-renew-trace 1 sample=glide ticks=2000 timestep_ns=16666667 budget=5 seed=7
+renew-trace 2 sample=glide ticks=2000 timestep_ns=16666667 budget=5 seed=7

@@ -1,8 +1,9 @@
 # renew-event
 
-The engine's event vocabulary: what happened, as plain data. Three
-enums — `WindowEvent`, `KeyCode`, `PointerButton` — plus `EVERY_EVENT_SHAPE`
-and `shape_index` over it.
+The engine's event vocabulary: what happened, as plain data. The
+enums — `WindowEvent`, `KeyCode`, `PointerButton`, `TouchPhase` — plus
+`EVERY_EVENT_SHAPE` and `shape_index` over it. (Enumerated, not
+counted: a count here went stale once already.)
 
 No dependencies. Nothing here can make anything happen.
 
