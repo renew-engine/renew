@@ -692,6 +692,22 @@ pub fn digests_from_output(
 /// report itself, or the comparison would refuse a leg for spelling
 /// rather than for disagreeing.
 ///
+/// **One row deliberately breaks that rule, and it is the more
+/// important rule that makes it.** A binary built for
+/// `aarch64-apple-ios-sim` reports `ios` from `env::consts`, exactly as
+/// one built for a phone does — so following the spelling would give
+/// the two triples one identity, and a determinism row reading
+/// `ios/aarch64` would promise that phones agree when only simulators
+/// had ever been measured. The simulator is therefore named
+/// `ios-simulator`, which no binary reports, because **the words exist
+/// to say what was proved and a row that overclaims is worse than a row
+/// that is oddly spelled.**
+///
+/// This costs nothing elsewhere: `env::consts` is read only when no
+/// `--target` is given, which happens only on the three desktop rows,
+/// where the spellings still match exactly and a test pins that they
+/// do.
+///
 /// **A table, not a parser, and the difference is the whole point.**
 /// Neither column can be read off a triple by position. `android` lives
 /// in the *environment* field of `x86_64-linux-android`, whose os field
@@ -731,7 +747,7 @@ pub const KNOWN_TARGETS: [(&str, &str, &str); 7] = [
     ("aarch64-linux-android", "android", "aarch64"),
     ("x86_64-linux-android", "android", "x86_64"),
     ("aarch64-apple-ios", "ios", "aarch64"),
-    ("aarch64-apple-ios-sim", "ios", "aarch64"),
+    ("aarch64-apple-ios-sim", "ios-simulator", "aarch64"),
 ];
 
 /// Build one pinned run's cargo command line.
@@ -803,7 +819,7 @@ mod tests {
             ("x86_64-linux-android", "android", "x86_64"),
             ("aarch64-linux-android", "android", "aarch64"),
             ("aarch64-apple-ios", "ios", "aarch64"),
-            ("aarch64-apple-ios-sim", "ios", "aarch64"),
+            ("aarch64-apple-ios-sim", "ios-simulator", "aarch64"),
         ] {
             assert_eq!(platform_of_triple(triple), Some((os, arch)), "{triple}");
         }
@@ -845,12 +861,35 @@ mod tests {
                     .find_map(|line| line.strip_prefix(key))
                     .map(|rest| rest.trim_matches('"'))
             };
-            assert_eq!(value("target_os="), Some(os), "target_os for {triple}");
             assert_eq!(
                 value("target_arch="),
                 Some(arch),
                 "target_arch for {triple}"
             );
+
+            // **The one row that deliberately disagrees with rustc, and
+            // it is checked harder than the others rather than
+            // excused.** The simulator triple reports `ios`, exactly as
+            // the device triple does, so following rustc would give the
+            // two one identity and let a determinism row promise phones
+            // on a simulator's evidence. Both halves are asserted: that
+            // rustc still says `ios` (if that ever changed, the reason
+            // for the exception would have changed with it) and that
+            // this table still says something else.
+            if triple == "aarch64-apple-ios-sim" {
+                assert_eq!(
+                    value("target_os="),
+                    Some("ios"),
+                    "the simulator triple no longer reports `ios`, so the reason this row \
+                     departs from rustc needs re-reading"
+                );
+                assert_eq!(
+                    os, "ios-simulator",
+                    "the simulator must not share a name with the device it stands in for"
+                );
+            } else {
+                assert_eq!(value("target_os="), Some(os), "target_os for {triple}");
+            }
         }
 
         // A triple nobody has stated the answer for gets no answer.
