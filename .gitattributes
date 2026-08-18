@@ -16,3 +16,9 @@ fuzz/corpus/** -text
 # today; this says so, because the two rules above are here for the same
 # reason and were each added after the auto-detection was trusted once.
 *.spv -text
+
+# Vendored Mach-O libraries. Marked binary so no checkout, diff or merge
+# tries to normalise line endings inside them - the failure that would
+# produce is a library that loads on one machine and not another, found
+# at link time on a platform nobody here can debug.
+third_party/moltenvk/**/*.dylib binary

@@ -22,34 +22,9 @@ set -euo pipefail
 bundle_id="com.renewengine.inputecho"
 binary="input_echo"
 
-device_json="$(xcrun simctl list devices available --json)"
-device="$(printf '%s' "$device_json" | python3 -c "
-import json, sys
-
-try:
-    catalogue = json.load(sys.stdin)['devices']
-except (ValueError, KeyError) as problem:
-    raise SystemExit(f'simctl device list was not the shape expected: {problem}')
-
-def version(runtime):
-    tail = runtime.rsplit('.', 1)[-1]
-    parts = [p for p in tail.split('-') if p.isdigit()]
-    return [int(p) for p in parts] or [0]
-
-best = None
-for runtime, devices in catalogue.items():
-    if 'iOS' not in runtime:
-        continue
-    for device in devices:
-        if not device.get('isAvailable') or 'iPhone' not in device.get('name', ''):
-            continue
-        if best is None or version(runtime) > version(best[0]):
-            best = (runtime, device.get('udid'))
-
-if best is None or not best[1]:
-    raise SystemExit('no available iOS iPhone simulator on this runner')
-print(best[1])
-")"
+selection="$(bash tools/ci/ios-simulator.sh)"
+device="$(printf '%s' "$selection" | cut -f1)"
+echo "simulator: $(printf '%s' "$selection" | cut -f2) on $(printf '%s' "$selection" | cut -f3)"
 
 echo "booting $device"
 xcrun simctl boot "$device" || true
