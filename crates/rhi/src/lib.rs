@@ -85,8 +85,9 @@ pub use vk::pass::{
     PassTarget, RenderDesc, StoreOp, color_attachment,
 };
 pub use vk::pipeline::{
-    AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES, MeshShaders,
-    PipelineDesc, RenderPipeline, Sampler, SamplerDesc, Shaders, TargetFormat, VertexAttribute,
+    AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES,
+    MAX_UNIFORM_BLOCK_BYTES, MeshShaders, PipelineDesc, RenderPipeline, Sampler, SamplerDesc,
+    Shaders, TargetFormat, VertexAttribute,
 };
 pub use vk::render_image::{RenderImage, RenderImageDesc, RenderImageKind};
 #[cfg(feature = "present")]

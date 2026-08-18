@@ -119,6 +119,21 @@ struct Chain {
 /// exists to justify a specific number yet.
 const FRAMES_IN_FLIGHT: usize = 2;
 
+/// The ring this target indexes must be at least as deep as the frames it
+/// keeps in flight.
+///
+/// **Checked at build time, because the alternative is silent corruption.**
+/// `frame` indexes per-frame buffers' slot regions, whose count is
+/// `MAX_FRAME_SLOTS` in another module — two independent literals with no
+/// relation between them until this line. Raising this constant alone
+/// reads as a local change and turns every per-frame copy into a write
+/// past the allocation; a runtime assert would catch it only in a debug
+/// build, which is not where the damage happens.
+const _: () = assert!(
+    FRAMES_IN_FLIGHT <= crate::vk::buffer::MAX_FRAME_SLOTS,
+    "the presentation ring is deeper than the per-frame buffers it indexes"
+);
+
 /// The same count as Vulkan wants it. Derived rather than written twice,
 /// and checked where a mistake costs nothing: a second literal is a
 /// hand-maintained pair, and a runtime conversion would put a panic on
@@ -511,13 +526,17 @@ impl WindowTarget {
     /// attachment's kind and a depth clear its documented range; an
     /// item's pipeline depth state must match its pass, its format an
     /// image pass's kind, and a depth-only pipeline draws only into
-    /// depth images; one buffer carries one `FrameData` per frame
-    /// (pointer-identical data may repeat across items; differing data
-    /// is refused); an item names geometry exactly when its pipeline
-    /// declares per-vertex input, and a mesh's vertex stride equals the
-    /// stride that pipeline's layout packs to; an item names bindings
-    /// exactly when its pipeline declares sampled slots, and exactly as
-    /// many as it declares; the per-image walk is one-way — a frame
+    /// depth images; one buffer carries one write per frame, whichever
+    /// channel wrote it (pointer-identical data may repeat across items;
+    /// differing data is refused); an item names geometry exactly when its
+    /// pipeline declares per-vertex input, and a mesh's vertex stride
+    /// equals the stride that pipeline's layout packs to; an item names
+    /// bindings exactly when its pipeline declares any descriptor slot,
+    /// exactly as many as it declares, and of the classes it declares —
+    /// sampled slots first, a uniform block last; an item carries uniform
+    /// data exactly when its pipeline declares a block and exactly that
+    /// many bytes, and the buffer its block binding reads holds exactly
+    /// that many per frame; the per-image walk is one-way — a frame
     /// writes an image before reading it, never in the same pass, never
     /// re-targeting after a read, storing whatever a later pass loads
     /// or samples — over at most
@@ -646,6 +665,10 @@ impl WindowTarget {
                 *slot = None;
             }
             let mut retained_count = 0usize;
+            // One per render, beside the retention counter and for the
+            // same reason: a resource named by several items is handled
+            // once, not once per mention.
+            let mut blocks_written = crate::vk::buffer::BlockWrites::new();
             for pass in desc.passes {
                 // A pass-target image is retained by the pass itself,
                 // the offscreen loop's reasoning on the asynchronous
@@ -695,6 +718,36 @@ impl WindowTarget {
                         self.retained[frame][retained_count] = Some(resource);
                         retained_count += 1;
                     }
+                    // The uniform block's bytes, into this frame's
+                    // region of whichever buffer the item's uniform
+                    // binding reads.
+                    //
+                    // SAFETY: the wait above proved slot `frame`'s
+                    // previous work ended, and the retention loop above
+                    // recorded every binding this item names — which is
+                    // what holds the block's buffer alive past the
+                    // submit.
+                    // **Not an ash dispatch, unlike everything else the
+                    // blanket above covers** — a raw write into mapped
+                    // memory, with preconditions of its own. Its offscreen
+                    // twin sits in a block of its own; this one cannot,
+                    // because a nested `unsafe` inside the blanket is a
+                    // lint error, so the comment carries the whole weight
+                    // here.
+                    //
+                    // SAFETY: the wait above proved slot `frame`'s
+                    // previous work ended; `frame < FRAMES_IN_FLIGHT`, and
+                    // a build-time assert holds that inside the ring's
+                    // depth; and the retention loop above recorded every
+                    // binding this item names, which is what holds the
+                    // block's buffer alive past the submit.
+                    crate::vk::buffer::write_uniform_blocks(
+                        item,
+                        &self.shared,
+                        std::ptr::from_ref::<Self>(self) as usize,
+                        frame,
+                        &mut blocks_written,
+                    );
                     let Some(data) = &item.frame_data else {
                         continue;
                     };
@@ -1002,7 +1055,7 @@ impl WindowTarget {
                         item.pipeline.pipeline,
                     );
                     if let Some(bindings) = &item.bindings {
-                        item.pipeline.bind_bindings(cmd, bindings);
+                        item.pipeline.bind_bindings(cmd, bindings, frame);
                     }
                     if let Some(bytes) = item.push_data {
                         // The contract proved presence and length match

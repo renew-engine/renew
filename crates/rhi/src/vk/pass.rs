@@ -10,6 +10,7 @@ use std::fmt;
 
 use crate::config::Color;
 use crate::vk::binding::{Binding, MAX_SAMPLED_BINDINGS};
+use crate::vk::buffer::BufferInner;
 use crate::vk::mesh::Mesh;
 use crate::vk::pipeline::{FrameData, RenderPipeline};
 use crate::vk::render_image::{RenderImage, RenderImageKind};
@@ -235,19 +236,51 @@ pub struct Item<'a> {
     /// matched. The bytes are copied into the command stream at record
     /// time, so nothing here is retained past the `render` call.
     pub push_data: Option<&'a [u8]>,
-    /// The bindings filling the pipeline's sampled slots, in slot
-    /// order — slot `i` is descriptor set `i`.
+    /// The bindings filling the pipeline's descriptor slots, in slot
+    /// order — slot `i` is descriptor set `i`, every sampled slot first
+    /// and the uniform block last.
     ///
-    /// Present exactly when the pipeline declares sampled bindings, and
-    /// exactly its declared count; both are refused by the frame
-    /// contract before any GPU call, the same way push data matches its
-    /// range. Named per draw rather than welded to the pipeline — that
-    /// is what lets N textures share one pipeline.
+    /// Present exactly when the pipeline declares any slot at all, and
+    /// exactly its declared count **and classes**: a block bound where a
+    /// sampler is declared, or the reverse, binds a set the layout does
+    /// not describe. All of it is refused by the frame contract before any
+    /// GPU call, the same way push data matches its range. Named per draw
+    /// rather than welded to the pipeline — that is what lets N textures
+    /// share one pipeline.
     ///
-    /// **Like a mesh, a binding may be named by any number of items** —
-    /// nothing copies into it, so the buffer rule does not reach it;
-    /// each distinct binding costs one retention slot.
+    /// **Like a mesh, a binding may be named by any number of items**, and
+    /// each distinct one costs one retention slot however many mentions.
+    ///
+    /// For a *sampled* binding nothing copies into it, so the buffer rule
+    /// does not reach it at all. For a **uniform block it does**: the
+    /// block's bytes are copied into the buffer its binding reads, so two
+    /// items naming one block binding must carry pointer-identical bytes,
+    /// exactly as two items naming one per-frame buffer must. See
+    /// [`Item::uniform_data`].
     pub bindings: Option<Bindings<'a>>,
+    /// Bytes written into the pipeline's uniform block for this draw.
+    ///
+    /// **Per draw as written, per buffer as stored, and the distinction
+    /// matters.** Each item states its own block, but the bytes land in
+    /// the buffer its binding reads — and the one-buffer-one-write rule
+    /// refuses two items carrying *different* bytes for one buffer. So
+    /// several draws sharing one block (a camera, a light list) is the
+    /// shape this serves, and it costs one buffer and one binding; several
+    /// draws wanting *different* blocks in one frame needs a buffer and a
+    /// binding each. A block ring suballocated per draw is the answer the
+    /// day a consumer needs that, and no consumer does yet.
+    ///
+    /// Present exactly when the pipeline declares a block, and exactly
+    /// its declared length; both are refused by the frame contract
+    /// before any GPU call, the same way push data matches its range.
+    ///
+    /// **Unlike push data, these bytes land in memory**, so they follow
+    /// the buffer rule rather than the push rule: the block's buffer is
+    /// the one its binding reads, the copy happens where every per-frame
+    /// copy happens, and two items writing *different* bytes to one
+    /// block would have the second silently win before either draws —
+    /// refused, exactly as for [`FrameData`].
+    pub uniform_data: Option<&'a [u8]>,
 }
 
 impl<'a> Item<'a> {
@@ -258,6 +291,7 @@ impl<'a> Item<'a> {
             pipeline,
             mesh: None,
             frame_data: None,
+            uniform_data: None,
             push_data: None,
             bindings: None,
         }
@@ -285,14 +319,29 @@ impl<'a> Item<'a> {
         self
     }
 
-    /// Fill the pipeline's sampled slots with `bindings`, in slot
-    /// order. Must be exactly the count the pipeline declared.
+    /// Fill the pipeline's descriptor slots with `bindings`, in slot
+    /// order: every sampled slot first, then the uniform block if the
+    /// pipeline declares one. Must be exactly the count the pipeline
+    /// declared, and of the classes it declared, in that order.
     ///
     /// The references are copied into the item — the slice itself may
     /// be a temporary.
     #[must_use]
     pub fn bindings(mut self, bindings: &[&'a Binding]) -> Self {
         self.bindings = Some(Bindings::new(bindings));
+        self
+    }
+
+    /// Write `bytes` into the pipeline's uniform block for this draw.
+    /// Must be exactly the length the pipeline declared.
+    ///
+    /// The bytes are copied into the block's buffer, at the region for
+    /// the frame being recorded, before anything is submitted — so the
+    /// slice may be a temporary of the caller's frame, exactly as
+    /// [`FrameData`]'s is.
+    #[must_use]
+    pub fn uniform_data(mut self, bytes: &'a [u8]) -> Self {
+        self.uniform_data = Some(bytes);
         self
     }
 }
@@ -591,6 +640,13 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOUR
         // Copied into the command stream by the record path's push
         // call, so no allocation outlives `render` — nothing to retain.
         push_data: _,
+        // Copied into a buffer rather than into the command stream, so
+        // memory *is* read past `render` — but the buffer is not named
+        // here. It belongs to the uniform binding in the list below,
+        // which holds it; retaining the binding retains the buffer, so
+        // adding an arm for it would count one allocation twice and
+        // spend a retention slot on nothing.
+        uniform_data: _,
         bindings,
     } = item;
     let mut out = [const { None }; MAX_ITEM_RESOURCES];
@@ -613,6 +669,32 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOUR
         }
     }
     out
+}
+
+/// Every uniform block this item writes this frame, as the buffer that
+/// holds it and the bytes going into it.
+///
+/// **A filter rather than a loop with a skip arm.** The obvious shape —
+/// walk the bindings, `continue` past the sampled ones — has a branch
+/// that only a pipeline mixing sampled slots with a block ever takes, so
+/// it sits unexercised in two record paths. Expressed as a filter there
+/// is no arm to leave untaken.
+///
+/// At most one pair today, because a pipeline declares at most one block.
+/// An iterator rather than an `Option` because the two record paths then
+/// read the same shape whatever the count becomes — but note that a second
+/// block is *not* a change confined to the declaration: `Item::uniform_data`
+/// is one slice, and two blocks would need an ordered list paired index to
+/// index. The iterator saves the targets from changing, not the item.
+pub(crate) fn uniform_writes<'a>(
+    item: &'a Item<'a>,
+) -> impl Iterator<Item = (&'a std::rc::Rc<BufferInner>, &'a [u8])> {
+    item.uniform_data.into_iter().flat_map(move |bytes| {
+        item.bindings
+            .iter()
+            .flat_map(Bindings::iter)
+            .filter_map(move |binding| binding.inner.uniform_buffer().map(|buffer| (buffer, bytes)))
+    })
 }
 
 /// The most resources one item can reference: its mesh, its per-frame
@@ -1110,20 +1192,82 @@ pub(crate) fn pass_has_depth(pass: &Pass<'_>) -> bool {
 /// refused by name. A sibling of [`check_retention_bound`] for the same
 /// reason: one rule family, its own function.
 fn check_binding_contract(index: usize, item: &Item<'_>) {
-    let declared_slots = item.pipeline.sampled_bindings as usize;
+    let sampled = item.pipeline.sampled_bindings as usize;
+    let block = item.pipeline.uniform_block as usize;
+    // A block spends one set, after every sampled slot — the order
+    // `create_pipeline` built its layout list in.
+    let declared_slots = sampled + usize::from(block > 0);
     assert!(
         item.bindings.is_some() == (declared_slots > 0),
         "pass {index}: an item names bindings exactly when its pipeline declares \
-         sampled slots — a declared slot never filled samples an unbound set, and \
+         descriptor slots — a declared slot never filled samples an unbound set, and \
          bindings on a slotless pipeline are invalid usage"
     );
     if let Some(bindings) = &item.bindings {
         let named = bindings.len();
         assert!(
             named == declared_slots,
-            "pass {index}: an item fills every declared sampled slot, in order \
+            "pass {index}: an item fills every declared slot, in order \
              ({declared_slots} declared, {named} named) — a partial fill leaves \
              unbound sets, and a surplus binds past the layout"
+        );
+        // **Class as well as count.** A set's layout fixes its
+        // descriptor type, so a block bound where a sampler is declared
+        // is a set the layout does not describe — invalid usage that
+        // draws a wrong picture on a permissive driver rather than
+        // failing.
+        for (slot, binding) in bindings.iter().enumerate() {
+            // **Class before size, because class is the more basic
+            // mistake and its message is the one that helps.** A binding
+            // of the wrong class also has the wrong size — a block bound
+            // into a sampled slot of a pipeline that declares no block is
+            // a 192-byte buffer against a zero-byte declaration — so a
+            // size check running first answers a question the caller did
+            // not get wrong yet. Found by making these refusals match
+            // their clause by name: the class case was being refused, but
+            // by the size rule.
+            let wants_uniform = slot >= sampled;
+            assert!(
+                binding.is_uniform() == wants_uniform,
+                "pass {index}: slot {slot} of this pipeline is {}, and the binding named                  there is {} — sampled slots come first and the uniform block last",
+                if wants_uniform {
+                    "a uniform block"
+                } else {
+                    "sampled"
+                },
+                if binding.is_uniform() {
+                    "a uniform block"
+                } else {
+                    "sampled"
+                }
+            );
+            // The block and the buffer that holds it are two statements of
+            // one size, and the descriptor's range is the whole per-frame
+            // capacity — so a buffer of any other size leaves the shader
+            // reading bytes no frame writes.
+            if let Some(capacity) = binding.inner.block_capacity() {
+                assert!(
+                    capacity == block,
+                    "pass {index}: this pipeline declares a {block}-byte uniform block and                      the buffer bound for it holds {capacity} per frame — the block and its                      buffer are one size, so a shader cannot read past what was written"
+                );
+            }
+        }
+    }
+    // The block's bytes follow the push range's rule exactly: present
+    // when declared, absent when not, and never a different length.
+    assert!(
+        item.uniform_data.is_some() == (block > 0),
+        "pass {index}: an item carries uniform data exactly when its pipeline declares \
+         a block — a declared block never written reads the previous frame's bytes, and \
+         data for an undeclared one has nowhere to go"
+    );
+    if let Some(bytes) = item.uniform_data {
+        let carried = bytes.len();
+        assert!(
+            carried == block,
+            "pass {index}: an item carries exactly its pipeline's declared uniform block \
+             ({block} bytes declared, {carried} carried) — a short write leaves the tail \
+             holding the previous frame's bytes"
         );
     }
 }
@@ -1138,13 +1282,16 @@ fn check_binding_contract(index: usize, item: &Item<'_>) {
 fn check_retention_bound(desc: &RenderDesc<'_>) {
     // Two rules, deliberately different:
     //
-    // - **One buffer, one `FrameData`, per frame.** Two items carrying
+    // - **One buffer, one write, per frame.** Two items carrying
     //   DIFFERENT data for one per-frame buffer would have the second
     //   copy silently win before either draws — refused. Two items
     //   carrying the POINTER-IDENTICAL data (same bytes, same count)
     //   are one copy written twice: drawing the same instanced world
     //   from two passes is an ordinary thing to want, and it costs one
-    //   retention slot.
+    //   retention slot. **Both write channels share the rule and the
+    //   table**, because they share the hazard: a uniform block and an
+    //   instance stream are the same memory written the same way, and a
+    //   buffer used as both in one frame would race itself.
     // - **A mesh, a binding, or a pass-target image may repeat.**
     //   Nothing copies into them, so there is no race at all; each
     //   distinct one costs one retention slot however many mentions.
@@ -1190,31 +1337,117 @@ fn check_retention_bound(desc: &RenderDesc<'_>) {
                     count_repeatable(&mut seen, &mut count, key);
                 }
             }
+            // The uniform block's bytes, keyed by the buffer its
+            // binding reads. The instance field of the signature is
+            // zero: this channel has no instance count, and a buffer
+            // written through both channels in one frame is exactly the
+            // collision the shared table exists to catch.
+            for (buffer, bytes) in uniform_writes(item) {
+                record_write(
+                    &mut seen,
+                    &mut count,
+                    &mut buffer_data,
+                    std::rc::Rc::as_ptr(buffer).cast::<u8>(),
+                    (bytes.as_ptr(), bytes.len(), 0),
+                    // The binding was counted just above; the buffer it
+                    // holds must not be counted again.
+                    Charge::Nothing,
+                    &count_repeatable,
+                );
+            }
             let Some(data) = &item.frame_data else {
                 continue;
             };
             let key = std::rc::Rc::as_ptr(&data.buffer.inner).cast::<u8>();
-            let signature = (data.bytes.as_ptr(), data.bytes.len(), data.instances);
-            let prior = buffer_data[..count_matters(&buffer_data)]
-                .iter()
-                .flatten()
-                .find(|(prior_key, _)| *prior_key == key);
-            if let Some((_, prior_signature)) = prior {
-                assert!(
-                    *prior_signature == signature,
-                    "one buffer, one FrameData, per frame: two items carry different data \
-                     for the same buffer, and the second copy would silently win before \
-                     either draws (pointer-identical data may repeat)"
-                );
-            } else {
-                count_repeatable(&mut seen, &mut count, key);
-                let Some(slot) = buffer_data.iter_mut().find(|slot| slot.is_none()) else {
-                    unreachable!("the ceiling assert above bounds distinct buffers")
-                };
-                *slot = Some((key, signature));
-            }
+            record_write(
+                &mut seen,
+                &mut count,
+                &mut buffer_data,
+                key,
+                (data.bytes.as_ptr(), data.bytes.len(), data.instances),
+                Charge::RetentionSlot,
+                &count_repeatable,
+            );
         }
     }
+}
+
+/// Claim one write to `key`'s buffer, or prove it repeats a claim
+/// already made.
+///
+/// **One definition read by both write channels**, because the rule is
+/// about the memory rather than about which channel wrote it: an
+/// instance stream and a uniform block copied into the same buffer race
+/// each other exactly as two instance streams would.
+///
+/// # Panics
+///
+/// When a prior claim on the same buffer carried a different signature —
+/// the second copy would silently win before either draw.
+fn record_write(
+    seen: &mut [Option<*const u8>; MAX_RETAINED_RESOURCES],
+    count: &mut usize,
+    records: &mut [Option<BufferRecord>; MAX_RETAINED_RESOURCES],
+    key: *const u8,
+    signature: (*const u8, usize, u32),
+    charge: Charge,
+    count_repeatable: &impl Fn(&mut [Option<*const u8>; MAX_RETAINED_RESOURCES], &mut usize, *const u8),
+) {
+    // **Charged before the early return, not after it.** The two write
+    // channels can produce an equal signature for one buffer — a uniform
+    // block and a zero-instance `FrameData` over pointer-identical bytes —
+    // and a charge that only ran on the first claim would then let a
+    // buffer be retained twice and counted never, overrunning the table
+    // with an index panic instead of the named refusal. `count_repeatable`
+    // dedups by key, so charging on every claim is idempotent.
+    if charge == Charge::RetentionSlot {
+        count_repeatable(seen, count, key);
+    }
+    let prior = records[..count_matters(records)]
+        .iter()
+        .flatten()
+        .find(|(prior_key, _)| *prior_key == key);
+    if let Some((_, prior_signature)) = prior {
+        assert!(
+            *prior_signature == signature,
+            "one buffer, one write, per frame: two items carry different data for the \
+             same buffer, and the second copy would silently win before either draws \
+             (pointer-identical data may repeat)"
+        );
+        return;
+    }
+    let Some(slot) = records.iter_mut().find(|slot| slot.is_none()) else {
+        // Unreachable, and the argument is longer than it was: `records`
+        // is now filled by claims that may not increment `count`, so the
+        // ceiling assert does not bound it directly. It still holds —
+        // every distinct uniform buffer implies at least one distinct
+        // `Binding`, charged in the same item iteration just above the
+        // uniform loop — so `#records <= count <= MAX_RETAINED_RESOURCES`.
+        // That depends on the loop order in `check_retention_bound`;
+        // written down here because a reorder would break it silently.
+        unreachable!("every claimed buffer implies a charged resource, bounded above")
+    };
+    *slot = Some((key, signature));
+}
+
+/// Whether a claimed write also spends one of the frame's retention slots.
+///
+/// **The two write channels differ here, and only here.** An item's
+/// [`FrameData`] names its buffer directly, so the buffer is what the
+/// target retains and it costs a slot. A uniform block's buffer is reached
+/// through its [`Binding`], which the target retains instead — so charging
+/// the buffer as well would spend two of the budget on one held resource,
+/// and refuse a legal frame by a message naming a table with room in it.
+///
+/// The signature is recorded either way: the one-buffer-one-write rule is
+/// about which copy wins, which has nothing to do with who holds the
+/// memory alive.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Charge {
+    /// The caller retains this buffer directly.
+    RetentionSlot,
+    /// Something else already retains it — record the claim, spend nothing.
+    Nothing,
 }
 
 /// One buffer's recorded claim: its key, then its `FrameData`

@@ -465,13 +465,17 @@ impl OffscreenTarget {
     /// and a depth clear its documented range; an item's pipeline
     /// depth state must match its pass, its format an image pass's
     /// kind, and a depth-only pipeline draws only into depth images;
-    /// one buffer carries one `FrameData` per frame
+    /// one buffer carries one write per frame, whichever channel wrote it
     /// (pointer-identical data may repeat across items; differing data
     /// is refused); an item names geometry exactly when its pipeline
     /// declares per-vertex input, and a mesh's vertex stride equals
     /// the stride that pipeline's layout packs to; an item names
-    /// bindings exactly when its pipeline declares sampled slots, and
-    /// exactly as many as it declares; the per-image walk is one-way —
+    /// bindings exactly when its pipeline declares any descriptor slot,
+    /// exactly as many as it declares, and of the classes it declares —
+    /// sampled slots first, a uniform block last; an item carries
+    /// uniform data exactly when its pipeline declares a block and
+    /// exactly that many bytes, and the buffer its block binding reads
+    /// holds exactly that many per frame; the per-image walk is one-way —
     /// a frame writes an image before reading it, never in the same
     /// pass, never re-targeting after a read, storing whatever a later
     /// pass loads or samples — over at most
@@ -540,6 +544,10 @@ impl OffscreenTarget {
             *slot = None;
         }
         let mut retained_count = 0usize;
+        // One per render, beside the retention counter and for the
+        // same reason: a resource named by several items is handled
+        // once, not once per mention.
+        let mut blocks_written = crate::vk::buffer::BlockWrites::new();
         for pass in desc.passes {
             // A pass-target image is retained by the pass itself: the
             // recorded attachment references it whether or not any item
@@ -582,6 +590,24 @@ impl OffscreenTarget {
                     }
                     self.retained[retained_count] = Some(resource);
                     retained_count += 1;
+                }
+                // The uniform block's bytes, into slot zero's region of
+                // whichever buffer this item's uniform binding reads.
+                // Slot zero always: this target is synchronous, so one
+                // region is ever in play.
+                //
+                // SAFETY: the tail wait of the previous `render` proved
+                // no submit reads slot zero, and the retention loop above
+                // recorded every binding this item names — which is what
+                // holds the block's buffer alive past the submit.
+                unsafe {
+                    crate::vk::buffer::write_uniform_blocks(
+                        item,
+                        &self.shared,
+                        std::ptr::from_ref::<Self>(self) as usize,
+                        0,
+                        &mut blocks_written,
+                    );
                 }
                 let Some(data) = &item.frame_data else {
                     continue;
@@ -813,7 +839,10 @@ impl OffscreenTarget {
                         item.pipeline.pipeline,
                     );
                     if let Some(bindings) = &item.bindings {
-                        item.pipeline.bind_bindings(self.cmd, bindings);
+                        // Slot zero always: this target is synchronous,
+                        // so one region is ever in play — the same
+                        // reasoning the instance bind below records.
+                        item.pipeline.bind_bindings(self.cmd, bindings, 0);
                     }
                     if let Some(bytes) = item.push_data {
                         // The contract proved presence and length match

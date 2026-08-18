@@ -29,6 +29,12 @@ use renew_memory::{CountingAllocator, counters};
 use renew_platform::window::{
     LoopControl, WindowApp, WindowConfig, WindowError, WindowEvent, WindowRef, run_window_app,
 };
+/// The uniform-block fixture's stages: a full-target triangle whose every
+/// pixel answers from a 192-byte block. Shared with the device suite; the
+/// compile record lives in the shaders README beside the builtins'.
+static UNIFORM_TINT_VS_SPV: &[u8] = include_bytes!("../shaders/uniform_tint.vert.spv");
+static UNIFORM_TINT_FS_SPV: &[u8] = include_bytes!("../shaders/uniform_tint.frag.spv");
+
 use renew_rhi::{
     Attachment, Buffer, BufferUsage, ClearValue, Color, Device, DeviceDesc, DeviceError, Extent,
     FrameData, Item, LoadOp, Pass, PipelineDesc, PresentOutcome, RenderDesc, StoreOp, TargetError,
@@ -83,6 +89,34 @@ struct GateApp {
     /// the claim that a push allocates nothing is gate-observed here
     /// too, not inherited from the offscreen gate by reading.
     push_camera: Option<(renew_rhi::RenderPipeline, [u8; 64])>,
+    /// A uniform-block pipeline, the per-frame buffer behind it, and the
+    /// binding that reads it.
+    ///
+    /// **The one automated exercise of a nonzero frame slot.** The block's
+    /// descriptor is written once and reaches its frame's bytes through a
+    /// dynamic offset of `slot_stride * slot` — arithmetic that is the
+    /// identity on the offscreen path, which is synchronous and always
+    /// slot zero. Every other block test is offscreen, so without this the
+    /// ring that `UNIFORM_BUFFER_DYNAMIC` was chosen *for* is never
+    /// indexed past its first region, and a slot/offset disagreement is a
+    /// window-only wrong picture no golden could see.
+    ///
+    /// It sits in this gate rather than the smoke test because a block
+    /// frame is also the strictly stronger allocation shape: it binds a
+    /// descriptor, copies into mapped memory, and passes a non-empty
+    /// dynamic-offset array, all inside the measured window.
+    block: Option<(renew_rhi::RenderPipeline, Buffer, renew_rhi::Binding)>,
+    /// Which frame slots a uniform-block frame was recorded into, one bit
+    /// each.
+    ///
+    /// **Asserted rather than inferred.** The whole reason this fixture is
+    /// on the window path is that the offscreen path is synchronous and
+    /// always slot zero, so the dynamic offset is never exercised there.
+    /// Reasoning from the frame counter to the slot would be reasoning,
+    /// not evidence — and if the cycle length and the ring depth ever
+    /// share a factor, the block frame silently pins to one slot and the
+    /// coverage this exists for quietly stops happening.
+    block_slots: u32,
     size: Extent,
     presented: u32,
     updates: u32,
@@ -108,6 +142,8 @@ impl GateApp {
             pipeline: None,
             instanced: None,
             mesh: None,
+            block: None,
+            block_slots: 0,
             push_camera: None,
             size: Extent {
                 width: 0,
@@ -208,12 +244,20 @@ impl WindowApp for GateApp {
                 return;
             }
         };
+        let block = match block_fixture(&device, target.format()) {
+            Ok(trio) => trio,
+            Err(error) => {
+                self.failure = Some(error);
+                return;
+            }
+        };
         self.device = Some(device);
         self.target = Some(target);
         self.pipeline = Some(pipeline);
         self.instanced = Some(instanced);
         self.mesh = Some(mesh);
         self.push_camera = Some(push_camera);
+        self.block = Some(block);
     }
 
     #[expect(
@@ -269,7 +313,22 @@ impl WindowApp for GateApp {
                 let passes_two;
                 let mesh_storage;
                 let push_storage;
-                let passes: &[Pass<'_>] = match self.presented % 5 {
+                let block_bytes = {
+                    // Varied by frame, so consecutive slots hold different
+                    // bytes and a slot read from the wrong region shows.
+                    let mut bytes = [0u8; BLOCK_BYTES];
+                    let level = f32::from(u8::try_from(self.presented % 8).unwrap_or(0)) / 8.0;
+                    for chunk in bytes.chunks_exact_mut(4) {
+                        chunk.copy_from_slice(&level.to_ne_bytes());
+                    }
+                    bytes
+                };
+                let block_storage;
+                // Recorded inside the arm and folded in after the render,
+                // because the slot belongs to the frame about to be
+                // recorded rather than to the one that just finished.
+                let mut block_slot = None;
+                let passes: &[Pass<'_>] = match self.presented % 6 {
                     0 => {
                         if let Some(pipeline) = self.pipeline.as_ref() {
                             items_storage = [Item::new(pipeline)];
@@ -288,6 +347,24 @@ impl WindowApp for GateApp {
                                 1,
                             ))];
                             passes_one = [Pass::new(&color, &items_storage)];
+                            &passes_one
+                        } else {
+                            passes_one = [Pass::new(&color, &[])];
+                            &passes_one
+                        }
+                    }
+                    // The uniform-block frame: a descriptor bind with a
+                    // dynamic offset, a copy into this slot's region, and
+                    // a retention entry for the binding that holds the
+                    // buffer. The slot is whatever the ring is on, which
+                    // is the point.
+                    5 => {
+                        if let Some((pipeline, _, binding)) = self.block.as_ref() {
+                            block_storage = [Item::new(pipeline)
+                                .bindings(&[binding])
+                                .uniform_data(&block_bytes)];
+                            passes_one = [Pass::new(&color, &block_storage)];
+                            block_slot = Some(target.frame_slot());
                             &passes_one
                         } else {
                             passes_one = [Pass::new(&color, &[])];
@@ -365,6 +442,9 @@ impl WindowApp for GateApp {
                 let spent = allocations() - before;
                 match outcome {
                     Ok(PresentOutcome::Presented) => {
+                        if let Some(slot) = block_slot {
+                            self.block_slots |= 1u32 << slot;
+                        }
                         self.presented += 1;
                         if self.presented > WARMUP_FRAMES {
                             self.window_frames += 1;
@@ -434,6 +514,37 @@ impl WindowApp for GateApp {
 /// fixtures are: fixture work, out of a `ready` at the length the lint
 /// refuses. The texture coordinate is packed unread because the record
 /// must be what the pipeline's layout says it is.
+/// The fixture's uniform block: eight `vec4`s and a `mat4`, std140.
+const BLOCK_BYTES: usize = 8 * 16 + 64;
+
+/// A uniform-block pipeline, its per-frame buffer, and the binding that
+/// reads it.
+///
+/// Extracted like its siblings: it is fixture work, and the bring-up it
+/// would otherwise sit inside is already at the length the lint refuses.
+fn block_fixture(
+    device: &Device,
+    format: renew_rhi::TargetFormat,
+) -> Result<(renew_rhi::RenderPipeline, Buffer, renew_rhi::Binding), String> {
+    let size = u32::try_from(BLOCK_BYTES).unwrap_or(u32::MAX);
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(
+                renew_rhi::Shaders::new(UNIFORM_TINT_VS_SPV, UNIFORM_TINT_FS_SPV, 3),
+                format,
+            )
+            .uniform_block(size),
+        )
+        .map_err(|error| format!("uniform-block pipeline failed: {error}"))?;
+    let buffer = device
+        .create_buffer(BLOCK_BYTES, BufferUsage::PerFrame)
+        .map_err(|error| format!("block buffer failed: {error}"))?;
+    let binding = device
+        .create_binding(&renew_rhi::BindingDesc::uniform(&buffer))
+        .map_err(|error| format!("block binding failed: {error}"))?;
+    Ok((pipeline, buffer, binding))
+}
+
 fn mesh_fixture(
     device: &Device,
     format: renew_rhi::TargetFormat,
@@ -543,6 +654,18 @@ fn main() {
          steady frames, reproduced in all {ATTEMPTS} measurement windows. The offscreen gate has \
          covered this contract for the offscreen path only; this is the window path.",
         app.last_delta
+    );
+    // **The nonzero slot, stated rather than assumed.** A uniform block
+    // reaches its frame's bytes through a dynamic offset of
+    // `slot_stride * slot`, which is the identity on the offscreen path —
+    // synchronous, always slot zero — so this gate is the only place the
+    // arithmetic does anything. If the frame cycle and the ring depth ever
+    // share a factor, the block pins to one slot and this coverage stops
+    // happening silently; that is what the assertion is for.
+    assert!(
+        app.block_slots & !1 != 0,
+        "no uniform-block frame was recorded into a nonzero frame slot (slots seen: {:#b}), so          the dynamic offset was never exercised past its identity case",
+        app.block_slots
     );
     println!(
         "OK: {WINDOW_FRAMES} steady window frames allocated nothing (after {WARMUP_FRAMES} warmup, \

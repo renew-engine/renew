@@ -70,13 +70,28 @@ lines = [94, 95, 100, 101, 105, 106, 129, 130, 133, 134]
 reason = "The width guards on the pack's own header fields. Reaching one needs more than four billion entries, or more than four gibibytes of names or of payload in a single pack; the per-entry pair is narrower still, since a name is already bounded to 1024 bytes and a blob length is a usize widening to u64. They are checked conversions rather than casts because a silently wrapped length is a reader pointed at arbitrary bytes, and because the count field is the kind that gets widened later. Unreachable on a 64-bit target and retained for the 32-bit one the platform list does not exclude."
 
 [[exempt]]
+file = "crates/rhi/src/vk/device.rs"
+lines = [243, 247, 248, 249, 250, 251, 252, 253]
+reason = "The unwind for the SECOND canonical set layout: if the uniform layout's creation fails, the sampled one made just above it is destroyed. Unreachable, and factoring did not change that - the fault suite arms one quirk per scenario and faults the FIRST vkCreateDescriptorSetLayout, so the second call is never made and this arm never runs. It was three times this size before, as a duplicated arm at each call site; owning both layouts in one helper left bring-up a single failure arm that the suite DOES drive and shrank the unreachable residue to these five lines. Reaching them needs a layer that fails the second call and not the first, which the quirk list does not offer and which would prove nothing the covered arm does not."
+
+[[exempt]]
+file = "crates/rhi/src/vk/buffer.rs"
+lines = [416]
+reason = "The full-table answer of the block-write tracker, which reports a buffer as already written when there is no room to record it. Unreachable: the frame contract bounds a frame's distinct resources below this table's width before any copy runs, and every distinct block buffer implies at least one distinct binding already counted against that bound. It is a return rather than an assert because the safe direction is to skip a redundant copy - the bytes are pointer-identical by the same contract - and because a panic here would be a memory-safety boundary the length assert below already owns."
+
+[[exempt]]
+file = "crates/rhi/src/vk/pass.rs"
+lines = [1428]
+reason = "The unreachable arm of the write-claim table: no free slot to record a claim in. The ceiling assert does not bound it directly any more, because a uniform write records a claim without charging a retention slot - so the argument is one step longer. Every distinct uniform buffer implies at least one distinct Binding, charged in the same item iteration just above the uniform loop, so the number of records never exceeds the charged count and that count is what the ceiling bounds. Stated in the arm itself, because it depends on the loop order in check_retention_bound and a reorder would break it silently."
+
+[[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [684]
+lines = [710]
 reason = "The unreachable arm of the walk's surface-depth barrier: a depth-carrying surface pass on a depthless target was already refused by the DepthUnsupported check before recording began, so the walk cannot hand this site a depth use with no depth image. The arm exists so the guaranteed-Some is stated without a banned expect; driving it would require breaking the refusal it stands behind."
 
 [[exempt]]
 file = "crates/rhi/src/vk/pass.rs"
-lines = [862]
+lines = [944]
 reason = "The unreachable arm behind the sample-before-write refusal: the assert immediately above proved the entry exists, and the let-else restates it without a banned expect. No frame can drive it."
 
 [[exempt]]
@@ -106,12 +121,12 @@ reason = "The depthless-adapter arm of target creation: no depth image is built 
 
 [[exempt]]
 file = "crates/rhi/src/vk/offscreen.rs"
-lines = [513, 514, 515]
+lines = [517, 518, 519]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter. Same unreachability as the creation arm above: every measuring lane's adapter offers a depth format, and the query that decides it cannot be faulted. The error construction is driven by the display test in the error module; the branch condition's false side runs on every depth-carrying frame."
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [1133, 1134, 1135]
+lines = [1288, 1289, 1290]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
@@ -121,17 +136,17 @@ reason = "The no-adapter fallback of the device-reuse test. Every lane that meas
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [435]
+lines = [450]
 reason = "The dormant answer of the surface-transform accessor, which mirrors the extent accessor's dormant answer beside it. Reachable only where dormancy RETAINS a chain - the failed-quiesce corner - because every other parking destroys the chain, and a chainless target already answers identity by the arm below. Reaching it therefore needs a rotated surface and a wait-idle fault at once, and the fault suite arms one quirk per scenario. Deliberately an exemption rather than an assertion inside a rotated scenario: parking a rotated target destroys its chain, so such an assertion holds whether the guard exists or not - measured, not assumed, by deleting the guard and watching all 48 scenarios still pass."
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [561, 562, 563]
+lines = [580, 581, 582]
 reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless adapter, window side - same unreachability as the offscreen twin: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [1402]
+lines = [1455]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
 
 [[exempt]]

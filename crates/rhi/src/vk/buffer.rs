@@ -8,6 +8,14 @@
 //! and a submit to the steady path, which is the reason the image upload
 //! path and this one are different designs, not one design with a flag.
 //!
+//! **Two reads, still one class.** A frame's bytes are read either as an
+//! instance stream or as a uniform block, and that is a property of the
+//! *draw*, not of the memory: both want host-visible coherent bytes in
+//! one region per frame slot, written after the slot's fence is known
+//! clear. So the buffer carries both usage bits and the slot stride
+//! satisfies both alignments, rather than there being a second class
+//! whose ring logic would have to be written twice.
+//!
 //! **That argument since produced a third design rather than a third
 //! flag.** Geometry — written once at creation, drawn by any number of
 //! items on any number of targets — lives in `mesh.rs`, with no ring, no
@@ -41,7 +49,16 @@ use ash::vk;
 
 use crate::error::TargetError;
 use crate::vk::device::{Device, DeviceShared};
+// **A deliberate edge, stated here rather than hidden in a path.** This
+// module is the lower half and `pass` is the frame vocabulary above it, so
+// the arrow points the wrong way at first glance. It is here because the
+// frame walk's module denies `unsafe` and the block copy writes through a
+// mapping, so the write has to live on this side while the safe half —
+// which bindings a draw writes — stays on that one. Written as an import
+// so the dependency shows in the module's own header, the way
+// `pipeline`'s longer-standing edge to `pass` does.
 use crate::vk::offscreen::{creation, pick_memory_type};
+use crate::vk::pass::{Item, MAX_RETAINED_RESOURCES, uniform_writes};
 use crate::vk::texture::no_memory_type;
 
 /// One region per frame slot, sized by the compile-time ceiling both
@@ -49,14 +66,31 @@ use crate::vk::texture::no_memory_type;
 /// future creation-time depth chooses at most this many.
 pub(crate) const MAX_FRAME_SLOTS: usize = 2;
 
-/// Per-slot regions start on this alignment. Covers every vertex
-/// attribute format's alignment with room to spare; the cost is at most
-/// `MAX_FRAME_SLOTS * 63` bytes per buffer.
+/// The floor per-slot regions start on. Covers every vertex attribute
+/// format's alignment with room to spare.
+///
+/// A floor rather than the answer: a region read as a uniform block must
+/// also start on the adapter's `minUniformBufferOffsetAlignment`, which
+/// the guaranteed-worst-case adapter puts at 256. The stride is the
+/// larger of the two, so the cost is at most `MAX_FRAME_SLOTS * 255`
+/// bytes per buffer and a caller never has to know which read it will
+/// be used for.
 const SLOT_ALIGN: u64 = 64;
 
-/// What a buffer is for. One variant today, deliberately: the only
-/// consumer draws instanced quads from per-frame data, and an arm no
-/// test can reach is a hole in the coverage gate, not foresight.
+/// How long a buffer's contents live. One variant today, deliberately.
+///
+/// **Named for its lifetime, not for its reads.** A per-frame buffer may
+/// be drawn as an instance stream or bound as a uniform block, and which
+/// of those happens is decided by the pipeline and the item; the memory,
+/// the ring and the copy rule are identical either way.
+///
+/// **Not one variant per *read*.** A per-frame buffer may be drawn as an
+/// instance stream or bound as a uniform block, and which of those
+/// happens is decided by the pipeline and the item, not here — the
+/// memory, the ring and the copy rule are identical either way. A second
+/// arm arrives with a second *lifetime*, which is what this enum is
+/// actually about; geometry, the other lifetime that exists, already
+/// lives in `mesh.rs` rather than as an arm here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BufferUsage {
@@ -74,14 +108,25 @@ pub(crate) struct BufferInner {
     memory: vk::DeviceMemory,
     /// Host address of the whole mapped allocation.
     pub(crate) mapped: *mut u8,
-    /// Distance between slot regions, `>= capacity`, `SLOT_ALIGN`ed.
+    /// Distance between slot regions: `>= capacity`, and a multiple of
+    /// `max(SLOT_ALIGN, minUniformBufferOffsetAlignment)`.
+    ///
+    /// **Not merely `SLOT_ALIGN`-aligned, and the difference is load-
+    /// bearing.** A region read as a uniform block is reached by a dynamic
+    /// offset of `slot_stride * slot`, and that offset is legal only when
+    /// it is a multiple of the adapter's own uniform granularity. The whole
+    /// correctness argument for the block channel rests on this field
+    /// carrying the larger of the two alignments.
     /// The offscreen path is synchronous and lives in slot zero, so the
     /// only reader of a nonzero offset is the presentation path.
     #[cfg_attr(
         not(feature = "present"),
         allow(
             dead_code,
-            reason = "read only by the presentation path's slot addressing"
+            reason = "read by the presentation path's slot addressing; the \
+                      uniform-block paths that also read it are compiled \
+                      unconditionally, so this only fires for a build with \
+                      neither"
         )
     )]
     pub(crate) slot_stride: u64,
@@ -96,9 +141,13 @@ pub(crate) struct BufferInner {
 
 impl Drop for BufferInner {
     fn drop(&mut self) {
-        // Quiesces nothing, deliberately: a target retains a clone of
-        // this `Rc` for every slot whose recorded work references the
-        // buffer and releases it only when that work has provably ended
+        // Quiesces nothing, deliberately: a target holds this `Rc` alive
+        // for every slot whose recorded work references the buffer, and
+        // releases it only when that work has provably ended. Directly,
+        // for an instance stream the item names; transitively for a
+        // uniform block, whose binding the target retains and whose
+        // binding holds this — the conclusion is the same and the chain
+        // is one link longer
         // (fence wait succeeded, quiesce succeeded, or device lost), so
         // this destructor is unreachable while any submit can read the
         // memory. A wait here would be the per-drop `vkDeviceWaitIdle`
@@ -182,6 +231,13 @@ impl Device {
     /// [`TargetError`] naming the Vulkan call that refused;
     /// [`TargetError::DeviceLost`] on a poisoned device.
     ///
+    /// Among those refusals is *no suitable memory type*, which this path
+    /// can now reach on an adapter it previously could not: the buffer
+    /// carries both the vertex and the uniform usage bits, so the memory
+    /// types the driver will accept for it may be narrower than for a
+    /// vertex-only buffer. Unlikely on desktop, not impossible under a
+    /// translation layer.
+    ///
     /// # Panics
     ///
     /// A zero `capacity` is a contract violation and panics through a
@@ -202,7 +258,12 @@ impl Device {
         // bounds every later copy into the mapping.
         assert!(capacity > 0, "a per-frame buffer needs a non-zero capacity");
 
-        let per_slot = (capacity as u64).div_ceil(SLOT_ALIGN) * SLOT_ALIGN;
+        // The larger of the two alignments this memory must satisfy: the
+        // vertex floor above, and the adapter's own uniform-offset
+        // granularity, because a dynamic offset that is not a multiple
+        // of it is a usage violation rather than a slow path.
+        let align = SLOT_ALIGN.max(self.shared.uniform_offset_alignment.max(1));
+        let per_slot = (capacity as u64).div_ceil(align) * align;
         let total = per_slot.checked_mul(MAX_FRAME_SLOTS as u64);
         // Same boundary, same retained refusal: an overflowed size would
         // hand the driver a wrapped number with the caller's bytes later
@@ -237,7 +298,7 @@ impl Device {
 
         let info = vk::BufferCreateInfo::default()
             .size(total)
-            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         // SAFETY: device live; info local.
         let buffer = unsafe {
@@ -308,5 +369,156 @@ impl Device {
                 owner: core::cell::Cell::new(None),
             }),
         })
+    }
+}
+
+/// Which block buffers a frame has already written, so a block named by
+/// several items is copied once rather than once per item.
+///
+/// **The frame contract makes this an optimisation rather than a
+/// correctness fix**: it has already refused two items carrying *different*
+/// bytes for one buffer, so every repeat writes identical bytes to an
+/// identical address and skipping it cannot change what the GPU reads.
+///
+/// It is worth having anyway, because the shape it saves is the common
+/// one. A camera block read by every draw in a frame is the motivating
+/// consumer: sixty-four draws over a sixteen-kilobyte block was a megabyte
+/// of host writes into one region, and the memory is whatever
+/// `HOST_VISIBLE | HOST_COHERENT` type the adapter offered first — which on
+/// some configurations is uncached and slow to write twice.
+///
+/// Fixed width, sized by the frame's own distinct-resource ceiling, so the
+/// frame path still allocates nothing.
+pub(crate) struct BlockWrites {
+    seen: [Option<*const u8>; MAX_RETAINED_RESOURCES],
+    count: usize,
+}
+
+impl BlockWrites {
+    /// Nothing written yet — one per `render` call.
+    pub(crate) const fn new() -> Self {
+        Self {
+            seen: [None; crate::vk::pass::MAX_RETAINED_RESOURCES],
+            count: 0,
+        }
+    }
+
+    /// Claim `key`, answering whether this frame had already written it.
+    ///
+    /// A full table answers "already written", which is the safe direction
+    /// and unreachable besides: the frame contract bounded the distinct
+    /// count below this width before any of this ran.
+    fn first_time(&mut self, key: *const u8) -> bool {
+        if self.seen[..self.count].contains(&Some(key)) {
+            return false;
+        }
+        let Some(slot) = self.seen.get_mut(self.count) else {
+            return false;
+        };
+        *slot = Some(key);
+        self.count += 1;
+        true
+    }
+}
+
+/// Copy an item's uniform blocks into `slot`'s region of the buffers
+/// their bindings read.
+///
+/// **One implementation, called by both targets**, for the reason the
+/// binding bind is one: the slot arithmetic here and the dynamic offset
+/// there are one agreement, and two copies of it drift. `owner` is the
+/// calling target's identity, for the one-target rule per-frame buffers
+/// carry.
+///
+/// It lives here rather than beside the frame walk because the walk's
+/// module denies `unsafe` and this writes through a mapping; the safe
+/// half — which bindings a draw writes — stays there as
+/// [`uniform_writes`](crate::vk::pass::uniform_writes).
+///
+/// # Panics
+///
+/// Bytes longer than the buffer's per-frame capacity — retained, because
+/// the length bounds a write into mapped device memory. The frame
+/// contract already refused the case by name; this is the memory-safety
+/// boundary behind it.
+///
+/// # Safety
+///
+/// Two obligations, and the second went unstated until a review asked
+/// for it.
+///
+/// - No submit may be reading `slot`'s regions: the tail wait on the
+///   offscreen path, the per-slot fence wait on the presentation one. The
+///   caller must also hold every named binding alive past the submit it is
+///   about to record.
+/// - **`slot` must be less than [`MAX_FRAME_SLOTS`].** The pointer
+///   arithmetic below is bounded by it and by nothing else, so a caller
+///   passing a larger slot writes past the allocation. The presentation
+///   target's `FRAMES_IN_FLIGHT` and this module's `MAX_FRAME_SLOTS` are
+///   two independent literals with no compile-time link between them —
+///   raising one without the other turns this into an out-of-bounds write
+///   into mapped memory, which is why the bound is now named here and
+///   checked below rather than left to the two constants agreeing.
+pub(crate) unsafe fn write_uniform_blocks(
+    item: &Item<'_>,
+    shared: &Rc<DeviceShared>,
+    owner: usize,
+    slot: usize,
+    written: &mut BlockWrites,
+) {
+    debug_assert!(
+        slot < MAX_FRAME_SLOTS,
+        "a frame slot past the ring's depth would write outside the allocation"
+    );
+    for (buffer, bytes) in uniform_writes(item) {
+        if !written.first_time(Rc::as_ptr(buffer).cast::<u8>()) {
+            // Written by an earlier item this frame, with bytes the
+            // contract proved identical. Copying again would be the same
+            // memcpy to the same address.
+            continue;
+        }
+        debug_assert!(
+            Rc::ptr_eq(&buffer.shared, shared),
+            "uniform buffer and target come from different devices"
+        );
+        match buffer.owner.get() {
+            None => buffer.owner.set(Some(owner)),
+            // **Retained, unlike the instance path's twin.** Two targets
+            // writing one buffer's slot regions race with no fence
+            // relating them — a torn read and a wrong picture, reported
+            // by nothing. That was survivable while per-frame buffers
+            // were instance streams, which are target-local in practice;
+            // a block is the opposite, exactly the resource an app shares
+            // between a window and an offscreen preview. Debug-only here
+            // would leave the case it was written for unguarded in the
+            // builds that ship.
+            //
+            // The token is the target's address, which cannot tell a
+            // moved target from a different one — recorded as debt rather
+            // than fixed here, because a monotonic target id is a change
+            // to both targets and to the instance path beside them.
+            Some(held) => assert!(
+                held == owner,
+                "a per-frame buffer belongs to one target: its slot regions are owned by \
+                 whichever target last submitted against them"
+            ),
+        }
+        assert!(
+            bytes.len() <= buffer.capacity,
+            "uniform data exceeds the block buffer's per-frame capacity"
+        );
+        // The stride is alignment-rounded and the slot count is two, so
+        // the product is far inside usize on every supported target.
+        #[allow(clippy::cast_possible_truncation)]
+        let at = (buffer.slot_stride * slot as u64) as usize;
+        // SAFETY: the mapping covers `slot_stride * MAX_FRAME_SLOTS`
+        // bytes; `slot < MAX_FRAME_SLOTS` and the assert above bounds the
+        // length within one region, so the write stays inside the
+        // allocation and cannot touch a neighbouring slot. The caller's
+        // obligation covers the "no submit reads this" half, and the
+        // memory is HOST_COHERENT, so no flush.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.mapped.add(at), bytes.len());
+        }
     }
 }
