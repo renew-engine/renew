@@ -317,12 +317,19 @@ renew determinism --emit leg.json --target x86_64-linux-android
 **This needs a runner configured, and says so rather than assuming it.**
 Cargo executes a cross-built binary through whatever
 `CARGO_TARGET_<TRIPLE>_RUNNER` names — for the triple above, that is
-`CARGO_TARGET_X86_64_LINUX_ANDROID_RUNNER`, and `tools/android-runner.sh`
-is the one this repository ships: it pushes each binary to a connected
-device with `adb`, runs it there, and hands back its output and its exit
-code. With no runner set, cargo tries to execute the binary here, which
-fails rather than quietly measuring the wrong machine. A linker for the
-target is needed too; the CI lane sets both.
+`CARGO_TARGET_X86_64_LINUX_ANDROID_RUNNER`. With no runner set, cargo
+tries to execute the binary here, which fails rather than quietly
+measuring the wrong machine.
+
+This repository ships two:
+
+| runner | for | what it does |
+|---|---|---|
+| `tools/android-runner.sh` | `*-linux-android` | pushes the binary to a connected device with `adb`, runs it there, and carries its exit code back through a file, because `adb shell` reports its own shell's status rather than the program's |
+| `tools/ios-sim-runner.sh` | `aarch64-apple-ios-sim` | runs the binary on a booted simulator with `xcrun simctl spawn`, which needs no push (the simulator shares this filesystem) and reports the child's exit code directly |
+
+Android needs a linker for the target as well; the CI lanes set what
+each one needs.
 
 The triple also decides what the leg calls itself, so only triples this
 tool has been taught are accepted — anything else is refused by name

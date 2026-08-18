@@ -310,11 +310,30 @@ impl std::error::Error for WindowError {}
 /// main thread (attempting otherwise panics inside the OS layer, by the
 /// windowing stack's own contract). Call this from `main`.
 ///
+/// **On iOS this function does not return once the loop is entered.**
+/// The loop is entered through `UIApplicationMain`, which owns the
+/// process from that point on: the app ends when the system ends it, and
+/// the code after that call is unreachable on that target. The signature
+/// keeps its `Result` anyway, so that one `main` compiles everywhere —
+/// the same reason Android's arm below keeps it.
+///
+/// Nothing about this is a defect to fix; it is how the platform runs
+/// applications. It is written down because a reader on a desktop cannot
+/// see it, and a caller that logs "the loop returned cleanly" after this
+/// call would be describing an event that never happens on iOS.
+///
 /// # Errors
 ///
 /// [`WindowError::LoopUnavailable`] when the loop cannot be created —
 /// on Linux this is the recoverable no-display-server case;
 /// [`WindowError::Loop`] when the running loop reports failure.
+///
+/// **On iOS, in practice, neither.** The windowing crate's iOS backend
+/// reports loop-creation problems by panicking rather than by returning,
+/// and the one error it can return needs a *second* loop built from
+/// another thread — which the first call cannot come back to arrange.
+/// So a caller there should expect this function to take the process,
+/// not to hand back a `Result` worth matching on.
 #[cfg(not(target_os = "android"))]
 pub fn run_window_app(config: &WindowConfig, app: &mut dyn WindowApp) -> Result<(), WindowError> {
     let event_loop = EventLoop::new().map_err(|error| WindowError::LoopUnavailable {
@@ -350,6 +369,13 @@ pub fn run_window_app(_config: &WindowConfig, _app: &mut dyn WindowApp) -> Resul
 /// was *built* differs per platform (a plain `new` on desktop, around
 /// an activity handle on Android), but what happens once it exists must
 /// not.
+///
+/// One platform disagrees about the *ending* rather than the beginning:
+/// on iOS `run_app` enters `UIApplicationMain` and never comes back, so
+/// [`Adapter::outcome`] below is desktop-and-Android-only in practice.
+/// It is left in one shared path rather than split, because a second
+/// copy of the loop body would be a second place for the two to drift,
+/// and the difference is that one of them has no line after the call.
 fn drive(
     event_loop: EventLoop<()>,
     config: &WindowConfig,
