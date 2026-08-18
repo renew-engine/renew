@@ -12,48 +12,11 @@ set -euo pipefail
 # is none.** A traceback out of the selector would name a Python line
 # instead of the thing that went wrong, on the lane least likely to have
 # anyone watching.
-device_json="$(xcrun simctl list devices available --json)"
-selection="$(printf '%s' "$device_json" | python3 -c "
-import json, sys
-
-try:
-    catalogue = json.load(sys.stdin)['devices']
-except (ValueError, KeyError) as problem:
-    raise SystemExit(f'simctl device list was not the shape expected: {problem}')
-
-# Newest runtime first. The identifiers sort as text, so iOS-9 would beat
-# iOS-26 on a plain sort; splitting on the dashes and comparing numbers
-# keeps the newest one winning when an image carries several. Which
-# runtime ran is printed below, because a leg records the platform and
-# not the OS version, and this is the only place that ever says it.
-def version(runtime):
-    tail = runtime.rsplit('.', 1)[-1]
-    parts = [p for p in tail.split('-') if p.isdigit()]
-    return [int(p) for p in parts] or [0]
-
-best = None
-for runtime, devices in catalogue.items():
-    if 'iOS' not in runtime:
-        continue
-    for device in devices:
-        if not device.get('isAvailable'):
-            continue
-        if 'iPhone' not in device.get('name', ''):
-            continue
-        if best is None or version(runtime) > version(best[0]):
-            best = (runtime, device.get('udid'), device.get('name'))
-
-if best is None:
-    raise SystemExit('no available iOS iPhone simulator on this runner')
-
-runtime, udid, name = best
-if not udid:
-    raise SystemExit(f'the chosen simulator ({name}) has no udid')
-print(f'{udid}\t{name}\t{runtime}')
-")"
-
+selection="$(bash tools/ci/ios-simulator.sh)"
 device="$(printf '%s' "$selection" | cut -f1)"
 echo "simulator: $(printf '%s' "$selection" | cut -f2) on $(printf '%s' "$selection" | cut -f3)"
+
+device="$(printf '%s' "$selection" | cut -f1)"
 
 echo "booting $device"
 xcrun simctl boot "$device" || true

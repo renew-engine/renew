@@ -1381,6 +1381,37 @@ jobs:
       - name: Background and resume the app, and read its log
         run: bash tools/ci/ios-lifecycle.sh
 
+  # A frame drawn on an iOS simulator, through MoltenVK.
+  #
+  # **The engine needed no iOS code to reach this.** The RHI's surface
+  # creation already understands a UiKit handle, the Metal surface
+  # extension is already in its instance list, and presentation is a
+  # default feature - so this target has type-checked the whole
+  # rendering path on every push since the first mobile lane. The only
+  # thing missing was a Vulkan implementation to load, and that is what
+  # this lane supplies.
+  #
+  # Advisory: it is the first GPU work on a mobile target here, it runs
+  # against a translation layer on a simulated device, and a lane that
+  # gated on that combination before anyone had watched it behave would
+  # be asserting rather than finding out.
+  ios-render:
+    name: iOS rendering (simulator, advisory)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Draw a frame on the simulator
+        run: bash tools/ci/ios-render.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-triangle
+          path: target/ios-triangle.png
+          if-no-files-found: error
+
   determinism-compare:
     name: Determinism (cross-platform comparison)
     runs-on: ubuntu-latest
