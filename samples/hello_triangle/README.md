@@ -197,8 +197,51 @@ why.
 | `tests/zero_alloc.rs` | The steady-state frame path performs no heap allocation, and neither does the title readout. |
 
 The unit tests beside the source drive the window callbacks directly —
-`event`, `update`, the draw and stall verdicts — with no window at all.
-Only `ready` needs one, because it borrows a live OS window. The
+`event`, `update`, `surface_lost`, the draw and stall verdicts — with no
+window at all. Only `ready` needs one, because it borrows a live OS
+window. `surface_lost` is driven here of necessity: no desktop platform
+emits a suspend, so this suite is the only place the gap between one
+surface epoch and the next is exercised at all. The
 readout's text is a pure function of two numbers, so it is tested
 directly at both ends of the range: a frame too fast for the clock to
 resolve, and one of `u64::MAX` nanoseconds.
+
+## Android
+
+The renderer's first phone build. The library gains a `cdylib` crate
+type and a second doorway beside `main.rs` — `src/android.rs` defines
+the `android_main` the activity looks up by name, wraps the sample in a
+logging adapter, and sends every line the desktop prints to a log in
+internal storage, ending with the same verdict the desktop prints.
+
+What the triangle proves there is not the triangle: it is that the
+renderer survives a platform that takes windows away. Backgrounding
+closes the surface epoch, and the sample drops its pipeline, surface,
+window handles and frame loop before the callback returns — the seam
+verifies the release — while the device, the expensive half, survives
+to serve the next epoch. Coming back rebuilds only what belonged to the
+old surface.
+
+Two commands produce an installable debug APK (the second from
+`android/`):
+
+```
+cargo ndk -t arm64-v8a -o samples/hello_triangle/android/app/src/main/jniLibs build -p renew-sample-hello-triangle --release
+./gradlew assembleDebug
+```
+
+`cargo-ndk` needs `ANDROID_NDK_HOME` pointing at an r28+ NDK; Gradle
+needs `JAVA_HOME` and `ANDROID_HOME`. The artifact lands under
+`android/app/build/outputs/apk/debug/` debug-signed, and the log is at
+`adb shell run-as com.renewengine.hellotriangle cat files/hello_triangle.log`.
+
+**The activity is orientation-locked, deliberately.** A surface whose
+panel is rotated reports a transform the swapchain declares and no
+renderer folds yet, so unlocked rotation would present the scene
+sideways. The window target reports that transform now
+(`WindowTarget::transform`) and the fault layer can fake one, so the
+fold is buildable and testable — it simply is not built yet. The lock
+narrows when a rotation can appear; it does not promise none can, since
+a panel whose natural orientation is the other one reports a quarter
+turn even under a lock. That is precisely why the transform is reported
+rather than assumed.

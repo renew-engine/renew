@@ -65,6 +65,55 @@ pub struct Extent {
     pub height: u32,
 }
 
+/// How the presentation engine will rotate what is drawn.
+///
+/// **A declaration the renderer must answer, not decoration.** The
+/// swapchain is built declaring the transform the surface reports, and
+/// the presentation engine then treats the image as already rotated by
+/// that much. A caller drawing unrotated content into a chain
+/// declaring a quarter turn gets a sideways image at no GPU cost;
+/// letting the compositor rotate instead costs real milliseconds on
+/// the devices where this is not the identity. So the target reports
+/// what it declared, and a renderer folds the counter-rotation into
+/// its projection.
+///
+/// Every desktop surface reports [`SurfaceTransform::Identity`]
+/// always. The other three exist because handheld panels have a
+/// natural orientation that need not be the one being drawn to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceTransform {
+    /// No rotation: what is drawn is what is shown.
+    #[default]
+    Identity,
+    /// A quarter turn clockwise.
+    Rotate90,
+    /// A half turn.
+    Rotate180,
+    /// Three quarters clockwise.
+    Rotate270,
+}
+
+impl SurfaceTransform {
+    /// The turn as quarter-turns clockwise, which is the form a
+    /// projection fold wants.
+    #[must_use]
+    pub const fn quarter_turns(self) -> u8 {
+        match self {
+            Self::Identity => 0,
+            Self::Rotate90 => 1,
+            Self::Rotate180 => 2,
+            Self::Rotate270 => 3,
+        }
+    }
+
+    /// Whether the declared transform swaps width and height — the
+    /// question a caller sizing anything in surface space actually has.
+    #[must_use]
+    pub const fn swaps_extent(self) -> bool {
+        matches!(self, Self::Rotate90 | Self::Rotate270)
+    }
+}
+
 /// A clear color, linear RGBA in [0, 1].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -106,6 +155,39 @@ impl Color {
 
 #[cfg(test)]
 mod tests {
+    /// The two questions a fold asks, answered for all four rotations.
+    /// A table rather than four assertions: the quarter-turn count and
+    /// the extent swap are the same fact seen twice, and a mapping that
+    /// drifted between them would rotate content one way and size it
+    /// the other.
+    #[test]
+    fn every_rotation_reports_its_turns_and_whether_it_swaps_the_extent() {
+        for (transform, turns, swaps) in [
+            (SurfaceTransform::Identity, 0, false),
+            (SurfaceTransform::Rotate90, 1, true),
+            (SurfaceTransform::Rotate180, 2, false),
+            (SurfaceTransform::Rotate270, 3, true),
+        ] {
+            assert_eq!(transform.quarter_turns(), turns, "{transform:?}");
+            assert_eq!(transform.swaps_extent(), swaps, "{transform:?}");
+            // The swap is exactly the odd turns, stated as the relation
+            // rather than as a second list anyone could edit alone.
+            assert_eq!(
+                transform.swaps_extent(),
+                transform.quarter_turns() % 2 == 1,
+                "{transform:?}"
+            );
+        }
+    }
+
+    /// The default is the identity, which is what every desktop surface
+    /// reports and what a target says while it has no chain at all.
+    #[test]
+    fn the_default_transform_is_no_rotation() {
+        assert_eq!(SurfaceTransform::default(), SurfaceTransform::Identity);
+        assert_eq!(SurfaceTransform::default().quarter_turns(), 0);
+    }
+
     use super::*;
 
     /// The authored-colour constructor decodes each channel and leaves

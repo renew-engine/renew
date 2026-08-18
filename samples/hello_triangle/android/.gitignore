@@ -1,0 +1,7 @@
+# Build products and machine-local configuration; the shell's sources
+# above them are owned and committed.
+.gradle/
+build/
+app/build/
+app/src/main/jniLibs/
+local.properties

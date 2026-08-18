@@ -261,6 +261,7 @@ impl Device {
                 ash::khr::xcb_surface::NAME,
                 ash::khr::wayland_surface::NAME,
                 ash::ext::metal_surface::NAME,
+                ash::khr::android_surface::NAME,
             ] {
                 if has_extension(name) {
                     extensions.push(name.as_ptr());

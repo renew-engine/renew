@@ -45,6 +45,8 @@
 
 use std::process::ExitCode;
 
+#[cfg(target_os = "android")]
+mod android;
 mod cli;
 mod error;
 mod offscreen;
