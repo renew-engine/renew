@@ -1276,12 +1276,8 @@ jobs:
   # evidence. What this lane can still not do is speak for a phone, and
   # the name is what keeps that visible.
   determinism-ios:
-    name: Determinism (ios simulator, advisory)
+    name: Determinism (ios simulator)
     runs-on: macos-latest
-    continue-on-error: true
-    # Only so the Linux leg exists to print a comparison against, as in
-    # the Android lane.
-    needs: [determinism-emit]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -1291,7 +1287,7 @@ jobs:
         run: bash tools/ci/ios-determinism.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: determinism-ios-simulator-aarch64
+          name: determinism-ios
           path: ios-leg.json
           if-no-files-found: error
       - uses: actions/download-artifact@v4
@@ -1445,7 +1441,7 @@ jobs:
   determinism-compare:
     name: Determinism (cross-platform comparison)
     runs-on: ubuntu-latest
-    needs: [determinism-emit, determinism-android]
+    needs: [determinism-emit, determinism-android, determinism-ios]
     # `needs` on a failed job SKIPS this one, and GitHub reports a skipped
     # required job as neutral rather than failed — which is how a
     # comparison that never ran can read as a comparison that passed.
@@ -1458,12 +1454,14 @@ jobs:
       - name: Refuse to compare when a leg did not finish
         if: >-
           needs.determinism-emit.result != 'success' ||
-          needs.determinism-android.result != 'success'
+          needs.determinism-android.result != 'success' ||
+          needs.determinism-ios.result != 'success'
         run: |
-          echo "the desktop legs concluded '${{ needs.determinism-emit.result }}' and the"
-          echo "android leg '${{ needs.determinism-android.result }}', so at least one"
-          echo "target reported nothing. A missing target is an untested target, not a"
-          echo "passing one, and this job fails rather than comparing what remains."
+          echo "the desktop legs concluded '${{ needs.determinism-emit.result }}', the android"
+          echo "leg '${{ needs.determinism-android.result }}' and the ios leg"
+          echo "'${{ needs.determinism-ios.result }}', so at least one target reported"
+          echo "nothing. A missing target is an untested target, not a passing one, and this"
+          echo "job fails rather than comparing what remains."
           exit 1
       - uses: actions/download-artifact@v4
         with:
@@ -1486,4 +1484,5 @@ jobs:
             --compare legs/determinism-ubuntu-latest/leg.json \
             --compare legs/determinism-windows-latest/leg.json \
             --compare legs/determinism-macos-latest/leg.json \
-            --compare legs/determinism-android/android-leg.json
+            --compare legs/determinism-android/android-leg.json \
+            --compare legs/determinism-ios/ios-leg.json
