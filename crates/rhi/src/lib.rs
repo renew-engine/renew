@@ -167,6 +167,41 @@ pub mod builtin {
         fragment: MESH_CAMERA_TEXTURED_FS_SPV,
     };
 
+    /// Fragment stage SPIR-V for the camera mesh path with a texture
+    /// whose clear texels are thrown away rather than drawn.
+    pub static MESH_CAMERA_CUTOUT_FS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_cutout.frag.spv");
+
+    /// The camera mesh pair with a **cutout** texture: as
+    /// [`MESH_CAMERA_TEXTURED`] in every respect a caller can see —
+    /// same vertex stage, same layout, same push block, same binding —
+    /// except that a fragment whose alpha falls below half is discarded
+    /// instead of drawn.
+    ///
+    /// **What this is for.** A texture with holes in it draws as a solid
+    /// rectangle on the textured pair, because that pipeline replaces the
+    /// target wherever a fragment lands and writes depth while it does:
+    /// the hole is opaque *and* it hides what stands behind it. Foliage,
+    /// grates, fences, decals and sprites standing in a world are all
+    /// that shape.
+    ///
+    /// **Why discarding rather than blending.** Blending fixes the colour
+    /// and not the depth — a see-through fragment that still writes depth
+    /// occludes whatever is drawn after it, and correcting that means
+    /// sorting every draw back to front, a cost paid by every consumer
+    /// for the sake of textures that are usually binary anyway. A discard
+    /// needs no sorting and no ordering contract, which is what makes
+    /// this the pair to reach for first and [`Blend::PremultipliedAlpha`]
+    /// the one to reach for when a surface is genuinely half-there.
+    ///
+    /// The threshold is on the texel's alpha times the vertex colour's,
+    /// so a caller can fade a whole draw to nothing rather than having it
+    /// stay solid until it vanishes.
+    pub const MESH_CAMERA_CUTOUT: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_TEXTURED_VS_SPV,
+        fragment: MESH_CAMERA_CUTOUT_FS_SPV,
+    };
+
     /// Vertex stage SPIR-V for the shadowed camera mesh path: two
     /// matrices in one 128-byte push block, light-space position out.
     pub static MESH_CAMERA_SHADOW_VS_SPV: &[u8] =
@@ -385,10 +420,14 @@ mod horizon_tests {
     /// directory of a crate it was compiled from. That makes this list the
     /// weak point, so `every_shader_declaring_horizon_is_on_the_list`
     /// below holds it against the shaders that actually exist.
-    const HORIZON_SHADERS: [(&str, &str); 3] = [
+    const HORIZON_SHADERS: [(&str, &str); 4] = [
         (
             "mesh_camera.frag",
             include_str!("../shaders/mesh_camera.frag"),
+        ),
+        (
+            "mesh_camera_cutout.frag",
+            include_str!("../shaders/mesh_camera_cutout.frag"),
         ),
         (
             "mesh_camera_shadow.frag",

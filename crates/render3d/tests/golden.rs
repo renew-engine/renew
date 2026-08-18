@@ -15,8 +15,8 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, Scene, ShadowMatrices,
-    ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
+    Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
+    ShadowMatrices, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -952,6 +952,184 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
 
     drop(mesh);
     drop(renderer);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A clear texel is not drawn, and does not hide what is behind it.**
+///
+/// The whole reason this pipeline exists. On the textured path a texture
+/// with holes in it draws as a solid rectangle that also writes depth, so
+/// the hole is opaque and it occludes; here the hole is a hole.
+///
+/// The oracle is two draws deep: a red quad at the back, a cutout quad in
+/// front of it whose left half is clear. Where the texture is clear the
+/// red must show through — which can only happen if the near fragment was
+/// discarded before it wrote either colour or depth.
+#[test]
+fn a_clear_texel_shows_what_is_behind_it() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+
+    // Two texels wide: the left one clear, the right one opaque white.
+    // One row, so the sampler cannot pick up a neighbour vertically.
+    let texture_extent = Extent {
+        width: 2,
+        height: 1,
+    };
+    let masked: Vec<u8> = vec![
+        0, 0, 0, 0, // left: nothing there
+        255, 255, 255, 255, // right: solid
+    ];
+
+    let mut behind = Scene::new();
+    full_quad(&mut behind, 0.2, [1.0, 0.0, 0.0, 1.0]);
+    let mut cut = Scene::new();
+    full_quad(&mut cut, 0.8, [0.0, 0.0, 1.0, 1.0]);
+
+    let mut target = device.create_offscreen_target(extent)?;
+    let plain = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+    let cutout =
+        CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &masked)?;
+    let far = plain.upload(&device, &behind)?;
+    let near = cutout.upload(&device, &cut)?;
+    // The near one second, so if it does not discard it wins the depth
+    // test and covers the red — which is exactly the failure this is
+    // written to catch.
+    let items = [plain.item(&far, &camera), cutout.item(&near, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    let through = at(&pixels, SIZE / 4, SIZE / 2);
+    let solid = at(&pixels, SIZE * 3 / 4, SIZE / 2);
+    assert!(
+        through[0] > 150 && through[2] < 80,
+        "the clear half did not show the red behind it: {through:?}"
+    );
+    assert!(
+        solid[2] > 150 && solid[0] < 80,
+        "the opaque half did not draw the blue in front: {solid:?}"
+    );
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **What survives the cut is drawn exactly as the textured path draws
+/// it**, tint and all — the pipelines differ in what they throw away, not
+/// in how they shade what they keep.
+///
+/// Two pipelines over one fully-opaque texture must agree pixel for
+/// pixel. If they ever stop, a world drawn half on each shows the seam.
+#[test]
+fn what_survives_is_shaded_like_the_textured_path() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    // Opaque throughout, so nothing is cut and the only question is how
+    // the survivors are shaded. Tinted by the vertex colour, so the
+    // comparison covers the multiply as well as the fetch.
+    let opaque: Vec<u8> = [200u8, 180, 60, 255].repeat(4);
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.5, [0.5, 0.8, 1.0, 1.0]);
+
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &opaque)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(pixels);
+    }
+    {
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &opaque)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(pixels);
+    }
+
+    assert_eq!(
+        seen[0], seen[1],
+        "the two textured paths shade an opaque texture differently"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// The threshold reads the vertex colour's alpha too, so a caller can
+/// fade a whole draw out rather than having it stay solid and then
+/// vanish.
+#[test]
+fn a_faded_draw_is_cut_away() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+
+    // The same opaque texture, drawn once at full alpha and once faded
+    // below the threshold.
+    let mut seen = Vec::new();
+    for alpha in [1.0_f32, 0.25] {
+        let mut scene = Scene::new();
+        full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, alpha]);
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &opaque)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+    }
+
+    assert!(
+        seen[0][0] > 150,
+        "a full-alpha draw was cut away: {:?}",
+        seen[0]
+    );
+    assert!(
+        seen[1][0] < 40 && seen[1][1] < 40,
+        "a faded draw was kept: {:?}",
+        seen[1]
+    );
     assert_no_validation_errors(&device);
     Ok(())
 }

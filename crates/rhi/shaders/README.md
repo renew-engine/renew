@@ -361,3 +361,22 @@ Target: SPIR-V 1.0
 shadow CASTER needs no new shader: a depth-only pipeline reuses
 `mesh_camera.vert` unchanged — its colour output simply has no
 consumer.
+
+`mesh_camera_cutout.frag` was compiled 2026-08-18, version output
+observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_cutout.frag -o mesh_camera_cutout.frag.spv
+```
+
+1180 bytes, the exact blob `builtin` embeds. It needs no new vertex
+stage: it shares `mesh_camera_textured.vert.spv`, because the two paths
+differ only in what the fragment stage throws away. Fade constants are
+the textured pair's, for the same reason the shadowed pair's are.
