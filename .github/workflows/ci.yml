@@ -1262,13 +1262,13 @@ jobs:
   # signature attached, and a lane that could redden `main` before that
   # signature would be asserting the answer rather than gathering it.
   #
-  # **A simulator is not a device, and the row this lane eventually
-  # proposes has to say so.** Both `aarch64-apple-ios` and
-  # `aarch64-apple-ios-sim` map to the same platform words, so a leg
-  # cannot tell the two apart - the mapping is a table keyed by triple,
-  # which is what a `--target` run labels a leg from. That is a naming
-  # decision owed before the row exists, not before the lane does: the
-  # lane's job today is to find out whether the numbers agree at all.
+  # **A simulator is not a device, and this leg says so in its own
+  # name.** `aarch64-apple-ios-sim` is labelled `ios-simulator`, which
+  # no binary reports about itself - the departure is deliberate,
+  # because the device triple reports `ios` too and one shared name
+  # would let a determinism row promise phones on a simulator's
+  # evidence. What this lane can still not do is speak for a phone, and
+  # the name is what keeps that visible.
   determinism-ios:
     name: Determinism (ios simulator, advisory)
     runs-on: macos-latest
@@ -1328,7 +1328,7 @@ jobs:
                   else:
                       diverge.append((name, ios[name], other[name]))
 
-              print(f'{ios_name} (simulator) against {other_name}')
+              print(f'{ios_name} against {other_name}')
               for name, mine, theirs in diverge:
                   print(f'  DIVERGE {name}: {mine} here, {theirs} there')
               for name in missing:
