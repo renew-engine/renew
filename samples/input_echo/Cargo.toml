@@ -15,6 +15,15 @@ core = false
 extension_points = []
 simulation = false
 
+# The library carries a second crate type for the Android doorway: the
+# activity loads the sample as a shared object and calls its
+# `android_main`. The cdylib also builds on desktop as an unused
+# artifact — accepted, because a dedicated Android-only crate would buy
+# seconds of build time at the price of a second copy of this sample's
+# wiring.
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [[bin]]
 name = "input_echo"
 path = "src/main.rs"

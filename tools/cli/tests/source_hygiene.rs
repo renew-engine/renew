@@ -21,11 +21,30 @@ use std::path::{Path, PathBuf};
 /// Extensions worth checking. Deliberately a list of text formats rather
 /// than "everything that is not binary": a guess about which unknown file
 /// is text is how a guard starts failing on a PNG.
-const TEXT_EXTENSIONS: &[&str] = &["rs", "toml", "yml", "yaml", "md", "trace", "txt", "json"];
+const TEXT_EXTENSIONS: &[&str] = &[
+    "rs",
+    "toml",
+    "yml",
+    "yaml",
+    "md",
+    "trace",
+    "txt",
+    "json",
+    "gradle",
+    "properties",
+    "xml",
+];
 
-/// Directories never descended into. `target` is build output and
-/// enormous; `.git` is not source.
+/// Directories never descended into, anywhere: `target` is build
+/// output and enormous; `.git` is not source.
 const SKIPPED: &[&str] = &["target", ".git"];
+
+/// Directories skipped only inside an `android` packaging shell:
+/// Gradle's output and cache, whose reports carry Gradle's own tabs.
+/// Scoped by the ancestor rather than by bare name, so a future source
+/// directory legitimately called `build` elsewhere cannot silently
+/// drop out of this suite's coverage.
+const SKIPPED_UNDER_ANDROID: &[&str] = &["build", ".gradle"];
 
 /// U+FEFF at the start of a file. Legal UTF-8, and a nuisance in every
 /// format here: it is why a YAML key stops matching and why a golden
@@ -53,6 +72,14 @@ fn workspace_root() -> PathBuf {
 
 /// Every text file under `dir`, recursively.
 fn text_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    walk(dir, false, found)
+}
+
+/// `inside_android` is threaded through the recursion rather than
+/// re-derived from the path, so a checkout that happens to live under
+/// a directory named `android` cannot widen the skip to the whole
+/// tree.
+fn walk(dir: &Path, inside_android: bool, found: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|error| format!("{} unreadable: {error}", dir.display()))?;
     for entry in entries {
@@ -61,8 +88,10 @@ fn text_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if path.is_dir() {
-            if !SKIPPED.contains(&name.as_ref()) {
-                text_files(&path, found)?;
+            let skipped = SKIPPED.contains(&name.as_ref())
+                || (inside_android && SKIPPED_UNDER_ANDROID.contains(&name.as_ref()));
+            if !skipped {
+                walk(&path, inside_android || name == "android", found)?;
             }
             continue;
         }

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NativeActivity, no code of its own: android.app.lib_name points the
+     activity at the cdylib, whose android_main is the whole app.
+     hasCode=false tells the framework to load no app code — the build
+     tool still packs its standard stub dex, which is inert.
+     configChanges keeps rotation and keyboard changes from restarting
+     the activity, since the engine hears them as events instead. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:label="renew input echo"
+        android:hasCode="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="renew_sample_input_echo" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

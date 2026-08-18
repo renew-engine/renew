@@ -671,6 +671,10 @@ impl Adapter<'_> {
 
 impl ApplicationHandler for Adapter<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // The suspend handler may have parked the loop; a resume is the
+        // platform granting a window back, and the poll cadence returns
+        // with it. Idempotent on desktop, where nothing ever parked it.
+        event_loop.set_control_flow(ControlFlow::Poll);
         self.open(&|attributes| {
             event_loop
                 .create_window(attributes)
@@ -690,9 +694,15 @@ impl ApplicationHandler for Adapter<'_> {
     /// treatment. Desktop platforms never call this at all. `cfg!`
     /// rather than an attribute so every target compiles every path —
     /// the branch is decided at compile time either way.
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         if cfg!(target_os = "android") {
             self.close_surface();
+            // A backgrounded app with no window has nothing to draw
+            // and nobody watching: parking the loop here is what stops
+            // `update` spinning at full poll speed in a pocket until
+            // the OS kills the process. Events still wake it; the
+            // resume above restores the cadence with the window.
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 
@@ -1620,12 +1630,13 @@ mod tests {
     /// instructions: the notification, the release verification, the
     /// drop, and the modifier reset all execute here on the exact code
     /// `close_surface` delegates to — severing any one of them turns
-    /// this red. What remains outside every test is the two-line
-    /// delegation chain above the shared function (the suspend handler
-    /// and `close_surface` itself), each of which is pinned elsewhere:
-    /// the modifier test fails if `close_surface` stops delegating, and
-    /// the handler's body waits on an execution lane no desktop can
-    /// host, whose first suspend cycle is its regression test.
+    /// this red. What remains outside every test is the chain above
+    /// the shared function — the suspend handler's body, with the park
+    /// it performs after the close, and `close_surface`'s own
+    /// delegation — each pinned elsewhere: the modifier test fails if
+    /// `close_surface` stops delegating, and the handler's body waits
+    /// on an execution lane no desktop can host, whose first suspend
+    /// cycle is its regression test.
     #[test]
     fn a_full_suspend_notifies_releases_and_forgets_the_modifier() {
         let mut epoch = SurfaceEpoch::new();
