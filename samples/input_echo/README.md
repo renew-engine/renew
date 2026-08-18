@@ -177,7 +177,11 @@ observable in the log this sample writes.
 ## iOS
 
 The same shape once more, with a doorway that never returns.
-`src/ios.rs` is entered from `main` on that target and hands straight to
+`src/ios.rs` is entered from `main` when the run wants a window — which a
+bundle launch always does, and a command line does unless it asked for
+`--headless`. That distinction matters on this platform: `simctl spawn`
+runs the same binary directly, and entering the windowed loop with no
+application around it traps. The doorway hands straight to
 the event loop, which enters `UIApplicationMain` and owns the process
 from then on. It wraps the same `EchoApp` in the same kind of logging
 adapter, writing to `Documents` inside the app's sandbox — read back
