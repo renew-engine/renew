@@ -43,7 +43,7 @@ mod gpu;
 mod scene;
 
 pub use gpu::{
-    Camera, CameraRenderer, MeshRenderer, Render3dError, ShadowMatrices, ShadowedCameraRenderer,
-    TexturedCameraRenderer, TexturedMeshRenderer, depth_attachment, pass,
+    Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, ShadowMatrices,
+    ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, depth_attachment, pass,
 };
 pub use scene::Scene;

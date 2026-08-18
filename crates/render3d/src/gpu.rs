@@ -416,6 +416,99 @@ impl TexturedCameraRenderer {
     }
 }
 
+/// Draws indexed geometry through a camera, depth-tested, sampling a
+/// texture whose clear texels are cut away rather than drawn.
+///
+/// **The difference from [`TexturedCameraRenderer`] is one comparison in
+/// the fragment stage**, and it is the difference between a leaf and a
+/// green rectangle. That renderer replaces the target wherever a fragment
+/// lands and writes depth as it goes, so a texel the artist left empty is
+/// drawn opaque *and* hides whatever stands behind it. Anything authored
+/// with holes in it — foliage, a grate, a fence, a decal, a sprite
+/// standing in a world — is that shape, and none of it was drawable.
+///
+/// # Why this is not the blended path
+///
+/// Blending would fix the colour and leave the depth wrong: a see-through
+/// fragment that still writes depth occludes what is drawn after it, and
+/// putting that right means sorting every draw back to front — a cost
+/// every consumer pays, forever, for textures that are usually binary
+/// anyway. A discard needs no sorting and imposes no ordering contract,
+/// which makes this the one to reach for first. A surface that is
+/// genuinely half-there — glass, smoke — wants blending and a caller
+/// willing to sort, and that is a different pipeline.
+///
+/// Everything else is [`TexturedCameraRenderer`]: the same vertex stage,
+/// the same layout, the same push block, the same single atlas, and the
+/// same fade toward the same horizon, because pipelines drawing one world
+/// must fade alike or the seam between them shows.
+pub struct CutoutCameraRenderer {
+    pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
+}
+
+impl CutoutCameraRenderer {
+    /// Build the pipeline and upload `pixels` as the texture it samples.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long. **The alpha channel is read as a mask**: a texel at or
+    /// above half survives whole, one below it is not drawn.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::new`].
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA_CUTOUT, format, LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
+                .sampled_bindings(1)
+                // Depth read *and* written, exactly as the opaque paths
+                // do. That is the whole point: what survives the cut is
+                // solid geometry and occludes properly, which is what
+                // blending cannot offer without sorting.
+                .depth_state(renew_rhi::DepthState::read_write()),
+        )?;
+        Ok(Self { pipeline, binding })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh` seen through `camera`.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .push_data(camera.bytes())
+            .bindings(&[&self.binding])
+    }
+}
+
+impl core::fmt::Debug for CutoutCameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CutoutCameraRenderer")
+    }
+}
+
 impl core::fmt::Debug for TexturedCameraRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TexturedCameraRenderer")
