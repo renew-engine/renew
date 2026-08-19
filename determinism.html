@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>Making a simulation reproduce bit-for-bit on three platforms</title>
-<meta name="description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What it actually takes to make a game simulation produce byte-identical state on Windows, Linux and macOS: fixed point, integer time, defined iteration order, and a CI job that compares targets against each other rather than against a constant.">
+<title>Making a simulation reproduce bit-for-bit across targets</title>
+<meta name="description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What it actually takes to make a game simulation produce byte-identical state on desktop and mobile targets alike: fixed point, integer time, defined iteration order, and a CI job that compares targets against each other rather than against a constant.">
 <link rel="canonical" href="https://renew-engine.github.io/renew/determinism.html">
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="renew">
 <meta property="og:url" content="https://renew-engine.github.io/renew/determinism.html">
-<meta property="og:title" content="Making a simulation reproduce bit-for-bit on three platforms">
+<meta property="og:title" content="Making a simulation reproduce bit-for-bit across targets">
 <meta property="og:description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What cross-platform determinism actually costs.">
 <meta property="og:image" content="https://renew-engine.github.io/renew/renew-banner.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Making a simulation reproduce bit-for-bit on three platforms">
+<meta name="twitter:title" content="Making a simulation reproduce bit-for-bit across targets">
 <meta name="twitter:description" content="Rust guarantees IEEE 754 semantics for float operators, and the guarantee stops at the operators. What cross-platform determinism actually costs.">
 <meta name="twitter:image" content="https://renew-engine.github.io/renew/renew-banner.png">
 
@@ -27,7 +27,7 @@
 {
   "@context": "https://schema.org",
   "@type": "TechArticle",
-  "headline": "Making a simulation reproduce bit-for-bit on three platforms",
+  "headline": "Making a simulation reproduce bit-for-bit across targets",
   "description": "What cross-platform bit-determinism costs in practice: fixed-point arithmetic instead of floats, integer time, defined iteration order, and comparing digests across targets rather than against a committed constant.",
   "url": "https://renew-engine.github.io/renew/determinism.html",
   "image": "https://renew-engine.github.io/renew/renew-banner.png",
@@ -110,7 +110,7 @@ footer a{color:var(--muted)}
 <article>
   <div class="wrap">
     <p class="eyebrow">Engineering</p>
-    <h1>Making a simulation reproduce bit-for-bit on three platforms</h1>
+    <h1>Making a simulation reproduce bit-for-bit across targets</h1>
     <p class="standfirst">
       Determinism is usually described as a property of the game loop. In practice the loop
       is the easy part. The hard part is that most of the guarantees you think you have stop
@@ -146,7 +146,7 @@ footer a{color:var(--muted)}
       <cite>renew-fixed, crate documentation</cite>
     </blockquote>
     <p>
-      Addition and multiplication will agree across Windows, Linux and macOS.
+      Addition and multiplication will agree across every target renew builds for.
       <code>sin</code> will not necessarily, because it is not specified by IEEE 754 to the
       last bit. It is whatever the platform's libm shipped. One transcendental call in a
       physics step and cross-platform reproducibility is gone, silently, in a way no test on
@@ -245,20 +245,19 @@ time pending: 11666657 ns</code></pre>
       Cross-platform determinism is a claim about targets agreeing <em>with each other</em>,
       so the only thing that discharges it is running the simulation on every target and
       comparing those digests against one another. In renew's CI that is two stages: each
-      platform emits its digests as an artifact, and a final job collects them and compares.
+      target emits its digests as an artifact, and a final job collects them and compares.
+      There are five of them: Windows, Linux and macOS on the desktop, an Android emulator, and
+      an iOS simulator.
     </p>
     <p>
       That final job has a failure mode worth naming, because it is the kind of thing that
       makes a green checkmark meaningless:
     </p>
-    <blockquote>
-      <p>
-        <code>needs</code> on a failed job SKIPS this one, and GitHub reports a skipped
-        required job as neutral rather than failed, which is how a comparison that never ran
-        can read as a comparison that passed.
-      </p>
-      <cite>renew CI, determinism-compare</cite>
-    </blockquote>
+    <p>
+      Declaring the comparison to <em>need</em> the emit jobs means a failure upstream skips
+      it, and GitHub reports a skipped required job as neutral. A comparison that never ran
+      then reads as a comparison that passed.
+    </p>
     <p>
       The job therefore runs unconditionally and turns a missing leg back into an explicit
       failure, on the principle that a missing target is an untested target rather than a
@@ -272,10 +271,11 @@ time pending: 11666657 ns</code></pre>
       boundary is simulation versus presentation.
     </p>
     <p>
-      Cameras, particles and UI rendering all interpolate between simulation ticks at
-      display rate, because smooth motion on a 144 Hz monitor is not something a 60 Hz
-      simulation should be distorted to provide. Those crates are presentation-side and sit
-      outside the digest by design. What is inside is the state that can change future
+      Cameras, inter-tick snapshots and UI rendering all interpolate between simulation
+      ticks at display rate, because smooth motion on a 144 Hz monitor is not something a
+      60 Hz simulation should be distorted to provide. Those crates are presentation-side
+      and sit outside the digest by design. The particle pool is not among them: it is
+      stepped at the simulation's cadence and seeded, so a replay reproduces the picture. What is inside is the state that can change future
       observable behaviour, and the digest names in the source what it leaves out rather
       than leaving the reader to infer it.
     </p>
@@ -290,7 +290,7 @@ time pending: 11666657 ns</code></pre>
     <hr>
 
     <p class="footnote">
-      renew is in early development, pre-0.1, with no module yet at <code>stable</code>
+      renew is in early development, with no module yet at <code>stable</code>
       maturity, and it is not ready to build a game on. The determinism machinery described
       here is the part that exists first, because retrofitting it is not realistic. The
       engine is Apache-2.0 and developed in the open at

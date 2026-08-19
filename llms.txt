@@ -8,7 +8,11 @@
 > that emits schema-versioned JSON, so a person, a script, or an agent drives the engine
 > through the same surface.
 
-renew is in early development (pre-0.1). APIs are unstable and no module has reached
+Six samples ship with the engine (chess, cube, glide, hello_triangle, input_echo, leap);
+the four simulation samples (chess, cube, glide, leap) run headless and report a digest;
+hello_triangle and input_echo open a window and exercise the renderer and input path.
+
+renew is in early development. The crates are published at 0.1.1, but APIs are unstable and no module has reached
 `stable` maturity. It is not yet ready to build a game on. The project is developed in the
 open at https://github.com/renew-engine/renew.
 
@@ -17,11 +21,14 @@ open at https://github.com/renew-engine/renew.
 - Name: renew (also written "renew engine"); organization `renew-engine` on GitHub.
 - Language: Rust, edition 2024, stable toolchain 1.97 or newer.
 - License: Apache-2.0.
-- Platforms: Windows, Linux, macOS desktop.
+- Publication: 27 of the 29 engine crates are on crates.io at 0.1.1 (all but renew-net
+  and renew-volume).
+- Platforms: Windows, Linux and macOS on the desktop; Android and iOS build and test, with
+  simulation digests checked on an Android emulator and an iOS simulator.
 - Graphics: Vulkan through the `ash` crate, behind an internal RHI whose public API names
-  no Vulkan type. MoltenVK on macOS.
+  no Vulkan type. MoltenVK on Apple platforms.
 - Windowing: `winit`, behind a default-on feature on the platform crate.
-- Structure: 27 engine crates, 5 of them core; every non-core crate is removable, and CI
+- Structure: 29 engine crates, 5 of them core; every non-core crate is removable, and CI
   builds and tests one configuration per removed crate to prove it.
 - Determinism scope: simulation code only. Presentation-side crates (cameras, particle
   rendering, UI rendering) interpolate at display rate and are outside the digest.
@@ -40,7 +47,7 @@ open at https://github.com/renew-engine/renew.
 - renew-rng: PCG32 with derived per-domain streams
 - renew-input: input state and action mapping over the event vocabulary
 - renew-replay: record a run to an input trace, replay it, compare digests
-- renew-trace: the input-trace codec and simulation digests
+- renew-trace: the recorded-input codec, a text format with a reader that refuses the unknown
 - renew-physics2d: bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, slide resolution
 - renew-physics3d: the same surface in three dimensions, axis-aligned only
 - renew-scene: local placements, parenting, and a propagation pass over entity storage
@@ -55,12 +62,14 @@ open at https://github.com/renew-engine/renew.
 - renew-audio: a fixed-voice mixer and WAV reader behind the platform's device seam
 - renew-asset: content-addressed asset packs, every entry verifiable against its digest
 - renew-png: PNG encoding with no dependencies
+- renew-volume: a chunked voxel volume: read, write, ray pick, box sweep, merged surface
+- renew-net: inputs-only lockstep datagrams, with a reader that validates rather than trusts
 
 ## Command-line surface
 
 One binary, `renew`, drives the workspace: `configure`, `build`, `test`, `bench`, `run`,
 `record`, `replay`, `lint`, `check`, `coverage`, `modules`, `asset-pack`, `asset-inspect`,
-`determinism`, `doctor`. Every command accepts `--json` and emits a single
+`ui-compile`, `determinism`, `doctor`. Every command accepts `--json` and emits a single
 schema-versioned document.
 
 ## Disambiguation
