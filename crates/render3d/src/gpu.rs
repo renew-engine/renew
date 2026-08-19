@@ -211,9 +211,94 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
 /// **Plain columns rather than a matrix type**, so this crate keeps its
 /// single dependency. Whoever owns a camera owns the maths that built it;
 /// what crosses the boundary is sixty-four bytes with a stated order.
+/// The buffer and set a camera pipeline reads its fade through.
+///
+/// **One per renderer, not one per draw.** The block holds four floats
+/// that change at most once a frame; a buffer and a set per pipeline is
+/// what that costs, and it is paid at bring-up rather than in the loop.
+fn air_binding(device: &Device) -> Result<renew_rhi::Binding, Render3dError> {
+    let buffer = device.create_buffer(AIR_BYTES as usize, renew_rhi::BufferUsage::PerFrame)?;
+    Ok(device.create_binding(&renew_rhi::BindingDesc::uniform(&buffer))?)
+}
+
+/// How many bytes the fade's uniform block carries.
+///
+/// One `vec4`, which `std140` wants aligned to sixteen and this is.
+pub const AIR_BYTES: u32 = 16;
+
+/// What distance fades toward, and how much of it shows.
+///
+/// **The colour has to match whatever the caller clears to**, and only the
+/// caller knows that. It was compiled into four fragment shaders, matched
+/// by hand to the colour this repository's own samples clear to; a caller
+/// clearing to daylight got its far geometry faded toward near-black,
+/// which reads as a wall of soot across the horizon rather than as
+/// distance. That is the whole reason this type exists.
+///
+/// [`Air::CLEAR_BLACK`] is the value those shaders held, so a caller that
+/// says nothing gets exactly the picture it got before there was anything
+/// to say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Air {
+    bytes: [u8; AIR_BYTES as usize],
+}
+
+impl Air {
+    /// What the shaders used to compile in: this repository's own sample
+    /// backdrop, at seventy-two per cent.
+    pub const CLEAR_BLACK: Self = Self::of(renew_rhi::builtin::HORIZON, 0.72);
+
+    /// Fade toward `horizon`, reaching `most` of it at the far plane.
+    ///
+    /// `horizon` is linear, the space the mix happens in and the space
+    /// [`renew_rhi::Color`] carries — so a caller passes the same numbers
+    /// it clears with and the fade meets the backdrop without a seam.
+    ///
+    /// `most` short of one leaves geometry at the very back faintly
+    /// visible rather than vanishing into the backdrop, which is what
+    /// keeps a room's far wall reading as a wall. One is legal and means
+    /// the far plane is exactly the backdrop.
+    #[must_use]
+    pub const fn of(horizon: [f32; 3], most: f32) -> Self {
+        let mut bytes = [0u8; AIR_BYTES as usize];
+        let values = [horizon[0], horizon[1], horizon[2], most];
+        let mut at = 0;
+        // A const loop, because this is what makes `CLEAR_BLACK` a
+        // constant rather than something built at every bring-up.
+        while at < 4 {
+            let word = values[at].to_ne_bytes();
+            let mut byte = 0;
+            while byte < 4 {
+                bytes[at * 4 + byte] = word[byte];
+                byte += 1;
+            }
+            at += 1;
+        }
+        Self { bytes }
+    }
+
+    /// The packed bytes, exactly the length the pipelines' declared
+    /// uniform block wants.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Default for Air {
+    fn default() -> Self {
+        Self::CLEAR_BLACK
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Camera {
     bytes: [u8; 80],
+    /// **Carried here rather than passed to `item`**, so that adding it
+    /// broke no caller: a camera is already the thing every camera path
+    /// takes, and what the distance fades toward is a property of the
+    /// scene being looked at rather than of one draw within it.
+    air: Air,
 }
 
 impl Camera {
@@ -253,7 +338,17 @@ impl Camera {
             bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
             at += 4;
         }
-        Self { bytes }
+        Self {
+            bytes,
+            air: Air::CLEAR_BLACK,
+        }
+    }
+
+    /// The same camera, looking through different air.
+    #[must_use]
+    pub const fn through(mut self, air: Air) -> Self {
+        self.air = air;
+        self
     }
 
     /// The packed bytes, exactly the length the pipelines' declared
@@ -261,6 +356,13 @@ impl Camera {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// The fade's bytes, exactly the length the pipelines' declared
+    /// uniform block wants.
+    #[must_use]
+    pub fn air(&self) -> &[u8] {
+        self.air.bytes()
     }
 }
 
@@ -356,6 +458,13 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 pub struct TexturedCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
+    /// The set the fade's block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl TexturedCameraRenderer {
@@ -388,10 +497,16 @@ impl TexturedCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(1)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -412,7 +527,8 @@ impl TexturedCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
     }
 }
 
@@ -445,6 +561,13 @@ impl TexturedCameraRenderer {
 pub struct CutoutCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
+    /// The set the fade's block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl CutoutCameraRenderer {
@@ -474,6 +597,7 @@ impl CutoutCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_CUTOUT, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(1)
                 // Depth read *and* written, exactly as the opaque paths
                 // do. That is the whole point: what survives the cut is
@@ -481,7 +605,12 @@ impl CutoutCameraRenderer {
                 // blending cannot offer without sorting.
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -499,7 +628,8 @@ impl CutoutCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
     }
 }
 
@@ -554,6 +684,13 @@ impl core::fmt::Debug for TexturedCameraRenderer {
 /// it is. They move only when something needs them to vary per draw.
 pub struct CameraRenderer {
     pipeline: RenderPipeline,
+    /// The set the fade's block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 /// The camera's push-constant range: one column-major matrix, and the
@@ -563,7 +700,7 @@ const CAMERA_PUSH_BYTES: u32 = 80;
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
-const _: () = assert!(CAMERA_PUSH_BYTES as usize == core::mem::size_of::<Camera>());
+const _: () = assert!(CAMERA_PUSH_BYTES as usize == 80);
 
 impl CameraRenderer {
     /// Build the pipeline.
@@ -579,9 +716,14 @@ impl CameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -607,6 +749,8 @@ impl CameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
+            .uniform_data(camera.air())
+            .bindings(&[&self.air_binding])
     }
 }
 
@@ -659,6 +803,9 @@ impl core::fmt::Debug for MeshRenderer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowedCamera {
     bytes: [u8; 128],
+    /// What distance fades toward — see [`Camera::air`], which carries it
+    /// for the same reason and hands it to the same uniform block.
+    air: Air,
 }
 
 impl ShadowedCamera {
@@ -743,7 +890,26 @@ impl ShadowedCamera {
         }
         put(1.0, &mut at);
         debug_assert_eq!(at, 128, "the pack must fill the declared range exactly");
-        Self { bytes }
+        Self {
+            bytes,
+            air: Air::CLEAR_BLACK,
+        }
+    }
+
+    /// The same camera, looking through different air.
+    #[must_use]
+    pub const fn through(mut self, air: Air) -> Self {
+        self.air = air;
+        self
+    }
+
+    /// The fade's bytes, exactly the length the lit pipeline's declared
+    /// uniform block wants.
+    ///
+    /// The caster has no colour attachment and reads none of this.
+    #[must_use]
+    pub fn air(&self) -> &[u8] {
+        self.air.bytes()
     }
 
     /// The packed bytes, exactly both shadowed pipelines' declared
@@ -762,7 +928,7 @@ const SHADOW_PUSH_BYTES: u32 = renew_rhi::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
-const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowedCamera>());
+const _: () = assert!(SHADOW_PUSH_BYTES as usize == 128);
 
 /// Draws a world with a shadow: a depth-only caster pass renders the
 /// scene from the light into a depth image, and the lit pipeline
@@ -800,6 +966,13 @@ pub struct ShadowedCameraRenderer {
     shadow_map: renew_rhi::RenderImage,
     atlas_binding: renew_rhi::Binding,
     shadow_binding: renew_rhi::Binding,
+    /// The set the fade's block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl ShadowedCameraRenderer {
@@ -861,15 +1034,18 @@ impl ShadowedCameraRenderer {
         let lit = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_SHADOW, format, LAYOUT)
                 .push_constant_size(SHADOW_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(2)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
+        let air_binding = air_binding(device)?;
         Ok(Self {
             caster,
             lit,
             shadow_map,
             atlas_binding,
             shadow_binding,
+            air_binding,
         })
     }
 
@@ -912,7 +1088,8 @@ impl ShadowedCameraRenderer {
         Item::new(&self.lit)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.atlas_binding, &self.shadow_binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.atlas_binding, &self.shadow_binding, &self.air_binding])
     }
 }
 

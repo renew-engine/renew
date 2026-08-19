@@ -509,3 +509,30 @@ layout, and nothing in the tree previously proved that an entirely-unread
 block member keeps its offset through `-O`. `spirv-dis` on both blobs reports
 `Offset 0 / 64 / 80 / 96 / 112` for the five members, identically. Had they
 moved, the fallback was an explicit `layout(offset = …)` in the caster.
+
+The four camera fragment stages were recompiled 2026-08-19, when the horizon
+they fade toward became a uniform block instead of a compiled-in constant.
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.frag -o mesh_camera.frag.spv
+> glslc -O mesh_camera_textured.frag -o mesh_camera_textured.frag.spv
+> glslc -O mesh_camera_cutout.frag -o mesh_camera_cutout.frag.spv
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+940, 1264, 1372 and 2340 bytes, read off disk after compiling — 192 bytes
+larger apiece, which is the block declaration and the two loads from it.
+
+**The pictures did not move.** `Air::CLEAR_BLACK` carries exactly the values
+the four shaders used to compile in, so every golden that fixed a faded pixel
+before this change still fixes the same pixel after it. That is the evidence
+the arithmetic folds the same way through a uniform as it did through a
+constant, which was the stated reason for leaving the constants compiled in.
