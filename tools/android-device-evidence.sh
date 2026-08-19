@@ -55,12 +55,18 @@ if [ -z "$ANDROID_NDK_HOME" ]; then
 fi
 
 # Gradle needs the SDK as much as cargo needs the NDK, and it reports
-# its absence as a build failure two minutes into the run rather than as
-# a missing variable at the start. Checking both here keeps the two
-# preconditions in one place, where the message can name them.
+# its absence as a build failure two minutes in rather than as a missing
+# variable at the start.
+#
+# **Not a hard requirement on the variable, though.** Android Studio
+# writes the path into `local.properties`, which this project ignores as
+# machine-local configuration precisely so that setup works — and a
+# check that demanded the variable would reject the standard install
+# while gradle sat there able to find the SDK perfectly well. So this
+# refuses only when neither route exists.
 export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-if [ -z "$ANDROID_HOME" ]; then
-    echo "ANDROID_HOME is unset; gradle cannot find the SDK" >&2
+if [ -z "$ANDROID_HOME" ] && [ ! -f samples/input_echo/android/local.properties ]; then
+    echo "no SDK: ANDROID_HOME is unset and there is no local.properties for gradle to read it from" >&2
     exit 1
 fi
 
@@ -77,4 +83,4 @@ apk="samples/input_echo/android/app/build/outputs/apk/debug/app-debug.apk"
 # The cycling, the counting and the verdict are the same on a phone as
 # on an emulator, so they live in one file that both callers use rather
 # than in two that drift.
-exec bash "$(dirname "$0")/android-lifecycle-core.sh" "$serial" "$apk"
+exec bash "$(dirname "$0")/android-lifecycle-core.sh" "$serial" "$apk" "$kind"
