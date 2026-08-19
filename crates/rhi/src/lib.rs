@@ -510,24 +510,25 @@ mod horizon_tests {
     fn no_shader_compiles_the_horizon_in() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let mut fading: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&dir).expect("the shader directory is beside the crate") {
-            let Ok(path) = entry.map(|entry| entry.path()) else {
-                continue;
-            };
-            if path
-                .extension()
-                .is_none_or(|kind| kind != "frag" && kind != "vert")
-            {
-                continue;
-            }
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_owned();
+        // **Filtered rather than skipped with `continue`.** An arm that
+        // steps over an unreadable entry is an arm nothing in this
+        // directory can take, so it is a line no run covers and a hole in
+        // the coverage ratchet for no gain — the walk simply wants the
+        // shaders it can read.
+        let shaders = std::fs::read_dir(&dir)
+            .expect("the shader directory is beside the crate")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|kind| kind == "frag" || kind == "vert")
+            })
+            .filter_map(|path| {
+                let name = path.file_name()?.to_str()?.to_owned();
+                let source = std::fs::read_to_string(&path).ok()?;
+                Some((name, source))
+            });
+        for (name, source) in shaders {
             assert!(
                 !source
                     .lines()

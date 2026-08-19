@@ -995,7 +995,13 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     // `Camera` for the caster and a second copy here — was how a
     // row/column mistake used to move the cast a little instead of
     // making the shadow vanish.
-    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns);
+    // **Through the default air, which is what makes this golden evidence.**
+    // The shadowed path reads the fade's colour from the same block the
+    // other camera paths do; `Air::CLEAR_BLACK` carries exactly the values
+    // the shaders used to compile in, so this picture is the picture it
+    // was before there was anything to say — and that it still matches is
+    // the claim, not an accident of the arm never being taken.
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns).through(Air::CLEAR_BLACK);
 
     let renderer = ShadowedCameraRenderer::new(
         &device,

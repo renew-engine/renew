@@ -285,12 +285,6 @@ impl Air {
     }
 }
 
-impl Default for Air {
-    fn default() -> Self {
-        Self::CLEAR_BLACK
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Camera {
     bytes: [u8; 80],
