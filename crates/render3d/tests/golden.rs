@@ -498,6 +498,15 @@ fn a_translation_moves_the_picture_rather_than_bending_it() -> Result<(), Box<dy
 /// The matrix puts `z` into `w`, so the two draws differ in distance and
 /// in nothing else; the centre pixel sits on the view axis, where the
 /// perspective divide moves nothing.
+///
+/// **Both reads are refused if they are the clear colour, and that is not
+/// belt-and-braces.** The far draw sat at a depth of forty until
+/// 2026-08-19, by which the quad has shrunk past the centre pixel
+/// entirely — so the "far" sample *was* the clear colour, and every
+/// assertion below is satisfied by the background: magenta has less green
+/// than green and more red and blue, and it has them monotonically. This
+/// test reported a fade it had never once seen, for as long as it existed.
+/// A control on one of two samples is a control on neither.
 #[test]
 fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error>> {
     let Some(device) = device_or_skip()? else {
@@ -517,7 +526,14 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     let camera = Camera::from_columns(columns);
 
     let mut seen = Vec::new();
-    for depth in [4.0f32, 40.0] {
+    // **Twenty-four, with the bound derived rather than guessed.** The
+    // matrix puts `z` into `w`, so this quad's NDC half-extent is
+    // `1 / depth`, and the centre pixel of a 32-wide target samples at
+    // `16.5 / 32 * 2 - 1`, which is `0.03125`. Coverage therefore ends at
+    // a depth of thirty-two, exactly on the sample point and so at the
+    // mercy of the fill rule; thirty-one is the last depth that certainly
+    // draws. Twenty-four is that bound with room, and heavily faded.
+    for depth in [4.0f32, 24.0] {
         let mut target = device.create_offscreen_target(extent)?;
         let mut scene = Scene::new();
         // Positions are world space on this path, so `depth` is distance
@@ -533,11 +549,13 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     }
 
     let (near, far) = (seen[0], seen[1]);
-    assert_ne!(
-        near,
-        [255, 0, 255, 255],
-        "the near quad did not draw at all, so the comparison would be vacuous"
-    );
+    for (which, pixel) in [("near", near), ("far", far)] {
+        assert_ne!(
+            pixel,
+            [255, 0, 255, 255],
+            "the {which} quad did not draw at all, so everything below is the backdrop, not a fade"
+        );
+    }
     assert!(
         far[1] < near[1],
         "distance must cost green: near {near:?}, far {far:?}"
