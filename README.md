@@ -3,214 +3,222 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/brand/renew-banner-wide.svg">
   <source media="(prefers-color-scheme: light)" srcset="assets/brand/renew-banner-wide-light.svg">
-  <img src="assets/brand/renew-banner-wide.svg" alt="renew — an AI-first game engine in Rust" width="820">
+  <img src="assets/brand/renew-banner-wide.svg" alt="renew, an AI-first game engine in Rust" width="820">
 </picture>
 
 <br>
 <br>
 
-[![CI](https://github.com/renew-engine/renew/actions/workflows/ci.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
-[![Nightly checks](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25%20minus%20named%20exemptions-brightgreen)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
+[![CI](https://github.com/renew-engine/renew/actions/workflows/ci.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/ci.yml) [![Nightly checks](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](rust-toolchain.toml)
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](rust-toolchain.toml)
-[![Edition](https://img.shields.io/badge/edition-2024-blueviolet)](Cargo.toml)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](https://github.com/renew-engine/renew/actions/workflows/ci.yml)
-[![Unsafe](https://img.shields.io/badge/unsafe-denied%20by%20default-success)](#quality-gates)
-
-**[Quick start](#quick-start)**&nbsp; · &nbsp;**[Modules](#modules)**&nbsp; · &nbsp;**[The `renew` CLI](#the-renew-cli)**&nbsp; · &nbsp;**[Quality gates](#quality-gates)**&nbsp; · &nbsp;**[Contributing](CONTRIBUTING.md)**
+**[See it running](#see-it-running)**&nbsp; · &nbsp;**[Quick start](#quick-start)**&nbsp; · &nbsp;**[Determinism](#determinism-is-the-point)**&nbsp; · &nbsp;**[Platforms](#platforms)**&nbsp; · &nbsp;**[Modules](#the-engine)**&nbsp; · &nbsp;**[Contributing](CONTRIBUTING.md)**
 
 </div>
 
 ---
 
-**renew** is a game engine built for the long haul — and built to be *operated*, not just
-used. Every capability is a library with a command-line face and machine-readable output,
-so a person, a script, or an agent drives the engine through exactly the same surface. The
-simulation core is deterministic by construction: same build, same seed, same inputs, same
-result, bit for bit.
+**renew is a game engine in Rust, built to be operated.**
 
-> [!NOTE]
-> **What "AI-first" means here.** Every capability is headless, scriptable, and emits
-> schema-versioned JSON beside its human-readable output, so nothing about the engine
-> requires a person in front of a screen. It does *not* mean the engine ships AI features —
-> it means the machine-operable surface is the primary one, and the GUI, when it arrives,
-> will be a client of it like everything else.
+Every capability is a library with a command-line face and machine-readable output. Building,
+testing, packing assets, recording a play session, replaying it, benchmarking, and running any
+sample all happen from one binary, headless, with `--json` on every command. A person, a script,
+and an agent drive the engine through exactly the same surface, because there is only one.
+
+Underneath it, the simulation is bit-deterministic by construction. Same build, same seed, same
+inputs, same result, down to the byte, on every platform the engine targets.
 
 > [!IMPORTANT]
-> **Status: early development.** Pre-0.1. APIs are unstable, modules are still moving
-> through the maturity ladder, and this is not yet ready to build a game on. What is here
-> is real, tested, and honest about what it is.
+> **Early development, pre-0.1.** APIs change without notice and no module has reached `stable`
+> maturity yet, so this is not something to start a shipping game on today. Everything described
+> below exists, runs, and is covered by tests. Nothing here is a plan.
+
+## See it running
+
+Every picture below is committed in this repository and produced by the sample under it. None of
+them are mockups.
+
+<table>
+<tr>
+<td width="33%"><img src="samples/cube/arena.png" alt="A voxel arena viewed from above, walls and floor lit"></td>
+<td width="33%"><img src="samples/cube/digging.png" alt="First-person view of a voxel floor with a block broken out of it and debris particles"></td>
+<td width="33%"><img src="samples/glide/soar-600.png" alt="A side-scrolling game frame: a yellow bird between green pipes on a blue sky"></td>
+</tr>
+<tr>
+<td><b>cube</b><br><sub>A voxel world with a walking, jumping, block-breaking player.</sub></td>
+<td><b>cube</b><br><sub>Breaking a block, with the particle pool running at the simulation's cadence.</sub></td>
+<td><b>glide</b><br><sub>A small complete game, playable in a window or driven from a trace.</sub></td>
+</tr>
+</table>
+
+Six samples ship with the engine, and each one runs headless and answers with a digest:
+
+```console
+$ cargo run -p renew-sample-cube --bin cube
+cube script=stand source=script ticks=600 digest=0xcbc2871e466a6bfc solids=5012 broken=0 placed=0 grounded=true
+
+$ cargo run -p renew-sample-leap --bin leap
+leap script=stand ticks=600 digest=0xd7058b85479adeb4 grounded=true wall=false
+
+$ cargo run -p renew-sample-glide --bin glide -- --frames 600
+renew-frame sample=glide seed=7 source=soar frames=600 ticks=600 dropped=0 score=3 alive=1 schedule_hash=0x55ce27c8dcb97c4d state_hash=0xe8f68645bf927702
+```
+
+Run any of them again, on any machine, on any supported operating system. The digests do not move.
 
 ## Quick start
 
-Requires stable [Rust](https://rustup.rs) 1.97 or newer.
+Stable [Rust](https://rustup.rs) 1.97 or newer. That is all the engine and its headless samples
+need. Opening a window or playing audio on Linux additionally wants the usual desktop development
+packages, the same ones any Rust graphics project asks for.
 
 ```sh
 git clone https://github.com/renew-engine/renew
 cd renew
-cargo build --workspace
-cargo test --workspace
-cargo run --bin hello-engine
+cargo run --bin renew -- build
+cargo run --bin renew -- test
 ```
 
-`hello-engine` is the current proof of life — a fixed-timestep accumulator driven through
-60 frames of deliberately uneven frame times, reading no clocks at all:
-
-```console
-$ cargo run --bin hello-engine
-hello-engine 0.1.1
-fixed timestep: 16666667 ns
-frames simulated: 60
-time submitted: 1245000015 ns
-ticks executed: 74
-time pending: 11666657 ns
-```
-
-> [!TIP]
-> Run it twice. Run it on another machine, or another OS. Every byte is identical — that
-> is the property everything else in the engine is built to preserve.
-
-## Modules
-
-Every module is independently buildable, testable, and — outside the minimal core —
-removable. CI proves the last part on every commit, and proves it *one crate at a time*: twenty-four
-configurations, each with one optional crate and everything that depends on it excluded, every one
-built **and** tested. A twenty-fifth builds the minimal core alone and asserts that no optional crate
-reached its graph. The platform crate is built again with its windowing feature compiled away, and
-the game is built with no graphics crate in its dependency graph at all — which is the removability
-claim from the other side, and the reason the window is a feature rather than a default.
-
-| Module | What it does | Maturity |
-|---|---|---|
-| **`renew-diag`** | Log records, severity levels, and the sink interface the engine reports through | `internal` · core |
-| **`renew-event`** | The event vocabulary — key codes, pointer buttons, event shapes — as plain data with no dependencies | `internal` · core |
-| **`renew-math`** | `Vec2/3/4`, `Mat4`, `Quat`, `Aabb3` — plain data, documented layout, branchless kernels | `internal` · core |
-| **`renew-memory`** | `LinearArena`, a generation-checked `Pool<T>`, and a counting global allocator | `internal` · core |
-| **`renew-platform`** | The engine's only doorway to the OS: clock, files, named threads, window | `internal` · core |
-| **`renew-fixed`** | Q47.16 fixed-point arithmetic — the number type the simulation is written in, so a result cannot depend on a floating-point mode | `bootstrap` · optional |
-| **`renew-frame`** | The fixed-timestep loop: an accumulator over integer nanoseconds, with the clock passed in | `bootstrap` · optional |
-| **`renew-ecs`** | Sparse-set storage with a defined iteration order, because an undefined one is a determinism bug waiting for a rehash | `bootstrap` · optional |
-| **`renew-jobs`** | A fixed-size worker pool with a deterministic-chunk `parallel_for` | `bootstrap` · optional |
-| **`renew-rng`** | Seeded, reproducible random numbers — no thread-local state, no entropy the caller did not ask for | `bootstrap` · optional |
-| **`renew-input`** | Input state and mapping, over the event vocabulary | `bootstrap` · optional |
-| **`renew-replay`** | Input traces as files: record a run, replay it, compare the digests | `bootstrap` · optional |
-| **`renew-trace`** | Simulation digests — the hash the cross-platform determinism lane compares | `bootstrap` · optional |
-| **`renew-physics2d`** | Bodies, shapes, broadphase, SAT narrowphase, raycasts, sweeps, and slide resolution, in fixed point | `bootstrap` · optional |
-| **`renew-physics3d`** | The same surface in three dimensions, axis-aligned only — rotation waits on a fixed-point orientation type, and the crate says so rather than pretending | `bootstrap` · optional |
-| **`renew-scene`** | Transform hierarchies over the entity storage: parents, children, and world transforms resolved in a stated order | `bootstrap` · optional |
-| **`renew-volume`** | A chunked voxel volume of opaque identifiers, with the queries a volume is asked: read, write, pick along a ray, sweep a box, what changed since a mark, and the merged surface | `bootstrap` · optional |
-| **`renew-rhi`** | The GPU doorway: Vulkan through `ash`, behind an interface that names no Vulkan type in its public API | `bootstrap` · optional |
-| **`renew-render2d`** | Sprites from an atlas, one instanced draw | `bootstrap` · optional |
-| **`renew-render3d`** | Indexed geometry, depth-tested, in submission order | `bootstrap` · optional |
-| **`renew-camera`** | Presentation-side viewpoints: a look-at view, a reversed-depth perspective, and a blend between ticks for display-rate smoothness | `bootstrap` · optional |
-| **`renew-snapshot`** | Two captures of one slot space blended by the interpolation factor, keyed so a recycled slot never inherits the previous tenant's motion | `bootstrap` · optional |
-| **`renew-particles`** | A fixed-capacity particle pool stepped at the simulation's cadence, seeded so replays reproduce the picture | `bootstrap` · optional |
-| **`renew-ui`** | A widget tree solved in fixed point inside the simulation, so a layout is part of what a replay reproduces | `bootstrap` · optional |
-| **`renew-ui-render`** | Presentation for the widget tree: retained snapshots blended at display rate, clipped on the CPU, emitted as sprites | `bootstrap` · optional |
-| **`renew-audio`** | Mixing and playback, behind the platform's device seam | `bootstrap` · optional |
-| **`renew-asset`** | Content-addressed asset packs, with every entry verifiable against its digest | `bootstrap` · optional |
-| **`renew-png`** | PNG encoding with no dependencies — pixels in, the bytes of a file out, so a sample can commit a picture of itself | `bootstrap` · optional |
-| **`renew-net`** | Inputs-only lockstep datagrams: one byte string per fact, and a reader that proves it rather than trusting it | `bootstrap` · optional |
-
-Twenty-nine engine crates, five of them core. Six samples and two tools sit beside them; `renew modules`
-prints the live list with each crate's declared maturity, read from its manifest rather than from
-this table.
-
-Maturity runs `bootstrap` → `internal` → `stable`. A module never claims a level it has not
-earned: `internal` means other modules may depend on it, `stable` means the public API is
-under change control. Nothing here is `stable` yet.
-
-## How it's built
-
-- **Code-first.** Every capability is a library with a CLI face — build, test, benchmark,
-  asset work, running samples. Graphical tools are clients of the same public APIs, never
-  privileged.
-- **Deterministic simulation.** Fixed timestep, integer nanoseconds, no wall-clock reads, no
-  unseeded randomness, no iteration-order-dependent state. Replay and lockstep are a
-  foundation, not a retrofit.
-- **Modular to the core.** A small required core; everything else is optional, removable,
-  and behind an explicit interface — enforced by CI, not by good intentions.
-- **Measured, never assumed.** Performance claims arrive with numbers and the configuration
-  that produced them. The steady-state frame loop is held to zero heap allocations through
-  the engine's allocators, counted in dev builds.
-- **Explicit over implicit.** No global mutable state in engine modules; state lives in
-  context objects that callers own and pass. Ownership and lifetime are visible at every API
-  boundary.
-
-## The `renew` CLI
-
-One binary drives the workspace the same way for people, scripts, and CI:
+Then pick something to look at:
 
 ```sh
-cargo run --bin renew -- help
+# a 3D voxel world, drawn to a window
+cargo run --bin renew -- --features window run cube -- --window
+
+# the same world, headless, answered with one line
+cargo run -p renew-sample-cube --bin cube -- --script patrol --ticks 2000
+
+# chess, counting every legal game four plies deep
+cargo run -p renew-sample-chess --bin chess
 ```
 
-| Command | What it does |
+## Determinism is the point
+
+Most engines treat reproducibility as a feature you bolt on for netcode or for replays. Here it is
+the constraint everything else is built around, and the parts that make it possible are not
+optional extras:
+
+- the simulation runs on a **fixed timestep over integer nanoseconds**, and the frame loop is
+  handed its clock rather than reading one
+- simulation arithmetic is **Q47.16 fixed point**, so no floating-point mode or instruction
+  selection can change a result
+- storage has a **defined iteration order**, because an undefined one is a determinism bug waiting
+  for a rehash
+- randomness is **seeded and explicit**, with no thread-local state and no entropy a caller did not
+  ask for
+
+The engine can prove it about itself. One command runs a pinned set of simulations and writes what
+they produced:
+
+```console
+$ cargo run --bin renew -- determinism --emit windows.json
+wrote 15 digests for windows/x86_64 to windows.json
+```
+
+```jsonc
+{
+  "schema_version": 1,
+  "os": "windows",
+  "arch": "x86_64",
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "digests": {
+    "cube/build-900/digest": "0xce632722e5698fa1",
+    "glide/seed-7-600/state_hash": "0xe8f68645bf927702",
+    "chess/play-60/digest": "0x6bf0be22d95711ee"
+    // 12 more
+  }
+}
+```
+
+On every commit, CI produces that file on **five targets** and holds them against each other.
+Windows, Linux and macOS on the desktop, an Android emulator, and an iOS simulator. A digest that
+differs anywhere fails the build. Comparing against a value committed in the repository would prove
+only that one machine agrees with its own past; comparing targets against each other is what
+actually establishes the claim.
+
+## Platforms
+
+| Target | Builds and tests | Simulation digests match | Draws a frame |
+|---|---|---|---|
+| Windows, Linux, macOS | yes | yes | yes |
+| Android | yes | yes, on an emulator | not yet in CI |
+| iOS | yes | yes, on a simulator | yes, on a simulator |
+
+Graphics go through an internal interface backed by Vulkan through [`ash`](https://github.com/ash-rs/ash),
+with MoltenVK on Apple platforms. Windowing and input go through [`winit`](https://github.com/rust-windowing/winit).
+Both sit behind engine interfaces that name no third-party type in their public API.
+
+Mobile is honest about its evidence. An emulator is not a phone and a simulator is not a device, so
+the table says which was used. Android rendering is held back by the emulator topping out at Vulkan
+1.2 while the renderer requires 1.3, not by anything missing in the engine.
+
+## One surface for everything
+
+```console
+$ cargo run --bin renew -- help
+```
+
+| | |
 |---|---|
-| `configure` | verify the toolchain and cargo are present and sane |
-| `build` | build the workspace |
-| `test` | run the workspace test suite |
-| `bench` | run the workspace benchmarks (`--smoke` runs each once, without statistics — CI's mode) |
-| `run` | build and start a sample; everything after its name goes to the sample verbatim |
-| `record` | run a sample, writing the input it saw to a trace file |
-| `replay` | run a sample from a recorded trace, and compare the digest |
-| `lint` | check formatting, then run clippy with warnings denied |
-| `check` | verify workspace crate manifests and dependencies |
-| `coverage` | hold a coverage report against the exemption manifest |
-| `modules` | list every module with its maturity, read from the manifests |
-| `asset-pack` | build an asset pack from a directory of files |
-| `asset-inspect` | list a pack's entries, optionally re-hashing every payload |
-| `determinism` | emit this target's simulation digests, or compare several targets' |
-| `doctor` | check the development environment |
+| `build` `test` `bench` `lint` `check` | the workspace, with one canonical command each |
+| `run` `record` `replay` | start a sample, capture the input it saw, play it back and compare |
+| `determinism` | emit this target's digests, or compare several targets' |
+| `asset-pack` `asset-inspect` `ui-compile` | content, built and verified from the command line |
+| `coverage` `modules` `doctor` `configure` | the state of the tree and the machine it is on |
 
-Every command takes `--json` and emits a single schema-versioned document, so tooling can
-build against stable output while the human-readable output stays free to change.
+Every one of them accepts `--json` and answers with a single document carrying a `schema_version`,
+so tooling can build against a stable contract while the human-readable output stays free to
+change. This is what "built to be operated" means in practice: there is no capability reachable
+only by clicking, and the editor, when it arrives, will be a client of these same APIs rather than
+a privileged one.
 
-## Quality gates
+## The engine
 
-Every commit on `main` clears all of these, on Windows, Linux, and macOS:
+Twenty-nine engine crates, five of them core. Everything outside the core is optional and
+removable, and CI proves that one crate at a time rather than asserting it: it builds and tests a
+configuration per optional crate with that crate and its dependents excluded, plus the minimal core
+on its own.
 
-| Gate | Enforced by |
+| | |
 |---|---|
-| Format and lints, zero warnings | `rustfmt` and `clippy` with a strict deny-set |
-| Tests, debug and release | `cargo test` across the three-platform matrix |
-| Line coverage: 100% of every line not individually exempted | `renew coverage --report`, against `coverage-exemptions.toml`. Each exemption names its lines and its reason, and the gate fails in **both** directions — an uncovered line with no entry, and an entry whose line is covered again. `--fail-under-lines 95` also runs, as a loose backstop against a collection that collapsed wholesale |
-| No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo`, `dbg!` denied outside tests |
-| `unsafe` denied by default | workspace-wide `unsafe_code = "deny"`; the crates that need it opt in per crate, and `undocumented_unsafe_blocks = "deny"` makes every block state the invariant that keeps it sound |
-| Module graph is a DAG | crate manifest and dependency-graph check (`renew check`) |
-| Optional modules stay removable | twenty-four configurations, each excluding one optional crate and its dependents, all built and tested; plus the minimal core alone, asserted to contain no optional crate |
-| Licenses and advisories | `cargo-deny`, over the full dependency tree including dev-dependencies |
-| Sanitizers and Miri | scheduled nightly runs (ASan, TSan, Miri) |
+| **Core** | `diag` logging and sinks · `event` the input vocabulary · `math` vectors, matrices, quaternions · `memory` arenas, pools, a counting allocator · `platform` the only doorway to the OS |
+| **Simulation** | `fixed` Q47.16 arithmetic · `frame` the fixed-timestep loop · `ecs` sparse-set storage · `scene` transform hierarchies · `physics2d` and `physics3d` · `volume` chunked voxels · `particles` · `ui` layout solved in fixed point · `input` state and mapping · `rng` · `jobs` |
+| **Rendering** | `rhi` the GPU doorway · `render2d` sprites · `render3d` indexed geometry · `camera` views and projections · `snapshot` interpolation between ticks · `ui-render` |
+| **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
 
-## What's next
+`cargo run --bin renew -- modules` prints the live list with each crate's declared maturity, read
+from its manifest rather than from this table. Maturity runs `bootstrap` to `internal` to `stable`,
+and a module never claims a level it has not earned. Nothing is `stable` yet, and the list says so.
 
-The list this section used to carry — rendering, an ECS, the asset pipeline, audio, input
-mapping, 2D samples — has shipped. What is actually next:
+## How it is kept honest
 
-- **The 3D renderer, deepened.** The voxel sample meshes its world, plays in a window through a
-  perspective camera — now an engine crate of its own, with display-rate smoothing between
-  simulation ticks — and draws from a texture atlas generated in code so golden images stay
-  byte-comparable. Depth is reversed engine-wide, and per-draw constants ride push constants.
-  Still to come: the particle pool's renderer half, and instancing for chunked geometry.
-- **Modules climbing the maturity ladder.** Nothing is `stable` yet, and nothing will claim it
-  before its API is under change control and its parsers have been fuzzed.
-- **An editor, eventually**, as a client of the same public APIs every other tool uses — never a
-  privileged one.
+Every commit on `main` clears all of this, on Windows, Linux and macOS:
 
-Each lands behind the same gates as everything above.
+| Gate | What it enforces |
+|---|---|
+| Format and lints | `rustfmt`, and `clippy` with warnings denied |
+| Tests | the workspace suite, debug and release, on three platforms |
+| Coverage | every line covered, or individually exempted with a written reason. The gate fails in both directions, so an exemption that becomes covered again is also an error |
+| No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo` and `dbg!` denied outside tests |
+| `unsafe` denied by default | crates that need it opt in, and every block must document the invariant that makes it sound |
+| Module graph is a DAG | manifests are checked against the real dependency graph |
+| Optional crates stay removable | one build and test per crate removed, plus the minimal core alone |
+| Licenses and advisories | `cargo-deny` across the whole tree, dev-dependencies included |
+| Determinism | five targets compared against each other |
+| Sanitizers, Miri, fuzzing | on a schedule, against the parsers and the threaded code |
+
+Performance claims arrive with numbers and the configuration that produced them, or they are not
+made. The steady-state frame loop is held to zero heap allocations through the engine's allocators,
+counted in development builds.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING](CONTRIBUTING.md) for the workflow
-and the bar a change is held to. The short version: a change arrives with its tests, its
-documentation, and evidence that it works.
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the workflow and the
+bar a change is held to. The short version: a change arrives with its tests, its documentation, and
+evidence that it works.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Contributions are accepted under
-the same license.
+[Apache-2.0](LICENSE). Contributions are accepted under the same license.
 
 <div align="center">
 <br>
