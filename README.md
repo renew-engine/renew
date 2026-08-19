@@ -9,9 +9,9 @@
 <br>
 <br>
 
-[![CI](https://github.com/renew-engine/renew/actions/workflows/ci.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/ci.yml) [![Nightly checks](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](rust-toolchain.toml)
+[![CI](https://github.com/renew-engine/renew/actions/workflows/ci.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/ci.yml) [![Nightly checks](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml/badge.svg)](https://github.com/renew-engine/renew/actions/workflows/nightly-checks.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](Cargo.toml) [![crates.io](https://img.shields.io/badge/crates.io-0.1.1-yellow)](https://crates.io/crates/renew-math)
 
-**[See it running](#see-it-running)**&nbsp; · &nbsp;**[Quick start](#quick-start)**&nbsp; · &nbsp;**[Determinism](#determinism-is-the-point)**&nbsp; · &nbsp;**[Platforms](#platforms)**&nbsp; · &nbsp;**[Modules](#the-engine)**&nbsp; · &nbsp;**[Contributing](CONTRIBUTING.md)**
+**[See it running](#see-it-running)**&nbsp; · &nbsp;**[Quick start](#quick-start)**&nbsp; · &nbsp;**[Determinism](#determinism-is-the-point)**&nbsp; · &nbsp;**[Platforms](#platforms)**&nbsp; · &nbsp;**[The engine](#the-engine)**&nbsp; · &nbsp;**[Contributing](CONTRIBUTING.md)**
 
 </div>
 
@@ -34,8 +34,7 @@ inputs, same result, down to the byte, on every platform the engine targets.
 
 ## See it running
 
-Every picture below is committed in this repository and produced by the sample under it. None of
-them are mockups.
+Every picture below was produced by the sample under it and is committed in this repository.
 
 <table>
 <tr>
@@ -147,8 +146,7 @@ Graphics go through an internal interface backed by Vulkan through [`ash`](https
 with MoltenVK on Apple platforms. Windowing and input go through [`winit`](https://github.com/rust-windowing/winit).
 Both sit behind engine interfaces that name no third-party type in their public API.
 
-Mobile is honest about its evidence. An emulator is not a phone and a simulator is not a device, so
-the table says which was used. Android rendering is held back by the emulator topping out at Vulkan
+An emulator is not a phone and a simulator is not a device, so the table says which was used. Android rendering is held back by the emulator topping out at Vulkan
 1.2 while the renderer requires 1.3, not by anything missing in the engine.
 
 ## One surface for everything
@@ -167,16 +165,14 @@ $ cargo run --bin renew -- help
 
 Every one of them accepts `--json` and answers with a single document carrying a `schema_version`,
 so tooling can build against a stable contract while the human-readable output stays free to
-change. This is what "built to be operated" means in practice: there is no capability reachable
-only by clicking, and the editor, when it arrives, will be a client of these same APIs rather than
-a privileged one.
+change. This is what "built to be operated" means in practice: no capability is reachable only by
+clicking, and the editor, when it arrives, will be one more client of these APIs.
 
 ## The engine
 
 Twenty-nine engine crates, five of them core. Everything outside the core is optional and
-removable, and CI proves that one crate at a time rather than asserting it: it builds and tests a
-configuration per optional crate with that crate and its dependents excluded, plus the minimal core
-on its own.
+removable. CI builds and tests one configuration per optional crate, with that crate and everything
+depending on it excluded, plus one more with the minimal core on its own.
 
 | | |
 |---|---|
@@ -185,11 +181,12 @@ on its own.
 | **Rendering** | `rhi` the GPU doorway · `render2d` sprites · `render3d` indexed geometry · `camera` views and projections · `snapshot` interpolation between ticks · `ui-render` |
 | **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
 
-`cargo run --bin renew -- modules` prints the live list with each crate's declared maturity, read
-from its manifest rather than from this table. Maturity runs `bootstrap` to `internal` to `stable`,
-and a module never claims a level it has not earned. Nothing is `stable` yet, and the list says so.
+Twenty-seven of the twenty-nine are published on [crates.io](https://crates.io/crates/renew-math)
+at 0.1.1. `cargo run --bin renew -- modules` prints the live list with each crate's declared
+maturity, read from its manifest, so it stays correct as this table ages. Maturity runs `bootstrap` to `internal`
+to `stable`, and nothing has reached `stable` yet.
 
-## How it is kept honest
+## What every commit has to clear
 
 Every commit on `main` clears all of this, on Windows, Linux and macOS:
 
@@ -199,7 +196,7 @@ Every commit on `main` clears all of this, on Windows, Linux and macOS:
 | Tests | the workspace suite, debug and release, on three platforms |
 | Coverage | every line covered, or individually exempted with a written reason. The gate fails in both directions, so an exemption that becomes covered again is also an error |
 | No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo` and `dbg!` denied outside tests |
-| `unsafe` denied by default | crates that need it opt in, and every block must document the invariant that makes it sound |
+| `unsafe` denied by default | denied workspace-wide; three crates opt in (`memory`, `jobs`, `rhi`), and every block must document the invariant that makes it sound |
 | Module graph is a DAG | manifests are checked against the real dependency graph |
 | Optional crates stay removable | one build and test per crate removed, plus the minimal core alone |
 | Licenses and advisories | `cargo-deny` across the whole tree, dev-dependencies included |
