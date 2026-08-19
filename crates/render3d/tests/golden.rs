@@ -669,6 +669,138 @@ fn a_caller_chooses_what_distance_fades_toward() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// **Every camera pipeline reads the horizon, not just the plain one.**
+///
+/// This is the test the change most needed and the one a single-pipeline
+/// golden cannot be. The block sits at set `sampled_bindings`, which
+/// differs per shader — nought where nothing is sampled, one for the
+/// textured pair, two for the shadowed one — so each shader hardcodes a
+/// different index and each is a separate chance to be wrong. A block one
+/// set along binds nothing and reads zeroes: the world fades to black,
+/// which looks like a lighting bug and is a layout mistake.
+///
+/// Each renderer draws the same far quad under a red horizon and a blue
+/// one, and the two must differ. Opposite corners of the cube, so a
+/// channel moving the wrong way fails rather than passing smaller.
+///
+/// Probed by moving any one shader's block one set along and
+/// recompiling: that pipeline's two frames come out identical and the
+/// assertion names it.
+#[test]
+fn every_camera_pipeline_reads_the_horizon() -> Result<(), Box<dyn std::error::Error>> {
+    // Far enough to be heavily faded and near enough still to cover the
+    // centre pixel — see the sibling test for why forty does not.
+    const FAR: f32 = 24.0;
+
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+    let camera = Camera::from_columns(columns);
+    let shadowed = ShadowedCamera::from_columns(columns, IDENTITY);
+
+    for which in ["camera", "textured", "cutout", "shadowed"] {
+        let mut seen = Vec::new();
+        for horizon in [[1.0f32, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+            let mut target = device.create_offscreen_target(extent)?;
+            let mut scene = Scene::new();
+            full_quad(&mut scene, FAR, [0.0, 1.0, 0.0, 1.0]);
+            let pixel = match which {
+                "camera" => {
+                    let mut renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+                    renderer.set_horizon(horizon);
+                    let mesh = renderer.upload(&device, &scene)?;
+                    let items = [renderer.item(&mesh, &camera)];
+                    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+                    read_centre(&mut target)
+                }
+                "textured" => {
+                    let mut renderer = TexturedCameraRenderer::new(
+                        &device,
+                        TargetFormat::Rgba8Srgb,
+                        texture_extent,
+                        &white,
+                    )?;
+                    renderer.set_horizon(horizon);
+                    let mesh = renderer.upload(&device, &scene)?;
+                    let items = [renderer.item(&mesh, &camera)];
+                    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+                    read_centre(&mut target)
+                }
+                "cutout" => {
+                    let mut renderer = CutoutCameraRenderer::new(
+                        &device,
+                        TargetFormat::Rgba8Srgb,
+                        texture_extent,
+                        &white,
+                    )?;
+                    renderer.set_horizon(horizon);
+                    let mesh = renderer.upload(&device, &scene)?;
+                    let items = [renderer.item(&mesh, &camera)];
+                    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+                    read_centre(&mut target)
+                }
+                _ => {
+                    let mut renderer = ShadowedCameraRenderer::new(
+                        &device,
+                        TargetFormat::Rgba8Srgb,
+                        texture_extent,
+                        &white,
+                        256,
+                    )?;
+                    renderer.set_horizon(horizon);
+                    let mesh = renderer.upload(&device, &scene)?;
+                    let casters = [renderer.caster_item(&mesh, &shadowed)];
+                    let items = [renderer.item(&mesh, &shadowed)];
+                    target.render(&RenderDesc::new(&[
+                        renderer.shadow_pass(&casters),
+                        pass(&clear, &items),
+                    ]))?;
+                    read_centre(&mut target)
+                }
+            };
+            seen.push(pixel);
+        }
+        let (red, blue) = (seen[0], seen[1]);
+        assert_ne!(
+            red,
+            [255, 0, 255, 255],
+            "the {which} pipeline drew nothing at the centre, so its comparison is vacuous"
+        );
+        assert_ne!(
+            red, blue,
+            "the {which} pipeline faded the same way under a red horizon and a blue one, so              its block reached nothing — check the set its shader declares against the              samplers before it"
+        );
+        assert!(
+            red[0] > blue[0] && blue[2] > red[2],
+            "the {which} pipeline moved the wrong way: red horizon gave {red:?}, blue {blue:?}"
+        );
+    }
+
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// The centre pixel of a rendered target.
+fn read_centre(target: &mut renew_rhi::OffscreenTarget) -> [u8; 4] {
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    at(&pixels, SIZE / 2, SIZE / 2)
+}
+
 /// The camera path refuses an empty scene the same way the mesh path
 /// does — the shared refusal is shared in fact, not only in intention.
 #[test]

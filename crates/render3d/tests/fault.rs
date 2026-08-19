@@ -159,24 +159,28 @@ fn every_creation_arm_reports_its_own_failure() {
     }
     drop(device);
 
-    // R4 — the camera constructor allocates no buffer, proven by arming
-    // the FIRST buffer allocation to fail (the layer fails the
-    // ordinal-th occurrence of a named call, not every occurrence — so
-    // any buffer the constructor created would be occurrence one and
-    // die). This scenario used to drive a `CameraBuffer` arm: the
-    // constructor owned a sixty-four-byte per-frame buffer for the
-    // matrix, and this fault reached it. The matrix rides push
-    // constants now, recorded into the command stream per draw — so
-    // construction must SUCCEED. Non-vacuous because R2 above armed the
-    // identical directive and it bit: the directive works, and this
-    // constructor simply never makes the call.
+    // R4 — the camera constructor owns exactly one buffer, and says so
+    // when it cannot have it.
+    //
+    // **This expectation has now been inverted twice, and the history is
+    // the point.** Originally the constructor owned a sixty-four-byte
+    // per-frame buffer for the matrix and this armed the failure to catch
+    // it. Then the matrix moved to push constants, the buffer went away,
+    // and this became a proof that construction *succeeds* under a buffer
+    // fault. Now the horizon is settable, which needs a uniform block,
+    // which needs a buffer — so the fault reaches the constructor again
+    // and must be reported rather than swallowed.
+    //
+    // A test that merely tracked whichever way the code went would be
+    // worthless. What it holds each time is the same rule: every creation
+    // arm reports its own failure in its own variant, so a reader sent to
+    // "creating the buffer" is sent to the right thing.
     arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R4");
     match CameraRenderer::new(&device, TargetFormat::Rgba8Srgb) {
-        Ok(renderer) => drop(renderer),
-        Err(error) => panic!(
-            "R4: the camera constructor owns no buffer, so a buffer fault must not reach \
-             it — it failed with {error:?}"
+        Err(Render3dError::Texture(_)) => {}
+        other => panic!(
+            "R4: the camera constructor owns a fade buffer now, so a buffer fault must reach              it and arrive as the target's own error — got {other:?}"
         ),
     }
     drop(device);
