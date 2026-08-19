@@ -8,8 +8,9 @@
 # is, which is a developer's desk and never CI. A recipe that has to be
 # retyped from a document is a recipe that gets typed differently each
 # time, and evidence that differs between runs is not evidence. So the
-# cycle, the counting and the verdict live here, and the person with the
-# phone runs one command.
+# whole thing is one command: this script finds the machine and builds
+# the APK, and hands both to `android-lifecycle-core.sh`, which is the
+# same cycling and counting the CI emulator lane runs.
 #
 # It works against an emulator too, and that is deliberate: a tool whose
 # first execution is on the hardware it was written for is a tool nobody
@@ -17,8 +18,6 @@
 # device run and an emulator run say which they were.
 set -euo pipefail
 
-cycles="${CYCLES:-3}"
-package="com.renewengine.inputecho"
 sample="renew-sample-input-echo"
 
 command -v adb >/dev/null || {
@@ -55,6 +54,22 @@ if [ -z "$ANDROID_NDK_HOME" ]; then
     exit 1
 fi
 
+# Gradle needs the SDK as much as cargo needs the NDK, and it reports
+# its absence as a build failure two minutes in rather than as a missing
+# variable at the start.
+#
+# **Not a hard requirement on the variable, though.** Android Studio
+# writes the path into `local.properties`, which this project ignores as
+# machine-local configuration precisely so that setup works — and a
+# check that demanded the variable would reject the standard install
+# while gradle sat there able to find the SDK perfectly well. So this
+# refuses only when neither route exists.
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+if [ -z "$ANDROID_HOME" ] && [ ! -f samples/input_echo/android/local.properties ]; then
+    echo "no SDK: ANDROID_HOME is unset and there is no local.properties for gradle to read it from" >&2
+    exit 1
+fi
+
 jni="samples/input_echo/android/app/src/main/jniLibs"
 cargo ndk -t "$abi" -o "$jni" build -p "$sample" --release
 
@@ -65,72 +80,7 @@ apk="samples/input_echo/android/app/build/outputs/apk/debug/app-debug.apk"
     exit 1
 }
 
-# A fresh install every time: the app appends to its log, so a container
-# left from an earlier run would have this run counting somebody else's
-# lines.
-adb -s "$serial" uninstall "$package" >/dev/null 2>&1 || true
-adb -s "$serial" install -r "$apk" >/dev/null
-echo "installed $(basename "$apk")"
-
-launch() {
-    adb -s "$serial" shell monkey -p "$package" -c android.intent.category.LAUNCHER 1 \
-        >/dev/null 2>&1
-    sleep 4
-}
-
-echo "launching, then backgrounding and resuming $cycles time(s)"
-launch
-pid="$(adb -s "$serial" shell pidof "$package" | tr -d '\r')"
-[ -n "$pid" ] || {
-    echo "the app did not start, so there is nothing to observe" >&2
-    exit 1
-}
-
-for _ in $(seq "$cycles"); do
-    adb -s "$serial" shell input keyevent KEYCODE_HOME
-    sleep 3
-    launch
-done
-
-after="$(adb -s "$serial" shell pidof "$package" | tr -d '\r')"
-
-log="$(adb -s "$serial" shell run-as "$package" cat files/input_echo.log 2>/dev/null || true)"
-if [ -z "$log" ]; then
-    echo "the app wrote no readable log. On a device this usually means the build is not"
-    echo "debuggable, since \`run-as\` only works for a debuggable package." >&2
-    exit 1
-fi
-
-echo "--- the app's own log ---"
-printf '%s\n' "$log"
-echo "--- counted ---"
-ready="$(printf '%s\n' "$log" | grep -c '^ready:' || true)"
-lost="$(printf '%s\n' "$log" | grep -c '^surface lost:' || true)"
-starts="$(printf '%s\n' "$log" | grep -c 'android start' || true)"
-echo "ready: $ready   surface-lost: $lost   launch announcements: $starts"
-echo "process: $pid at first launch, $after at the end"
-
-# **What the counts have to show before this is evidence of anything.**
-# Android revokes the window when it backgrounds an activity, so a real
-# cycle leaves one surface-lost per background and one ready per
-# foreground. Zero of either means the cycle did not happen - a phone
-# that never backgrounded the app, or an app that never came back - and
-# reporting that as a passing lifecycle would be reporting the absence of
-# a test as the result of one.
-if [ "$starts" -ne 1 ]; then
-    echo "the log carries $starts launch announcements, so it is not one run's record" >&2
-    exit 1
-fi
-if [ "$ready" -lt $((cycles + 1)) ] || [ "$lost" -lt "$cycles" ]; then
-    echo "expected at least $((cycles + 1)) ready and $cycles surface-lost for $cycles \
-cycle(s); the app was not backgrounded and resumed as this run assumed" >&2
-    exit 1
-fi
-if [ "$pid" != "$after" ]; then
-    echo "NOTE: the process id changed ($pid -> $after), so the OS restarted the app rather"
-    echo "than backgrounding it. The epochs above are still real, but they span processes."
-fi
-
-echo
-echo "OBSERVED on this $kind: $ready surface epochs opened and $lost closed across"
-echo "$cycles background/resume cycle(s), in $([ "$pid" = "$after" ] && echo "one process" || echo "more than one process")."
+# The cycling, the counting and the verdict are the same on a phone as
+# on an emulator, so they live in one file that both callers use rather
+# than in two that drift.
+exec bash "$(dirname "$0")/android-lifecycle-core.sh" "$serial" "$apk" "$kind"

@@ -8,3 +8,8 @@
 .DS_Store
 
 # Cargo.lock is committed: this workspace builds binaries.
+
+# The log the Android lifecycle run pulls off the device. It is kept as
+# a file so CI can upload it after the emulator is destroyed, and it is
+# a record of one run rather than anything the tree should carry.
+/android-lifecycle.log

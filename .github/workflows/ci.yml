@@ -43,6 +43,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
         run: cargo run --package renew-cli --bin renew -- test
+      # **The Android lifecycle counting, checked where no device is.**
+      # The emulator lane exercises that script's success path and none
+      # of its refusals, so a guard could rot into decoration and the
+      # lane would stay green while checking nothing — which is exactly
+      # what happened to its first version. These cases replay canned
+      # device output through it, needing no emulator and no Android
+      # toolchain, so they gate here rather than on the advisory lane
+      # they protect. One platform is enough: the script under test is
+      # the same bytes everywhere, and this checks its logic, not the
+      # shell it happens to run in.
+      - name: The lifecycle counting refuses what it should
+        if: matrix.os == 'ubuntu-latest'
+        run: bash tools/tests/android-lifecycle-cases.sh
 
   build:
     name: Build (dev)
@@ -1261,6 +1274,89 @@ jobs:
           name: determinism-android
           path: android-leg.json
           if-no-files-found: error
+
+  # The Android app, installed on an emulator, backgrounded and resumed.
+  #
+  # **This lane guards two things nothing else did.** The APK was built
+  # by no CI job at all: gradle wiring, the JNI library path and the
+  # manifest were verified only when somebody ran gradle at a desk, so a
+  # break in any of them would have reached `main` and waited there for
+  # whoever next tried to install the sample. It guards them for the
+  # emulator's ABI only, so a break specific to `arm64-v8a` — the one
+  # every real phone runs — still gets past; building both to close
+  # that would double the compile for a packaging check, and the desk
+  # tool builds whatever ABI is plugged in. And the Android lifecycle
+  # — that backgrounding revokes the surface and returning grants a new
+  # one — was asserted by a desk tool and by no automation.
+  #
+  # It draws nothing, which is why it can run here at all: surface
+  # epochs are a windowing property, and the emulator's Vulkan 1.2
+  # ceiling — which is what keeps the rendering lane off this platform,
+  # since the renderer requires 1.3 — does not reach them.
+  #
+  # Advisory, for the reason the determinism lane was advisory before it
+  # earned its signature: this boots a virtual machine on a shared
+  # runner, which is the flakiest thing available to it, and a lane that
+  # could redden `main` on a boot timeout before anyone has watched it
+  # behave would be asserting rather than finding out.
+  android-lifecycle:
+    name: Android app lifecycle (emulator, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      # Pinned, and to the version the desk recipe names. This is the
+      # tool that decides how the shared object is linked and aligned,
+      # on the one lane whose subject is packaging — floating it would
+      # let a release change what CI builds while a developer's machine
+      # stayed put, which is the difference this lane exists to catch.
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      # The emulator's ABI only. `abiFilters` names both, and gradle
+      # packages whichever shared objects it finds — so building the arm
+      # one would add minutes and ship a library this run cannot load.
+      # **The NDK path is read in the shell, not in an expression.**
+      # `${{ env.X }}` sees only variables the workflow itself declared;
+      # the runner image's own variables are not in that context, so an
+      # `env:` block written that way sets the variable to the empty
+      # string. That is worse than omitting it: cargo-ndk falls back to
+      # `ANDROID_NDK_ROOT` when nothing is set, and an empty
+      # `ANDROID_NDK_HOME` overrides the fallback with nothing. The
+      # first run of this lane died exactly there. Read in the shell it
+      # resolves, and `:?` makes a runner without an NDK say so instead
+      # of proceeding with an empty path.
+      - name: Build the sample for the emulator's ABI
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:?the runner image provided no NDK}}"
+          cargo ndk -t x86_64 -o samples/input_echo/android/app/src/main/jniLibs             build -p renew-sample-input-echo --release
+      - name: Package the APK
+        run: samples/input_echo/android/gradlew -p samples/input_echo/android assembleDebug
+      - name: Allow the runner to use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Background and resume the app, and read its log
+        uses: reactivecircus/android-emulator-runner@v2.34.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          # One line, because the action runs this input one line per
+          # `sh -c`.
+          script: bash tools/ci/android-lifecycle.sh
+      # The emulator is destroyed when the action finishes, so the log
+      # the app wrote leaves with it unless it is kept here.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-lifecycle-log
+          path: android-lifecycle.log
+          if-no-files-found: ignore
 
   # The same eleven pinned simulations, executed on an iOS simulator.
   # Advisory for the same reason the Android lane is: whether this
