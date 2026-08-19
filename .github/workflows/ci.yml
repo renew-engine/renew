@@ -1296,10 +1296,19 @@ jobs:
       # The emulator's ABI only. `abiFilters` names both, and gradle
       # packages whichever shared objects it finds — so building the arm
       # one would add minutes and ship a library this run cannot load.
+      # **The NDK path is read in the shell, not in an expression.**
+      # `${{ env.X }}` sees only variables the workflow itself declared;
+      # the runner image's own variables are not in that context, so an
+      # `env:` block written that way sets the variable to the empty
+      # string. That is worse than omitting it: cargo-ndk falls back to
+      # `ANDROID_NDK_ROOT` when nothing is set, and an empty
+      # `ANDROID_NDK_HOME` overrides the fallback with nothing. The
+      # first run of this lane died exactly there. Read in the shell it
+      # resolves, and `:?` makes a runner without an NDK say so instead
+      # of proceeding with an empty path.
       - name: Build the sample for the emulator's ABI
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:?the runner image provided no NDK}"
           cargo ndk -t x86_64 -o samples/input_echo/android/app/src/main/jniLibs             build -p renew-sample-input-echo --release
       - name: Package the APK
         run: samples/input_echo/android/gradlew -p samples/input_echo/android assembleDebug
