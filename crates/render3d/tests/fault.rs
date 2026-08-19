@@ -159,24 +159,30 @@ fn every_creation_arm_reports_its_own_failure() {
     }
     drop(device);
 
-    // R4 — the camera constructor allocates no buffer, proven by arming
-    // the FIRST buffer allocation to fail (the layer fails the
-    // ordinal-th occurrence of a named call, not every occurrence — so
-    // any buffer the constructor created would be occurrence one and
-    // die). This scenario used to drive a `CameraBuffer` arm: the
-    // constructor owned a sixty-four-byte per-frame buffer for the
-    // matrix, and this fault reached it. The matrix rides push
-    // constants now, recorded into the command stream per draw — so
-    // construction must SUCCEED. Non-vacuous because R2 above armed the
-    // identical directive and it bit: the directive works, and this
-    // constructor simply never makes the call.
+    // R4 — the camera constructor allocates exactly one buffer, and a
+    // buffer fault reaches it. Armed on the FIRST buffer allocation (the
+    // layer fails the ordinal-th occurrence of a named call, not every
+    // occurrence), so what this proves is that the constructor makes the
+    // call at all and reports it in the Upload arm rather than panicking
+    // or swallowing it.
+    //
+    // **This scenario has now said three different things, and the
+    // history is the point.** It once drove a `CameraBuffer` arm, for a
+    // sixty-four-byte per-frame buffer holding the matrix. The matrix
+    // moved to push constants and the scenario inverted: construction had
+    // to succeed, because there was no buffer left to fail. The fade's
+    // colour then arrived, and it cannot ride the push range — that is
+    // vertex-only, and the shadowed path is at its ceiling — so the
+    // constructor owns a sixteen-byte block buffer again and this bites
+    // again. A scenario asserting what a constructor does *not* allocate
+    // is worth keeping precisely because it fails the day that changes.
     arm("vkCreateBuffer=ERROR_OUT_OF_HOST_MEMORY");
     let device = new_device().expect("device for R4");
     match CameraRenderer::new(&device, TargetFormat::Rgba8Srgb) {
-        Ok(renderer) => drop(renderer),
-        Err(error) => panic!(
-            "R4: the camera constructor owns no buffer, so a buffer fault must not reach \
-             it — it failed with {error:?}"
+        Err(Render3dError::Upload(_)) => {}
+        other => panic!(
+            "R4: the camera constructor owns the fade's block buffer, so a buffer fault must \
+             reach it in the Upload arm — got {other:?}"
         ),
     }
     drop(device);
