@@ -28,9 +28,9 @@ Underneath it, the simulation is bit-deterministic by construction. Same build, 
 inputs, same result, down to the byte, on every platform the engine targets.
 
 > [!IMPORTANT]
-> **Early development, pre-0.1.** APIs change without notice and no module has reached `stable`
-> maturity yet, so this is not something to start a shipping game on today. Everything described
-> below exists, runs, and is covered by tests. Nothing here is a plan.
+> **Early development.** The crates are published at 0.1.1, but APIs change without notice and no
+> module has reached `stable` maturity, so this is not something to start a shipping game on today.
+> Everything described below exists, runs, and is covered by tests. Nothing here is a plan.
 
 ## See it running
 
@@ -38,7 +38,7 @@ Every picture below was produced by the sample under it and is committed in this
 
 <table>
 <tr>
-<td width="33%"><img src="samples/cube/arena.png" alt="A voxel arena viewed from above, walls and floor lit"></td>
+<td width="33%"><img src="samples/cube/arena.png" alt="A voxel arena seen from an isometric angle, its walls and floor lit"></td>
 <td width="33%"><img src="samples/cube/digging.png" alt="First-person view of a voxel floor with a block broken out of it and debris particles"></td>
 <td width="33%"><img src="samples/glide/soar-600.png" alt="A side-scrolling game frame: a yellow bird between green pipes on a blue sky"></td>
 </tr>
@@ -49,7 +49,8 @@ Every picture below was produced by the sample under it and is committed in this
 </tr>
 </table>
 
-Six samples ship with the engine, and each one runs headless and answers with a digest:
+Six samples ship with the engine. The four simulation samples run headless and answer with a
+digest:
 
 ```console
 $ cargo run -p renew-sample-cube --bin cube
@@ -62,7 +63,9 @@ $ cargo run -p renew-sample-glide --bin glide -- --frames 600
 renew-frame sample=glide seed=7 source=soar frames=600 ticks=600 dropped=0 score=3 alive=1 schedule_hash=0x55ce27c8dcb97c4d state_hash=0xe8f68645bf927702
 ```
 
-Run any of them again, on any machine, on any supported operating system. The digests do not move.
+Run any of those again, on any machine, on any supported operating system, and the digest does not
+move. The other two samples, `hello_triangle` and `input_echo`, open a window and exist to exercise
+the renderer and the input path.
 
 ## Quick start
 
@@ -144,7 +147,7 @@ actually establishes the claim.
 
 Graphics go through an internal interface backed by Vulkan through [`ash`](https://github.com/ash-rs/ash),
 with MoltenVK on Apple platforms. Windowing and input go through [`winit`](https://github.com/rust-windowing/winit).
-Both sit behind engine interfaces that name no third-party type in their public API.
+No Vulkan type appears in the rendering interface's public API, so the backend stays replaceable.
 
 An emulator is not a phone and a simulator is not a device, so the table says which was used. Android rendering is held back by the emulator topping out at Vulkan
 1.2 while the renderer requires 1.3, not by anything missing in the engine.
@@ -193,9 +196,9 @@ Every commit on `main` clears all of this, on Windows, Linux and macOS:
 | Gate | What it enforces |
 |---|---|
 | Format and lints | `rustfmt`, and `clippy` with warnings denied |
-| Tests | the workspace suite, debug and release, on three platforms |
-| Coverage | every line covered, or individually exempted with a written reason. The gate fails in both directions, so an exemption that becomes covered again is also an error |
-| No panicking shortcuts | `unwrap`, `expect`, `panic`, `todo` and `dbg!` denied outside tests |
+| Tests | the workspace suite on Windows, Linux and macOS, plus a release build |
+| Coverage | every line of engine code covered, or individually exempted with a written reason. The gate fails in both directions, so an exemption that becomes covered again is also an error |
+| No panicking shortcuts | `unwrap`, `expect` and `panic` denied outside tests; `todo`, `unimplemented` and `dbg!` denied everywhere |
 | `unsafe` denied by default | denied workspace-wide; three crates opt in (`memory`, `jobs`, `rhi`), and every block must document the invariant that makes it sound |
 | Module graph is a DAG | manifests are checked against the real dependency graph |
 | Optional crates stay removable | one build and test per crate removed, plus the minimal core alone |
