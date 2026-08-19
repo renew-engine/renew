@@ -1112,7 +1112,9 @@ fn the_readme_counts_what_the_workspace_actually_holds() {
     for name in &crates {
         let short = name.strip_prefix("renew-").unwrap_or(name);
         if !readme.contains(&format!("`{short}`")) {
-            wrong.push(format!("{name} is named nowhere in the README's module table"));
+            wrong.push(format!(
+                "{name} is named nowhere in the README's module table"
+            ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
