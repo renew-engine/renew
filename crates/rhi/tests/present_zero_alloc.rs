@@ -88,7 +88,12 @@ struct GateApp {
     /// sixty-four bytes of push data — measured on the window path so
     /// the claim that a push allocates nothing is gate-observed here
     /// too, not inherited from the offscreen gate by reading.
-    push_camera: Option<(renew_rhi::RenderPipeline, [u8; 64])>,
+    push_camera: Option<(
+        renew_rhi::RenderPipeline,
+        [u8; 64],
+        renew_rhi::Binding,
+        [u8; 16],
+    )>,
     /// A uniform-block pipeline, the per-frame buffer behind it, and the
     /// binding that reads it.
     ///
@@ -399,10 +404,16 @@ impl WindowApp for GateApp {
                     // sixty-four matrix bytes are recorded as push
                     // constants into this slot's command buffer.
                     3 => {
-                        if let (Some((push_pipeline, matrix)), Some((_, mesh))) =
-                            (self.push_camera.as_ref(), self.mesh.as_ref())
+                        if let (
+                            Some((push_pipeline, matrix, air_binding, air_bytes)),
+                            Some((_, mesh)),
+                        ) = (self.push_camera.as_ref(), self.mesh.as_ref())
                         {
-                            push_storage = [Item::new(push_pipeline).mesh(mesh).push_data(matrix)];
+                            push_storage = [Item::new(push_pipeline)
+                                .mesh(mesh)
+                                .push_data(matrix)
+                                .uniform_data(air_bytes)
+                                .bindings(core::slice::from_ref(&air_binding))];
                             passes_one = [Pass::new(&color, &push_storage)];
                             &passes_one
                         } else {
@@ -590,13 +601,37 @@ fn mesh_fixture(
 fn push_camera_fixture(
     device: &Device,
     format: renew_rhi::TargetFormat,
-) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), String> {
+) -> Result<
+    (
+        renew_rhi::RenderPipeline,
+        [u8; 64],
+        renew_rhi::Binding,
+        [u8; 16],
+    ),
+    String,
+> {
     let pipeline = device
         .create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, builtin::MESH_LAYOUT)
-                .push_constant_size(64),
+                .push_constant_size(64)
+                // **The camera fragment stage reads what it fades
+                // toward.** A pipeline built from these shaders without
+                // the block leaves that set unbound, which is undefined
+                // and which a software rasterizer takes as a fault rather
+                // than as a colour.
+                .uniform_block(16),
         )
         .map_err(|error| format!("push pipeline failed: {error}"))?;
+    let air = device
+        .create_buffer(16, renew_rhi::BufferUsage::PerFrame)
+        .map_err(|error| format!("air buffer failed: {error}"))?;
+    let air_binding = device
+        .create_binding(&renew_rhi::BindingDesc::uniform(&air))
+        .map_err(|error| format!("air binding failed: {error}"))?;
+    let mut air_bytes = [0u8; 16];
+    for (index, value) in [0.0f32, 0.0, 0.0, 0.72].iter().enumerate() {
+        air_bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
     let mut matrix = [0u8; 64];
     for (index, value) in [
         1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -606,7 +641,7 @@ fn push_camera_fixture(
     {
         matrix[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
-    Ok((pipeline, matrix))
+    Ok((pipeline, matrix, air_binding, air_bytes))
 }
 
 fn main() {
