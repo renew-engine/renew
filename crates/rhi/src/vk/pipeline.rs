@@ -155,14 +155,43 @@ pub enum VertexAttribute {
     Vec3,
     /// Four 32-bit floats.
     Vec4,
+    /// One 32-bit unsigned integer, delivered to the shader as a `uint`.
+    ///
+    /// **A correctness fix rather than a saving, and the distinction is
+    /// worth stating because the workaround looks fine.** Without an
+    /// integer format the only way to carry an integer field per vertex
+    /// is to store it in a float attribute and recover it with
+    /// `floatBitsToUint`. For a small integer that bit pattern has a zero
+    /// exponent field — it is a denormal — and both the Vulkan spec and
+    /// real drivers permit flushing denormals to zero in vertex input
+    /// conversion. A software rasteriser very likely passes it and a
+    /// discrete part very likely does not, which is precisely the class
+    /// of defect a golden on one software lane cannot see.
+    ///
+    /// The other workaround, storing the integer as an exactly
+    /// representable float *value* below 2^24 and reading it with
+    /// `uint(attr)`, is sound but caps a packed record at 24 exact bits —
+    /// so four 8-bit fields do not fit, and any such packing has to be
+    /// 4x6 bits or split across components.
+    Uint32,
+    /// Two 32-bit unsigned integers, as a `uvec2`.
+    Uint32x2,
+    /// Four bytes, each normalised to `0.0..=1.0` and delivered as a
+    /// `vec4`.
+    ///
+    /// The compact way to carry a colour, a normal or four small
+    /// fractions per vertex: sixteen bytes of `Vec4` for four values that
+    /// never needed more than eight bits each.
+    Unorm8x4,
 }
 
 impl VertexAttribute {
     pub(crate) fn byte_len(self) -> u32 {
         match self {
-            Self::Vec2 => 8,
+            Self::Vec2 | Self::Uint32x2 => 8,
             Self::Vec3 => 12,
             Self::Vec4 => 16,
+            Self::Uint32 | Self::Unorm8x4 => 4,
         }
     }
 
@@ -171,6 +200,9 @@ impl VertexAttribute {
             Self::Vec2 => vk::Format::R32G32_SFLOAT,
             Self::Vec3 => vk::Format::R32G32B32_SFLOAT,
             Self::Vec4 => vk::Format::R32G32B32A32_SFLOAT,
+            Self::Uint32 => vk::Format::R32_UINT,
+            Self::Uint32x2 => vk::Format::R32G32_UINT,
+            Self::Unorm8x4 => vk::Format::R8G8B8A8_UNORM,
         }
     }
 }
@@ -1669,21 +1701,70 @@ mod tests {
         assert_eq!(desc.address, AddressMode::ClampToEdge);
     }
 
-    /// Every attribute's size and Vulkan spelling, all three arms. Here
-    /// rather than in the device suite for the reason the filter test
-    /// above states: that suite skips wherever the validation layer is
-    /// absent, which is most machines.
+    /// Every attribute's size and Vulkan spelling, every arm. Here rather
+    /// than in the device suite for the reason the filter test above
+    /// states: that suite skips wherever the validation layer is absent,
+    /// which is most machines.
+    ///
+    /// **Exhaustive by construction.** The expectation is a `match`, so a
+    /// seventh format is a compile error in this test before it can be a
+    /// wrong stride in a vertex buffer — which is a silent failure that
+    /// reads the wrong bytes and draws a plausible wrong picture.
     #[test]
     fn every_vertex_attribute_maps_to_its_vulkan_spelling() {
-        assert_eq!(VertexAttribute::Vec2.byte_len(), 8);
-        assert_eq!(VertexAttribute::Vec3.byte_len(), 12);
-        assert_eq!(VertexAttribute::Vec4.byte_len(), 16);
-        assert_eq!(VertexAttribute::Vec2.format(), vk::Format::R32G32_SFLOAT);
-        assert_eq!(VertexAttribute::Vec3.format(), vk::Format::R32G32B32_SFLOAT);
-        assert_eq!(
-            VertexAttribute::Vec4.format(),
-            vk::Format::R32G32B32A32_SFLOAT
-        );
+        const EVERY: [VertexAttribute; 6] = [
+            VertexAttribute::Vec2,
+            VertexAttribute::Vec3,
+            VertexAttribute::Vec4,
+            VertexAttribute::Uint32,
+            VertexAttribute::Uint32x2,
+            VertexAttribute::Unorm8x4,
+        ];
+        fn expected(attribute: VertexAttribute) -> (u32, vk::Format) {
+            match attribute {
+                VertexAttribute::Vec2 => (8, vk::Format::R32G32_SFLOAT),
+                VertexAttribute::Vec3 => (12, vk::Format::R32G32B32_SFLOAT),
+                VertexAttribute::Vec4 => (16, vk::Format::R32G32B32A32_SFLOAT),
+                VertexAttribute::Uint32 => (4, vk::Format::R32_UINT),
+                VertexAttribute::Uint32x2 => (8, vk::Format::R32G32_UINT),
+                VertexAttribute::Unorm8x4 => (4, vk::Format::R8G8B8A8_UNORM),
+            }
+        }
+        for attribute in EVERY {
+            let (bytes, format) = expected(attribute);
+            assert_eq!(attribute.byte_len(), bytes, "{attribute:?} byte length");
+            assert_eq!(attribute.format(), format, "{attribute:?} Vulkan format");
+        }
+    }
+
+    /// **No two attributes share a Vulkan format**, which the table above
+    /// cannot catch on its own: it restates the implementation, so a
+    /// copy-paste that gave `Uint32x2` the single-component spelling
+    /// would be wrong in both places and agree with itself.
+    ///
+    /// Injectivity is the property that does not restate anything. Two
+    /// formats colliding means one attribute reads the other's component
+    /// count, which is a stride the pipeline accepts and a buffer the
+    /// shader misreads.
+    #[test]
+    fn no_two_vertex_attributes_share_a_vulkan_format() {
+        const EVERY: [VertexAttribute; 6] = [
+            VertexAttribute::Vec2,
+            VertexAttribute::Vec3,
+            VertexAttribute::Vec4,
+            VertexAttribute::Uint32,
+            VertexAttribute::Uint32x2,
+            VertexAttribute::Unorm8x4,
+        ];
+        for (index, one) in EVERY.iter().enumerate() {
+            for other in EVERY.iter().skip(index + 1) {
+                assert_ne!(
+                    one.format(),
+                    other.format(),
+                    "{one:?} and {other:?} claim the same Vulkan format"
+                );
+            }
+        }
     }
 
     /// **The two streams share one location space, and this is where
