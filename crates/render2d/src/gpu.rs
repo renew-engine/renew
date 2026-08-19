@@ -307,9 +307,10 @@ mod tests {
     /// exhaustiveness tripwire is kept and every arm is exercised.
     fn packed_width(attribute: VertexAttribute) -> usize {
         match attribute {
-            VertexAttribute::Vec2 => 8,
+            VertexAttribute::Vec2 | VertexAttribute::Uint32x2 => 8,
             VertexAttribute::Vec3 => 12,
             VertexAttribute::Vec4 => 16,
+            VertexAttribute::Uint32 | VertexAttribute::Unorm8x4 => 4,
         }
     }
 
@@ -318,6 +319,9 @@ mod tests {
         assert_eq!(packed_width(VertexAttribute::Vec2), 8);
         assert_eq!(packed_width(VertexAttribute::Vec3), 12);
         assert_eq!(packed_width(VertexAttribute::Vec4), 16);
+        assert_eq!(packed_width(VertexAttribute::Uint32), 4);
+        assert_eq!(packed_width(VertexAttribute::Uint32x2), 8);
+        assert_eq!(packed_width(VertexAttribute::Unorm8x4), 4);
     }
 
     #[test]

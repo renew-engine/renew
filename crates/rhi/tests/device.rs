@@ -10,7 +10,7 @@ use renew_rhi::{
     AddressMode, Attachment, Binding, BindingDesc, BindingSource, BufferUsage, ClearValue, Color,
     DepthState, Device, DeviceDesc, DeviceError, Extent, Filter, FrameData, Item, ItemList, LoadOp,
     MeshDesc, Pass, PipelineDesc, PipelineError, RenderDesc, Sampler, SamplerDesc, Shaders,
-    StoreOp, TargetFormat, Texture, Validation, builtin,
+    StoreOp, TargetFormat, Texture, Validation, VertexAttribute, builtin,
 };
 
 /// The one color attachment these frames render into: cleared, stored.
@@ -157,6 +157,66 @@ fn bring_up_reports_an_adapter_and_stays_clean() {
 // the lane exists to prove the rendering path, so an adapter that
 // refuses both formats must redden it rather than silently narrowing
 // what the lane proves. Elsewhere, no-format is a reportable fact.
+/// **A real driver accepts the narrow attribute formats.** The unit test
+/// beside the enum pins the Vulkan spelling and that the mapping is
+/// injective; neither can tell you whether an adapter will build a
+/// pipeline out of them. This can, and it is the cheapest form of that
+/// question: a pipeline is created and nothing is drawn, so no shader has
+/// to declare the locations — supplying an attribute the shader ignores
+/// is legal, and what is under test is the format and the stride
+/// arithmetic rather than the values arriving.
+///
+/// **What this deliberately does not prove** is the reason the formats
+/// exist. `Uint32` is here because packing an integer into an SFLOAT
+/// attribute and recovering it with `floatBitsToUint` yields a denormal
+/// for small integers, which a driver may flush to zero — and only a
+/// shader that reads the value can show that. That proof arrives with the
+/// first consumer; a format with nothing reading it cannot be proven
+/// correct by construction, and saying so is better than a test that
+/// looks like it did.
+///
+/// **The first probe written for this came back green and is worth
+/// recording.** Giving `Unorm8x4` a sixteen-byte length changes nothing
+/// here: offsets are the running sum of the same lengths, so an inflated
+/// one makes the stride bigger and leaves everything consistent —
+/// validation has no view of what the buffer actually holds at pipeline
+/// creation. What this test can see is whether a format is a legal vertex
+/// format at all, so that is what it claims and that is what it is probed
+/// with.
+///
+/// Probed by spelling `Uint32` as `D32_SFLOAT`: validation reports that a
+/// depth format has no defined size for alignment and does not carry
+/// `VERTEX_BUFFER_BIT`.
+#[test]
+fn a_driver_builds_a_pipeline_from_the_narrow_attribute_formats() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    // The mesh layout the builtin vertex stage declares, followed by the
+    // three narrow formats it does not — extra attributes are supplied
+    // and ignored, which is what makes this need no new shader.
+    let layout = [
+        VertexAttribute::Vec3,
+        VertexAttribute::Vec4,
+        VertexAttribute::Vec2,
+        VertexAttribute::Uint32,
+        VertexAttribute::Uint32x2,
+        VertexAttribute::Unorm8x4,
+    ];
+    let pipeline = device.create_pipeline(&PipelineDesc::mesh(
+        builtin::MESH,
+        TargetFormat::Rgba8Srgb,
+        &layout,
+    ));
+    assert!(
+        pipeline.is_ok(),
+        "an adapter refused a pipeline declaring the narrow formats: {:?}",
+        pipeline.err()
+    );
+    drop(pipeline);
+    assert_no_validation_errors(&device);
+}
+
 #[test]
 fn the_adapter_reports_its_depth_format() {
     let Some(device) = required_device().expect("device bring-up") else {
