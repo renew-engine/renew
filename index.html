@@ -273,9 +273,10 @@ wrote 15 digests for windows/x86_64 to windows.json</code></pre>
   "arch": "x86_64",
   "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "digests": {
+    "chess/play-60/digest": "0x6bf0be22d95711ee",
     "cube/build-900/digest": "0xce632722e5698fa1",
-    "glide/seed-7-600/state_hash": "0xe8f68645bf927702",
-    "chess/play-60/digest": "0x6bf0be22d95711ee"
+    "cube/patrol-600/digest": "0x29559b5af5e634d2"
+    // 12 more, in key order
   }
 }</code></pre>
     <p>
@@ -374,11 +375,11 @@ cargo run --bin renew -- --features window run cube -- --window</code></pre>
     <h2>Platforms</h2>
     <div class="tablewrap">
       <table class="gates">
-        <thead><tr><th>Target</th><th>Builds and tests</th><th>Digests match</th><th>Draws a frame</th></tr></thead>
+        <thead><tr><th>Target</th><th>CI compiles</th><th>Test suite</th><th>Digests match</th><th>Draws a frame</th></tr></thead>
         <tbody>
-          <tr><td>Windows, Linux, macOS</td><td>yes</td><td>yes</td><td>yes</td></tr>
-          <tr><td>Android</td><td>yes</td><td>yes, on an emulator</td><td>not yet in CI</td></tr>
-          <tr><td>iOS</td><td>yes</td><td>yes, on a simulator</td><td>yes, on a simulator</td></tr>
+          <tr><td>Windows, Linux, macOS</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td></tr>
+          <tr><td>Android</td><td>yes, and lints</td><td>the pinned simulations only</td><td>yes, on an emulator</td><td>not yet in CI</td></tr>
+          <tr><td>iOS</td><td>yes, and lints</td><td>the pinned simulations only</td><td>yes, on a simulator</td><td>yes, on a simulator</td></tr>
         </tbody>
       </table>
     </div>
@@ -398,7 +399,7 @@ cargo run --bin renew -- --features window run cube -- --window</code></pre>
 <section>
   <div class="wrap">
     <h2>Quality gates</h2>
-    <p>Every commit on <code>main</code> clears all of these, on Windows, Linux, and macOS:</p>
+    <p>Every commit on <code>main</code> clears all of these. The test suite runs on all three desktop platforms; the rest run once, on Linux:</p>
     <div class="tablewrap">
       <table class="gates">
         <thead><tr><th>Gate</th><th>Enforced by</th></tr></thead>
