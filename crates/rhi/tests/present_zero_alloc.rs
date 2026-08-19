@@ -88,7 +88,12 @@ struct GateApp {
     /// sixty-four bytes of push data — measured on the window path so
     /// the claim that a push allocates nothing is gate-observed here
     /// too, not inherited from the offscreen gate by reading.
-    push_camera: Option<(renew_rhi::RenderPipeline, [u8; 64])>,
+    push_camera: Option<(
+        renew_rhi::RenderPipeline,
+        [u8; 64],
+        renew_rhi::Binding,
+        [u8; 16],
+    )>,
     /// A uniform-block pipeline, the per-frame buffer behind it, and the
     /// binding that reads it.
     ///
@@ -399,10 +404,14 @@ impl WindowApp for GateApp {
                     // sixty-four matrix bytes are recorded as push
                     // constants into this slot's command buffer.
                     3 => {
-                        if let (Some((push_pipeline, matrix)), Some((_, mesh))) =
+                        if let (Some((push_pipeline, matrix, fade, horizon)), Some((_, mesh))) =
                             (self.push_camera.as_ref(), self.mesh.as_ref())
                         {
-                            push_storage = [Item::new(push_pipeline).mesh(mesh).push_data(matrix)];
+                            push_storage = [Item::new(push_pipeline)
+                                .mesh(mesh)
+                                .push_data(matrix)
+                                .bindings(core::slice::from_ref(&fade))
+                                .uniform_data(horizon)];
                             passes_one = [Pass::new(&color, &push_storage)];
                             &passes_one
                         } else {
@@ -587,14 +596,29 @@ fn mesh_fixture(
 /// bytes, built outside the measured window. Extracted for the reason
 /// the offscreen gate's fixtures are: fixture work, out of a `ready`
 /// at the length the lint refuses.
+/// **The fade block is fixture, not measurement.** `mesh_camera.frag`
+/// reads its horizon from a uniform block, so a pipeline built from that
+/// shader has to declare one or the fragment stage reads a descriptor
+/// nothing bound. Its buffer and binding are made here, before the
+/// A camera pipeline, its matrix bytes, and the fade block its
+/// fragment stage reads.
+type CameraFixture = (
+    renew_rhi::RenderPipeline,
+    [u8; 64],
+    renew_rhi::Binding,
+    [u8; 16],
+);
+
+/// window opens.
 fn push_camera_fixture(
     device: &Device,
     format: renew_rhi::TargetFormat,
-) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), String> {
+) -> Result<CameraFixture, String> {
     let pipeline = device
         .create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, builtin::MESH_LAYOUT)
-                .push_constant_size(64),
+                .push_constant_size(64)
+                .uniform_block(16),
         )
         .map_err(|error| format!("push pipeline failed: {error}"))?;
     let mut matrix = [0u8; 64];
@@ -606,7 +630,20 @@ fn push_camera_fixture(
     {
         matrix[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
-    Ok((pipeline, matrix))
+    let fade_buffer = device
+        .create_buffer(16, renew_rhi::BufferUsage::PerFrame)
+        .map_err(|error| format!("fade buffer failed: {error}"))?;
+    let fade = device
+        .create_binding(&renew_rhi::BindingDesc::uniform(&fade_buffer))
+        .map_err(|error| format!("fade binding failed: {error}"))?;
+    let mut horizon = [0u8; 16];
+    for (slot, value) in horizon
+        .chunks_exact_mut(4)
+        .zip(builtin::HORIZON.into_iter().chain([1.0]))
+    {
+        slot.copy_from_slice(&value.to_ne_bytes());
+    }
+    Ok((pipeline, matrix, fade, horizon))
 }
 
 fn main() {

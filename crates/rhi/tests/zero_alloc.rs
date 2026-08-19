@@ -157,7 +157,8 @@ fn steady_state_frames_allocate_nothing() {
     // push channel allocates nothing must be gate-observed, not
     // code-read. The pipeline and the matrix bytes are built out here;
     // the window measures the record-time push alone.
-    let (camera_pipeline, matrix_bytes) = camera_fixture(&device).expect("camera fixture");
+    let (camera_pipeline, matrix_bytes, fade, horizon) =
+        camera_fixture(&device).expect("camera fixture");
     let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
@@ -178,7 +179,9 @@ fn steady_state_frames_allocate_nothing() {
             .expect("warmup mesh frame");
         let items = [Item::new(&camera_pipeline)
             .mesh(&mesh)
-            .push_data(&matrix_bytes)];
+            .push_data(&matrix_bytes)
+            .bindings(&[&fade])
+            .uniform_data(&horizon)];
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup push frame");
@@ -228,7 +231,9 @@ fn steady_state_frames_allocate_nothing() {
             // push branch names itself.
             let items = [Item::new(&camera_pipeline)
                 .mesh(&mesh)
-                .push_data(&matrix_bytes)];
+                .push_data(&matrix_bytes)
+                .bindings(&[&fade])
+                .uniform_data(&horizon)];
             target
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady push frame");
@@ -336,21 +341,47 @@ fn mesh_fixture(
     Ok((pipeline, mesh))
 }
 
-/// The camera-shaped push-constant pipeline and an identity matrix's
-/// sixty-four bytes, built outside the measured window. Depth-free —
-/// what the window measures is the record-time push, and a depth
-/// attachment would measure something else beside it.
-fn camera_fixture(
-    device: &Device,
-) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), Box<dyn std::error::Error>> {
+/// The camera-shaped push-constant pipeline, an identity matrix's
+/// sixty-four bytes, and the fade block its fragment stage reads, all
+/// built outside the measured window. Depth-free — what the window
+/// measures is the record-time push, and a depth attachment would
+/// measure something else beside it.
+///
+/// **The block is part of the fixture, not part of what is measured.**
+/// `mesh_camera.frag` reads the horizon from a uniform block, so a
+/// pipeline built from that shader has to declare one or the fragment
+/// stage reads a descriptor nothing bound. Its buffer and binding are
+/// made here, before the window opens, exactly as the mesh and the
+/// A camera pipeline, its matrix bytes, and the fade block its
+/// fragment stage reads — everything the measured window needs, built
+/// before it opens.
+type CameraFixture = (
+    renew_rhi::RenderPipeline,
+    [u8; 64],
+    renew_rhi::Binding,
+    [u8; 16],
+);
+
+/// matrix are; what the window still measures is the record.
+fn camera_fixture(device: &Device) -> Result<CameraFixture, Box<dyn std::error::Error>> {
     let pipeline = device.create_pipeline(
         &PipelineDesc::mesh(
             builtin::MESH_CAMERA,
             TargetFormat::Rgba8Srgb,
             builtin::MESH_LAYOUT,
         )
-        .push_constant_size(64),
+        .push_constant_size(64)
+        .uniform_block(16),
     )?;
+    let fade_buffer = device.create_buffer(16, renew_rhi::BufferUsage::PerFrame)?;
+    let fade = device.create_binding(&renew_rhi::BindingDesc::uniform(&fade_buffer))?;
+    let mut horizon = [0u8; 16];
+    for (slot, value) in horizon
+        .chunks_exact_mut(4)
+        .zip(builtin::HORIZON.into_iter().chain([1.0]))
+    {
+        slot.copy_from_slice(&value.to_ne_bytes());
+    }
     let mut bytes = [0u8; 64];
     for (index, value) in [
         1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -360,7 +391,7 @@ fn camera_fixture(
     {
         bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
-    Ok((pipeline, bytes))
+    Ok((pipeline, bytes, fade, horizon))
 }
 
 /// The instanced pipeline, its per-frame buffer, and one packed
