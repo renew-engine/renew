@@ -18,18 +18,40 @@ mesh comes out, and a draw item goes into a frame the caller composes.
 - `Camera` — the pack type. Four column-major `[f32; 4]` columns in,
   sixty-four bytes out; whoever owns a camera owns the maths that built
   it, and what crosses this boundary is bytes with a stated order.
-- `ShadowedCameraRenderer` / `ShadowMatrices` — the world-space half
-  with a shadow. One type owns the whole story: a depth render image
-  (the map), a depth-only caster pipeline that draws the scene from
-  the light with no fragment stage at all, the lit pipeline sampling
-  the atlas at slot 0 and the map at slot 1, and both bindings. A
-  frame leads with `shadow_pass` (`caster_item`s pushing the light's
-  sixty-four bytes — a light IS a camera), then draws `item`s pushing
-  both matrices as one 128-byte `ShadowMatrices` block. The shadow
+- `ShadowedCameraRenderer` / `ShadowedCamera` — the world-space half
+  with a shadow, **and a scene light**. One type owns the whole story: a
+  depth render image (the map), a depth-only caster pipeline that draws
+  the scene from the light with no fragment stage at all, the lit
+  pipeline sampling the atlas at slot 0 and the map at slot 1, and both
+  bindings. A frame leads with `shadow_pass`, then draws `item`s — and
+  **both halves take the same `ShadowedCamera`**, a 128-byte push block
+  holding the camera's matrix, the light's first three rows, and how
+  brightly the scene is lit.
+  One record for both, so the map cannot be written with one light and
+  sampled with another; the caster simply reads fewer of its members.
+  The light's fourth row is not carried: an orthographic projection over
+  a rigid view is affine, so that row is exactly `(0, 0, 0, 1)` and both
+  shaders write a literal one. Those sixteen bytes are what let a scene
+  light join a shadow inside the guaranteed push ceiling — the naive
+  layout, two full matrices and a colour, is 144 and does not fit. The shadow
   test is reversed-Z like everything else: the map holds the depth
   nearest the light, and a fragment is lit exactly when its own light
   depth reaches it within a constant bias — constant because the
   light is orthographic, which makes light depth linear.
+  **So this family casts directional shadows only** — a sun, not a spot
+  lamp. A projective light is refused rather than approximated, and the
+  refusal is deliberate twice over: the pack has no room for the fourth
+  row, and the constant depth bias is only correct while light depth is
+  linear, so a spot light needs a bias that varies with distance as well
+  as sixteen more bytes. The path to one is a uniform block rather than
+  a wider push range: the naive layout is 144 bytes and the guaranteed
+  ceiling is 128, so no push block will ever hold it, and a second
+  renderer beside this one is the shape to reach for — the directional
+  path should keep its zero-buffer cost rather than every sun paying for
+  a lamp. Worth stating plainly, because this type replaced one that
+  packed two full matrices and could express a projective light: the
+  narrowing is a deliberate trade for the scene light, not a capability
+  that was never here.
 - `depth_attachment` / `pass` — the frame pieces this crate owns (the
   colour attachment is the rendering crate's shared `color_attachment`).
   `pass`
@@ -70,6 +92,13 @@ target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
   distant fragments toward a horizon colour — a readability floor, not
   a look, and stated in their rustdoc because behaviour a caller cannot
   predict from a type's name is behaviour the type must name itself.
+- **A shadowed camera costs nothing but its bytes either** — no buffer, no
+  binding, no descriptor set — and the light's fourth row costs nothing at
+  all, because an orthographic projection over a rigid view is affine and
+  that row is a constant both shaders write themselves. The distance fade
+  is a readability floor and the scene light is the caller's own look;
+  they compose, and both camera families dim alike because both apply the
+  light in the same stage.
 - **Target-agnostic.** This crate never renders, never presents and
   never touches a window. It describes draws; the caller owns the
   target.

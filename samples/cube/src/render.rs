@@ -11,8 +11,7 @@
 //! all three are pure and tested without a device.
 
 use renew_render3d::{
-    Camera as RenderCamera, MeshRenderer, Scene, ShadowMatrices, ShadowedCameraRenderer,
-    TexturedMeshRenderer, pass,
+    MeshRenderer, Scene, ShadowedCamera, ShadowedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, Extent, ItemList, RenderDesc, TargetFormat, Validation,
@@ -354,8 +353,10 @@ pub(crate) fn draw_scene(
     let caster_mesh = renderer
         .upload(&device, caster)
         .map_err(|error| RenderError::Refused(error.to_string()))?;
-    let light_packed = RenderCamera::from_columns(light.columns());
-    let packed = ShadowMatrices::from_columns(camera.columns(), light.columns());
+    // One record, both halves: the caster reads this value's light rows
+    // and the lit item reads all of it, so the map cannot be written
+    // with a light the lit pass does not sample.
+    let packed = ShadowedCamera::from_columns(camera.columns(), light.columns());
 
     // The overlay, if there is one: geometry that is already clip space
     // and so needs the pipeline that does not transform. Built here
@@ -427,7 +428,7 @@ pub(crate) fn draw_scene(
     items.push_some(over.as_ref().map(|(plain, mesh)| plain.item(mesh)));
     // The caster pass leads: the world's depth as the sun sees it,
     // into the map the world item samples.
-    let casting = [renderer.caster_item(&caster_mesh, &light_packed)];
+    let casting = [renderer.caster_item(&caster_mesh, &packed)];
     let passes = [
         renderer.shadow_pass(&casting),
         pass(&color, items.as_slice()),

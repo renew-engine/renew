@@ -357,10 +357,15 @@ Target: SPIR-V 1.0
 > glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
 ```
 
-1484 bytes and 2148 bytes, the exact blobs `builtin` embeds. The
-shadow CASTER needs no new shader: a depth-only pipeline reuses
-`mesh_camera.vert` unchanged — its colour output simply has no
+1484 bytes and 2148 bytes, the exact blobs `builtin` embedded at the
+time. The shadow CASTER needed no new shader then: a depth-only pipeline
+reused `mesh_camera.vert` unchanged, its colour output simply having no
 consumer.
+
+**Both statements were superseded on 2026-08-19** — the vertex stage was
+recompiled when a scene light joined the block, and the caster gained a
+stage of its own so that both halves read one record. See the dated
+section at the end of this file.
 
 `mesh_camera_cutout.frag` was compiled 2026-08-18, version output
 observed again rather than assumed unchanged:
@@ -447,3 +452,60 @@ Target: SPIR-V 1.0
 ```
 
 1132 bytes, the exact blob the device suite embeds.
+
+## mesh_camera_shadow.vert and mesh_camera_shadow_caster.vert - compiled 2026-08-19
+
+**A scene light joins the shadowed path, and the caster gets a stage of its
+own.** No renderer here could carry a light and a shadow at once: the lit
+shadowed stage spent all 128 bytes — the guaranteed push ceiling — on two
+matrices, and the naive union with a light colour is 144.
+
+The sixteen bytes come from the light's matrix. Its projection is
+orthographic and its view is rigid, so the product is affine and its bottom
+row is exactly `(0, 0, 0, 1)`; carrying it would be carrying a constant. The
+three rows that vary are three tight `vec4`s — 48 bytes — and both stages
+write the fourth as a literal one. The block is now `mat4 view_projection`,
+`vec4 light_row_0/1/2`, `vec4 light`: 64 + 48 + 16 = 128.
+
+**`mat4x3` is the trap, and a test bans it.** That type looks like the same
+saving and is not: std430 pads each of its four three-component columns back
+to sixteen bytes, so it is 64 again and the block is 144 again, while a host
+packing 48 would have the shader read padding. The saving comes from rows,
+not from a narrower matrix type.
+
+**The caster reads the same block**, where it used to reuse
+`mesh_camera.vert` through a depth-only pipeline. One record for both halves
+means the map cannot be written with one light and sampled with another —
+and it turns a host-side row/column mistake from an invisible regression
+into a loud one: with two encodings such a mistake moved the cast slightly
+and the golden missed it; with one, every surface self-compares, the shadow
+vanishes, and the golden that already existed refuses it. That was verified
+by making the mistake on purpose and watching the test go red.
+
+`mesh_camera_shadow.frag` is **untouched, byte for byte**: the light rides in
+on `fragment_colour`, which it already multiplies, and
+`fragment_light_position.w` interpolates a constant one, so its documented
+no-op divide stays a no-op.
+
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_shadow.vert -o mesh_camera_shadow.vert.spv
+> glslc -O mesh_camera_shadow_caster.vert -o mesh_camera_shadow_caster.vert.spv
+```
+
+1780 bytes and 1120 bytes, read off disk after compiling.
+
+**The offsets were checked, not assumed.** The caster declares two members it
+never reads — the camera matrix and the light — so that both stages share one
+layout, and nothing in the tree previously proved that an entirely-unread
+block member keeps its offset through `-O`. `spirv-dis` on both blobs reports
+`Offset 0 / 64 / 80 / 96 / 112` for the five members, identically. Had they
+moved, the fallback was an explicit `layout(offset = …)` in the caster.
