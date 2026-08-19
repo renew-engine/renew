@@ -1103,9 +1103,16 @@ fn the_readme_counts_what_the_workspace_actually_holds() {
             crates.len()
         ));
     }
+    // **The name, not the row's shape.** The table used to be one row per
+    // crate and is now grouped by what each crate is for, so a check
+    // pinned to `**`renew-x`**` was pinning a layout rather than the
+    // guarantee. The guarantee is that no crate is silently absent from
+    // the page, and a crate is named there by its short form, since the
+    // `renew-` prefix is on every one of them and carries nothing.
     for name in &crates {
-        if !readme.contains(&format!("**`{name}`**")) {
-            wrong.push(format!("{name} has no row in the README's module table"));
+        let short = name.strip_prefix("renew-").unwrap_or(name);
+        if !readme.contains(&format!("`{short}`")) {
+            wrong.push(format!("{name} is named nowhere in the README's module table"));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));

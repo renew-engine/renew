@@ -123,10 +123,10 @@ wrote 15 digests for windows/x86_64 to windows.json
   "arch": "x86_64",
   "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "digests": {
+    "chess/play-60/digest": "0x6bf0be22d95711ee",
     "cube/build-900/digest": "0xce632722e5698fa1",
-    "glide/seed-7-600/state_hash": "0xe8f68645bf927702",
-    "chess/play-60/digest": "0x6bf0be22d95711ee"
-    // 12 more
+    "cube/patrol-600/digest": "0x29559b5af5e634d2"
+    // 12 more, in key order
   }
 }
 ```
@@ -139,11 +139,11 @@ actually establishes the claim.
 
 ## Platforms
 
-| Target | Builds and tests | Simulation digests match | Draws a frame |
-|---|---|---|---|
-| Windows, Linux, macOS | yes | yes | yes |
-| Android | yes | yes, on an emulator | not yet in CI |
-| iOS | yes | yes, on a simulator | yes, on a simulator |
+| Target | CI compiles | Test suite runs | Simulation digests match | Draws a frame |
+|---|---|---|---|---|
+| Windows, Linux, macOS | yes | yes | yes | yes |
+| Android | yes, and lints | no, the pinned simulations only | yes, on an emulator | not yet in CI |
+| iOS | yes, and lints | no, the pinned simulations only | yes, on a simulator | yes, on a simulator |
 
 Graphics go through an internal interface backed by Vulkan through [`ash`](https://github.com/ash-rs/ash),
 with MoltenVK on Apple platforms. Windowing and input go through [`winit`](https://github.com/rust-windowing/winit).
@@ -174,8 +174,9 @@ clicking, and the editor, when it arrives, will be one more client of these APIs
 ## The engine
 
 Twenty-nine engine crates, five of them core. Everything outside the core is optional and
-removable. CI builds and tests one configuration per optional crate, with that crate and everything
-depending on it excluded, plus one more with the minimal core on its own.
+removable, and CI proves it *one crate at a time*: twenty-four configurations, each excluding one
+optional crate and everything that depends on it, every one built **and** tested.
+A twenty-fifth builds the minimal core alone and checks that no optional crate reached its graph.
 
 | | |
 |---|---|
@@ -191,7 +192,8 @@ to `stable`, and nothing has reached `stable` yet.
 
 ## What every commit has to clear
 
-Every commit on `main` clears all of this, on Windows, Linux and macOS:
+Every commit on `main` clears all of this. The test suite runs on all three desktop platforms;
+the rest run once, on Linux:
 
 | Gate | What it enforces |
 |---|---|
