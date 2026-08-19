@@ -633,6 +633,52 @@ impl<'a> PipelineDesc<'a> {
         }
     }
 
+    /// A depth-only pipeline whose vertex stage writes its own vertex
+    /// list: no per-vertex stream, no fragment stage, no color
+    /// attachment.
+    ///
+    /// **The shape that lets a generative pipeline cast a shadow, and
+    /// until now there was not one.** [`Self::depth_mesh`] hard-sets
+    /// `vertex_input: Some(layout)`, and the frame contract asserts that
+    /// an item names geometry exactly when its pipeline declares
+    /// per-vertex input — so a pipeline that generates its own vertices
+    /// and draws an instance stream could reach a color target and no
+    /// depth-only one. A renderer of that shape could therefore be seen
+    /// and could not cast, which is not a limitation anybody chose.
+    ///
+    /// `vertex_count` is what the stage generates for one instance, the
+    /// same number [`Shaders`] bundles and for the same reason: passed
+    /// beside the SPIR-V it is a second value that compiles in any
+    /// combination, and too low renders part of the geometry while too
+    /// high indexes past the end of the stage's own constant array.
+    ///
+    /// Combine it with [`Self::instance_input`] for the instanced case.
+    /// Depth state must still be declared, exactly as on
+    /// [`Self::depth_mesh`]: a depth-only pipeline that neither tests nor
+    /// writes depth does nothing at all, and creation asserts it.
+    #[must_use]
+    pub fn depth_only(vertex_spirv: &'a [u8], vertex_count: u32) -> Self {
+        Self {
+            vertex_spirv,
+            // Structurally absent, as on `depth_mesh`: the depth-only
+            // format is what licenses the emptiness, and creation asserts
+            // the pairing in both directions.
+            fragment_spirv: &[],
+            target_format: TargetFormat::DepthOnly,
+            vertex_count,
+            blend: Blend::Opaque,
+            sampled_bindings: 0,
+            uniform_block: 0,
+            // The difference from `depth_mesh`, and the whole of this
+            // constructor: no per-vertex stream, so the frame contract
+            // expects an item that names no geometry.
+            vertex_input: None,
+            instance_input: None,
+            depth_state: None,
+            push_constant_size: 0,
+        }
+    }
+
     /// Declare per-instance vertex input, in order. Locations and
     /// offsets are derived from position; the shader's `location(n)`
     /// list and this slice describe the same layout or the draw reads
@@ -1699,6 +1745,47 @@ mod tests {
         let desc = SamplerDesc::atlas();
         assert_eq!(desc.filter, Filter::Nearest);
         assert_eq!(desc.address, AddressMode::ClampToEdge);
+    }
+
+    /// **The two depth-only shapes differ in exactly one field, and it is
+    /// the one the frame contract reads.**
+    ///
+    /// `Item`'s rule is `pipeline.vertex_input == item.mesh.is_some()`,
+    /// asserted before any GPU call. So `vertex_input` is not a detail of
+    /// these two constructors, it is the whole difference between them:
+    /// one demands geometry and one demands its absence. Everything else
+    /// they set is identical, and pinning that here is what stops a later
+    /// edit from making them differ somewhere a caller cannot see.
+    #[test]
+    fn the_two_depth_only_shapes_differ_only_in_whether_they_want_geometry() {
+        const LAYOUT: &[VertexAttribute] = &[VertexAttribute::Vec3];
+        let generative = PipelineDesc::depth_only(&[1, 2, 3, 4], 6);
+        let over_a_mesh = PipelineDesc::depth_mesh(&[1, 2, 3, 4], LAYOUT);
+
+        assert!(
+            generative.vertex_input.is_none(),
+            "a generative pipeline declaring per-vertex input would be refused a mesh-less item"
+        );
+        assert!(
+            over_a_mesh.vertex_input.is_some(),
+            "a mesh pipeline that declared none would be handed a mesh and ignore it"
+        );
+        assert_eq!(generative.vertex_count, 6, "the stage's own count is kept");
+        assert_eq!(
+            over_a_mesh.vertex_count, 0,
+            "a mesh pipeline takes its count from the geometry"
+        );
+        for desc in [&generative, &over_a_mesh] {
+            assert_eq!(desc.target_format, TargetFormat::DepthOnly);
+            assert!(
+                desc.fragment_spirv.is_empty(),
+                "a depth-only pipeline carries no fragment bytes"
+            );
+            assert!(
+                desc.depth_state.is_none(),
+                "depth state is the caller's to declare, and creation asserts it was"
+            );
+        }
     }
 
     /// Every attribute's size and Vulkan spelling, every arm. Here rather
