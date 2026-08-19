@@ -526,10 +526,13 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     let camera = Camera::from_columns(columns);
 
     let mut seen = Vec::new();
-    // **Twenty-four, and the number is load-bearing.** It is the furthest
-    // this quad still covers the centre pixel at, which makes it the
-    // furthest reading that is a reading of the quad. Anything beyond it
-    // measures the backdrop; see the note above.
+    // **Twenty-four, with the bound derived rather than guessed.** The
+    // matrix puts `z` into `w`, so this quad's NDC half-extent is
+    // `1 / depth`, and the centre pixel of a 32-wide target samples at
+    // `16.5 / 32 * 2 - 1`, which is `0.03125`. Coverage therefore ends at
+    // a depth of thirty-two, exactly on the sample point and so at the
+    // mercy of the fill rule; thirty-one is the last depth that certainly
+    // draws. Twenty-four is that bound with room, and heavily faded.
     for depth in [4.0f32, 24.0] {
         let mut target = device.create_offscreen_target(extent)?;
         let mut scene = Scene::new();
