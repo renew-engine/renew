@@ -35,7 +35,20 @@ layout(location = 0) out vec4 out_colour;
 const float MAX_FADE = 0.72;
 
 // What distance fades toward, matching the other camera paths exactly.
-const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
+// What distance fades toward, supplied per frame.
+//
+// **A block, not a push constant, and not because of space.** This engine
+// declares its push range for the vertex stage alone, so a fragment
+// shader cannot read one at all — which is the whole reason this value
+// was a compiled-in constant for as long as it was. A uniform block is
+// visible to both stages and is the only channel that reaches here.
+//
+// `w` is unused. std140 rounds a `vec3` to sixteen bytes regardless, so
+// the padding exists either way and a named spare is honester than a
+// silent one.
+layout(std140, set = 1, binding = 0) uniform Fade {
+    vec4 horizon;
+} fade;
 
 // Below this, the fragment is not drawn at all.
 //
@@ -58,5 +71,5 @@ void main() {
     // Opaque out: what survives the cut is drawn whole. The alpha is not
     // carried through, because this pipeline does not blend and a value
     // nothing reads is a value that will one day be read wrongly.
-    out_colour = vec4(mix(surface, HORIZON, fragment_fade * MAX_FADE), 1.0);
+    out_colour = vec4(mix(surface, fade.horizon.rgb, fragment_fade * MAX_FADE), 1.0);
 }

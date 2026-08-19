@@ -517,7 +517,12 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     let camera = Camera::from_columns(columns);
 
     let mut seen = Vec::new();
-    for depth in [4.0f32, 40.0] {
+    // **Twenty-four rather than forty.** At forty the quad has shrunk
+    // past the centre pixel and this read the clear colour instead — and
+    // every assertion below passes on the clear colour, so this test was
+    // reporting a fade it had never seen. Found by a sibling test that
+    // needed the far quad to actually be there.
+    for depth in [4.0f32, 24.0] {
         let mut target = device.create_offscreen_target(extent)?;
         let mut scene = Scene::new();
         // Positions are world space on this path, so `depth` is distance
@@ -533,11 +538,13 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     }
 
     let (near, far) = (seen[0], seen[1]);
-    assert_ne!(
-        near,
-        [255, 0, 255, 255],
-        "the near quad did not draw at all, so the comparison would be vacuous"
-    );
+    for (which, pixel) in [("near", near), ("far", far)] {
+        assert_ne!(
+            pixel,
+            [255, 0, 255, 255],
+            "the {which} quad did not draw at all, so every comparison below is vacuous —              which is exactly what this test did until 2026-08-19"
+        );
+    }
     assert!(
         far[1] < near[1],
         "distance must cost green: near {near:?}, far {far:?}"
@@ -552,6 +559,112 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     );
 
     drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A caller can say what distance fades toward, and the far quad
+/// obeys.** This is the whole of E10: the colour was a `const vec3` in
+/// four fragment shaders, so a world that is warm, or a sky that changes
+/// with the hour, could not be said at all.
+///
+/// **Measured on the far quad against a near one in the same frame.** A
+/// far quad alone would move when anything about the fade moved, and the
+/// near quad is the control that says the change came from the horizon
+/// rather than from the fade strength.
+///
+/// The two horizons are chosen at opposite corners of the cube — red and
+/// blue — so that a channel going the wrong way is a failure and not a
+/// smaller pass. A single grey horizon would be satisfied by any change
+/// at all.
+///
+/// Probed by dropping `set_horizon`'s write: both frames fade to the
+/// built-in colour, the two far pixels come out equal, and the first
+/// assertion names them.
+#[test]
+fn a_caller_chooses_what_distance_fades_toward() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+    let camera = Camera::from_columns(columns);
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+
+    let mut seen = Vec::new();
+    for horizon in [[1.0f32, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+        let mut through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+        through.set_horizon(horizon);
+        let mut near = Vec::new();
+        // **Twenty-four, not forty.** At forty this quad no longer
+        // covers the centre pixel at all and the read is the clear
+        // colour — which is how the older fade golden beside this one
+        // came to pass without ever seeing a faded quad. Twenty-four is
+        // the furthest that still draws, and it is heavily faded.
+        for depth in [4.0f32, 24.0] {
+            let mut target = device.create_offscreen_target(extent)?;
+            let mut scene = Scene::new();
+            full_quad(&mut scene, depth, [0.0, 1.0, 0.0, 1.0]);
+            let mesh = through.upload(&device, &scene)?;
+            let items = [through.item(&mesh, &camera)];
+            target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+            let mut pixels = vec![0u8; target.byte_len()];
+            target.read_back_into(&mut pixels);
+            // The centre, which the quad covers, and a corner it never
+            // does — the corner is the control.
+            near.push((at(&pixels, SIZE / 2, SIZE / 2), at(&pixels, 2, 2)));
+            drop(target);
+        }
+        seen.push(near);
+        drop(through);
+    }
+
+    let (red_far, blue_far) = (seen[0][1].0, seen[1][1].0);
+    assert_ne!(
+        red_far, blue_far,
+        "the same distance faded to the same colour under two different horizons, so the          setting reached nothing"
+    );
+    assert!(
+        red_far[0] > blue_far[0],
+        "fading toward red must leave more red than fading toward blue: {red_far:?} against          {blue_far:?}"
+    );
+    assert!(
+        blue_far[2] > red_far[2],
+        "and more blue the other way: {blue_far:?} against {red_far:?}"
+    );
+
+    // **The horizon reaches further into what is further away.** This
+    // is what makes it a fade rather than a tint: the same setting moves
+    // a distant surface more than a near one. A change that simply
+    // repainted every fragment would move both alike and fail here.
+    let apart = |lit: [u8; 4], other: [u8; 4]| {
+        (0..3)
+            .map(|channel| (i32::from(lit[channel]) - i32::from(other[channel])).abs())
+            .sum::<i32>()
+    };
+    let (near_apart, far_apart) = (apart(seen[0][0].0, seen[1][0].0), apart(red_far, blue_far));
+    assert!(
+        far_apart > near_apart,
+        "the horizon moved a near surface by {near_apart} and a far one by {far_apart}; a fade          has to reach further into what is further away"
+    );
+
+    // **And it touches nothing this pipeline did not draw.** A corner the
+    // quad never covers must be the clear colour under both horizons —
+    // without this, a change that repainted the whole target would
+    // satisfy everything above.
+    for (which, corner) in [("red", seen[0][0].1), ("blue", seen[1][0].1)] {
+        assert_eq!(
+            corner,
+            [255, 0, 255, 255],
+            "under the {which} horizon a corner the quad never covers was repainted"
+        );
+    }
+
     assert_no_validation_errors(&device);
     Ok(())
 }

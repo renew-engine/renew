@@ -20,6 +20,62 @@ use renew_rhi::{
 
 use crate::scene::{Scene, VERTEX_STRIDE};
 
+/// How many bytes the fade block carries.
+///
+/// Sixteen: a `vec4` whose `w` is unused. std140 rounds a `vec3` up to
+/// sixteen anyway, so the padding exists either way and a named spare is
+/// honester than a silent one.
+const FADE_BYTES: usize = 16;
+
+/// The same, as the width the pipeline wants.
+const FADE_BYTES_U32: u32 = 16;
+
+/// The scene-wide values every camera pipeline reads in its fragment
+/// stage, and the buffer they cross in.
+///
+/// **A block rather than push data, and not for want of space.** This
+/// engine declares its push range for the vertex stage alone, so a
+/// fragment shader cannot read one at all — which is why the horizon was
+/// a compiled-in constant for as long as it was. The block is visible to
+/// both stages and is the only channel that reaches here.
+///
+/// One per renderer, because the horizon is a property of the scene and
+/// not of a draw: every item a renderer makes in a frame reads the same
+/// one, and threading a colour through four `item` signatures would say
+/// otherwise.
+struct Fade {
+    binding: renew_rhi::Binding,
+    bytes: [u8; FADE_BYTES],
+}
+
+impl Fade {
+    /// A fade holding the horizon the shaders used to compile in, so a
+    /// caller that says nothing gets the picture it already had.
+    fn new(device: &Device) -> Result<Self, Render3dError> {
+        let buffer = device
+            .create_buffer(FADE_BYTES, renew_rhi::BufferUsage::PerFrame)
+            .map_err(Render3dError::Texture)?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::uniform(&buffer))?;
+        let mut fade = Self {
+            binding,
+            bytes: [0; FADE_BYTES],
+        };
+        fade.set(builtin::HORIZON);
+        Ok(fade)
+    }
+
+    /// Write a colour into the bytes the next item will carry.
+    fn set(&mut self, horizon: [f32; 3]) {
+        for (slot, value) in self
+            .bytes
+            .chunks_exact_mut(4)
+            .zip(horizon.into_iter().chain([1.0]))
+        {
+            slot.copy_from_slice(&value.to_ne_bytes());
+        }
+    }
+}
+
 /// The per-vertex layout this crate's pipeline declares.
 ///
 /// **The rendering crate's own constant, not a copy of it.** `MESH_LAYOUT`
@@ -354,6 +410,8 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 /// with the same two constants, because two pipelines drawing one world
 /// must fade alike or the seam between them shows.
 pub struct TexturedCameraRenderer {
+    /// The scene values its fragment stage reads.
+    fade: Fade,
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
 }
@@ -388,10 +446,15 @@ impl TexturedCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(FADE_BYTES_U32)
                 .sampled_bindings(1)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        Ok(Self {
+            pipeline,
+            binding,
+            fade: Fade::new(device)?,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -412,7 +475,29 @@ impl TexturedCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            // **The block last, as the pipeline declares it.** Sampled
+            // slots come first and the block takes the set after them.
+            .bindings(&[&self.binding, &self.fade.binding])
+            .uniform_data(&self.fade.bytes)
+    }
+
+    /// What distance fades toward, from the next item onward.
+    ///
+    /// **A scene value, so it is set here rather than passed per draw.**
+    /// One horizon serves every item this renderer makes in a frame;
+    /// threading a colour through `item` would say the opposite and put
+    /// the same three floats at every call site.
+    ///
+    /// Defaults to [`renew_rhi::builtin::HORIZON`] — the colour these
+    /// shaders compiled in before there was a way to say otherwise — so a
+    /// caller that never calls this draws exactly what it drew before.
+    ///
+    /// **Match it to whatever the pass clears to.** The fade reads as
+    /// depth when distance dissolves into the backdrop and as coloured
+    /// fog when it does not, and nothing here can check that: the clear
+    /// colour belongs to the pass, not to the pipeline.
+    pub fn set_horizon(&mut self, horizon: [f32; 3]) {
+        self.fade.set(horizon);
     }
 }
 
@@ -443,6 +528,8 @@ impl TexturedCameraRenderer {
 /// same fade toward the same horizon, because pipelines drawing one world
 /// must fade alike or the seam between them shows.
 pub struct CutoutCameraRenderer {
+    /// The scene values its fragment stage reads.
+    fade: Fade,
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
 }
@@ -474,6 +561,7 @@ impl CutoutCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_CUTOUT, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(FADE_BYTES_U32)
                 .sampled_bindings(1)
                 // Depth read *and* written, exactly as the opaque paths
                 // do. That is the whole point: what survives the cut is
@@ -481,7 +569,11 @@ impl CutoutCameraRenderer {
                 // blending cannot offer without sorting.
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        Ok(Self {
+            pipeline,
+            binding,
+            fade: Fade::new(device)?,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -499,7 +591,29 @@ impl CutoutCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            // **The block last, as the pipeline declares it.** Sampled
+            // slots come first and the block takes the set after them.
+            .bindings(&[&self.binding, &self.fade.binding])
+            .uniform_data(&self.fade.bytes)
+    }
+
+    /// What distance fades toward, from the next item onward.
+    ///
+    /// **A scene value, so it is set here rather than passed per draw.**
+    /// One horizon serves every item this renderer makes in a frame;
+    /// threading a colour through `item` would say the opposite and put
+    /// the same three floats at every call site.
+    ///
+    /// Defaults to [`renew_rhi::builtin::HORIZON`] — the colour these
+    /// shaders compiled in before there was a way to say otherwise — so a
+    /// caller that never calls this draws exactly what it drew before.
+    ///
+    /// **Match it to whatever the pass clears to.** The fade reads as
+    /// depth when distance dissolves into the backdrop and as coloured
+    /// fog when it does not, and nothing here can check that: the clear
+    /// colour belongs to the pass, not to the pipeline.
+    pub fn set_horizon(&mut self, horizon: [f32; 3]) {
+        self.fade.set(horizon);
     }
 }
 
@@ -553,6 +667,8 @@ impl core::fmt::Debug for TexturedCameraRenderer {
 /// floating-point result, and the committed pictures pin the result as
 /// it is. They move only when something needs them to vary per draw.
 pub struct CameraRenderer {
+    /// The scene values its fragment stage reads.
+    fade: Fade,
     pipeline: RenderPipeline,
 }
 
@@ -579,9 +695,13 @@ impl CameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(FADE_BYTES_U32)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline })
+        Ok(Self {
+            pipeline,
+            fade: Fade::new(device)?,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -607,6 +727,29 @@ impl CameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
+            // This pipeline samples nothing, so the block is its only
+            // binding and sits at set zero.
+            .bindings(&[&self.fade.binding])
+            .uniform_data(&self.fade.bytes)
+    }
+
+    /// What distance fades toward, from the next item onward.
+    ///
+    /// **A scene value, so it is set here rather than passed per draw.**
+    /// One horizon serves every item this renderer makes in a frame;
+    /// threading a colour through `item` would say the opposite and put
+    /// the same three floats at every call site.
+    ///
+    /// Defaults to [`renew_rhi::builtin::HORIZON`] — the colour these
+    /// shaders compiled in before there was a way to say otherwise — so a
+    /// caller that never calls this draws exactly what it drew before.
+    ///
+    /// **Match it to whatever the pass clears to.** The fade reads as
+    /// depth when distance dissolves into the backdrop and as coloured
+    /// fog when it does not, and nothing here can check that: the clear
+    /// colour belongs to the pass, not to the pipeline.
+    pub fn set_horizon(&mut self, horizon: [f32; 3]) {
+        self.fade.set(horizon);
     }
 }
 
@@ -795,6 +938,8 @@ const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<Shadowe
 /// face at the far plane is faded, not doubly darkened. The constants
 /// stay in the shader for the reason recorded on [`CameraRenderer`].
 pub struct ShadowedCameraRenderer {
+    /// The scene values its fragment stage reads.
+    fade: Fade,
     caster: RenderPipeline,
     lit: RenderPipeline,
     shadow_map: renew_rhi::RenderImage,
@@ -862,6 +1007,7 @@ impl ShadowedCameraRenderer {
             &PipelineDesc::mesh(builtin::MESH_CAMERA_SHADOW, format, LAYOUT)
                 .push_constant_size(SHADOW_PUSH_BYTES)
                 .sampled_bindings(2)
+                .uniform_block(FADE_BYTES_U32)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
         Ok(Self {
@@ -870,6 +1016,7 @@ impl ShadowedCameraRenderer {
             shadow_map,
             atlas_binding,
             shadow_binding,
+            fade: Fade::new(device)?,
         })
     }
 
@@ -912,7 +1059,31 @@ impl ShadowedCameraRenderer {
         Item::new(&self.lit)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.atlas_binding, &self.shadow_binding])
+            .bindings(&[
+                &self.atlas_binding,
+                &self.shadow_binding,
+                &self.fade.binding,
+            ])
+            .uniform_data(&self.fade.bytes)
+    }
+
+    /// What distance fades toward, from the next item onward.
+    ///
+    /// **A scene value, so it is set here rather than passed per draw.**
+    /// One horizon serves every item this renderer makes in a frame;
+    /// threading a colour through `item` would say the opposite and put
+    /// the same three floats at every call site.
+    ///
+    /// Defaults to [`renew_rhi::builtin::HORIZON`] — the colour these
+    /// shaders compiled in before there was a way to say otherwise — so a
+    /// caller that never calls this draws exactly what it drew before.
+    ///
+    /// **Match it to whatever the pass clears to.** The fade reads as
+    /// depth when distance dissolves into the backdrop and as coloured
+    /// fog when it does not, and nothing here can check that: the clear
+    /// colour belongs to the pass, not to the pipeline.
+    pub fn set_horizon(&mut self, horizon: [f32; 3]) {
+        self.fade.set(horizon);
     }
 }
 

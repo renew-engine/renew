@@ -468,46 +468,72 @@ mod horizon_tests {
         ),
     ];
 
-    /// Pull the `vec3(...)` components out of a `const vec3 HORIZON` line.
-    fn declared_horizon(name: &str, source: &str) -> Vec<f32> {
-        let line = source
-            .lines()
-            .find(|line| line.starts_with("const vec3 HORIZON"))
-            .unwrap_or_else(|| panic!("{name} must declare `const vec3 HORIZON`"));
-        let inside = line
-            .split_once("vec3(")
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(inside, _)| inside)
-            .expect("the declaration must be a vec3(...) literal");
-        inside
-            .split(',')
-            .map(|part| {
-                part.trim()
-                    .parse()
-                    .expect("each component must be a float literal")
-            })
-            .collect()
+    /// Which set a shader declares its fade block at, and how many
+    /// combined image samplers it declares before it.
+    ///
+    /// **The invariant is that these are equal.** The RHI binds the block
+    /// at set `sampled_bindings`, so a shader's block belongs at exactly
+    /// the set after its last sampler.
+    fn fade_set_and_samplers(name: &str, source: &str) -> (u32, u32) {
+        let mut samplers = 0;
+        let mut block = None;
+        for line in source.lines() {
+            let line = line.trim_start();
+            if line.contains("uniform sampler2D") {
+                samplers += 1;
+            }
+            if line.contains("uniform Fade") {
+                block = Some(
+                    line.split("set = ")
+                        .nth(1)
+                        .and_then(|rest| rest.split(',').next())
+                        .and_then(|digits| digits.trim().parse::<u32>().ok())
+                        .unwrap_or_else(|| panic!("{name}'s fade block must name its set")),
+                );
+            }
+        }
+        (
+            block.unwrap_or_else(|| panic!("{name} must declare a `uniform Fade` block")),
+            samplers,
+        )
     }
 
-    /// **The constant and the shaders that use it cannot drift.**
-    /// A colour written in two languages is coupled by nothing but the
-    /// hope that whoever edits one greps for the other. Here the shader
-    /// source is the authority and this reads it.
+    /// **Every camera shader reads the horizon from a block, at the set
+    /// its own samplers leave free.**
     ///
-    /// **All three of them.** This checked `mesh_camera.frag` alone while
-    /// two more shaders declared the same constant, so the fade applied to
-    /// shadowed and textured surfaces was coupled to nothing. All three
-    /// agreed, so nothing was wrong — but the next edit to the horizon
-    /// would have changed one, passed, and left two surfaces fading to the
-    /// old colour, which looks like a lighting bug and is a stale copy.
+    /// The colour was a `const vec3` in four shaders until E10, so a
+    /// consumer whose world is warm could not say so. It could not become
+    /// a push constant either, and not for want of space: this engine
+    /// declares its push range for the vertex stage alone, so a fragment
+    /// shader cannot read one at all.
+    ///
+    /// **The set index is what can drift now.** The RHI binds the block
+    /// at set `sampled_bindings`, so a shader's block belongs at exactly
+    /// the set after its last sampler. One set too far binds nothing and
+    /// reads zeroes, which draws a world fading to black — a lighting bug
+    /// to look at, and a layout mistake in fact.
+    ///
+    /// Checked inside each shader rather than against a table naming
+    /// which pipeline uses which: a second table is a second thing to
+    /// keep in step, and a shader is self-consistent or it is not.
+    ///
+    /// Probed by moving one block one set along: the mismatch names the
+    /// shader and both numbers.
     #[test]
-    fn the_horizon_constant_matches_every_shader_that_fades_to_it() {
+    fn every_camera_shader_reads_the_horizon_from_the_set_after_its_samplers() {
         for (name, source) in HORIZON_SHADERS {
+            let (set, samplers) = fade_set_and_samplers(name, source);
             assert_eq!(
-                declared_horizon(name, source),
-                crate::builtin::HORIZON.to_vec(),
-                "{name} disagrees with builtin::HORIZON — the shader is the authority, so the \
-                 constant is what needs changing"
+                set, samplers,
+                "{name} declares {samplers} sampler(s) and puts its fade block at set {set};                  the RHI binds the block at set `sampled_bindings`, so those must match"
+            );
+            assert!(
+                source.contains("fade.horizon"),
+                "{name} declares a fade block and never reads it"
+            );
+            assert!(
+                !source.contains("const vec3 HORIZON"),
+                "{name} still carries the compiled-in horizon beside the block it reads"
             );
         }
     }
@@ -527,7 +553,7 @@ mod horizon_tests {
         clippy::disallowed_methods,
         reason = "a test reading its own crate's sources is not the renderer reading files"
     )]
-    fn every_shader_declaring_horizon_is_on_the_list() {
+    fn every_shader_reading_a_fade_block_is_on_the_list() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let mut declaring: Vec<String> = std::fs::read_dir(&dir)
             .expect("the shader directory is beside the crate")
@@ -539,7 +565,7 @@ mod horizon_tests {
                 let source = std::fs::read_to_string(&path).ok()?;
                 source
                     .lines()
-                    .any(|line| line.starts_with("const vec3 HORIZON"))
+                    .any(|line| line.contains("uniform Fade"))
                     .then(|| path.file_name()?.to_str().map(str::to_owned))
                     .flatten()
             })
@@ -554,7 +580,7 @@ mod horizon_tests {
 
         assert_eq!(
             declaring, listed,
-            "the shaders declaring HORIZON and the list the drift check walks have diverged"
+            "the shaders reading a fade block and the list the drift check walks have diverged"
         );
     }
 

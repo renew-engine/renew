@@ -86,15 +86,22 @@ target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
   rather than a flag, because the meaning of a scene's positions must
   be decidable at the call site — the failure mode of guessing is a
   plausible wrong picture, not an error.
-- **A camera costs nothing but its bytes.** The matrix is recorded as
-  push data per draw: no buffer, no retention slot, and several camera
-  items in one frame cost nothing extra. The camera pipelines fade
-  distant fragments toward a horizon colour — a readability floor, not
-  a look, and stated in their rustdoc because behaviour a caller cannot
-  predict from a type's name is behaviour the type must name itself.
-- **A shadowed camera costs nothing but its bytes either** — no buffer, no
-  binding, no descriptor set — and the light's fourth row costs nothing at
-  all, because an orthographic projection over a rigid view is affine and
+- **A camera's matrix costs nothing but its bytes.** It is recorded as
+  push data per draw: no retention slot, and several camera items in one
+  frame cost nothing extra.
+- **The scene values cost one buffer a renderer, and they have to.** The
+  camera pipelines fade distant fragments toward a horizon colour — a
+  readability floor rather than a look — and that colour is settable with
+  `set_horizon`, which means it crosses in a uniform block. **Not because
+  it is large.** This engine declares its push range for the vertex stage
+  alone, so a fragment shader cannot read push data at all; a block is
+  visible to both stages and is the only channel that reaches a fragment
+  shader. One buffer and one binding a renderer, shared by every item it
+  makes, because the horizon is a property of the scene rather than of a
+  draw. The default is the colour the shaders used to compile in, so a
+  caller that says nothing draws what it always drew.
+- **A shadowed camera's matrix costs nothing but its bytes either** — no
+  retention slot, and the light's fourth row costs nothing at all, because an orthographic projection over a rigid view is affine and
   that row is a constant both shaders write themselves. The distance fade
   is a readability floor and the scene light is the caller's own look;
   they compose, and both camera families dim alike because both apply the

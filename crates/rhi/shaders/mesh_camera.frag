@@ -40,11 +40,24 @@ const float MAX_FADE = 0.72;
 // What distance fades toward. The same colour the samples clear to, so
 // the fade reads as depth rather than as a grey wash — a fade toward some
 // other colour would look like haze sitting in front of the backdrop.
-const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
+// What distance fades toward, supplied per frame.
+//
+// **A block, not a push constant, and not because of space.** This engine
+// declares its push range for the vertex stage alone, so a fragment
+// shader cannot read one at all — which is the whole reason this value
+// was a compiled-in constant for as long as it was. A uniform block is
+// visible to both stages and is the only channel that reaches here.
+//
+// `w` is unused. std140 rounds a `vec3` to sixteen bytes regardless, so
+// the padding exists either way and a named spare is honester than a
+// silent one.
+layout(std140, set = 0, binding = 0) uniform Fade {
+    vec4 horizon;
+} fade;
 
 void main() {
     out_colour = vec4(
-        mix(fragment_colour.rgb, HORIZON, fragment_fade * MAX_FADE),
+        mix(fragment_colour.rgb, fade.horizon.rgb, fragment_fade * MAX_FADE),
         fragment_colour.a
     );
 }

@@ -509,3 +509,43 @@ layout, and nothing in the tree previously proved that an entirely-unread
 block member keeps its offset through `-O`. `spirv-dis` on both blobs reports
 `Offset 0 / 64 / 80 / 96 / 112` for the five members, identically. Had they
 moved, the fallback was an explicit `layout(offset = …)` in the caster.
+
+## The horizon becomes a block, 2026-08-19
+
+Four camera fragment shaders carried `const vec3 HORIZON` and now read it from
+a uniform block instead, so a consumer can say what distance fades toward.
+
+**It could not become a push constant, and not for want of space.** The
+pipeline layout declares its push range with `stage_flags(VERTEX)` alone, so a
+fragment shader cannot read one at all. The block is visible to both stages and
+is the only channel that reaches here. `mesh_camera_shadow` also has no room —
+its push block is the whole guaranteed 128 — but that is the second reason, not
+the first.
+
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.frag -o mesh_camera.frag.spv
+> glslc -O mesh_camera_textured.frag -o mesh_camera_textured.frag.spv
+> glslc -O mesh_camera_cutout.frag -o mesh_camera_cutout.frag.spv
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+900, 1224, 1332 and 2300 bytes, read off disk after compiling.
+
+**The set indices were checked in the blob, not assumed from the source.** The
+block sits at set `sampled_bindings`, which differs per shader — 0 where
+nothing is sampled, 1 for the textured pair, 2 for the shadowed one — so a
+shader whose block drifted one set along would bind nothing and read zeroes,
+drawing a world that fades to black. `spirv-dis` on `mesh_camera_shadow.frag.spv`
+reports `DescriptorSet 0` and `1` for the two samplers and `DescriptorSet 2`
+with `Offset 0` for the block, which is what the pipeline declares. A test in
+`rhi` holds every shader's declared set against its own sampler count, so the
+source cannot drift either.
