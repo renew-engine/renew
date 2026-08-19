@@ -26,10 +26,24 @@ layout(location = 3) in vec4 fragment_light_position;
 
 layout(location = 0) out vec4 out_colour;
 
-// See mesh_camera_textured.frag; identical, because two pipelines
-// drawing one world must fade alike or the seam shows.
-const float MAX_FADE = 0.72;
-const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
+// **What distance fades toward, said by whoever is drawing.**
+//
+// It was a pair of compiled-in constants, the colour matched by hand to
+// what this repository's own samples clear to. That made the fade correct
+// for exactly one backdrop: a caller clearing to any other colour got a
+// haze of the wrong one hanging in front of its sky, which reads as dirty
+// glass rather than as distance. Only the caller knows what it clears to.
+//
+// `rgb` is that colour, in the same linear space this mix happens in.
+// `a` is how much of it shows at the far plane — short of one, so
+// geometry at the very back stays faintly visible rather than vanishing
+// into the backdrop, and a room's far wall still reads as a wall.
+//
+// The same block mesh_camera_textured.frag reads, for the same reason:
+// two pipelines drawing one world must fade alike or the seam shows.
+layout(std140, set = 2, binding = 0) uniform Air {
+    vec4 horizon;
+} air;
 
 // How much surface survives in shadow. Well above zero: a shadow is a
 // dimming of a lit world, not a hole in it.
@@ -63,7 +77,7 @@ void main() {
         shade = light_ndc.z >= nearest - BIAS ? 1.0 : SHADOW_DIM;
     }
     out_colour = vec4(
-        mix(surface * shade, HORIZON, fragment_fade * MAX_FADE),
+        mix(surface * shade, air.horizon.rgb, fragment_fade * air.horizon.a),
         fragment_colour.a * texel.a
     );
 }

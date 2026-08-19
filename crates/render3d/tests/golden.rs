@@ -15,7 +15,7 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
+    Air, Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
     ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
@@ -574,6 +574,137 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// **The distance fades toward the colour the caller named**, which is
+/// the whole reason the colour stopped being compiled in.
+///
+/// It was matched by hand to what this repository's own samples clear to,
+/// so the fade was correct for exactly one backdrop. A caller clearing to
+/// daylight got its far geometry faded toward near-black — a bank of soot
+/// across the horizon, which reads as a wall rather than as distance.
+///
+/// Asserted as a comparison between two airs rather than against absolute
+/// values: what matters is that the answer *follows* what was asked for,
+/// and a pinned pixel would also pass if the shader averaged the request
+/// with something of its own.
+///
+/// Probed by ignoring `air.horizon` and mixing toward a constant: the two
+/// renders come out identical and this names both pixels.
+#[test]
+fn the_fade_goes_toward_the_colour_the_caller_named() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+
+    // Columns of a matrix whose last row is (0, 0, 1, 0): w becomes z.
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+
+    // **The furthest reading that is a reading of the quad.** Past about
+    // this the quad has shrunk off the centre pixel and the sample is the
+    // clear colour, which satisfies a fade assertion perfectly well while
+    // measuring nothing. The refusal below is what caught it here.
+    let far = 24.0f32;
+    let mut seen = Vec::new();
+    for horizon in [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+        let camera = Camera::from_columns(columns).through(Air::of(horizon, 0.72));
+        let mut target = device.create_offscreen_target(extent)?;
+        let mut scene = Scene::new();
+        // Grey, so neither request is being handed its own answer by the
+        // surface it is fading.
+        full_quad(&mut scene, far, [0.5, 0.5, 0.5, 1.0]);
+        let mesh = through.upload(&device, &scene)?;
+        let items = [through.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+    }
+
+    let (reddened, blued) = (seen[0], seen[1]);
+    assert_ne!(
+        reddened,
+        [255, 0, 255, 255],
+        "the quad did not draw at all, so the comparison would be vacuous"
+    );
+    assert!(
+        reddened[0] > blued[0],
+        "asking for a red horizon must redden the distance: red air gave {reddened:?}, \
+         blue air gave {blued:?}"
+    );
+    assert!(
+        blued[2] > reddened[2],
+        "asking for a blue horizon must blue the distance: blue air gave {blued:?}, \
+         red air gave {reddened:?}"
+    );
+
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **How much of the horizon shows is the caller's too.** The same
+/// distance under the same colour, asked for at two strengths, has to
+/// differ — otherwise the strength is decorative and a caller that wanted
+/// a clear day would get this crate's haze anyway.
+///
+/// Probed by ignoring `air.horizon.a` and using a constant: the two
+/// renders agree and this names them.
+#[test]
+fn how_much_horizon_shows_is_the_callers_too() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+
+    let mut seen = Vec::new();
+    for most in [0.1f32, 0.9] {
+        // A black horizon, so more of it means plainly less green.
+        let camera = Camera::from_columns(columns).through(Air::of([0.0; 3], most));
+        let mut target = device.create_offscreen_target(extent)?;
+        let mut scene = Scene::new();
+        full_quad(&mut scene, 24.0, [0.0, 1.0, 0.0, 1.0]);
+        let mesh = through.upload(&device, &scene)?;
+        let items = [through.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+    }
+
+    let (barely, mostly) = (seen[0], seen[1]);
+    assert_ne!(
+        barely,
+        [255, 0, 255, 255],
+        "the quad did not draw at all, so the comparison would be vacuous"
+    );
+    assert!(
+        mostly[1] < barely[1],
+        "asking for more horizon must cost more green: a tenth gave {barely:?}, \
+         nine tenths gave {mostly:?}"
+    );
+
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
 /// The camera path refuses an empty scene the same way the mesh path
 /// does — the shared refusal is shared in fact, not only in intention.
 #[test]
@@ -882,7 +1013,13 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     // `Camera` for the caster and a second copy here — was how a
     // row/column mistake used to move the cast a little instead of
     // making the shadow vanish.
-    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns);
+    // **Through the default air, which is what makes this golden evidence.**
+    // The shadowed path reads the fade's colour from the same block the
+    // other camera paths do; `Air::CLEAR_BLACK` carries exactly the values
+    // the shaders used to compile in, so this picture is the picture it
+    // was before there was anything to say — and that it still matches is
+    // the claim, not an accident of the arm never being taken.
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns).through(Air::CLEAR_BLACK);
 
     let renderer = ShadowedCameraRenderer::new(
         &device,

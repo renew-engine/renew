@@ -22,21 +22,30 @@ layout(location = 2) in vec2 fragment_uv;
 
 layout(location = 0) out vec4 out_colour;
 
-// How much of the horizon shows at the far plane. Short of one, so
+// **What distance fades toward, said by whoever is drawing.**
+//
+// It was a pair of compiled-in constants, the colour matched by hand to
+// what this repository's own samples clear to. That made the fade correct
+// for exactly one backdrop: a caller clearing to any other colour got a
+// haze of the wrong one hanging in front of its sky, which reads as dirty
+// glass rather than as distance. Only the caller knows what it clears to.
+//
+// `rgb` is that colour, in the same linear space this mix happens in.
+// `a` is how much of it shows at the far plane — short of one, so
 // geometry at the very back stays faintly visible rather than vanishing
 // into the backdrop, and a room's far wall still reads as a wall.
-const float MAX_FADE = 0.72;
-
-// What distance fades toward. The same colour the samples clear to, so
-// the fade reads as depth rather than as a grey wash. Identical to the
-// untextured path's: two pipelines drawing one world must agree.
-const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
+//
+// Every camera path reads the same block, so two pipelines drawing one
+// world fade alike and no seam shows between them.
+layout(std140, set = 1, binding = 0) uniform Air {
+    vec4 horizon;
+} air;
 
 void main() {
     vec4 texel = texture(atlas, fragment_uv);
     vec3 surface = texel.rgb * fragment_colour.rgb;
     out_colour = vec4(
-        mix(surface, HORIZON, fragment_fade * MAX_FADE),
+        mix(surface, air.horizon.rgb, fragment_fade * air.horizon.a),
         fragment_colour.a * texel.a
     );
 }

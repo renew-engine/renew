@@ -441,15 +441,14 @@ pub mod builtin {
 
 #[cfg(test)]
 mod horizon_tests {
-    /// Every shader that declares `HORIZON`, so the test can check all of
-    /// them rather than the one somebody thought of.
+    /// Every camera fragment shader, which is every shader that fades.
     ///
-    /// **Named here rather than discovered at runtime** because the sources
-    /// are `include_str!`-ed into the binary and a test cannot read the
-    /// directory of a crate it was compiled from. That makes this list the
-    /// weak point, so `every_shader_declaring_horizon_is_on_the_list`
-    /// below holds it against the shaders that actually exist.
-    const HORIZON_SHADERS: [(&str, &str); 4] = [
+    /// **Named here rather than discovered at runtime** because the
+    /// sources are `include_str!`-ed into the binary and a test cannot
+    /// read the directory of a crate it was compiled from. That makes this
+    /// list the weak point, so `no_shader_compiles_the_horizon_in` below
+    /// holds it against the shaders that actually exist.
+    const FADING_SHADERS: [(&str, &str); 4] = [
         (
             "mesh_camera.frag",
             include_str!("../shaders/mesh_camera.frag"),
@@ -468,310 +467,90 @@ mod horizon_tests {
         ),
     ];
 
-    /// Pull the `vec3(...)` components out of a `const vec3 HORIZON` line.
-    fn declared_horizon(name: &str, source: &str) -> Vec<f32> {
-        let line = source
-            .lines()
-            .find(|line| line.starts_with("const vec3 HORIZON"))
-            .unwrap_or_else(|| panic!("{name} must declare `const vec3 HORIZON`"));
-        let inside = line
-            .split_once("vec3(")
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(inside, _)| inside)
-            .expect("the declaration must be a vec3(...) literal");
-        inside
-            .split(',')
-            .map(|part| {
-                part.trim()
-                    .parse()
-                    .expect("each component must be a float literal")
-            })
-            .collect()
-    }
-
-    /// **The constant and the shaders that use it cannot drift.**
-    /// A colour written in two languages is coupled by nothing but the
-    /// hope that whoever edits one greps for the other. Here the shader
-    /// source is the authority and this reads it.
+    /// **Every shader that fades reads the colour rather than knowing it.**
     ///
-    /// **All three of them.** This checked `mesh_camera.frag` alone while
-    /// two more shaders declared the same constant, so the fade applied to
-    /// shadowed and textured surfaces was coupled to nothing. All three
-    /// agreed, so nothing was wrong — but the next edit to the horizon
-    /// would have changed one, passed, and left two surfaces fading to the
-    /// old colour, which looks like a lighting bug and is a stale copy.
+    /// This replaces a pair of tests that checked the Rust constant and
+    /// four compiled-in copies of it had not drifted apart. They cannot
+    /// drift now, because there is one copy and the shaders no longer hold
+    /// it — which is the better answer to the same question, and it is why
+    /// those tests are gone rather than adapted.
+    ///
+    /// What can still go wrong is the opposite: somebody reintroduces a
+    /// constant, the fade stops honouring what the caller asked for, and
+    /// nothing looks wrong until a caller clears to a colour that is not
+    /// this crate's default.
     #[test]
-    fn the_horizon_constant_matches_every_shader_that_fades_to_it() {
-        for (name, source) in HORIZON_SHADERS {
-            assert_eq!(
-                declared_horizon(name, source),
-                crate::builtin::HORIZON.to_vec(),
-                "{name} disagrees with builtin::HORIZON — the shader is the authority, so the \
-                 constant is what needs changing"
+    fn every_fading_shader_reads_the_horizon_from_its_caller() {
+        for (name, source) in FADING_SHADERS {
+            assert!(
+                source.contains("uniform Air {"),
+                "{name} fades with distance but declares no Air block, so whatever it fades \
+                 toward is not what the caller asked for"
+            );
+            assert!(
+                source.contains("air.horizon.rgb"),
+                "{name} declares an Air block and does not fade toward it"
             );
         }
     }
 
     /// The list above is the thing that can go stale, so it is checked
-    /// against the directory rather than trusted.
-    ///
-    /// A shader added tomorrow that fades to the horizon and is not listed
-    /// would leave the drift check silently narrower than it reads.
+    /// against the directory rather than trusted — and the same walk
+    /// catches a compiled-in horizon coming back anywhere.
     ///
     /// The filesystem ban this crate carries is about the *renderer* never
     /// reading a file while it draws. Reading this crate's own shader
-    /// directory to check a list against it is a different act, at a
-    /// different time, and is named rather than exempted silently.
+    /// directory is a different act, at a different time, and is named
+    /// rather than exempted silently.
     #[test]
     #[allow(
         clippy::disallowed_methods,
         reason = "a test reading its own crate's sources is not the renderer reading files"
     )]
-    fn every_shader_declaring_horizon_is_on_the_list() {
+    fn no_shader_compiles_the_horizon_in() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let mut declaring: Vec<String> = std::fs::read_dir(&dir)
+        let mut fading: Vec<String> = Vec::new();
+        // **Filtered rather than skipped with `continue`.** An arm that
+        // steps over an unreadable entry is an arm nothing in this
+        // directory can take, so it is a line no run covers and a hole in
+        // the coverage ratchet for no gain — the walk simply wants the
+        // shaders it can read.
+        let shaders = std::fs::read_dir(&dir)
             .expect("the shader directory is beside the crate")
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                if path.extension()? != "frag" && path.extension()? != "vert" {
-                    return None;
-                }
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|kind| kind == "frag" || kind == "vert")
+            })
+            .filter_map(|path| {
+                let name = path.file_name()?.to_str()?.to_owned();
                 let source = std::fs::read_to_string(&path).ok()?;
-                source
-                    .lines()
-                    .any(|line| line.starts_with("const vec3 HORIZON"))
-                    .then(|| path.file_name()?.to_str().map(str::to_owned))
-                    .flatten()
-            })
-            .collect();
-        declaring.sort();
-
-        let mut listed: Vec<String> = HORIZON_SHADERS
-            .iter()
-            .map(|(name, _)| (*name).to_owned())
-            .collect();
-        listed.sort();
-
-        assert_eq!(
-            declaring, listed,
-            "the shaders declaring HORIZON and the list the drift check walks have diverged"
-        );
-    }
-
-    /// The two shadowed vertex stages that share one push block, and the
-    /// members they must both declare, in order, with the bytes each
-    /// costs.
-    ///
-    /// **The block is exactly the guaranteed push ceiling, and the fit is
-    /// the whole design.** A camera matrix, the light's three rows, and a
-    /// scene light come to 128; the naive layout — two full matrices and
-    /// a colour — is 144 and does not fit, which is why no path carried a
-    /// light and a shadow at once before. Anything that grows a member
-    /// breaks the path silently, so the shape is pinned here rather than
-    /// left to two files agreeing by habit.
-    const SHADOW_BLOCK_MEMBERS: [(&str, &str, u32); 5] = [
-        ("mat4", "view_projection", 64),
-        ("vec4", "light_row_0", 16),
-        ("vec4", "light_row_1", 16),
-        ("vec4", "light_row_2", 16),
-        ("vec4", "light", 16),
-    ];
-
-    /// Both stages reading that block.
-    const SHADOW_BLOCK_SHADERS: [(&str, &str); 2] = [
-        (
-            "mesh_camera_shadow.vert",
-            include_str!("../shaders/mesh_camera_shadow.vert"),
-        ),
-        (
-            "mesh_camera_shadow_caster.vert",
-            include_str!("../shaders/mesh_camera_shadow_caster.vert"),
-        ),
-    ];
-
-    /// The `type name;` pairs inside a shader's `push_constant` block, in
-    /// declaration order, with comments and blank lines dropped.
-    fn declared_push_members(name: &str, source: &str) -> Vec<(String, String)> {
-        let open = source
-            .find("layout(push_constant) uniform Matrices {")
-            .unwrap_or_else(|| panic!("{name} must declare a push_constant block named Matrices"));
-        // `unwrap_or_else` rather than `let ... else`, matching the
-        // sibling parser above: the refusal is the same, and this shape
-        // keeps the never-taken arm inside the expression rather than on
-        // a line of its own that no well-formed shader can reach.
-        let body_start = open
-            + source[open..]
-                .find('{')
-                .unwrap_or_else(|| panic!("{name}'s push block must have a body"))
-            + 1;
-        let body_end = body_start
-            + source[body_start..]
-                .find('}')
-                .unwrap_or_else(|| panic!("{name}'s push block must be closed"));
-        source[body_start..body_end]
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with("//"))
-            .map(|line| {
-                let statement = line.trim_end_matches(';');
-                let (kind, member) = statement
-                    .split_once(char::is_whitespace)
-                    .unwrap_or_else(|| panic!("{name}: `{line}` is not `type name;`"));
-                (kind.trim().to_owned(), member.trim().to_owned())
-            })
-            .collect()
-    }
-
-    /// **Both shadowed stages declare one block, member for member, in
-    /// one order.**
-    ///
-    /// They are two files that must agree byte for byte: the caster
-    /// rasterizes the depth the lit stage compares against, so a member
-    /// that moved in one and not the other would put the comparison at
-    /// the wrong offset and shift every shadow. Nothing else in the
-    /// toolchain checks it — SPIR-V is embedded as bytes and no stage
-    /// reflection exists here.
-    ///
-    /// Probed by reordering two members in one stage, by renaming one,
-    /// and by replacing the three rows with a `mat4x3`: each fails.
-    #[test]
-    fn the_shadowed_shaders_declare_one_push_block() {
-        let expected: Vec<(String, String)> = SHADOW_BLOCK_MEMBERS
-            .iter()
-            .map(|(kind, member, _)| ((*kind).to_owned(), (*member).to_owned()))
-            .collect();
-        for (name, source) in SHADOW_BLOCK_SHADERS {
-            assert_eq!(
-                declared_push_members(name, source),
-                expected,
-                "{name}'s push block is not the shared shadow block"
-            );
-        }
-        let total: u32 = SHADOW_BLOCK_MEMBERS.iter().map(|(_, _, bytes)| bytes).sum();
-        assert_eq!(
-            total,
-            crate::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES,
-            "the members do not sum to the declared push range"
-        );
-        assert_eq!(
-            total,
-            crate::MAX_PUSH_CONSTANT_BYTES,
-            "the block is meant to be exactly the guaranteed ceiling"
-        );
-
-        // **Where the light is applied, pinned in text — with the
-        // comments stripped first.** No pixel probe can tell a light
-        // multiplied in the vertex stage from one multiplied in the
-        // fragment stage, so this substring is the only guard. Searching
-        // the raw source would let a commented-out line satisfy it:
-        // `// fragment_colour = vertex_colour * matrices.light;` above a
-        // line that drops the multiply keeps a naive `contains` green.
-        //
-        // Both halves of the family are pinned, not just the shadowed
-        // one. They are spelled differently — one parenthesises the
-        // vertex colour — so each is matched on the parts that carry the
-        // meaning: the destination, the source, and the light.
-        for (name, source, receiver) in [
-            (
-                "mesh_camera_shadow.vert",
-                SHADOW_BLOCK_SHADERS[0].1,
-                "matrices.light",
-            ),
-            (
-                "mesh_camera.vert",
-                include_str!("../shaders/mesh_camera.vert"),
-                "camera.light",
-            ),
-        ] {
-            let code: String = source
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let applied = code
-                .split_once("fragment_colour =")
-                .is_some_and(|(_, rest)| {
-                    let statement = rest.split(';').next().unwrap_or("");
-                    statement.contains("vertex_colour") && statement.contains(receiver)
-                });
+                Some((name, source))
+            });
+        for (name, source) in shaders {
             assert!(
-                applied,
-                "{name} must apply the scene light to the vertex colour in the vertex \
-                 stage, as every camera path does — a world drawn half by each must dim \
-                 alike"
-            );
-        }
-    }
-
-    /// Every shader that reads the shared shadow block is on the list
-    /// above, and none of them spells the light's rows as a `mat4x3`.
-    ///
-    /// **A directory read, because a list is only as good as its
-    /// completeness** — the sibling of `every_shader_declaring_horizon_is_on_the_list`,
-    /// for the same reason. The `mat4x3` ban is the trap this layout
-    /// invites: that type looks like the same saving and is not, because
-    /// std430 pads each of its four three-component columns back to
-    /// sixteen bytes — 64 again, and the block back to 144, while the
-    /// host packs 48 and the shader reads padding.
-    ///
-    /// Probed by adding a third shader that reads `light_row_0` without
-    /// listing it, and by writing `mat4x3` in any shader: each fails.
-    #[test]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a test reading its own crate's sources is not the renderer reading files"
-    )]
-    fn every_shader_reading_the_shadow_block_is_on_the_list() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let mut reading: Vec<String> = Vec::new();
-        let mut with_mat4x3: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&dir).expect("the shader directory is beside the crate") {
-            let path = entry.expect("a readable directory entry").path();
-            let is_source = path
-                .extension()
-                .is_some_and(|kind| kind == "vert" || kind == "frag");
-            if !is_source {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .expect("a named file")
-                .to_string_lossy()
-                .into_owned();
-            let source = std::fs::read_to_string(&path).expect("a readable shader");
-            if source.contains("light_row_0") {
-                reading.push(name.clone());
-            }
-            // The word, not a comment mentioning it: the bans below are
-            // about declarations, and this file's own comments explain
-            // why the type is wrong.
-            // A filter rather than an `if` that pushes: the push can only
-            // run when a shader breaks the ban, so as a branch it is
-            // untaken by design and reads as uncovered forever. Collected
-            // this way the predicate runs on every shader and the result
-            // is simply empty.
-            with_mat4x3.extend(
-                source
+                !source
                     .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains("mat4x3"))
-                    .then_some(name),
+                    .any(|line| line.starts_with("const vec3 HORIZON")),
+                "{name} compiles a horizon in, so it cannot fade toward what its caller clears \
+                 to — the colour belongs in the Air block"
             );
+            if source.contains("uniform Air {") {
+                fading.push(name);
+            }
         }
-        reading.sort();
-        let mut listed: Vec<String> = SHADOW_BLOCK_SHADERS
+        fading.sort();
+
+        let mut listed: Vec<String> = FADING_SHADERS
             .iter()
             .map(|(name, _)| (*name).to_owned())
             .collect();
         listed.sort();
+
         assert_eq!(
-            reading, listed,
-            "every shader reading the shadow block must be on SHADOW_BLOCK_SHADERS"
-        );
-        assert!(
-            with_mat4x3.is_empty(),
-            "mat4x3 saves nothing under std430 — each of its four columns pads back to \
-             sixteen bytes — and using it here silently returns the block to 144: {with_mat4x3:?}"
+            fading, listed,
+            "the shaders reading an Air block and the list the check above walks have diverged"
         );
     }
 }
