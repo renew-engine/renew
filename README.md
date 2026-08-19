@@ -22,7 +22,9 @@
 Every capability is a library with a command-line face and machine-readable output. Building,
 testing, packing assets, recording a play session, replaying it, benchmarking, and running any
 sample all happen from one binary, headless, with `--json` on every command. A person, a script,
-and an agent drive the engine through exactly the same surface, because there is only one.
+and an agent drive the engine through exactly the same surface, because there is only one. That is
+what *AI-first* means here: the machine-operable surface is the primary one, not an export from
+something else.
 
 Underneath it, the simulation is bit-deterministic by construction. Same build, same seed, same
 inputs, same result, down to the byte, on every platform the engine targets.
@@ -158,7 +160,7 @@ An emulator is not a phone and a simulator is not a device, so the table says wh
 $ cargo run --bin renew -- help
 ```
 
-| | |
+| Commands | What they cover |
 |---|---|
 | `build` `test` `bench` `lint` `check` | the workspace, with one canonical command each |
 | `run` `record` `replay` | start a sample, capture the input it saw, play it back and compare |
@@ -178,10 +180,10 @@ removable, and CI proves it *one crate at a time*: twenty-four configurations, e
 optional crate and everything that depends on it, every one built **and** tested.
 A twenty-fifth builds the minimal core alone and checks that no optional crate reached its graph.
 
-| | |
+| Group | Crates |
 |---|---|
 | **Core** | `diag` logging and sinks · `event` the input vocabulary · `math` vectors, matrices, quaternions · `memory` arenas, pools, a counting allocator · `platform` the only doorway to the OS |
-| **Simulation** | `fixed` Q47.16 arithmetic · `frame` the fixed-timestep loop · `ecs` sparse-set storage · `scene` transform hierarchies · `physics2d` and `physics3d` · `volume` chunked voxels · `particles` · `ui` layout solved in fixed point · `input` state and mapping · `rng` · `jobs` |
+| **Simulation and runtime** | `fixed` Q47.16 arithmetic · `frame` the fixed-timestep loop · `ecs` sparse-set storage · `scene` transform hierarchies · `physics2d` and `physics3d` · `volume` chunked voxels · `particles` · `ui` layout solved in fixed point · `input` state and mapping · `rng` · `jobs` |
 | **Rendering** | `rhi` the GPU doorway · `render2d` sprites · `render3d` indexed geometry · `camera` views and projections · `snapshot` interpolation between ticks · `ui-render` |
 | **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
 
