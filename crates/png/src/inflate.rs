@@ -716,7 +716,7 @@ mod refusals {
         let mut out = fixed_block();
         // Three literals: 'A', 'B', 'C', each eight bits in the fixed
         // table at code 0x30 + value.
-        for byte in [b'A', b'B', b'C'] {
+        for byte in *b"ABC" {
             out.high(0b0011_0000 + u32::from(byte), 8);
         }
         assert_eq!(
