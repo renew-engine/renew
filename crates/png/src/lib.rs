@@ -1,4 +1,8 @@
-//! A PNG encoder, in about a hundred lines and with no dependency.
+//! PNG, both ways, with no dependency.
+//!
+//! [`encode`] turns pixels into a file; [`decode::decode`] turns a file
+//! back into pixels, and [`inflate::inflate`] is the decompressor it needs
+//! — the half of deflate this crate could previously only write.
 //!
 //! # Why this exists rather than a crate
 //!
@@ -9,6 +13,14 @@
 //! for flat-shaded pictures needs no tables of its own and no tuning.
 //!
 //! # What it does and does not do
+//!
+//! **Reading is the wider half.** The encoder writes one shape of file —
+//! 8-bit RGBA, fixed Huffman, no filtering — because that is all a picture
+//! of geometry needs. The decoder has no such freedom: it reads what other
+//! tools wrote, which means dynamic Huffman, all five scanline filters,
+//! palettes, and greyscale. Those are listed in [`decode`]'s own doc
+//! rather than here, along with what it refuses.
+//!
 //!
 //! Fixed Huffman codes over a three-candidate back-reference search: the
 //! pixel to the left, the pixel above, and the byte before. Those are what
@@ -49,6 +61,24 @@
 // go. Printing from here would put a message somewhere the caller did
 // not choose, in a crate whose whole value is being a pure function.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+
+#[cfg(test)]
+mod colours;
+pub mod decode;
+pub mod inflate;
+
+/// The CRC a chunk carries: its type and its body, hashed together.
+///
+/// **Shared with the decoder deliberately.** Two implementations of one
+/// checksum is two chances to be wrong about it, and the failure — a
+/// writer and a reader that each accept only their own files — is one
+/// nobody would look for.
+pub(crate) fn checksum(id: [u8; 4], body: &[u8]) -> u32 {
+    let mut crc = Crc::new();
+    crc.eat(&id);
+    crc.eat(body);
+    crc.finish()
+}
 
 /// The eight bytes every PNG starts with.
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -446,7 +476,7 @@ impl Crc {
 ///
 /// Over the *uncompressed* bytes — which is the mistake worth naming,
 /// since every other checksum in the file covers what is written.
-fn adler32(bytes: &[u8]) -> u32 {
+pub(crate) fn adler32(bytes: &[u8]) -> u32 {
     const MOD: u32 = 65521;
     let (mut low, mut high) = (1u32, 0u32);
     for byte in bytes {

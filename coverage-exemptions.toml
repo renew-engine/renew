@@ -269,3 +269,13 @@ reason = "The slot lookup in `edit_focused`, refused a line after `field_slot` r
 file = "crates/ui/src/field.rs"
 lines = [124, 133, 139, 145, 240, 243]
 reason = "The bounds arms of the two loops that move bytes inside a field, and the width check above them. Every one is refused by arithmetic the lines before it already did: a field is 64 bytes and a scalar is at most 4, so the `checked_add` cannot leave `usize`; the insert guard refuses anything past the ceiling before either loop runs, so every index the loops build is inside the array; and `remove` only ever walks the region between two cursor positions, both of which are `<= len`. They are written as refusals rather than indexing because the crate bans unchecked indexing outright — a widget tree takes its bytes from a driver, and an unchecked index there is a panic somebody else can cause. Kept rather than restructured: the two arms that were merely untested rather than unreachable — the forward character walk and backspace at position zero — were found by this same measurement and now have tests, which is the line between the two kinds."
+
+[[exempt]]
+file = "crates/png/src/inflate.rs"
+lines = [391]
+reason = "The fallthrough arm of the code-length symbol match, which a nineteen-entry table cannot reach: `Huffman::new` is built from exactly nineteen lengths, so every symbol it can hand back is 0..=18 and the arms above cover all of them. Kept because the match is on a `u16` and the compiler requires an arm — deleting it is not an option, and returning something other than a refusal there would be a decoder that trusted a value it had not checked."
+
+[[exempt]]
+file = "crates/png/src/colours.rs"
+lines = [90]
+reason = "A test's own failure message: the panic inside `read`'s error closure runs only when a fixture fails to decode, which is exactly when the suite is red. A test that could cover it would be a test asserting its own helper is broken."

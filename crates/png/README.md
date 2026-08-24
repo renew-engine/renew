@@ -1,9 +1,9 @@
 # renew-png
 
-PNG encoding with no dependencies: RGBA pixels in, the bytes of a file
-out. It never touches the filesystem — writing the file is the caller's
-business, which is what keeps the encoder a pure function and testable
-without one.
+PNG with no dependencies, both ways: RGBA pixels in and the bytes of a
+file out, or a file in and RGBA pixels out. It never touches the
+filesystem — reading and writing the file are the caller's business, which
+is what keeps both halves pure functions and testable without one.
 
 ## What it is for
 
@@ -14,14 +14,32 @@ stream, and deflate's *fixed* Huffman tables are published constants, so
 the whole encoder is four chunks, two checksums and a small
 back-reference search.
 
+## Reading is the wider half
+
+The encoder writes one shape of file — 8-bit RGBA, fixed Huffman, no
+filtering — because that is all a picture of geometry needs. The decoder
+has no such freedom: it reads what other tools wrote. So it carries
+dynamic Huffman, all five scanline filters, palettes with `tRNS`,
+greyscale, and 16-bit samples reduced to eight.
+
+It refuses two things by name rather than mis-reading them: **interlaced**
+images, which are a different image layout rather than a different pixel
+format, and **bit depths below eight**, which want a bit-unpacker nothing
+has asked for. Both are additions here when something needs them, not a
+second decoder.
+
+Every chunk's CRC is checked, every declared length is validated against
+the bytes actually present, and the decompressor takes a ceiling — a
+sixty-byte header can otherwise ask for sixty-four gigabytes.
+
 ## The charter, so this does not become a junk drawer
 
 **The PNG format, in memory, and nothing else.**
 
-The one direction it may grow is a **decoder for the same format** —
-which `renew-asset` names as a missing piece — because encoding and
-decoding one format are one body of knowledge, and splitting them puts
-the same specification in two crates.
+The decoder this once named as its one permitted direction of growth —
+because encoding and decoding one format are one body of knowledge, and
+splitting them puts the same specification in two crates — has landed.
+That direction is now closed: the charter below is the whole of it.
 
 Explicitly out of scope:
 
