@@ -71,9 +71,9 @@ impl Projection {
         let forward = [-1.0 / r3, -1.0 / r3, -1.0 / r3];
 
         let centre = [
-            (min[0] + max[0]) * 0.5,
-            (min[1] + max[1]) * 0.5,
-            (min[2] + max[2]) * 0.5,
+            min[0].midpoint(max[0]),
+            min[1].midpoint(max[1]),
+            min[2].midpoint(max[2]),
         ];
 
         // The box's extent along each view axis is the sum of its
