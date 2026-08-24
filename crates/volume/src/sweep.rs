@@ -427,8 +427,7 @@ mod tests {
         });
         assert!(
             open.is_none(),
-            "the body was stopped by a slot it fits through, at {:?}",
-            open.map(|hit| hit.cell)
+            "the body was stopped by a slot it fits through: {open:?}"
         );
         let closed = v.sweep_box_fine(half(), from, along, skin(), eight(), |sub| sub.x == 36);
         assert!(
