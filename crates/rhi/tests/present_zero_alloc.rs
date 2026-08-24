@@ -323,7 +323,7 @@ impl WindowApp for GateApp {
                     // bytes and a slot read from the wrong region shows.
                     let mut bytes = [0u8; BLOCK_BYTES];
                     let level = f32::from(u8::try_from(self.presented % 8).unwrap_or(0)) / 8.0;
-                    for chunk in bytes.chunks_exact_mut(4) {
+                    for chunk in bytes.as_chunks_mut::<4>().0 {
                         chunk.copy_from_slice(&level.to_ne_bytes());
                     }
                     bytes

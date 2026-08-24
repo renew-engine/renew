@@ -1240,7 +1240,7 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
     // is the clear, so a draw that silently read zeroed constants fails.
     for authored in [[0u8, 255, 64, 255], [255u8, 32, 0, 255]] {
         let mut pushed = [0u8; 16];
-        for (slot, &channel) in pushed.chunks_exact_mut(4).zip(&authored) {
+        for (slot, &channel) in pushed.as_chunks_mut::<4>().0.iter_mut().zip(&authored) {
             slot.copy_from_slice(&renew_rhi::srgb::decode(channel).to_ne_bytes());
         }
         let expected = &authored;
@@ -1250,7 +1250,7 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
             .render(&RenderDesc::new(&passes))
             .expect("push-constant render");
         target.read_back_into(&mut pixels);
-        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+        for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
             assert_eq!(
                 pixel, expected,
                 "pixel {index}: every pixel carries the color this frame pushed"
@@ -1300,7 +1300,7 @@ fn additive_blending_sums_the_same_bytes_in_all_six_orders() {
         .expect("additive push-constant pipeline");
     let push = |channels: [u8; 4]| {
         let mut bytes = [0u8; 16];
-        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+        for (slot, &channel) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&channels) {
             slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
         }
         bytes
@@ -1407,7 +1407,7 @@ fn additive_blending_sums_channels_in_either_order() {
         .expect("additive push-constant pipeline");
     let push = |channels: [u8; 4]| {
         let mut bytes = [0u8; 16];
-        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+        for (slot, &channel) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&channels) {
             slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
         }
         bytes
@@ -1434,9 +1434,9 @@ fn additive_blending_sums_channels_in_either_order() {
         pixels
     };
     let forward = render(&first, &second);
-    for (index, pixel) in forward.chunks_exact(4).enumerate() {
+    for (index, pixel) in forward.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel, expected,
+            *pixel, expected,
             "pixel {index}: additive must land exactly on the channel sums"
         );
     }

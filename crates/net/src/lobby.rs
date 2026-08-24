@@ -617,8 +617,10 @@ impl Lobby {
         // reader could evaluate.
         for (slot, endpoint) in self
             .table
-            .chunks_exact_mut(ENDPOINT_BYTES)
-            .zip(body.endpoints.chunks_exact(ENDPOINT_BYTES))
+            .as_chunks_mut::<ENDPOINT_BYTES>()
+            .0
+            .iter_mut()
+            .zip(body.endpoints.as_chunks::<ENDPOINT_BYTES>().0.iter())
         {
             slot.copy_from_slice(endpoint);
         }
@@ -638,8 +640,9 @@ impl Lobby {
         // a joiner.
         if let Some(slot) = self
             .table
-            .chunks_exact_mut(ENDPOINT_BYTES)
-            .nth(usize::from(seat.index()))
+            .as_chunks_mut::<ENDPOINT_BYTES>()
+            .0
+            .get_mut(usize::from(seat.index()))
         {
             slot.fill(0);
         }
@@ -869,8 +872,9 @@ impl Lobby {
         let mut out = UNKNOWN_ENDPOINT;
         if let Some(chunk) = self
             .table
-            .chunks_exact(ENDPOINT_BYTES)
-            .nth(usize::from(seat))
+            .as_chunks::<ENDPOINT_BYTES>()
+            .0
+            .get(usize::from(seat))
         {
             out.copy_from_slice(chunk);
         }
@@ -893,7 +897,10 @@ impl Lobby {
 
     fn table_snapshot(&self) -> [Endpoint; PEERS] {
         let mut out = [UNKNOWN_ENDPOINT; PEERS];
-        for (slot, held) in out.iter_mut().zip(self.table.chunks_exact(ENDPOINT_BYTES)) {
+        for (slot, held) in out
+            .iter_mut()
+            .zip(self.table.as_chunks::<ENDPOINT_BYTES>().0.iter())
+        {
             slot.copy_from_slice(held);
         }
         out

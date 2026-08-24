@@ -356,7 +356,9 @@ mod tests {
         scene.quad(CORNERS, [0.25, 0.5, 0.75, 1.0]);
         let first = &scene.vertices()[..VERTEX_STRIDE as usize];
         let floats: Vec<f32> = first
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
         // The last two are the default mapping's first corner, which is

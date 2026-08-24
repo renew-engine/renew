@@ -242,7 +242,7 @@ reason = "`pick_larger`, which exists only to compute MAX_DATAGRAM_BYTES in a co
 
 [[exempt]]
 file = "crates/net/src/lobby.rs"
-lines = [889]
+lines = [893]
 reason = "The addressless guard inside `seat_of`, unreachable through the only path that reaches it: `deliver` refuses UNKNOWN_ENDPOINT by name before any seat is looked up, and that refusal is covered. Kept because the two statements are one claim — seat zero's own slot holds exactly these bytes, so a caller that reached here with them would be told the host already holds the seat — and a private helper that depends on its caller having checked something is exactly the arrangement that breaks when a second caller appears."
 
 [[exempt]]

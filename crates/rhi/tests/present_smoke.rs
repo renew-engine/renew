@@ -339,7 +339,7 @@ impl WindowApp for SmokeApp {
                 // frame's command buffer, not a picture.
                 let level = f32::from(u8::try_from(self.frames % 8).unwrap_or(0)) / 8.0;
                 let mut pushed = [0u8; 16];
-                for slot in pushed.chunks_exact_mut(4) {
+                for slot in pushed.as_chunks_mut::<4>().0 {
                     slot.copy_from_slice(&level.to_ne_bytes());
                 }
                 // Built together in `ready`, like the mesh pair: "one

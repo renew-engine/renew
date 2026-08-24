@@ -306,7 +306,7 @@ impl GlideApp {
 
     fn atlas_bytes() -> [u8; 32] {
         let mut bytes = [0u8; 32];
-        for (index, chunk) in bytes.chunks_exact_mut(4).enumerate() {
+        for (index, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let texel = if index % 4 < 2 {
                 BIRD_TEXEL
             } else {
