@@ -346,9 +346,12 @@ fn dynamic(bits: &mut Bits<'_>) -> Result<(Huffman, Huffman), InflateError> {
     let literals = short(bits, 5)? as usize + 257;
     let distances = short(bits, 5)? as usize + 1;
     let codes = short(bits, 4)? as usize + 4;
-    if literals > 288 || distances > 32 || codes > LENGTH_ORDER.len() {
-        return Err(InflateError::BadCodeLengths);
-    }
+    // **No bounds check on the three counts, because the bit widths are
+    // the bounds.** `literals` is five bits plus 257, so at most 288;
+    // `distances` five bits plus one, so at most 32; `codes` four bits
+    // plus four, so at most 19 — which are exactly the ceilings the
+    // format states. A guard against them would be a condition that
+    // cannot fail, which reads as a check and is not one.
 
     // The table that describes the other two tables.
     let mut code_lengths = [0u8; LENGTH_ORDER.len()];
@@ -501,11 +504,16 @@ mod tests {
     fn a_stored_block_with_a_bad_complement_is_refused() {
         let mut bytes = stored_block(b"hello");
         bytes[3] ^= 0x01;
-        assert!(
-            matches!(
-                inflate(&bytes, 1 << 20),
-                Err(InflateError::StoredLengthMismatch { .. })
-            ),
+        // Named exactly rather than matched loosely: the pair it reports
+        // is the evidence that it read the header where it thought it
+        // did, and a pattern that ignores them would pass on a decoder
+        // that had lost its place entirely.
+        assert_eq!(
+            inflate(&bytes, 1 << 20),
+            Err(InflateError::StoredLengthMismatch {
+                length: 5,
+                complement: !5u16 ^ 1
+            }),
             "a corrupt stored header was accepted"
         );
     }
@@ -604,6 +612,233 @@ mod tests {
             inflate(&stored_block(&body), 100),
             Err(InflateError::TooLarge { limit: 100 }),
             "a stream past the ceiling was allowed through"
+        );
+    }
+}
+
+#[cfg(test)]
+mod refusals {
+    use super::{Huffman, InflateError, inflate};
+
+    /// A deflate stream's own bytes, built bit by bit, least significant
+    /// first — which is how the format packs everything except the
+    /// Huffman codes themselves.
+    #[derive(Default)]
+    struct Writer {
+        bytes: Vec<u8>,
+        bit: u32,
+    }
+
+    impl Writer {
+        /// `count` bits of `value`, low bit first.
+        fn low(&mut self, value: u32, count: u32) {
+            for step in 0..count {
+                self.one((value >> step) & 1);
+            }
+        }
+
+        /// `count` bits of `value`, **high bit first** — the order a
+        /// Huffman code is written in.
+        fn high(&mut self, value: u32, count: u32) {
+            for step in (0..count).rev() {
+                self.one((value >> step) & 1);
+            }
+        }
+
+        fn one(&mut self, value: u32) {
+            if self.bit == 0 {
+                self.bytes.push(0);
+            }
+            if value & 1 == 1
+                && let Some(last) = self.bytes.last_mut()
+            {
+                *last |= 1 << self.bit;
+            }
+            self.bit = (self.bit + 1) % 8;
+        }
+    }
+
+    /// A final block using the fixed tables, ready for symbols.
+    fn fixed_block() -> Writer {
+        let mut out = Writer::default();
+        out.low(1, 1);
+        out.low(1, 2);
+        out
+    }
+
+    /// **Block kind three does not exist**, and its presence means the
+    /// stream is not deflate at all rather than that it is damaged.
+    #[test]
+    fn a_block_kind_that_does_not_exist_is_refused() {
+        let mut out = Writer::default();
+        out.low(1, 1);
+        out.low(3, 2);
+        assert_eq!(
+            inflate(&out.bytes, 1 << 20),
+            Err(InflateError::BadBlockKind { kind: 3 })
+        );
+    }
+
+    /// **A back-reference cannot reach further back than the output.**
+    /// A stream that opens with one is asking to read from before the
+    /// beginning, and a decoder that answered with zeros would hand back
+    /// a picture built out of a bug.
+    #[test]
+    fn a_back_reference_before_the_beginning_is_refused() {
+        let mut out = fixed_block();
+        // Length symbol 257 — seven bits in the fixed table, code
+        // 0000001 — then distance symbol 0, five bits of zero.
+        out.high(0b000_0001, 7);
+        out.high(0, 5);
+        assert_eq!(
+            inflate(&out.bytes, 1 << 20),
+            Err(InflateError::BadDistance {
+                distance: 1,
+                produced: 0
+            })
+        );
+    }
+
+    /// The fixed table names two length symbols the format never assigns
+    /// a meaning to. They decode, and then they are refused.
+    #[test]
+    fn a_length_symbol_the_format_never_defined_is_refused() {
+        let mut out = fixed_block();
+        // Symbol 286: eight bits in the fixed table, code 11000110.
+        out.high(0b1100_0110, 8);
+        assert_eq!(inflate(&out.bytes, 1 << 20), Err(InflateError::BadSymbol));
+    }
+
+    /// The ceiling holds inside a Huffman block as well as a stored one —
+    /// a literal past it is refused rather than pushed.
+    #[test]
+    fn a_literal_past_the_ceiling_is_refused() {
+        let mut out = fixed_block();
+        // Three literals: 'A', 'B', 'C', each eight bits in the fixed
+        // table at code 0x30 + value.
+        for byte in [b'A', b'B', b'C'] {
+            out.high(0b0011_0000 + u32::from(byte), 8);
+        }
+        assert_eq!(
+            inflate(&out.bytes, 2),
+            Err(InflateError::TooLarge { limit: 2 })
+        );
+    }
+
+    /// A back-reference that would run past the ceiling is refused before
+    /// it is copied, rather than after.
+    #[test]
+    fn a_match_past_the_ceiling_is_refused() {
+        let mut out = fixed_block();
+        out.high(0b0011_0000 + u32::from(b'A'), 8);
+        // Length symbol 257 is three bytes; distance symbol 0 is one
+        // back, which is the 'A' just written.
+        out.high(0b000_0001, 7);
+        out.high(0, 5);
+        assert_eq!(
+            inflate(&out.bytes, 2),
+            Err(InflateError::TooLarge { limit: 2 })
+        );
+    }
+
+    /// **A code-length table no canonical code can satisfy is refused at
+    /// construction**, not at first use — an over-subscribed table would
+    /// otherwise decode a few symbols and then wander.
+    #[test]
+    fn a_table_no_canonical_code_can_satisfy_is_refused() {
+        // Three one-bit codes, where one bit holds two.
+        assert!(Huffman::new(&[1, 1, 1]).is_none(), "over-subscribed");
+        // A length past the fifteen the format allows.
+        assert!(Huffman::new(&[16]).is_none(), "a code of sixteen bits");
+        // And a legal table is built.
+        assert!(Huffman::new(&[1, 1]).is_some(), "two one-bit codes");
+    }
+
+    /// A run that overshoots the tables it is filling would silently steal
+    /// from the distance table, so the lengths are counted afterwards.
+    #[test]
+    fn a_code_length_run_that_overshoots_is_refused() {
+        let mut out = Writer::default();
+        out.low(1, 1);
+        out.low(2, 2);
+        // HLIT = 0 (257 literals), HDIST = 0 (1 distance), HCLEN = 0 (4).
+        out.low(0, 5);
+        out.low(0, 5);
+        out.low(0, 4);
+        // Four code lengths in the format's own order: 16, 17, 18, 0.
+        // Give 18 and 0 one bit each so both are usable.
+        for length in [0u32, 1, 1, 0] {
+            out.low(length, 3);
+        }
+        // Symbol 18 writes a run of 11..138 zeros; enough of them
+        // overshoot 258.
+        for _ in 0..3 {
+            out.high(1, 1);
+            out.low(127, 7);
+        }
+        assert_eq!(
+            inflate(&out.bytes, 1 << 20),
+            Err(InflateError::BadCodeLengths)
+        );
+    }
+
+    /// **A table with a hole in it refuses the bits that fall into the
+    /// hole.** The format allows a table that does not use every code —
+    /// one back-reference in a whole stream leaves a distance table with a
+    /// single entry — so an under-subscribed table is built rather than
+    /// rejected, and the refusal has to come at the moment a code walks
+    /// off the end of it.
+    #[test]
+    fn a_code_that_names_no_symbol_is_refused() {
+        let mut out = Writer::default();
+        out.low(1, 1);
+        out.low(2, 2);
+        out.low(0, 5);
+        out.low(0, 5);
+        out.low(0, 4);
+        // One usable code-length symbol, `18`, which writes runs of
+        // zeros: every literal length comes out zero, so the literal
+        // table has no codes at all and the first bit read against it
+        // falls through all fifteen lengths.
+        for length in [0u32, 0, 1, 0] {
+            out.low(length, 3);
+        }
+        // 257 + 1 lengths of zero, in runs of at most 138.
+        for times in [138u32, 120] {
+            out.high(0, 1);
+            out.low(times - 11, 7);
+        }
+        out.bytes.extend_from_slice(&[0u8; 8]);
+        assert_eq!(inflate(&out.bytes, 1 << 20), Err(InflateError::BadSymbol));
+    }
+
+    /// A repeat-previous symbol with nothing before it is a stream that
+    /// opens by copying what it has not written.
+    #[test]
+    fn a_repeat_with_nothing_to_repeat_is_refused() {
+        let mut out = Writer::default();
+        out.low(1, 1);
+        out.low(2, 2);
+        out.low(0, 5);
+        out.low(0, 5);
+        out.low(0, 4);
+        // Lengths for 16, 17, 18, 0: give 16 and 0 one bit each.
+        for length in [1u32, 0, 0, 1] {
+            out.low(length, 3);
+        }
+        // Symbol 16 first: repeat the previous length, of which there is
+        // none. Padded afterwards so the refusal comes from the missing
+        // previous length rather than from the stream running out.
+        //
+        // Code 1, not 0: among the two one-bit codes the canonical
+        // assignment gives symbol 0 the zero and symbol 16 the one, and
+        // asking for the wrong one reads a run of zero lengths instead.
+        out.high(1, 1);
+        out.low(0, 2);
+        out.bytes.extend_from_slice(&[0u8; 8]);
+        assert_eq!(
+            inflate(&out.bytes, 1 << 20),
+            Err(InflateError::BadCodeLengths)
         );
     }
 }

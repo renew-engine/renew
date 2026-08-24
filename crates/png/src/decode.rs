@@ -762,6 +762,31 @@ mod filters {
         file
     }
 
+    /// **The Paeth predictor's third answer.**
+    ///
+    /// Paeth takes whichever of the three neighbours is nearest their
+    /// linear estimate, and the up-left corner winning is the rarest of
+    /// the three — the generated fixture above never produced it, so that
+    /// branch was unexercised while every filter looked covered. These
+    /// values make it win outright: left 10, up 200, corner 100 gives an
+    /// estimate of 110, which is a hundred from the left, ninety from the
+    /// up, and ten from the corner.
+    ///
+    /// Probed by returning `up` where the corner is chosen: the second
+    /// row comes back wrong.
+    #[test]
+    fn the_paeth_predictor_can_choose_the_corner() {
+        let width = 2u32;
+        let mut pixels = vec![100u8, 100, 100, 255, 200, 200, 200, 255];
+        pixels.extend_from_slice(&[10, 10, 10, 255, 77, 88, 99, 255]);
+        let file = built(width, &pixels, &[0, 4]);
+        let image = decode(&file).expect("the fixture decodes");
+        assert_eq!(
+            image.pixels, pixels,
+            "the corner-predicted row came back wrong"
+        );
+    }
+
     /// **Every scanline filter, undone.**
     ///
     /// The encoder in this crate writes filter zero and nothing else, and
@@ -793,16 +818,16 @@ mod filters {
                 .unwrap_or_else(|error| panic!("{filters:?} did not decode: {error:?}"));
             assert_eq!(image.width, width);
             assert_eq!(image.height, 5);
-            for (row, (got, want)) in image
+            for (row, ((got, want), filter)) in image
                 .pixels
                 .chunks(width as usize * 4)
                 .zip(pixels.chunks(width as usize * 4))
+                .zip(&filters)
                 .enumerate()
             {
                 assert_eq!(
                     got, want,
-                    "row {row} under filter {} came back different",
-                    filters[row]
+                    "row {row} under filter {filter} came back different"
                 );
             }
         }

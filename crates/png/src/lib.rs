@@ -62,6 +62,8 @@
 // not choose, in a crate whose whole value is being a pure function.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+#[cfg(test)]
+mod colours;
 pub mod decode;
 pub mod inflate;
 
