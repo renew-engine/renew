@@ -125,7 +125,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// goldens — the humanly-viewable form of a mismatch or candidate.
 fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Result<()> {
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         ppm.extend_from_slice(&pixel[..3]);
     }
     std::fs::write(path, ppm)

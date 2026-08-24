@@ -1038,7 +1038,12 @@ fn every_lobby_kind_declares_the_body_it_writes() {
 fn a_roster_hands_back_each_seats_endpoint_and_nothing_past_them() {
     use renew_net::wire::{ENDPOINT_BYTES, RosterBody, write_roster};
     let mut endpoints = [0u8; 18 * 3];
-    for (seat, chunk) in endpoints.chunks_exact_mut(ENDPOINT_BYTES).enumerate() {
+    for (seat, chunk) in endpoints
+        .as_chunks_mut::<ENDPOINT_BYTES>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         chunk.fill(u8::try_from(seat).expect("three seats") + 10);
     }
     let mut out: Buffer = [0; MAX_DATAGRAM_BYTES];

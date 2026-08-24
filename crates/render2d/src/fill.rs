@@ -191,7 +191,7 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
         sprite.tint[3],
     ];
     let mut bytes = [0u8; INSTANCE_STRIDE];
-    for (slot, value) in bytes.chunks_exact_mut(4).zip(values) {
+    for (slot, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
         slot.copy_from_slice(&value.to_ne_bytes());
     }
     bytes

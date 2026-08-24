@@ -154,7 +154,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// goldens — the humanly-viewable form of a mismatch or candidate.
 fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Result<()> {
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         ppm.extend_from_slice(&pixel[..3]);
     }
     std::fs::write(path, ppm)
@@ -190,9 +190,9 @@ fn clear_is_byte_exact_everywhere() {
     // them and the attachment encodes it back, so the round trip is exact
     // and the expectation is the value that was chosen — no derivation.
     let expected = [51u8, 102, 153, 255];
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel,
+            *pixel,
             expected,
             "pixel {index} diverged on adapter {:?}",
             device.adapter()
@@ -264,8 +264,10 @@ impl Difference {
         let mut largest_channel = 0;
         let mut first_byte = usize::MAX;
         for (index, (a, b)) in rendered
-            .chunks_exact(4)
-            .zip(golden.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(golden.as_chunks::<4>().0.iter())
             .enumerate()
         {
             let mut differs = false;
@@ -1650,9 +1652,9 @@ fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
     target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel,
+            *pixel,
             [0, 0, 255, 255],
             "pixel {index} is not the mesh's own colour on adapter {:?} — a per-instance stream              bound where the per-vertex one belongs would change it",
             device.adapter()
