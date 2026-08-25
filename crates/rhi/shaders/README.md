@@ -536,3 +536,29 @@ the four shaders used to compile in, so every golden that fixed a faded pixel
 before this change still fixes the same pixel after it. That is the evidence
 the arithmetic folds the same way through a uniform as it did through a
 constant, which was the stated reason for leaving the constants compiled in.
+
+## mesh_camera_shadow.frag - recompiled 2026-08-25
+
+The shadow term softened: the single map tap became nine, one texel
+apart, averaged. One tap draws a hard lit/shadowed boundary, and a hard
+boundary aliases — wherever a shadow edge crosses geometry near the
+map's own sampling scale it renders as a row of sawteeth marching along
+the surface. Nine taps turn the same boundary into a two-texel
+gradient. Deep in light and deep in shadow all nine agree, so every
+pixel away from an edge reads exactly as before — which is why the
+arithmetic assertions in the golden and allocation suites, whose probes
+sit well inside each region, hold without being touched. Version output
+observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+3016 bytes, read off disk after compiling.
