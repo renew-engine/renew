@@ -800,6 +800,381 @@ fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+/// A textured frame of `scene` through `air`, as raw bytes.
+fn textured_frame(
+    device: &Device,
+    scene: &Scene,
+    air: Air,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY).through(air);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(device, scene)?;
+    let items = [renderer.item(&mesh, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **An air that never opted in changes not one byte.** This is the
+/// promise that let the sway land ahead of any consumer: every existing
+/// draw goes through the widened block with its tail zeroed, and the
+/// vertex stage then passes the position through with no arithmetic
+/// against it at all — untouched input, not cancelled arithmetic, is
+/// what makes identity certain. Asserted over the whole frame, alpha
+/// included, by drawing one scene through one air twice; the
+/// calm-swayer and plain-path goldens beside this hold the
+/// neighbouring claims.
+#[test]
+fn an_unasked_air_changes_no_byte() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.8, 0.7, 0.6, 1.0]);
+    let still = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    // A zero reach with a lively phase and ripple: the words the swing
+    // is computed from are as non-trivial as they get while the reach
+    // multiplies it all away.
+    let unasked = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    assert_eq!(
+        still, unasked,
+        "one air drew two pictures, so nothing below can claim anything"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **Calm air bends nothing and betrays nothing.** A swayer whose wind
+/// has dropped to zero reach draws exactly its unswayed geometry — and
+/// its weight-zero vertices stay *drawn* through the cutout mask,
+/// because the opt-in is the declaration, not the wind speed. The
+/// review's scenario, pinned: grass authored with rooted alphas must
+/// survive the first calm evening.
+///
+/// Probed by deriving `bent` from the reach instead of the flag: the
+/// roots vanish in calm air and this names the centre.
+#[test]
+fn calm_air_keeps_a_swayers_roots() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    // Declared a swayer; the wind is dead calm.
+    let calm =
+        Camera::from_columns(IDENTITY).through(Air::CLEAR_BLACK.swaying([0.0, 0.0], 0.9, 0.4));
+    let mut scene = Scene::new();
+    // Weight-zero roots, in a declared swayer, in calm air.
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(&device, &scene)?;
+    let items = [renderer.item(&mesh, &calm)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "calm air cut a swayer's roots out of the mask: centre {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The ripple makes the swing uneven across the world, and the
+/// second reach word pushes along the second world axis.** The x-axis
+/// test beside this one can see neither: a deleted ripple term and an
+/// axis swap both pass it. The first version of *this* test could not
+/// see them either — it pushed along z under the identity projection,
+/// where a z displacement moves depth and not one pixel, and its own
+/// probe run announced as much. Both claims are staged where they
+/// show now.
+///
+/// Ripple: at phase zero a lockstep swing is `sin(0)` — nothing — so
+/// the lockstep twin must equal the still frame exactly, while a
+/// ripple across the quad bends its two halves opposite ways and must
+/// not. Second word: the camera's columns are permuted so world z
+/// lands on clip x, and the same edge probes as the x-axis test then
+/// watch the quad translate.
+///
+/// Probed by deleting the ripple term from the vertex stage: the
+/// rippled frame equals the still one and the first inequality names
+/// it.
+#[test]
+fn the_ripple_walks_the_swing_across_the_world() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    // Half the screen, so the quad HAS an edge on screen to move: a
+    // full-screen quad pushed sideways still covers every pixel, which
+    // is how this test's own first run measured nothing.
+    half_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let still = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    // Phase zero: whatever swings, swings by the ripple term alone.
+    let rippled = textured_frame(
+        &device,
+        &scene,
+        Air::CLEAR_BLACK.swaying([0.4, 0.0], 0.0, 2.0),
+    )?;
+    let lockstep = textured_frame(
+        &device,
+        &scene,
+        Air::CLEAR_BLACK.swaying([0.4, 0.0], 0.0, 0.0),
+    )?;
+    assert_ne!(
+        rippled, still,
+        "a ripple across the world changed nothing, so fields move in lockstep"
+    );
+    assert_eq!(
+        lockstep, still,
+        "a lockstep swing at phase zero moved something, so the ripple test measures noise"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The second reach word pushes along the second world axis.** World
+/// z is steered onto clip x by a permuted camera, so the half-quad
+/// must vacate its old ground and claim new ground exactly as the
+/// x-axis test's quad does — and an axis swap that pushed y instead
+/// would move it vertically, which the row probes cannot mistake.
+///
+/// Probed by swapping the displacement to `vec3(sway.x, sway.y, 0.0)`
+/// in the vertex stage: nothing moves along z and the claimed-ground
+/// probe names it.
+#[test]
+fn the_second_reach_word_pushes_along_z() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    // World z out to clip x, world x into clip z: a z push becomes a
+    // horizontal move on screen.
+    let steered = [
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    // The quad spans world z in [-1, 0] at world x = 0.5: on screen,
+    // the left half at depth 0.5, exactly the half_quad picture.
+    let mut scene = Scene::new();
+    scene.quad(
+        [
+            [0.5, -1.0, -1.0],
+            [0.5, -1.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.5, 1.0, -1.0],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let frame = |air: Air| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let camera = Camera::from_columns(steered).through(air);
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        Ok(pixels)
+    };
+    let still = frame(Air::CLEAR_BLACK)?;
+    // sin(pi/2) = 1: displacement is exactly the half-unit reach.
+    let blown = frame(Air::CLEAR_BLACK.swaying([0.0, 0.5], std::f32::consts::FRAC_PI_2, 0.0))?;
+    let vacated = SIZE / 8;
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "the second reach word claimed no new ground along z"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared along z instead of moving"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The plain camera path stands still under swaying air.** The sway
+/// words live in a block every camera pipeline binds, and only the
+/// textured vertex stage reads them — a claim the docs make and this
+/// holds behaviorally, so a swayer and the plain-drawn world beside it
+/// cannot shear apart by accident of which pipeline read what.
+#[test]
+fn the_plain_path_ignores_the_sway() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.9, 0.8, 0.7, 1.0]);
+    let frame = |air: Air| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let camera = Camera::from_columns(IDENTITY).through(air);
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        Ok(pixels)
+    };
+    let still = frame(Air::CLEAR_BLACK)?;
+    let blown = frame(Air::CLEAR_BLACK.swaying([0.6, 0.6], 1.0, 1.0))?;
+    assert_eq!(
+        still, blown,
+        "the plain path bent under swaying air, so a mixed frame shears apart"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The reach carries the weighted and the weightless hold still.** A
+/// half-screen quad at full weight, pushed a quarter of clip space at
+/// the top of its swing, must vacate its old left edge and cover ground
+/// past its old right edge — a translation, not a smear. The same quad
+/// at weight zero must sit exactly where the still frame put it.
+///
+/// Probed by zeroing the weight multiply in the vertex stage: the
+/// weightless arm moves too, and the equality names it.
+#[test]
+fn the_reach_carries_the_weighted_and_pins_the_weightless() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // sin(pi/2) = 1: the swing is at its top, so the displacement is
+    // exactly the reach and the probes below are plain arithmetic.
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], std::f32::consts::FRAC_PI_2, 0.0);
+
+    let mut weighted = Scene::new();
+    half_quad(&mut weighted, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let still = textured_frame(&device, &weighted, Air::CLEAR_BLACK)?;
+    let blown = textured_frame(&device, &weighted, wind)?;
+    // Clip x = -0.75: inside the quad at rest, vacated once it moves.
+    let vacated = SIZE / 8;
+    // Clip x = +0.25: past the quad's resting edge, covered once blown.
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "full weight at full swing claimed no new ground"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared instead of moving: its old ground is still covered"
+    );
+
+    let mut weightless = Scene::new();
+    half_quad(&mut weightless, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let pinned = textured_frame(&device, &weightless, wind)?;
+    for (x, name) in [(vacated, "its own ground"), (claimed, "new ground")] {
+        let (was, is) = (at(&still, x, row), at(&pinned, x, row));
+        assert_eq!(
+            was[0..3],
+            is[0..3],
+            "a weightless vertex moved: {name} at column {x} was {was:?} and is {is:?}"
+        );
+    }
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A swaying draw spends its weight before the mask reads it.** The
+/// cutout pipeline discards where `texel.a * colour.a` falls below
+/// half, and the sway borrows exactly that alpha as its bend weight —
+/// so a rooted vertex at weight zero would vanish from a cutout the
+/// moment its draw started swaying, unless the vertex stage hands the
+/// fragment stage a one in its place. The grass this exists for is
+/// rooted at weight zero everywhere it meets the ground.
+///
+/// Probed by forwarding the raw alpha in the vertex stage: the centre
+/// goes to the clear colour and this names it.
+#[test]
+fn a_swaying_cutout_keeps_its_weightless_roots() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera =
+        Camera::from_columns(IDENTITY).through(Air::CLEAR_BLACK.swaying([0.1, 0.0], 0.0, 0.0));
+    let mut scene = Scene::new();
+    // Weight zero everywhere: rooted vertices, in a draw that sways.
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(&device, &scene)?;
+    let items = [renderer.item(&mesh, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "a weightless vertex was discarded by the mask it sways under: centre {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
 /// **The vertex colour tints the texel rather than being replaced by
 /// it.** The colour is where face shading and corner darkening live; a
 /// fragment stage that returned the texel alone would draw an evenly lit

@@ -562,3 +562,33 @@ Target: SPIR-V 1.0
 ```
 
 3016 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-25 (sway)
+
+The per-renderer block grew a sway word set and its own opt-in flag,
+and this stage learned to read them: vertices displace across the
+ground plane by the vertex colour's alpha as bend weight, phase
+travelling with world position. The flag, not the reach, is the
+opt-in — a wind calming to zero must not flip what a mesh's alphas
+mean — and a draw that never opted in has its position passed through
+with no arithmetic against it, which is what makes the byte-identity
+golden certain rather than probable. A swaying draw spends the weight
+in this stage and hands the fragment stage alpha one, so the cutout
+mask keeps its meaning at weightless roots. The four fragment stages
+declare the block's first sixteen bytes only — a leading subset,
+which per-stage descriptor validation accepts on both lanes — so
+their blobs are untouched by the widening. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2524 bytes, read off disk after compiling.

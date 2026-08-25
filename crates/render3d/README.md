@@ -106,6 +106,19 @@ target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
   keeping it, so one mesh can be drawn by several items in a frame —
   which the rendering crate deliberately allows.
 
+## Wind
+
+Foliage-like geometry can sway without a new pipeline or a new vertex
+attribute: [`Air::swaying`] declares a renderer's draws swayers and
+carries the wind's words in the same per-frame block as the fade. The
+vertex colour's alpha becomes the bend weight — zero pins a vertex, one
+bends it the whole reach — and is spent in the vertex stage, so a
+cutout's mask never mistakes a weight for a fade. Calling `swaying` is
+the opt-in, whatever the reach says: calm air bends nothing and changes
+no contract. Only the textured and cutout pipelines bend; the plain and
+shadowed paths ignore the words, and a golden holds each of these
+sentences.
+
 ## Two decisions worth knowing
 
 **The depth refusal is a translation, not a second detection.** The

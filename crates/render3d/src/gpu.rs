@@ -211,20 +211,36 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
 /// **Plain columns rather than a matrix type**, so this crate keeps its
 /// single dependency. Whoever owns a camera owns the maths that built it;
 /// what crosses the boundary is sixty-four bytes with a stated order.
-/// The buffer and set a camera pipeline reads its fade through.
+/// The buffer and set a camera pipeline reads its per-frame block
+/// through — the fade, and the sway beside it.
 ///
-/// **One per renderer, not one per draw.** The block holds four floats
-/// that change at most once a frame; a buffer and a set per pipeline is
+/// **One per renderer, not one per draw.** The block holds a dozen
+/// floats given once per frame; a buffer and a set per pipeline is
 /// what that costs, and it is paid at bring-up rather than in the loop.
 fn air_binding(device: &Device) -> Result<renew_rhi::Binding, Render3dError> {
     let buffer = device.create_buffer(AIR_BYTES as usize, renew_rhi::BufferUsage::PerFrame)?;
     Ok(device.create_binding(&renew_rhi::BindingDesc::uniform(&buffer))?)
 }
 
-/// How many bytes the fade's uniform block carries.
+/// How many bytes the per-renderer block carries.
 ///
-/// One `vec4`, which `std140` wants aligned to sixteen and this is.
-pub const AIR_BYTES: u32 = 16;
+/// Three `vec4`s, each aligned to sixteen as `std140` wants: the fade's
+/// words, the sway's, and the sway's own opt-in flag. Widened once, for
+/// every camera pipeline at once — the fragment stages declare and read
+/// the first sixteen bytes, the textured vertex stage reads the rest,
+/// and a stage that declares a leading subset of a block's members is
+/// reading exactly those members: descriptor validation is per-stage,
+/// and the validation layers on both a real adapter and the software
+/// lane accept the shapes here with no complaint. That is the observed
+/// mechanism, not a spec quotation, and the goldens hold the result.
+///
+/// **Per renderer, not per draw.** Each renderer owns one buffer of
+/// this block and the frame contract takes one set of bytes for it per
+/// frame — two cameras carrying different air through one renderer in
+/// one frame is refused at record time by name. A draw that must
+/// differ within a frame differs by vertex weight, or by a second
+/// renderer.
+pub const AIR_BYTES: u32 = 48;
 
 /// What distance fades toward, and how much of it shows.
 ///
@@ -238,6 +254,10 @@ pub const AIR_BYTES: u32 = 16;
 /// [`Air::CLEAR_BLACK`] is the value those shaders held, so a caller that
 /// says nothing gets exactly the picture it got before there was anything
 /// to say.
+///
+/// The fade is no longer the whole of it: the block also carries the
+/// sway words a vertex stage bends foliage by — see [`Air::swaying`],
+/// which is their contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Air {
     bytes: [u8; AIR_BYTES as usize],
@@ -275,6 +295,70 @@ impl Air {
             at += 1;
         }
         Self { bytes }
+    }
+
+    /// The same air, declared a swayer and given the wind's words.
+    ///
+    /// `reach` is how far a fully bent vertex is displaced across the
+    /// ground plane at the top of the swing, in world units — direction
+    /// and strength folded into one pair, because whoever owns the wind
+    /// owns that arithmetic. `phase` is where the swing is in its
+    /// cycle, in radians; advance it with time and the geometry moves.
+    /// `ripple` is radians of extra phase per world unit, so a meadow
+    /// swings as travelling waves rather than in lockstep; zero is
+    /// lockstep, for the caller that wants it. The wave crests travel a
+    /// fixed world bearing (one across, seven tenths along, in plan),
+    /// not the wind's — at these amplitudes the eye reads motion, not
+    /// crest bearing, and a steerable crest is a second feature the day
+    /// something needs it.
+    ///
+    /// **Calling this is the opt-in, whatever the reach says.** Which
+    /// draws bend, and by how much, is per vertex: the vertex colour's
+    /// alpha is the bend weight — zero pins a vertex, one bends it the
+    /// whole reach — and it is *spent* in the vertex stage, reaching
+    /// the fragment stage as one, so a cutout's mask never reads a
+    /// weight as a fade. That trade is made when this is called, not
+    /// when the wind happens to blow: a swayer with reach zero is a
+    /// meadow standing in calm air, roots intact, and a draw that never
+    /// calls this keeps alpha's old meaning — including fading a cutout
+    /// to nothing — with its picture untouched, byte for byte. What a
+    /// caller must not do is flicker one draw between the two contracts
+    /// and expect its alphas to mean both things at once.
+    ///
+    /// Only the textured and cutout pipelines bend; the plain and
+    /// shadowed pipelines ignore these words entirely — foliage is
+    /// authored with holes or textures, and a swaying caster would need
+    /// its shadow to sway in step, which is a feature the day something
+    /// needs it. A golden holds the plain path still under swaying air.
+    ///
+    /// Two `Air`s differing only in dead sway words — a becalmed swayer
+    /// against [`Air::CLEAR_BLACK`], a negative zero in the reach —
+    /// compare unequal: equality here is byte equality, as everywhere
+    /// in this module.
+    #[must_use]
+    pub const fn swaying(mut self, reach: [f32; 2], phase: f32, ripple: f32) -> Self {
+        let values = [reach[0], reach[1], phase, ripple];
+        let mut at = 0;
+        while at < 4 {
+            let word = values[at].to_ne_bytes();
+            let mut byte = 0;
+            while byte < 4 {
+                self.bytes[16 + at * 4 + byte] = word[byte];
+                byte += 1;
+            }
+            at += 1;
+        }
+        // The opt-in flag, in its own word: the vertex stage reads
+        // *this* to decide whether alpha is a weight, so a wind calming
+        // to zero reach cannot flip a draw's authoring contract out
+        // from under meshes built to it.
+        let on = 1.0f32.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[32 + byte] = on[byte];
+            byte += 1;
+        }
+        self
     }
 
     /// The packed bytes, exactly the length the pipelines' declared
@@ -352,8 +436,8 @@ impl Camera {
         &self.bytes
     }
 
-    /// The fade's bytes, exactly the length the pipelines' declared
-    /// uniform block wants.
+    /// The per-frame block's bytes — fade and sway together — exactly
+    /// the length the pipelines' declared uniform block wants.
     #[must_use]
     pub fn air(&self) -> &[u8] {
         self.air.bytes()
@@ -452,7 +536,7 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 pub struct TexturedCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
-    /// The set the fade's block is read through.
+    /// The set the per-frame block is read through.
     ///
     /// **The buffer behind it is not held here.** A binding keeps a share
     /// of the buffer it was built over, and the record path finds that
@@ -555,7 +639,7 @@ impl TexturedCameraRenderer {
 pub struct CutoutCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
-    /// The set the fade's block is read through.
+    /// The set the per-frame block is read through.
     ///
     /// **The buffer behind it is not held here.** A binding keeps a share
     /// of the buffer it was built over, and the record path finds that
@@ -678,7 +762,7 @@ impl core::fmt::Debug for TexturedCameraRenderer {
 /// it is. They move only when something needs them to vary per draw.
 pub struct CameraRenderer {
     pipeline: RenderPipeline,
-    /// The set the fade's block is read through.
+    /// The set the per-frame block is read through.
     ///
     /// **The buffer behind it is not held here.** A binding keeps a share
     /// of the buffer it was built over, and the record path finds that
@@ -897,10 +981,14 @@ impl ShadowedCamera {
         self
     }
 
-    /// The fade's bytes, exactly the length the lit pipeline's declared
-    /// uniform block wants.
+    /// The per-frame block's bytes, exactly the length the lit
+    /// pipeline's declared uniform block wants.
     ///
-    /// The caster has no colour attachment and reads none of this.
+    /// The caster has no colour attachment and reads none of this —
+    /// and the sway half is dead on this path entirely: the shadowed
+    /// stages never read it, so a swaying [`Air`] through this camera
+    /// draws a still world. See [`Air::swaying`] for which pipelines
+    /// bend.
     #[must_use]
     pub fn air(&self) -> &[u8] {
         self.air.bytes()
@@ -960,7 +1048,7 @@ pub struct ShadowedCameraRenderer {
     shadow_map: renew_rhi::RenderImage,
     atlas_binding: renew_rhi::Binding,
     shadow_binding: renew_rhi::Binding,
-    /// The set the fade's block is read through.
+    /// The set the per-frame block is read through.
     ///
     /// **The buffer behind it is not held here.** A binding keeps a share
     /// of the buffer it was built over, and the record path finds that
