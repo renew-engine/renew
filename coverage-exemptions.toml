@@ -101,13 +101,23 @@ reason = "The depthless-adapter arm of the shadow map's refusal, which translate
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [809]
+lines = [713]
 reason = "The creation-failure propagation on the cutout pipeline's bring-up. Never taken where creation succeeds, which is every measuring lane's adapter: provoking it needs a device refusing a pipeline the sibling paths already build, and the fault layer's quirk list carries no such refusal."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [839, 840, 841]
+lines = [809]
+reason = "The creation-failure propagation on the blended pipeline's bring-up - the same arm the cutout carries at 713, for the same reason: no measuring lane's adapter refuses a pipeline its sibling paths already build."
+
+[[exempt]]
+file = "crates/render3d/src/gpu.rs"
+lines = [743, 744, 745]
 reason = "A Debug impl writing the renderer's constant name. Calling it needs a live renderer, which needs a device, and a device-bound test that exists to print a constant string would be coverage without a claim; the impl exists so an error context can name the renderer."
+
+[[exempt]]
+file = "crates/render3d/src/gpu.rs"
+lines = [839, 840, 841]
+reason = "The blended renderer's Debug impl - the cutout's twin at 743, exempt for the same reason: a device-bound test that prints a constant string is coverage without a claim."
 
 [[exempt]]
 file = "crates/rhi/src/vk/render_image.rs"
