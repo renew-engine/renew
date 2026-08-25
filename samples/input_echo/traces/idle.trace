@@ -1,1 +1,1 @@
-renew-trace 2 sample=input_echo ticks=600 timestep_ns=16666667 budget=5 seed=0
+renew-trace 3 sample=input_echo ticks=600 timestep_ns=16666667 budget=5 seed=0

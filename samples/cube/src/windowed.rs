@@ -863,19 +863,14 @@ impl WindowApp for CubeApp {
                 // the difference is worth while alt-tab already frees the
                 // cursor by losing focus. Recorded rather than half-done.
                 KeyCode::Escape => self.closing |= pressed,
-                // Keys this game has nothing to do with: the four editing
-                // keys, which reach here because the window delivers every
-                // key it can name and not because a voxel world has a text
-                // field, and the unmapped one, which by construction names
-                // nothing. Named rather than swept under a wildcard, so
-                // that the next variant added to `KeyCode` reddens this
-                // match and gets a decision instead of silence — which is
-                // exactly how the editing keys arrived here.
-                KeyCode::Backspace
-                | KeyCode::Delete
-                | KeyCode::Home
-                | KeyCode::End
-                | KeyCode::Unidentified => {}
+                // Keys this game has nothing to do with. While the
+                // vocabulary was seventeen curated keys this arm named
+                // every one it ignored, so a new variant reddened the
+                // match and got a decision; the vocabulary is the whole
+                // keyboard now, and a sample enumerating every key it
+                // ignores is stenography, not decision-making. The keys
+                // this game answers to are the named arms above.
+                _ => {}
             },
             _ => {}
         }
