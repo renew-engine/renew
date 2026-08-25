@@ -1464,11 +1464,18 @@ fn count_matters(records: &[Option<BufferRecord>; MAX_RETAINED_RESOURCES]) -> us
 /// — the hard bound that keeps retention tables fixed-width and the frame
 /// path allocation-free. Per-frame buffers, meshes, bindings and
 /// pass-target render images share it, because they share one table. The
-/// seventeenth distinct resource is refused by name in
-/// [`check_frame_contract`]. Sixteen, doubled from eight when bindings
-/// joined the table: every draw's sampled slots now spend from the same
-/// budget its geometry does.
-pub(crate) const MAX_RETAINED_RESOURCES: usize = 16;
+/// next distinct resource past the bound is refused by name in
+/// [`check_frame_contract`].
+///
+/// Thirty-two, doubled from sixteen the day a real consumer's fullest
+/// frame — a world mesh, a marker, a held item, billboard layers, two
+/// cutout meshes, machines, two particle pipelines and an interface
+/// overlay, each with its bindings — landed on exactly seventeen. It
+/// was doubled from eight before that, when bindings joined the table.
+/// The table is `Option`s in fixed arrays: the cost of headroom is
+/// thirty-two words of `None` per frame, and the cost of too little is
+/// a consumer cutting a feature to fit a constant this crate chose.
+pub(crate) const MAX_RETAINED_RESOURCES: usize = 32;
 
 impl LoadOp {
     pub(crate) fn to_vk(self) -> ash::vk::AttachmentLoadOp {

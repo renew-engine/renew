@@ -738,7 +738,7 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
-    let many: Vec<renew_rhi::Buffer> = (0..17)
+    let many: Vec<renew_rhi::Buffer> = (0..33)
         .map(|_| {
             device
                 .create_buffer(64, BufferUsage::PerFrame)
@@ -746,7 +746,7 @@ fn malformed_frames_are_refused_by_name() {
         })
         .collect();
     refused(
-        "a seventeenth distinct buffer",
+        "a thirty-third distinct buffer",
         "distinct resources",
         &|target| {
             let color = clear(black);
