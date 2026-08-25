@@ -26,7 +26,7 @@
 //! let text = write(&trace);
 //! assert_eq!(
 //!     text,
-//!     "renew-trace 2 sample=input_echo ticks=10 timestep_ns=16666667 budget=5 seed=0\n\
+//!     "renew-trace 3 sample=input_echo ticks=10 timestep_ns=16666667 budget=5 seed=0\n\
 //!      e 5 key arrow-right down\n\
 //!      e 10 close\n"
 //! );

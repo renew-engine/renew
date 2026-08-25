@@ -166,9 +166,16 @@ pub enum TouchPhase {
     Cancelled,
 }
 
-/// Physical keys, the subset current consumers need — grows additively.
-/// Unmapped keys arrive as [`KeyCode::Unidentified`]; nothing is lost
-/// silently, nothing panics.
+/// Physical keys: the standard board a binding screen could name.
+///
+/// The vocabulary was consumer-driven — four letters and a handful of
+/// editing keys — until recording fidelity argued for breadth: an
+/// unmapped key arrives as [`KeyCode::Unidentified`], which replays
+/// fine but has forgotten *which* key it was, so any key a binding
+/// could plausibly claim belongs here before somebody records with it.
+/// The numpad is deliberately still out; adding it later is one more
+/// trace-format version. Unmapped keys lose nothing silently and
+/// nothing panics.
 // `Ord` so a consumer can keep these in a sorted table and binary
 // search it. The order is declaration order, which is arbitrary but
 // stable within a build — which is all a lookup key needs, and is
@@ -196,6 +203,70 @@ pub enum KeyCode {
     KeyA,
     KeyS,
     KeyD,
+    KeyB,
+    KeyC,
+    KeyE,
+    KeyF,
+    KeyG,
+    KeyH,
+    KeyI,
+    KeyJ,
+    KeyK,
+    KeyL,
+    KeyM,
+    KeyN,
+    KeyO,
+    KeyP,
+    KeyQ,
+    KeyR,
+    KeyT,
+    KeyU,
+    KeyV,
+    KeyX,
+    KeyY,
+    KeyZ,
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    ShiftLeft,
+    ShiftRight,
+    ControlLeft,
+    ControlRight,
+    AltLeft,
+    AltRight,
+    PageUp,
+    PageDown,
+    Insert,
+    Minus,
+    Equal,
+    BracketLeft,
+    BracketRight,
+    Semicolon,
+    Quote,
+    Comma,
+    Period,
+    Slash,
+    Backslash,
+    Backquote,
     Unidentified,
 }
 

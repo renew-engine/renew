@@ -20,7 +20,7 @@
 
 use renew_trace::{TraceError, TraceErrorKind, parse};
 
-const HEADER: &str = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+const HEADER: &str = "renew-trace 3 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
 /// The refusal a text produces. Every test goes through here, so a text
 /// that is unexpectedly *accepted* fails loudly rather than quietly

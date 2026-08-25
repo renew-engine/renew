@@ -28,7 +28,7 @@ pub(crate) const MAGIC: &str = "renew-trace";
 /// format however small the addition looked, and the number has to move
 /// with it. The alternative is a reader that blames its own table for a
 /// file it should simply have been told it was too old to read.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Fields are separated by exactly one space. Not by whitespace: a tab or
 /// a run of spaces is a different file from the one someone meant to

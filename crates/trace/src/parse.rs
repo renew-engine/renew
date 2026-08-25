@@ -160,6 +160,16 @@ fn parse_event(number: usize, line: &str, version: u64) -> Result<(u64, TraceEve
                     name: name.to_string(),
                 })
             })?;
+            // A name newer than the file's own claim: the file is lying
+            // to every reader of the version it names — the same refusal
+            // the touch words established, applied per name.
+            if version < u64::from(code.introduced()) {
+                return Err(cursor.error(TraceErrorKind::EventFromANewerFormat {
+                    kind: format!("key name `{name}`"),
+                    introduced: code.introduced(),
+                    declared: version,
+                }));
+            }
             let pressed = cursor.pressed()?;
             // The repeat flag is present or absent, never written as a
             // word meaning "no": an absent flag and a flag that says
@@ -514,7 +524,7 @@ mod tests {
     use super::parse;
     use crate::event::{FiniteF32, FiniteF64, TraceButton, TraceEvent, TraceKey, TraceTouchPhase};
 
-    const HEADER: &str = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
+    const HEADER: &str = "renew-trace 3 sample=input_echo ticks=30 timestep_ns=16666667 budget=5";
 
     /// A one-event trace, so a test can name the shape it cares about and
     /// nothing else.
@@ -747,6 +757,40 @@ mod tests {
             );
             assert_eq!(error.line(), 2, "the refusal names the touch line");
         }
+    }
+
+    /// **A widened key under an older claimed version is refused.** The
+    /// 64 names introduced at version 3 must not parse out of a file
+    /// claiming 2: such a file lies to every version-2 reader it names,
+    /// and the one reader able to notice refuses instead of laundering
+    /// it — the touch words' own rule, applied per name. The original
+    /// names still parse under the old claim, or the gate would orphan
+    /// every version-2 file for no reason.
+    ///
+    /// Probed red by deleting the `introduced()` check in the key arm.
+    #[test]
+    fn a_widened_key_under_an_older_claimed_version_is_refused() {
+        use crate::error::TraceErrorKind;
+        let text = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n\
+                    e 0 key key-z down\n";
+        let error = parse(text).unwrap_err();
+        assert_eq!(
+            *error.kind(),
+            TraceErrorKind::EventFromANewerFormat {
+                kind: "key name `key-z`".to_string(),
+                introduced: 3,
+                declared: 2,
+            },
+            "version 2 must not admit a version-3 key name"
+        );
+        assert_eq!(error.line(), 2, "the refusal names the key line");
+
+        let old = "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n\
+                   e 0 key key-w down\n";
+        assert!(
+            parse(old).is_ok(),
+            "an original name under version 2 was refused; the gate orphans old files"
+        );
     }
 
     /// Every lowercase hexadecimal digit, so the digit-to-value step is
