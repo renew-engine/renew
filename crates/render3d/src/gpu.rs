@@ -389,6 +389,35 @@ impl Air {
         self
     }
 
+    /// The same air, with every vertex bending by `weight` instead of
+    /// by its own alpha.
+    ///
+    /// **For draws whose alpha is spoken for.** The blended pipelines
+    /// read vertex alpha as translucency, so a surface that is
+    /// genuinely half-there could never sway: one channel cannot be a
+    /// bend weight and a coverage at once. This word moves the weight
+    /// into the air — one weight per draw, even across the mesh — and
+    /// the vertex stage leaves alpha unspent, exactly as authored. The
+    /// evenness is the price of the channel, and it lands where it is
+    /// cheap: the meshes that need this are the ones whose per-vertex
+    /// channel is already taken.
+    ///
+    /// Composes with [`Air::swaying`], which remains the opt-in — this
+    /// word alone bends nothing. Zero, and every `Air` built without
+    /// this call, keeps the authored contract: alpha is the weight and
+    /// is spent while the draw sways (the same zero-means-default the
+    /// fade distance rides).
+    #[must_use]
+    pub const fn bending_evenly(mut self, weight: f32) -> Self {
+        let word = weight.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[40 + byte] = word[byte];
+            byte += 1;
+        }
+        self
+    }
+
     /// The packed bytes, exactly the length the pipelines' declared
     /// uniform block wants.
     #[must_use]

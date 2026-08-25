@@ -645,3 +645,24 @@ Target: SPIR-V 1.0
 ```
 
 1284 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-25
+
+The sway learns where its weight rides: `bend.z` zero keeps the vertex
+alpha as the bend weight, spent in the vertex stage as before; nonzero
+is a per-draw even weight and the alpha passes through unspent - for
+draws whose alpha is spoken for, which is every mesh on the blended
+pair. Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2800 bytes, read off disk after compiling.

@@ -621,12 +621,20 @@ mod horizon_tests {
     /// alone: displacement is its business and the horizon is not — a
     /// vertex stage that started mixing toward the fade colour would be
     /// duplicating the fragment stage's job with its own arithmetic.
+    /// And it asks where the weight rides: a swayer that read only the
+    /// vertex alpha would silently strip an even caller back to
+    /// alpha-weighting — the exact channel conflict `bend.z` exists to
+    /// resolve.
     #[test]
     fn every_swaying_shader_sways_and_does_not_fade() {
         for (name, source) in SWAYING_SHADERS {
             assert!(
                 source.contains("air.sway"),
                 "{name} is listed as a swayer and never reads the sway words"
+            );
+            assert!(
+                source.contains("air.bend.z"),
+                "{name} sways and never asks where the weight rides"
             );
             assert!(
                 !source.contains("air.horizon"),
