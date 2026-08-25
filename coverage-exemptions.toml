@@ -96,7 +96,7 @@ reason = "The unreachable arm behind the sample-before-write refusal: the assert
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [1130, 1131]
+lines = [1226, 1227]
 reason = "The depthless-adapter arm of the shadow map's refusal, which translates the rendering crate's DepthUnsupported into this crate's own variant rather than reporting it as a texture failure. Unreachable wherever a depth format exists, which is every measuring lane's adapter: the format is chosen at device bring-up from a void query no fault layer can mutate, and the layer's quirk list carries no depthless-adapter quirk either. The sibling arm (any other creation failure) is driven by the R10 fault scenario."
 
 [[exempt]]
@@ -106,8 +106,18 @@ reason = "The creation-failure propagation on the cutout pipeline's bring-up. Ne
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
+lines = [809]
+reason = "The creation-failure propagation on the blended pipeline's bring-up - the same arm the cutout carries at 713, for the same reason: no measuring lane's adapter refuses a pipeline its sibling paths already build."
+
+[[exempt]]
+file = "crates/render3d/src/gpu.rs"
 lines = [743, 744, 745]
 reason = "A Debug impl writing the renderer's constant name. Calling it needs a live renderer, which needs a device, and a device-bound test that exists to print a constant string would be coverage without a claim; the impl exists so an error context can name the renderer."
+
+[[exempt]]
+file = "crates/render3d/src/gpu.rs"
+lines = [839, 840, 841]
+reason = "The blended renderer's Debug impl - the cutout's twin at 743, exempt for the same reason: a device-bound test that prints a constant string is coverage without a claim."
 
 [[exempt]]
 file = "crates/rhi/src/vk/render_image.rs"

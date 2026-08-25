@@ -621,3 +621,27 @@ Target: SPIR-V 1.0
 ```
 
 1548, 2608 and 2044 bytes, read off disk after compiling.
+
+## mesh_camera_blended.frag - compiled 2026-08-25
+
+The blended camera pair's fragment stage: the textured stage with
+its output premultiplied by its own alpha, so a pipeline built with
+premultiplied-alpha blending composites what the numbers claim. The
+multiply lives in the stage rather than in every caller because a
+convention one caller can forget is a defect waiting for a caller;
+one multiply makes it arithmetic. Shares the textured vertex stage,
+so it sways and takes its fade distance from the block like every
+camera path. Version output observed rather than assumed:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_blended.frag -o mesh_camera_blended.frag.spv
+```
+
+1284 bytes, read off disk after compiling.
