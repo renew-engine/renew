@@ -181,12 +181,12 @@ reason = "The scale-factor and keyboard arms of the winit event translation. Nei
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1502]
+lines = [1636]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1599, 1600, 1601, 1667, 1668, 1669, 1693, 1694, 1695, 1752, 1753, 1754]
+lines = [1733, 1734, 1735, 1801, 1802, 1803, 1827, 1828, 1829, 1886, 1887, 1888]
 reason = "Required trait methods of four single-purpose test doubles (the epoch-ordering probe, the defaulted-release app, the interruption counter and the app that ignores interruptions), whose tests drive only the surface-release and interruption paths. ready cannot be called for the same reason as the double above; event and update are empty stubs a test could call but only to color lines while asserting nothing, which is the vacuity this suite exists to refuse."
 
 [[exempt]]
