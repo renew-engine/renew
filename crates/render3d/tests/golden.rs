@@ -15,8 +15,9 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Air, Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
-    ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
+    Air, BlendedCameraRenderer, Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer,
+    Render3dError, Scene, ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer,
+    TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -1207,6 +1208,156 @@ fn the_fade_completes_where_the_caller_says() -> Result<(), Box<dyn std::error::
         u32::from(near_pixel[0]) * 10 < u32::from(far_pixel[0]) * 7,
         "a fade completing at half a unit did not darken the quad: {near_pixel:?} \
          against {far_pixel:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One blended frame: a solid red backdrop through the opaque textured
+/// pipeline, then `layers` drawn through the blended one, in order.
+fn blended_frame(device: &Device, layers: &[Scene]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    // Reversed-Z: nearer is larger, so the backdrop sits at 0.3 and
+    // every veil above it — the same convention the shadow golden's
+    // floor-and-blocker fixture documents.
+    let mut backdrop = Scene::new();
+    full_quad(&mut backdrop, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let floor = opaque.upload(device, &backdrop)?;
+    let meshes: Vec<renew_rhi::Mesh> = layers
+        .iter()
+        .map(|layer| blended.upload(device, layer))
+        .collect::<Result<_, _>>()?;
+    let mut items = vec![opaque.item(&floor, &camera)];
+    for mesh in &meshes {
+        items.push(blended.item(mesh, &camera));
+    }
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **Half there means half its colour over what stood behind.** A
+/// half-alpha green quad over a red backdrop must read as a red-green
+/// mix — not as opaque green, which is what this pipeline drawn with
+/// blending disabled produces, and not as pure red, which is a draw
+/// that landed nowhere.
+///
+/// Probed by building the pipeline with `Blend::Opaque`: the mix
+/// vanishes and the red channel names it.
+#[test]
+fn a_half_alpha_quad_mixes_with_what_stood_behind() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut veil = Scene::new();
+    full_quad(&mut veil, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let pixels = blended_frame(&device, &[veil])?;
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 60 && centre[1] > 60,
+        "a half-green veil over red lost one of its parents: {centre:?}"
+    );
+    assert!(
+        centre[0] < 220 && centre[1] < 220,
+        "a half-green veil over red kept a parent whole: {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The caller owes the order, and the pipeline makes that owing
+/// visible.** Two overlapping translucent veils drawn in opposite
+/// orders produce different frames — blending's own equation says so —
+/// which is the sorting contract stated as arithmetic rather than as a
+/// sentence in a doc. A pipeline where the swap changed nothing would
+/// be one where blending was silently off.
+///
+/// Probed by giving both veils full alpha: order stops mattering for
+/// the winner-takes-all case only because depth is tested, and the
+/// assertion names the equality.
+#[test]
+fn swapping_two_veils_changes_the_picture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut green = Scene::new();
+    full_quad(&mut green, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let mut blue = Scene::new();
+    full_quad(&mut blue, 0.6, [0.0, 0.0, 1.0, 0.5]);
+    let green_first = blended_frame(&device, &[green.clone(), blue.clone()])?;
+    let blue_first = blended_frame(&device, &[blue, green])?;
+    assert_ne!(
+        green_first, blue_first,
+        "swapping two translucent veils changed nothing, so blending is not blending"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **Translucency leaves no footprint in depth.** A veil drawn first
+/// must not occlude opaque geometry drawn after it at a farther depth
+/// — the pipeline tests depth and never writes it, so a pond cannot
+/// eat the ground behind it just because the pond drew first.
+///
+/// Probed with `DepthState::read_write` on the blended pipeline: the
+/// late floor vanishes behind the veil and the red channel names it.
+#[test]
+fn a_veil_never_occludes_what_draws_after_it() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mut veil = Scene::new();
+    full_quad(&mut veil, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    // Farther than the veil under reversed-Z: smaller.
+    let mut floor = Scene::new();
+    full_quad(&mut floor, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let veil_mesh = blended.upload(&device, &veil)?;
+    let floor_mesh = opaque.upload(&device, &floor)?;
+    // The veil draws FIRST, the opaque floor after and farther away.
+    let items = [
+        blended.item(&veil_mesh, &camera),
+        opaque.item(&floor_mesh, &camera),
+    ];
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "the floor vanished behind a veil that drew first: {centre:?} — translucency \
+         wrote depth"
     );
     assert_no_validation_errors(&device);
     Ok(())

@@ -205,6 +205,28 @@ pub mod builtin {
         fragment: MESH_CAMERA_CUTOUT_FS_SPV,
     };
 
+    /// Fragment stage SPIR-V for the camera mesh path that blends over
+    /// what is already drawn.
+    pub static MESH_CAMERA_BLENDED_FS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_blended.frag.spv");
+
+    /// The camera mesh pair that **blends**: the textured pair's vertex
+    /// stage over a fragment stage whose output is premultiplied by its
+    /// own alpha, for pipelines built with
+    /// [`Blend::PremultipliedAlpha`](crate::Blend::PremultipliedAlpha)
+    /// and a depth state that tests without writing.
+    ///
+    /// **The caller owes the order.** Blending is order-dependent by
+    /// its equation; this pair composites honestly and nothing more.
+    /// Draw the opaque world first, then translucent geometry back to
+    /// front — a wrong order is a wrong picture, visibly and
+    /// deterministically, never unsafely. The cutout pair's own doc
+    /// names this pair as where genuinely half-there surfaces belong.
+    pub const MESH_CAMERA_BLENDED: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_TEXTURED_VS_SPV,
+        fragment: MESH_CAMERA_BLENDED_FS_SPV,
+    };
+
     /// Vertex stage SPIR-V for the shadowed camera mesh path: the
     /// shared 128-byte push block in, light-space position out.
     pub static MESH_CAMERA_SHADOW_VS_SPV: &[u8] =
@@ -448,10 +470,14 @@ mod horizon_tests {
     /// read the directory of a crate it was compiled from. That makes this
     /// list the weak point, so `no_shader_compiles_the_horizon_in` below
     /// holds it against the shaders that actually exist.
-    const FADING_SHADERS: [(&str, &str); 4] = [
+    const FADING_SHADERS: [(&str, &str); 5] = [
         (
             "mesh_camera.frag",
             include_str!("../shaders/mesh_camera.frag"),
+        ),
+        (
+            "mesh_camera_blended.frag",
+            include_str!("../shaders/mesh_camera_blended.frag"),
         ),
         (
             "mesh_camera_cutout.frag",

@@ -745,6 +745,102 @@ impl core::fmt::Debug for CutoutCameraRenderer {
     }
 }
 
+/// Draws indexed geometry through a camera, blended over what is
+/// already in the target — the pair the cutout's own doc promised for
+/// surfaces that are genuinely half-there: water, glass, smoke.
+///
+/// **Depth is tested and not written.** Translucent geometry respects
+/// the opaque world — a wall in front of a pond hides it — but leaves
+/// no footprint in the depth buffer, so it can never occlude what is
+/// drawn after it. That is one half of the compositing contract.
+///
+/// **The caller owes the other half: order.** Blending is
+/// order-dependent by its equation (`src + dst * (1 - src.a)`), so
+/// translucent draws land after the opaque world and back to front
+/// among themselves. A wrong order is a wrong picture — visibly and
+/// deterministically, never unsafely — and a golden holds exactly
+/// that: swapping two overlapping translucent quads changes the frame,
+/// which is this contract said as arithmetic.
+///
+/// The fragment stage premultiplies its own output, so vertex colours
+/// and atlas bytes keep the same meaning they have on every other
+/// path; a caller says "half there" with a vertex alpha of one half
+/// and nothing else changes.
+pub struct BlendedCameraRenderer {
+    pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
+    /// The set the per-frame block is read through — held for the
+    /// record path, exactly as the cutout's is.
+    air_binding: renew_rhi::Binding,
+}
+
+impl BlendedCameraRenderer {
+    /// Build the pipeline and upload `pixels` as the texture it samples.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::new`].
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA_BLENDED, format, LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
+                .sampled_bindings(1)
+                .blend(renew_rhi::Blend::PremultipliedAlpha)
+                // Tested against the opaque world, never written: see
+                // the type's doc for why both halves matter.
+                .depth_state(renew_rhi::DepthState::test_only()),
+        )?;
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh` seen through `camera`.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .push_data(camera.bytes())
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
+    }
+}
+
+impl core::fmt::Debug for BlendedCameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("BlendedCameraRenderer")
+    }
+}
+
 impl core::fmt::Debug for TexturedCameraRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TexturedCameraRenderer")
