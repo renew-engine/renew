@@ -62,14 +62,30 @@ layout(location = 0) out vec4 fragment_colour;
 // twentieth of a block away. A fade driven by depth therefore saturates
 // almost immediately; driven the conventional way it turned the whole
 // room to fog, and that was not a guess -- it was the first picture.
+// The per-renderer block, for the one word this stage reads: how far
+// away the fade completes. `bend.y` is that distance in world units;
+// zero — every caller that never set it — selects the compiled
+// forty-eight this stage always carried, so the silent caller's
+// picture is untouched, byte for byte, by the exact argument the
+// sway's flag word made: the arithmetic is identical when the select
+// takes the constant. A stage may declare a leading subset of a
+// block's members, so nothing else here changes.
+layout(std140, set = 0, binding = 0) uniform Air {
+    vec4 horizon;
+    vec4 sway;
+    vec4 bend;
+} air;
+
 layout(location = 1) out float fragment_fade;
 
 void main() {
     gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
     fragment_colour = (vertex_colour) * camera.light;
-    // The distance at which the fade is complete, in world units. A
-    // little over the arena's diagonal, so its far corner is faint
-    // rather than lost.
+    // The distance at which the fade is complete, in world units: the
+    // caller's word when one was given, the compiled forty-eight when
+    // not. Only the caller knows how big its world is — this constant
+    // was sized to one arena and then met a world half again wider.
     const float FADE_DISTANCE = 48.0;
-    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+    float fade_over = air.bend.y > 0.0 ? air.bend.y : FADE_DISTANCE;
+    fragment_fade = clamp(gl_Position.w / fade_over, 0.0, 1.0);
 }

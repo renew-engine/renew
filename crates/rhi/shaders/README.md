@@ -592,3 +592,32 @@ Target: SPIR-V 1.0
 ```
 
 2524 bytes, read off disk after compiling.
+
+## the three camera vertex stages - recompiled 2026-08-25 (fade distance)
+
+The distance at which the fade completes moved out of the shaders
+and into the per-renderer block: each vertex stage reads the third
+word's y and falls back to the compiled forty-eight when it is zero,
+so a caller that says nothing keeps its picture byte for byte - the
+same defaulting argument the sway's flag word carried, held by the
+golden that compares a silent air against an explicit zero. The
+plain and shadowed stages declare the block for the first time (a
+leading subset was already every fragment stage's shape); the
+registry holds all three as rangers that read the word and never
+touch the horizon. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+> glslc -O mesh_camera_shadow.vert -o mesh_camera_shadow.vert.spv
+```
+
+1548, 2608 and 2044 bytes, read off disk after compiling.

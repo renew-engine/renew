@@ -65,6 +65,20 @@ layout(location = 2) out vec2 fragment_uv;
 // stage can compare its own light-depth against the shadow map's.
 layout(location = 3) out vec4 fragment_light_position;
 
+// The per-renderer block, for the one word this stage reads: how far
+// away the fade completes. `bend.y` is that distance in world units;
+// zero — every caller that never set it — selects the compiled
+// forty-eight this stage always carried, so the silent caller's
+// picture is untouched, byte for byte, by the exact argument the
+// sway's flag word made: the arithmetic is identical when the select
+// takes the constant. A stage may declare a leading subset of a
+// block's members, so nothing else here changes.
+layout(std140, set = 2, binding = 0) uniform Air {
+    vec4 horizon;
+    vec4 sway;
+    vec4 bend;
+} air;
+
 void main() {
     vec4 world = vec4(vertex_position, 1.0);
     gl_Position = matrices.view_projection * world;
@@ -85,8 +99,11 @@ void main() {
         dot(matrices.light_row_2, world),
         1.0
     );
-    // The same constant as every camera path: two pipelines drawing
-    // one world must fade alike or the seam shows.
+    // The distance at which the fade is complete, in world units: the
+    // caller's word when one was given, the compiled forty-eight when
+    // not. Only the caller knows how big its world is — this constant
+    // was sized to one arena and then met a world half again wider.
     const float FADE_DISTANCE = 48.0;
-    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+    float fade_over = air.bend.y > 0.0 ? air.bend.y : FADE_DISTANCE;
+    fragment_fade = clamp(gl_Position.w / fade_over, 0.0, 1.0);
 }

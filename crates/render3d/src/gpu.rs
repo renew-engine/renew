@@ -225,7 +225,9 @@ fn air_binding(device: &Device) -> Result<renew_rhi::Binding, Render3dError> {
 /// How many bytes the per-renderer block carries.
 ///
 /// Three `vec4`s, each aligned to sixteen as `std140` wants: the fade's
-/// words, the sway's, and the sway's own opt-in flag. Widened once, for
+/// words, the sway's, and a third whose `x` is the sway's opt-in flag
+/// and whose `y` is how far away the fade completes (zero meaning the
+/// compiled default). Widened once, for
 /// every camera pipeline at once — the fragment stages declare and read
 /// the first sixteen bytes, the textured vertex stage reads the rest,
 /// and a stage that declares a leading subset of a block's members is
@@ -356,6 +358,32 @@ impl Air {
         let mut byte = 0;
         while byte < 4 {
             self.bytes[32 + byte] = on[byte];
+            byte += 1;
+        }
+        self
+    }
+
+    /// The same air, with the fade completing at `distance` world units.
+    ///
+    /// **The compiled forty-eight was sized to one arena** and then met
+    /// worlds of other sizes; only the caller knows how big its world
+    /// is, which is the same reasoning that moved the horizon colour
+    /// into this block. Zero — and every `Air` built without this call —
+    /// selects the compiled default, so a caller that says nothing gets
+    /// the picture it always got, byte for byte: the stages take the
+    /// constant through a select, and identical arithmetic is identical
+    /// bytes.
+    ///
+    /// Every camera path reads the same word, textured, plain, shadowed
+    /// and cutout alike — pipelines drawing one world must fade alike or
+    /// the seam between them shows, and now they must also fade *this
+    /// far* alike.
+    #[must_use]
+    pub const fn fading_over(mut self, distance: f32) -> Self {
+        let word = distance.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[36 + byte] = word[byte];
             byte += 1;
         }
         self
