@@ -467,6 +467,19 @@ mod horizon_tests {
         ),
     ];
 
+    /// The block's other half: every shader that bends geometry by it.
+    ///
+    /// The Air block stopped being only the fade when the sway words
+    /// joined it, so "declares the block" stopped implying "fades" —
+    /// a vertex stage reads the second half and never touches the
+    /// horizon. Listed apart so each half's claim stays checkable:
+    /// a fader fades, a swayer sways, and the directory walk holds the
+    /// union against what actually exists.
+    const SWAYING_SHADERS: [(&str, &str); 1] = [(
+        "mesh_camera_textured.vert",
+        include_str!("../shaders/mesh_camera_textured.vert"),
+    )];
+
     /// **Every shader that fades reads the colour rather than knowing it.**
     ///
     /// This replaces a pair of tests that checked the Rust constant and
@@ -544,13 +557,32 @@ mod horizon_tests {
 
         let mut listed: Vec<String> = FADING_SHADERS
             .iter()
+            .chain(SWAYING_SHADERS.iter())
             .map(|(name, _)| (*name).to_owned())
             .collect();
         listed.sort();
 
         assert_eq!(
             fading, listed,
-            "the shaders reading an Air block and the list the check above walks have diverged"
+            "the shaders reading an Air block and the lists the checks above walk have diverged"
         );
+    }
+
+    /// A swayer reads the block's second half and leaves the first
+    /// alone: displacement is its business and the horizon is not — a
+    /// vertex stage that started mixing toward the fade colour would be
+    /// duplicating the fragment stage's job with its own arithmetic.
+    #[test]
+    fn every_swaying_shader_sways_and_does_not_fade() {
+        for (name, source) in SWAYING_SHADERS {
+            assert!(
+                source.contains("air.sway"),
+                "{name} is listed as a swayer and never reads the sway words"
+            );
+            assert!(
+                !source.contains("air.horizon"),
+                "{name} reads the horizon from the vertex stage; the fade is the fragment stage's job"
+            );
+        }
     }
 }

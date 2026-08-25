@@ -30,6 +30,27 @@ layout(push_constant) uniform Camera {
     vec4 light;
 } camera;
 
+// The per-renderer block every camera pipeline binds, in three words:
+// the fade's, which the fragment stages read; the sway's, which only
+// this stage does; and the sway's own opt-in flag. A stage may declare
+// a leading subset of a block's members — validation is per stage —
+// so the fragment shaders keep their sixteen-byte view of this buffer.
+//
+// **The sway, word by word.** `sway.xy` is how far a fully bent vertex
+// is pushed across the ground plane at the top of the swing, in world
+// units — direction and strength folded together by whoever owns the
+// wind. `sway.z` is where the swing is in its cycle, in radians; the
+// caller advances it with time. `sway.w` is radians of extra phase per
+// world unit, which turns a field moving in lockstep into travelling
+// waves. `bend.x` says whether this renderer's draws are swayers at
+// all — the flag, not the reach, because a wind that calms to zero
+// must not flip what a mesh's alphas mean (see Air::swaying).
+layout(std140, set = 1, binding = 0) uniform Air {
+    vec4 horizon;
+    vec4 sway;
+    vec4 bend;
+} air;
+
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
 layout(location = 2) in vec2 vertex_uv;
@@ -43,8 +64,27 @@ layout(location = 1) out float fragment_fade;
 layout(location = 2) out vec2 fragment_uv;
 
 void main() {
-    gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
-    fragment_colour = vertex_colour * camera.light;
+    // Whether this renderer's draws sway at all: the declared flag, not
+    // the reach, so calm air bends nothing while every alpha keeps the
+    // meaning its mesh was authored to (see Air::swaying). For a draw
+    // that never opted in, the position below is passed through with no
+    // arithmetic against it at all — the goldens hold this stage to
+    // byte identity, and untouched input is how identity is certain
+    // rather than probable.
+    bool bent = air.bend.x != 0.0;
+    // The vertex colour's alpha is the bend weight while a draw sways:
+    // zero pins a vertex, one bends it the whole reach. The two phase
+    // rates keep the crest line off both axes and the diagonal, so a
+    // field reads as weather rather than as a scan.
+    float swing = sin(air.sway.z + (vertex_position.x + 0.7 * vertex_position.z) * air.sway.w);
+    vec3 placed = bent
+        ? vertex_position + vec3(air.sway.x, 0.0, air.sway.y) * (swing * vertex_colour.a)
+        : vertex_position;
+    gl_Position = camera.view_projection * vec4(placed, 1.0);
+    // A swaying draw spends the weight here: the fragment stage sees
+    // alpha one, so a cutout's mask and a blend keep their meaning.
+    // A still draw's alpha keeps its old meaning untouched.
+    fragment_colour = vec4(vertex_colour.rgb, bent ? 1.0 : vertex_colour.a) * camera.light;
     fragment_uv = vertex_uv;
     // The distance at which the fade is complete, in world units. A
     // little over the arena's diagonal, so its far corner is faint
