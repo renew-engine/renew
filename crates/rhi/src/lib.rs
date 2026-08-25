@@ -480,6 +480,27 @@ mod horizon_tests {
         include_str!("../shaders/mesh_camera_textured.vert"),
     )];
 
+    /// The block's third claim: every vertex stage that computes the
+    /// fade reads how far it completes from the block, not from a
+    /// constant of its own — the distance moved out of the shaders the
+    /// same day the sway's flag proved a word can default safely. A
+    /// stage may be a ranger and a swayer at once (the textured one
+    /// is); the walk below holds the union.
+    const RANGING_SHADERS: [(&str, &str); 3] = [
+        (
+            "mesh_camera.vert",
+            include_str!("../shaders/mesh_camera.vert"),
+        ),
+        (
+            "mesh_camera_shadow.vert",
+            include_str!("../shaders/mesh_camera_shadow.vert"),
+        ),
+        (
+            "mesh_camera_textured.vert",
+            include_str!("../shaders/mesh_camera_textured.vert"),
+        ),
+    ];
+
     /// **Every shader that fades reads the colour rather than knowing it.**
     ///
     /// This replaces a pair of tests that checked the Rust constant and
@@ -558,9 +579,11 @@ mod horizon_tests {
         let mut listed: Vec<String> = FADING_SHADERS
             .iter()
             .chain(SWAYING_SHADERS.iter())
+            .chain(RANGING_SHADERS.iter())
             .map(|(name, _)| (*name).to_owned())
             .collect();
         listed.sort();
+        listed.dedup();
 
         assert_eq!(
             fading, listed,
@@ -578,6 +601,24 @@ mod horizon_tests {
             assert!(
                 source.contains("air.sway"),
                 "{name} is listed as a swayer and never reads the sway words"
+            );
+            assert!(
+                !source.contains("air.horizon"),
+                "{name} reads the horizon from the vertex stage; the fade is the fragment stage's job"
+            );
+        }
+    }
+
+    /// A ranger reads how far the fade completes from the block and
+    /// never invents its own: the compiled default may appear only as
+    /// the fallback beside the select, so a stage cannot quietly stop
+    /// honouring the caller's distance.
+    #[test]
+    fn every_ranging_shader_takes_its_distance_from_the_block() {
+        for (name, source) in RANGING_SHADERS {
+            assert!(
+                source.contains("air.bend.y"),
+                "{name} is listed as a ranger and never reads the distance word"
             );
             assert!(
                 !source.contains("air.horizon"),

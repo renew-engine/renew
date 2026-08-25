@@ -86,10 +86,11 @@ void main() {
     // A still draw's alpha keeps its old meaning untouched.
     fragment_colour = vec4(vertex_colour.rgb, bent ? 1.0 : vertex_colour.a) * camera.light;
     fragment_uv = vertex_uv;
-    // The distance at which the fade is complete, in world units. A
-    // little over the arena's diagonal, so its far corner is faint
-    // rather than lost. The same constant as the untextured path: two
-    // pipelines drawing one world must fade alike or the seam shows.
+    // The distance at which the fade is complete, in world units: the
+    // caller's word when one was given, the compiled forty-eight when
+    // not. Only the caller knows how big its world is — this constant
+    // was sized to one arena and then met a world half again wider.
     const float FADE_DISTANCE = 48.0;
-    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+    float fade_over = air.bend.y > 0.0 ? air.bend.y : FADE_DISTANCE;
+    fragment_fade = clamp(gl_Position.w / fade_over, 0.0, 1.0);
 }

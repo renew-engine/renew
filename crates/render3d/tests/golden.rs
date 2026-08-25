@@ -1175,6 +1175,43 @@ fn a_swaying_cutout_keeps_its_weightless_roots() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// **The fade completes where the caller says, and silence means the
+/// compiled default exactly.** Under this identity projection every
+/// vertex sits at w = 1: against the compiled forty-eight that is a
+/// fade of one part in forty-eight — a quad drawn essentially unfaded —
+/// while a caller who says the fade completes at half a unit gets a
+/// frame pulled its full fraction toward the horizon. And a caller
+/// passing zero has said nothing, byte for byte, which is what lets a
+/// consumer thread the value through unconditionally.
+///
+/// Probed by ignoring the distance word in the textured stage: the
+/// near frame equals the far one and the inequality names it.
+#[test]
+fn the_fade_completes_where_the_caller_says() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let silent = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    let explicit_zero = textured_frame(&device, &scene, Air::CLEAR_BLACK.fading_over(0.0))?;
+    assert_eq!(
+        silent, explicit_zero,
+        "zero is not the default it promises to be"
+    );
+    let near = textured_frame(&device, &scene, Air::CLEAR_BLACK.fading_over(0.5))?;
+    let (x, row) = (SIZE / 4, SIZE / 2);
+    let far_pixel = at(&silent, x, row);
+    let near_pixel = at(&near, x, row);
+    assert!(
+        u32::from(near_pixel[0]) * 10 < u32::from(far_pixel[0]) * 7,
+        "a fade completing at half a unit did not darken the quad: {near_pixel:?} \
+         against {far_pixel:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
 /// **The vertex colour tints the texel rather than being replaced by
 /// it.** The colour is where face shading and corner darkening live; a
 /// fragment stage that returned the texel alone would draw an evenly lit
