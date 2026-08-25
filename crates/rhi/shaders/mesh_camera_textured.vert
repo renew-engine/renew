@@ -44,7 +44,11 @@ layout(push_constant) uniform Camera {
 // world unit, which turns a field moving in lockstep into travelling
 // waves. `bend.x` says whether this renderer's draws are swayers at
 // all — the flag, not the reach, because a wind that calms to zero
-// must not flip what a mesh's alphas mean (see Air::swaying).
+// must not flip what a mesh's alphas mean (see Air::swaying). `bend.z`
+// is where the weight rides: zero means the vertex's own alpha, spent
+// below; nonzero is a per-draw even weight, for meshes whose alpha is
+// spoken for — the blended pair reads it as translucency, and one
+// channel cannot mean both (see Air::bending_evenly).
 layout(std140, set = 1, binding = 0) uniform Air {
     vec4 horizon;
     vec4 sway;
@@ -73,18 +77,24 @@ void main() {
     // rather than probable.
     bool bent = air.bend.x != 0.0;
     // The vertex colour's alpha is the bend weight while a draw sways:
-    // zero pins a vertex, one bends it the whole reach. The two phase
+    // zero pins a vertex, one bends it the whole reach. Unless the air
+    // carries an even weight — then every vertex bends by that word and
+    // alpha keeps the meaning its mesh was authored to. The two phase
     // rates keep the crest line off both axes and the diagonal, so a
     // field reads as weather rather than as a scan.
+    bool evenly = air.bend.z != 0.0;
+    float weight = evenly ? air.bend.z : vertex_colour.a;
     float swing = sin(air.sway.z + (vertex_position.x + 0.7 * vertex_position.z) * air.sway.w);
     vec3 placed = bent
-        ? vertex_position + vec3(air.sway.x, 0.0, air.sway.y) * (swing * vertex_colour.a)
+        ? vertex_position + vec3(air.sway.x, 0.0, air.sway.y) * (swing * weight)
         : vertex_position;
     gl_Position = camera.view_projection * vec4(placed, 1.0);
     // A swaying draw spends the weight here: the fragment stage sees
     // alpha one, so a cutout's mask and a blend keep their meaning.
-    // A still draw's alpha keeps its old meaning untouched.
-    fragment_colour = vec4(vertex_colour.rgb, bent ? 1.0 : vertex_colour.a) * camera.light;
+    // A still draw's alpha keeps its old meaning untouched — and so
+    // does an even swayer's, whose weight rode the air instead.
+    fragment_colour =
+        vec4(vertex_colour.rgb, bent && !evenly ? 1.0 : vertex_colour.a) * camera.light;
     fragment_uv = vertex_uv;
     // The distance at which the fade is complete, in world units: the
     // caller's word when one was given, the compiled forty-eight when

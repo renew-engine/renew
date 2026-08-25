@@ -1215,6 +1215,140 @@ fn the_fade_completes_where_the_caller_says() -> Result<(), Box<dyn std::error::
 
 /// One blended frame: a solid red backdrop through the opaque textured
 /// pipeline, then `layers` drawn through the blended one, in order.
+/// **The even weight moves what alpha pins.** `bend.z` is where a
+/// swaying draw's weight rides when its alpha is spoken for: a quad
+/// authored at alpha zero — pinned under the alpha contract, and the
+/// control arm proves it stays pinned — crosses the frame the moment
+/// the air carries an even weight of one. Same reach, same swing, same
+/// mesh; the only difference is which word the vertex stage weighed.
+///
+/// Probed by weighing the vertex alpha regardless of the even word:
+/// the blown arm stays pinned and "claimed no new ground" names it.
+#[test]
+fn the_even_weight_moves_what_alpha_pins() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // sin(pi/2) = 1: full swing, so the displacement is exactly the
+    // reach and the probe columns are the weighted golden's own.
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], std::f32::consts::FRAC_PI_2, 0.0);
+    let mut weightless = Scene::new();
+    half_quad(&mut weightless, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let still = textured_frame(&device, &weightless, Air::CLEAR_BLACK)?;
+    let pinned = textured_frame(&device, &weightless, wind)?;
+    let blown = textured_frame(&device, &weightless, wind.bending_evenly(1.0))?;
+    // Clip x = -0.75: inside the quad at rest. Clip x = +0.25: past its
+    // resting edge, covered only if the quad moved.
+    let vacated = SIZE / 8;
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    for (x, name) in [(vacated, "its own ground"), (claimed, "new ground")] {
+        assert_eq!(
+            at(&still, x, row)[0..3],
+            at(&pinned, x, row)[0..3],
+            "the control arm moved: an alpha-zero quad swayed with no even word, at {name}"
+        );
+    }
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "an even weight of one at full swing claimed no new ground"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared instead of moving: its old ground is still covered"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One veil through the blended pair under a chosen air: the opaque red
+/// backdrop at 0.3, a half-alpha green veil at 0.5, and the air on the
+/// veil's camera alone — the fixture for holding what an even swayer
+/// does to the alpha it was told to leave.
+fn veiled_frame(device: &Device, air: Air) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mut backdrop = Scene::new();
+    full_quad(&mut backdrop, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let floor = opaque.upload(device, &backdrop)?;
+    let mut layer = Scene::new();
+    full_quad(&mut layer, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let veil = blended.upload(device, &layer)?;
+    let aired = camera.through(air);
+    let items = [opaque.item(&floor, &camera), blended.item(&veil, &aired)];
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **An even swayer leaves the alpha unspent.** On the blended pair
+/// alpha is translucency, and spending it as bend weight is exactly
+/// the conflict `bend.z` resolves: a half-alpha veil swaying at zero
+/// swing — phase zero, no ripple, so the displacement arithmetic is
+/// exact zeros and the geometry is byte-identical — must blend exactly
+/// as the becalmed veil does. The discriminating arm sways without the
+/// even word: alpha is spent, the veil turns opaque, and the frame
+/// changes — which is what would silently happen to every translucent
+/// swayer if this contract broke.
+///
+/// Probed by spending the alpha in the vertex stage even when the
+/// weight rode the air: the even arm turns opaque and the first
+/// equality names it.
+#[test]
+fn a_zero_swing_even_swayer_blends_like_a_still_one() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 0.0, 0.0);
+    let becalmed = veiled_frame(&device, Air::CLEAR_BLACK)?;
+    let even = veiled_frame(&device, wind.bending_evenly(1.0))?;
+    let spent = veiled_frame(&device, wind)?;
+    assert_eq!(
+        becalmed, even,
+        "an even swayer at zero swing changed the blend: it spent the alpha it was told to leave"
+    );
+    assert_ne!(
+        becalmed, spent,
+        "the discriminator went dull: spending the alpha no longer changes the blend, so the equality above holds nothing"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **An even weight of zero is the alpha contract.** The same
+/// zero-means-default the fade distance rides: a caller that says
+/// nothing — or says zero — gets the authored behaviour, byte for
+/// byte, because the builder writes the same zeros the block was born
+/// with.
+#[test]
+fn an_even_weight_of_zero_is_the_alpha_contract() {
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 1.0, 0.7);
+    assert_eq!(
+        wind.bending_evenly(0.0).bytes(),
+        wind.bytes(),
+        "a zero even weight moved a byte; silent callers are no longer identical"
+    );
+}
+
 fn blended_frame(device: &Device, layers: &[Scene]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let extent = Extent {
         width: SIZE,
