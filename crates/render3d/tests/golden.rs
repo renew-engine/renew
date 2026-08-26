@@ -1661,6 +1661,10 @@ fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error:
 /// strips alike. Same-frame determinism rides along: both frames are
 /// drawn twice and compared byte for byte.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture, four claims: the dim, the v-flip guard, the empty map, and the kept-map cadence"
+)]
 fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::error::Error>> {
     let Some(device) = device_or_skip()? else {
         return Ok(());
@@ -1758,6 +1762,23 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         let mut target = device.create_offscreen_target(extent)?;
         let first = run(&mut target)?;
         let second = run(&mut target)?;
+        // The cadence contract, end to end, on the casting side: the
+        // map is kept, so a frame may omit the caster pass outright
+        // and its lit pass samples what the last casting frame stored
+        // — the picture must be the shadowed picture, to the byte.
+        // Same target as the frames above: the per-frame block buffer
+        // belongs to one target by the buffer's own rule.
+        if cast {
+            let items = [renderer.item(&mesh, &camera)];
+            let sampling_only = [pass(&clear, &items)];
+            target.render(&RenderDesc::new(&sampling_only))?;
+            let mut omitted = vec![0u8; target.byte_len()];
+            target.read_back_into(&mut omitted);
+            assert_eq!(
+                second, omitted,
+                "a frame that omitted the caster pass must sample what the last casting                  frame kept"
+            );
+        }
         Ok((first, second))
     };
 

@@ -34,7 +34,8 @@ pub enum RenderImageKind {
     Depth,
 }
 
-/// Everything a render image needs: its kind and its size.
+/// Everything a render image needs: its kind, its size, and whether
+/// its contents outlive the frame.
 ///
 /// `#[non_exhaustive]` with a constructor, per the descriptor pattern
 /// this crate uses everywhere.
@@ -45,18 +46,62 @@ pub struct RenderImageDesc {
     pub kind: RenderImageKind,
     /// The image's size in pixels.
     pub extent: Extent,
+    /// Whether the image's contents persist across frames. See
+    /// [`RenderImage`]'s contract for what a kept image may do that a
+    /// frame-scoped one may not.
+    pub kept: bool,
 }
 
 impl RenderImageDesc {
-    /// A render image of `kind`, sized `extent`.
+    /// A render image of `kind`, sized `extent`, frame-scoped.
     ///
     /// Positional because neither has a meaningful default: an image
     /// with no kind has no format, and one with no size is not an
-    /// image.
+    /// image. Frame-scoped by default because that is the cheaper
+    /// contract; [`Self::kept`] opts into persistence.
     #[must_use]
     pub fn new(kind: RenderImageKind, extent: Extent) -> Self {
-        Self { kind, extent }
+        Self {
+            kind,
+            extent,
+            kept: false,
+        }
     }
+
+    /// The same image, keeping its contents across frames.
+    #[must_use]
+    pub fn kept(mut self) -> Self {
+        self.kept = true;
+        self
+    }
+}
+
+/// What an earlier frame left in a **kept** render image - the
+/// cross-frame half of the frame walk's state machine, stored on the
+/// image because the image is the thing that outlives frames.
+///
+/// Written back only when a frame is actually **submitted** - the
+/// contract's dry walk reads it and must not move it, and a recorded
+/// frame that never reaches the queue must leave no trace, or the next
+/// frame's barriers would claim a layout no GPU work ever produced.
+/// Only ever read and written on the one thread the crate contract
+/// already requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeptContents {
+    /// No frame has rendered the image yet: contents undefined, exactly
+    /// a frame-scoped image's every-frame state. Also every non-kept
+    /// image's permanent value - the walk never writes those back.
+    Undefined,
+    /// The last frame to touch it wrote and stored: contents live, the
+    /// image sits in its attachment layout.
+    Stored,
+    /// The last frame to touch it wrote and discarded: the layout is
+    /// the attachment layout but the pixels are gone, so loading or
+    /// sampling them is refused by name.
+    Discarded,
+    /// The last frame to touch it left it sampled: contents live, the
+    /// image sits in the sampled layout.
+    Sampled,
 }
 
 /// Refuse a malformed render-image extent. A pure function so both
@@ -89,6 +134,11 @@ pub(crate) struct RenderImageInner {
     pub(crate) view: vk::ImageView,
     pub(crate) format: vk::Format,
     pub(crate) kind: RenderImageKind,
+    /// Whether contents persist across frames (creation-time choice).
+    pub(crate) kept: bool,
+    /// The cross-frame contents state; [`KeptContents::Undefined`]
+    /// forever on a frame-scoped image.
+    pub(crate) contents: core::cell::Cell<KeptContents>,
     extent: Extent,
 }
 
@@ -120,14 +170,27 @@ impl Drop for RenderImageInner {
 ///
 /// # Contract
 ///
-/// The image's **contents are frame-scoped**: every frame's first use
-/// of it starts from undefined pixels, and nothing rendered into it is
-/// promised to a later frame — the frame contract refuses a
+/// By default the image's **contents are frame-scoped**: every frame's
+/// first use of it starts from undefined pixels, and nothing rendered
+/// into it is promised to a later frame — the frame contract refuses a
 /// contents-preserving first-use load exactly as it does for the
 /// surface. The image itself outlives every frame that names it, held
 /// by the target's retention table until that frame's work provably
 /// ended, so a caller may drop the handle mid-frame and take nothing
 /// away from the GPU.
+///
+/// A **kept** image ([`RenderImageDesc::kept`]) persists its contents
+/// across frames instead. What that buys, concretely: a frame may open
+/// it with `LoadOp::Load` and paint over last frame's pixels, and a
+/// frame may **sample it without rendering to it at all** — the shape
+/// of every render-to-texture updated on its own cadence: a shadow map
+/// under a slow sun, a reflection probe, a minimap, an impostor cache.
+/// Two rules survive unchanged: the first frame ever to touch it must
+/// render before anything loads or samples it (there is nothing to
+/// keep yet), and a frame whose last write discarded leaves nothing
+/// for later frames to load or sample — both refused by name. The
+/// within-frame order (every writing pass before the first sampling
+/// pass) binds kept images exactly as it does frame-scoped ones.
 ///
 /// There is no host path — no upload, no readback — and no resize: an
 /// image is its size for its whole life, and a differently-sized frame
@@ -360,6 +423,8 @@ impl Device {
                 view,
                 format,
                 kind: desc.kind,
+                kept: desc.kept,
+                contents: core::cell::Cell::new(KeptContents::Undefined),
                 extent: desc.extent,
             }),
         })

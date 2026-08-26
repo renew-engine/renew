@@ -1137,6 +1137,302 @@ fn malformed_frames_are_refused_by_name() {
     assert_no_validation_errors(&device);
 }
 
+/// The kept-image rules: persistence changes what is legal, not
+/// whether legality is checked. A virgin kept image refuses loads and
+/// reads by its own name (nothing was ever kept); a stored frame makes
+/// the sample-only frame legal; a discarding frame takes the
+/// permission back. Each refusal is matched to its clause's words, and
+/// the target renders a clean frame afterwards to prove the refusals
+/// fired before any GPU work.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case per kept-contract clause; the matrix is the point"
+)]
+fn a_kept_image_keeps_only_what_was_stored() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("triangle pipeline");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let sampler = device
+        .create_sampler(&renew_rhi::SamplerDesc::atlas())
+        .expect("sampler");
+    let kept = device
+        .create_render_image(
+            &renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept image");
+    let kept_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&kept), &sampler))
+        .expect("kept binding");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    let discard = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Discard,
+    );
+    let load = Attachment::new(LoadOp::Load, StoreOp::Store);
+
+    // Virgin: nothing was ever kept, so nothing may be read or loaded.
+    refused_by_name(
+        "sampling a virgin kept image",
+        "render it once before reading it",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused_by_name(
+        "loading a virgin kept image",
+        "render it once before loading it",
+        || {
+            let color = clear(black);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+
+    // Stored: the sample-only frame is now legal — the whole point.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+        let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+        target
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+            .expect("a frame may sample what an earlier frame kept");
+        // And a loading re-open of the sampled layout renders too.
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("a frame may load what an earlier frame kept");
+    }
+
+    // Discarded: the permission is taken back, by name.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, discard, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the discarding frame itself is well-formed");
+    }
+    refused_by_name(
+        "sampling a kept image after a discarding frame",
+        "store what a later frame reads",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused_by_name(
+        "loading a kept image after a discarding frame",
+        "store what a later frame loads",
+        || {
+            let color = clear(black);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+
+    // A frame-scoped image's rules did not move: the same sample-only
+    // frame that a kept image earns stays refused for it.
+    let scoped = device
+        .create_render_image(&renew_rhi::RenderImageDesc::new(
+            renew_rhi::RenderImageKind::Color,
+            Extent {
+                width: 8,
+                height: 8,
+            },
+        ))
+        .expect("frame-scoped image");
+    let scoped_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&scoped), &sampler))
+        .expect("scoped binding");
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&scoped, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+    }
+    refused_by_name(
+        "sampling a frame-scoped image a previous frame stored",
+        "must write it first",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&scoped_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+
+    // The refusals fired before any GPU work: a clean frame still
+    // renders and validation stayed silent.
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives every refusal");
+    drop(scoped_binding);
+    drop(scoped);
+    drop(kept_binding);
+    drop(kept);
+    drop(sampler);
+    drop(one_slot);
+    drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
+/// A kept image read without a writing pass still spends a frame
+/// slot: the ceiling counts identities however they are used, so four
+/// targeted images plus a kept sample-only fifth is refused as the
+/// fifth, by the ceiling's own words.
+#[test]
+fn a_kept_sample_costs_a_frame_slot() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("triangle pipeline");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let sampler = device
+        .create_sampler(&renew_rhi::SamplerDesc::atlas())
+        .expect("sampler");
+    let kept = device
+        .create_render_image(
+            &renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept image");
+    let kept_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&kept), &sampler))
+        .expect("kept binding");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    // Stored once, so the sample-only mention is legal on its own
+    // terms and the refusal below can only be the ceiling's.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+    }
+    let four: Vec<renew_rhi::RenderImage> = (0..4)
+        .map(|_| {
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Color,
+                    Extent {
+                        width: 8,
+                        height: 8,
+                    },
+                ))
+                .expect("boundary image")
+        })
+        .collect();
+    refused_by_name(
+        "a kept sample as the fifth image",
+        "at most 4 distinct render images",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let image_passes: Vec<Pass<'_>> = four
+                .iter()
+                .map(|image| Pass::render_to(image, store, &[]))
+                .chain(std::iter::once(Pass::new(&color, &items)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&image_passes));
+        },
+    );
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives the refusal");
+    drop(four);
+    drop(kept_binding);
+    drop(kept);
+    drop(sampler);
+    drop(one_slot);
+    drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
 /// Four distinct render images in one frame — the documented ceiling —
 /// two of them sampled by the same surface pass: the multi-image walk,
 /// the pass-level retention of every image, and a batched sampling
