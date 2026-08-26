@@ -1053,13 +1053,19 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
         return;
     };
-    let image = match device.create_render_image(&RenderImageDesc::new(
-        RenderImageKind::Depth,
-        Extent {
-            width: SIZE,
-            height: SIZE,
-        },
-    )) {
+    // Kept, so the second frame below may re-open what this one wrote:
+    // the depth twin of the colour persistence golden, and the one
+    // place the sampled-to-depth-attachment walk-back arm runs.
+    let image = match device.create_render_image(
+        &RenderImageDesc::new(
+            RenderImageKind::Depth,
+            Extent {
+                width: SIZE,
+                height: SIZE,
+            },
+        )
+        .kept(),
+    ) {
         Ok(image) => image,
         // An adapter whose depth format cannot be sampled refuses at
         // creation by design; off the strict lane that is a skip, on it
@@ -1122,6 +1128,17 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     target
         .render(&RenderDesc::new(&passes))
         .expect("shadow render");
+    // Frame two: the image arrives in its sampled life and a depth
+    // pass re-opens it with Load, drawing nothing - the
+    // sampled-to-attachment walk-back at the depth stages, and the
+    // reader must see the same quad the first frame cast.
+    let second = [
+        Pass::render_to(&image, depth_again, &[]),
+        Pass::new(&color, &reading),
+    ];
+    target
+        .render(&RenderDesc::new(&second))
+        .expect("the kept re-open renders");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
