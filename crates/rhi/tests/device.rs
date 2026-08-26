@@ -738,7 +738,7 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
-    let many: Vec<renew_rhi::Buffer> = (0..33)
+    let many: Vec<renew_rhi::Buffer> = (0..257)
         .map(|_| {
             device
                 .create_buffer(64, BufferUsage::PerFrame)
@@ -746,7 +746,7 @@ fn malformed_frames_are_refused_by_name() {
         })
         .collect();
     refused(
-        "a thirty-third distinct buffer",
+        "a two-hundred-and-fifty-seventh distinct buffer",
         "distinct resources",
         &|target| {
             let color = clear(black);
@@ -1429,6 +1429,54 @@ fn a_kept_sample_costs_a_frame_slot() {
     drop(sampler);
     drop(one_slot);
     drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
+/// A frame filled to the retention ceiling exactly: two hundred and
+/// fifty-six distinct resources render, because a bound that only ever
+/// refused its successor could quietly shrink and no test would say
+/// so. The refusal battery proves the two-hundred-and-fifty-seventh is
+/// refused; this proves the boundary itself is livable - the shape a
+/// chunked world's fullest vista actually draws.
+#[test]
+fn the_retention_ceiling_is_livable_at_the_boundary() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let instanced = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
+                .instance_input(builtin::INSTANCED_LAYOUT),
+        )
+        .expect("instanced pipeline");
+    let bytes = [0u8; 24];
+    // One slot is the pipeline's own share of the table; the buffers
+    // take the rest to land the frame exactly on the ceiling.
+    let many: Vec<renew_rhi::Buffer> = (0..255)
+        .map(|_| {
+            device
+                .create_buffer(64, BufferUsage::PerFrame)
+                .expect("boundary buffer")
+        })
+        .collect();
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let color = clear(black);
+    let items: Vec<Item<'_>> = many
+        .iter()
+        .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
+        .collect();
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("a frame at the ceiling renders");
+    drop(many);
+    drop(instanced);
     drop(target);
     assert_no_validation_errors(&device);
 }

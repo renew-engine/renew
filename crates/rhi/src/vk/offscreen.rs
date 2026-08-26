@@ -417,7 +417,7 @@ fn build(
         cmd,
         fence,
         depth,
-        retained: Default::default(),
+        retained: [const { None }; MAX_RETAINED_RESOURCES],
         wedged: false,
     })
 }

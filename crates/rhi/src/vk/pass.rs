@@ -1589,15 +1589,20 @@ fn count_matters(records: &[Option<BufferRecord>; MAX_RETAINED_RESOURCES]) -> us
 /// next distinct resource past the bound is refused by name in
 /// [`check_frame_contract`].
 ///
-/// Thirty-two, doubled from sixteen the day a real consumer's fullest
-/// frame — a world mesh, a marker, a held item, billboard layers, two
-/// cutout meshes, machines, two particle pipelines and an interface
-/// overlay, each with its bindings — landed on exactly seventeen. It
-/// was doubled from eight before that, when bindings joined the table.
-/// The table is `Option`s in fixed arrays: the cost of headroom is
-/// thirty-two words of `None` per frame, and the cost of too little is
-/// a consumer cutting a feature to fit a constant this crate chose.
-pub(crate) const MAX_RETAINED_RESOURCES: usize = 32;
+/// Two hundred and fifty-six. The day a consumer moved from one world
+/// mesh to a buffer per chunk — the ordinary shape of any chunked or
+/// streaming world, and the move that makes uploads as incremental as
+/// the meshing — its fullest frame carried a mesh and a vegetation
+/// twin for every visible chunk and crossed thirty-two on the first
+/// real vista. Thirty-two had been doubled from sixteen the day a
+/// fullest frame landed on seventeen, and from eight before that,
+/// when bindings joined the table; each bump waited for a consumer to
+/// hit the wall, and this one grants the headroom class instead of
+/// the next doubling. The table is `Option`s in fixed arrays: the
+/// cost is two hundred and fifty-six words of `None` per frame slot,
+/// and the cost of too little is a consumer cutting a feature to fit
+/// a constant this crate chose.
+pub(crate) const MAX_RETAINED_RESOURCES: usize = 256;
 
 impl LoadOp {
     pub(crate) fn to_vk(self) -> ash::vk::AttachmentLoadOp {
