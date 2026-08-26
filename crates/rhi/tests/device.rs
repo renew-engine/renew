@@ -1330,6 +1330,109 @@ fn a_kept_image_keeps_only_what_was_stored() {
     assert_no_validation_errors(&device);
 }
 
+/// A kept image read without a writing pass still spends a frame
+/// slot: the ceiling counts identities however they are used, so four
+/// targeted images plus a kept sample-only fifth is refused as the
+/// fifth, by the ceiling's own words.
+#[test]
+fn a_kept_sample_costs_a_frame_slot() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("triangle pipeline");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let sampler = device
+        .create_sampler(&renew_rhi::SamplerDesc::atlas())
+        .expect("sampler");
+    let kept = device
+        .create_render_image(
+            &renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept image");
+    let kept_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&kept), &sampler))
+        .expect("kept binding");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    // Stored once, so the sample-only mention is legal on its own
+    // terms and the refusal below can only be the ceiling's.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+    }
+    let four: Vec<renew_rhi::RenderImage> = (0..4)
+        .map(|_| {
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Color,
+                    Extent {
+                        width: 8,
+                        height: 8,
+                    },
+                ))
+                .expect("boundary image")
+        })
+        .collect();
+    refused_by_name(
+        "a kept sample as the fifth image",
+        "at most 4 distinct render images",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let image_passes: Vec<Pass<'_>> = four
+                .iter()
+                .map(|image| Pass::render_to(image, store, &[]))
+                .chain(std::iter::once(Pass::new(&color, &items)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&image_passes));
+        },
+    );
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives the refusal");
+    drop(four);
+    drop(kept_binding);
+    drop(kept);
+    drop(sampler);
+    drop(one_slot);
+    drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
 /// Four distinct render images in one frame — the documented ceiling —
 /// two of them sampled by the same surface pass: the multi-image walk,
 /// the pass-level retention of every image, and a batched sampling

@@ -473,51 +473,6 @@ mod tests {
     /// These are the barriers the pure core deliberately does not own;
     /// a change to any mask here is a change to a synchronization
     /// argument and must be its own reviewed decision.
-    /// The kept arms, pinned like the rest: these are the only pairs
-    /// whose `old_layout` is the sampled layout, because kept contents
-    /// re-enter attachment life instead of starting undefined.
-    #[test]
-    fn the_kept_arms_are_pinned_field_by_field() {
-        let color = pass_boundary(ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment);
-        assert_eq!(
-            color.src_stage,
-            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags2::FRAGMENT_SHADER
-        );
-        assert_eq!(color.src_access, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
-        assert_eq!(
-            color.dst_stage,
-            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-        );
-        assert_eq!(
-            color.dst_access,
-            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-        );
-        assert_eq!(color.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        assert_eq!(color.new_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-        let depth = pass_boundary(ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment);
-        assert_eq!(
-            depth.src_stage,
-            DEPTH_STAGES | vk::PipelineStageFlags2::FRAGMENT_SHADER
-        );
-        assert_eq!(
-            depth.src_access,
-            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
-        );
-        assert_eq!(depth.dst_stage, DEPTH_STAGES);
-        assert_eq!(
-            depth.dst_access,
-            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
-                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
-        );
-        assert_eq!(depth.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        assert_eq!(
-            depth.new_layout,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        );
-    }
-
     #[test]
     fn the_excluded_sites_keep_their_exact_mask_literals() {
         let acquire = acquire_chained_color_first_use();
@@ -574,6 +529,51 @@ mod tests {
         assert_eq!(host.src_access, vk::AccessFlags2::TRANSFER_WRITE);
         assert_eq!(host.dst_stage, vk::PipelineStageFlags2::HOST);
         assert_eq!(host.dst_access, vk::AccessFlags2::HOST_READ);
+    }
+
+    /// The kept arms, pinned like the rest: these are the only pairs
+    /// whose `old_layout` is the sampled layout, because kept contents
+    /// re-enter attachment life instead of starting undefined.
+    #[test]
+    fn the_kept_arms_are_pinned_field_by_field() {
+        let color = pass_boundary(ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment);
+        assert_eq!(
+            color.src_stage,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+        assert_eq!(color.src_access, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
+        assert_eq!(
+            color.dst_stage,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+        );
+        assert_eq!(
+            color.dst_access,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+        );
+        assert_eq!(color.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(color.new_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let depth = pass_boundary(ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment);
+        assert_eq!(
+            depth.src_stage,
+            DEPTH_STAGES | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+        assert_eq!(
+            depth.src_access,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        );
+        assert_eq!(depth.dst_stage, DEPTH_STAGES);
+        assert_eq!(
+            depth.dst_access,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        );
+        assert_eq!(depth.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(
+            depth.new_layout,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        );
     }
 
     /// The unreachable pairs are refused, not silently mapped: proving

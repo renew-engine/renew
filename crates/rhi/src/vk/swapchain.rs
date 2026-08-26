@@ -1109,9 +1109,6 @@ impl WindowTarget {
                 }
                 device.cmd_end_rendering(cmd);
             }
-            // Every pass recorded: kept images remember where this
-            // frame left them, so the next frame's walk arrives there.
-            walk.settle();
 
             // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC; not a pass — the
             // terminal literal, pinned by unit test beside the core it
@@ -1159,6 +1156,13 @@ impl WindowTarget {
                 };
                 return Err(self.abort_frame(error));
             }
+            // Submitted, so the work executes in queue order - ONLY NOW
+            // may kept images remember where this frame leaves them. A
+            // recorded frame that never reached the queue must leave no
+            // trace: kept images are device-scoped, so even a dormant
+            // window target's stale claim would poison an offscreen
+            // sibling on the same device.
+            walk.settle();
             self.pending[frame] = true;
             // Advance only after a successful submit: a frame that failed
             // to submit left its slot unused, and skipping it would leak a

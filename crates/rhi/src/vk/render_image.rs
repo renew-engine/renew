@@ -34,7 +34,8 @@ pub enum RenderImageKind {
     Depth,
 }
 
-/// Everything a render image needs: its kind and its size.
+/// Everything a render image needs: its kind, its size, and whether
+/// its contents outlive the frame.
 ///
 /// `#[non_exhaustive]` with a constructor, per the descriptor pattern
 /// this crate uses everywhere.
@@ -79,9 +80,12 @@ impl RenderImageDesc {
 /// cross-frame half of the frame walk's state machine, stored on the
 /// image because the image is the thing that outlives frames.
 ///
-/// Written back only when a frame is actually recorded (the contract's
-/// dry walk reads it and must not move it), and only ever read and
-/// written on the one thread the crate contract already requires.
+/// Written back only when a frame is actually **submitted** - the
+/// contract's dry walk reads it and must not move it, and a recorded
+/// frame that never reaches the queue must leave no trace, or the next
+/// frame's barriers would claim a layout no GPU work ever produced.
+/// Only ever read and written on the one thread the crate contract
+/// already requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeptContents {
     /// No frame has rendered the image yet: contents undefined, exactly

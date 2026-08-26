@@ -896,9 +896,13 @@ fn a_rendered_image_samples_back_byte_exact() {
 /// and draws nothing over it. All three read back byte-identical to
 /// the same CPU oracle: the pixels are the proof that the contents,
 /// the layouts, and the cross-frame barriers all survived — on a
-/// frame-scoped image frames two and three are refused outright, and
-/// the byte oracle catches a silent discard that a mere absence of
-/// validation errors would wave through.
+/// frame-scoped image frames two and three are refused outright. On
+/// the CPU rasterizer CI runs, the bytes prove contract legality and
+/// layout-tracking cleanliness, not preservation — a transition that
+/// wrongly discarded would still read back intact there, exactly as
+/// the barrier table's own tests say of masks; on a real adapter,
+/// where a transition can actually move memory, these same bytes
+/// become the preservation oracle.
 #[test]
 fn a_kept_image_survives_frames_that_never_render_it() {
     const SIZE: u32 = 8;
@@ -966,10 +970,14 @@ fn a_kept_image_survives_frames_that_never_render_it() {
     ];
 
     let mut pixels = vec![0u8; target.byte_len()];
-    let frames: [(&str, &[Pass<'_>]); 3] = [
+    let frames: [(&str, &[Pass<'_>]); 4] = [
         ("writes and samples", &writing_frame),
         ("samples what frame one kept", &sampling_frame),
-        ("loads what frame two left sampled", &loading_frame),
+        // Twice in a row, deliberately: an image that arrives already
+        // sampled crosses no barrier at all - the boldest arm in the
+        // walk - and this is the frame that executes it.
+        ("samples again with no barrier at all", &sampling_frame),
+        ("loads what frame three left sampled", &loading_frame),
     ];
     for (label, passes) in frames {
         target

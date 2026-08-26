@@ -907,9 +907,6 @@ impl OffscreenTarget {
                 }
                 device.cmd_end_rendering(self.cmd);
             }
-            // Every pass recorded: kept images remember where this
-            // frame left them, so the next frame's walk arrives there.
-            walk.settle();
 
             // COLOR_ATTACHMENT_OPTIMAL → TRANSFER_SRC_OPTIMAL for the
             // copy. Not a pass boundary — the terminal literal, pinned
@@ -988,6 +985,15 @@ impl OffscreenTarget {
                         creation("vkQueueSubmit2", code)
                     }
                 })?;
+            // Submitted, so the work executes in queue order or the
+            // device dies and poisons the spine - ONLY NOW may kept
+            // images remember where this frame leaves them. A recorded
+            // frame that never reached the queue must leave no trace:
+            // settling at record time let a failed vkEndCommandBuffer
+            // hand the next frame a layout no GPU work ever produced,
+            // and on a virgin image it quietly defeated the
+            // render-once-before-reading rule itself.
+            walk.settle();
 
             match device.wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS) {
                 Ok(()) => {}

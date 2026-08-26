@@ -176,9 +176,12 @@ pub enum LoadOp {
     Clear(ClearValue),
     /// The attachment keeps the previous pass's contents. Refused on
     /// each identity's first use in the frame — the surface, the
-    /// target's depth image, and every render image all start a frame
-    /// from undefined contents — and on a render image whose last
-    /// targeting pass discarded.
+    /// target's depth image, and every frame-scoped render image all
+    /// start a frame from undefined contents — and on a render image
+    /// whose last targeting pass discarded. The one exception is a
+    /// **kept** render image with live contents
+    /// ([`RenderImageDesc::kept`]): its first frame use may load what
+    /// an earlier frame stored.
     Load,
 }
 
@@ -704,18 +707,6 @@ pub(crate) fn uniform_writes<'a>(
 /// the fill loops stay allocation-free.
 pub(crate) const MAX_ITEM_RESOURCES: usize = 2 + MAX_SAMPLED_BINDINGS;
 
-/// The frame's per-identity image walk: which attachment identities
-/// this frame has used, and how -- ONE definition read by the contract
-/// and by both record paths.
-///
-/// **The rules and the barrier pairs live in the same state machine,
-/// and that is the point.** The contract drives a walk over the whole
-/// frame before any GPU call, so every refusal below fires there, by
-/// name; each record path then drives a fresh walk over the same
-/// frame and reads the [`ImageUse`] pairs the contract already proved
-/// legal, feeding them to `transition::pass_boundary`. Two targets
-/// selecting masks independently is how barrier drift happens; two
-/// consumers of one walk cannot drift.
 /// Why a first-frame-use `LoadOp::Load` on a render image is refused,
 /// if it is — `None` exactly when kept contents are there to load. A
 /// pure function so the refusals read as one table.
@@ -758,6 +749,18 @@ fn sample_refusal(kept: bool, arrived: KeptContents) -> Option<&'static str> {
     }
 }
 
+/// The frame's per-identity image walk: which attachment identities
+/// this frame has used, and how -- ONE definition read by the contract
+/// and by both record paths.
+///
+/// **The rules and the barrier pairs live in the same state machine,
+/// and that is the point.** The contract drives a walk over the whole
+/// frame before any GPU call, so every refusal below fires there, by
+/// name; each record path then drives a fresh walk over the same
+/// frame and reads the [`ImageUse`] pairs the contract already proved
+/// legal, feeding them to `transition::pass_boundary`. Two targets
+/// selecting masks independently is how barrier drift happens; two
+/// consumers of one walk cannot drift.
 pub(crate) struct FrameWalk {
     surface_color_used: bool,
     target_depth_used: bool,
@@ -926,13 +929,19 @@ impl FrameWalk {
                 );
                 // The first frame-use pair: a frame-scoped image (or a
                 // kept one nothing ever rendered) starts undefined; a
-                // kept image re-enters from whichever layout its last
-                // frame left — the attachment layout preserves through
-                // the plain between-pass arms, the sampled layout walks
-                // back through the Kept*FromSampled arms.
+                // kept image OPENING WITH A LOAD re-enters from
+                // whichever layout its last frame left — the attachment
+                // layout preserves through the plain between-pass arms,
+                // the sampled layout walks back through the
+                // Kept*FromSampled arms. A Clear takes the undefined
+                // first-use arm even on a kept image: the clear
+                // overwrites every pixel, so preserving contents the
+                // pass immediately destroys would tax every
+                // clear-each-frame consumer for nothing.
+                let loads = matches!(attachment.load, LoadOp::Load);
                 let kept = entry.write_back.is_some();
-                let kept_alive = kept && entry.arrived != KeptContents::Undefined;
-                let from_sampled = kept && entry.arrived == KeptContents::Sampled;
+                let kept_alive = loads && kept && entry.arrived != KeptContents::Undefined;
+                let from_sampled = kept_alive && entry.arrived == KeptContents::Sampled;
                 entry.targeted = true;
                 entry.discarded = matches!(attachment.store, StoreOp::Discard);
                 match kind {
@@ -1002,28 +1011,23 @@ impl FrameWalk {
                 );
                 // A kept image with live contents may be sampled without
                 // any pass this frame rendering it; everything else must
-                // have been written this frame, refused by name.
-                let slot = self
-                    .images
-                    .iter()
-                    .position(|slot| matches!(slot, Some(entry) if entry.key == key));
-                let written_this_frame =
-                    slot.is_some_and(|slot| self.images[slot].iter().any(|entry| entry.targeted));
-                if !written_this_frame {
-                    let refusal = sample_refusal(inner.kept, inner.contents.get());
+                // have been written this frame, refused by name. Minted
+                // BEFORE the refusal so the verdict reads the same
+                // snapshot the whole frame reads - the refusal is the
+                // one place a live read could have let the dry walk and
+                // the record walk answer differently.
+                let slot = self.entry_index(inner);
+                let Some(entry) = self.images[slot].as_mut() else {
+                    unreachable!("entry_index returns an occupied slot")
+                };
+                if !entry.targeted {
+                    let refusal = sample_refusal(entry.write_back.is_some(), entry.arrived);
                     assert!(
                         refusal.is_none(),
                         "pass {index}: {}",
                         refusal.unwrap_or_default()
                     );
                 }
-                let slot = match slot {
-                    Some(slot) => slot,
-                    None => self.entry_index(inner),
-                };
-                let Some(entry) = self.images[slot].as_mut() else {
-                    unreachable!("entry_index returns an occupied slot")
-                };
                 assert!(
                     !(entry.targeted && entry.discarded),
                     "pass {index}: an item samples a render image whose last targeting \
