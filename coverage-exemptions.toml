@@ -176,37 +176,42 @@ reason = "The two places a window resize is acted on: rebuilding the crosshair f
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [904, 905]
+lines = [785, 786, 787, 788]
+reason = "The body of the window-creation branch that hands an application's icon to the windowing crate. It is inside `open`, which needs a live event loop no unit test can host: the branch is reached only when a real window is about to exist, and the windowed smoke test that does reach `open` uses an application with no icon, because an application that had one would be asserting on a picture nobody can see from a test. The parts that can be checked without a window are, and they are the parts that can be wrong - `WindowIcon::from_rgba` refuses bytes that do not match their dimensions, `IconError` says which refusal and with what numbers, and the trait method defaults to nothing. What is left here is three lines of handing validated bytes to a builder."
+
+[[exempt]]
+file = "crates/core/platform/src/window.rs"
+lines = [1036, 1037]
 reason = "The scale-factor and keyboard arms of the winit event translation. Neither payload type has a public constructor in the pinned windowing crate, so the input cannot be built outside it, and neither event can be provoked from inside the process. Each arm is a single delegation to a helper that IS driven directly, so the translation logic itself is covered. Note for local runs: on a machine with a live desktop a stray keyboard event can reach the window smoke test's real window and cover the keyboard arm, which then reports as a stale exemption. Under the virtual display CI uses there is no keyboard, so it is stable there; if this flaps locally, that is why."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1636]
+lines = [1859]
 reason = "A test double's required method that cannot be called: its argument borrows a live OS window, which needs a main-thread event loop the test harness cannot host."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1733, 1734, 1735, 1801, 1802, 1803, 1827, 1828, 1829, 1886, 1887, 1888]
+lines = [1956, 1957, 1958, 2024, 2025, 2026, 2050, 2051, 2052, 2109, 2110, 2111]
 reason = "Required trait methods of four single-purpose test doubles (the epoch-ordering probe, the defaulted-release app, the interruption counter and the app that ignores interruptions), whose tests drive only the surface-release and interruption paths. ready cannot be called for the same reason as the double above; event and update are empty stubs a test could call but only to color lines while asserting nothing, which is the vacuity this suite exists to refuse."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [798, 802, 804, 805, 806, 807, 808, 809, 810, 811, 812, 813]
+lines = [930, 934, 936, 937, 938, 939, 940, 941, 942, 943, 944, 945]
 reason = "The suspend handler's body - the delegation to the shared transition and the platform branch beneath it, not the transition itself, which is a free function a unit test drives directly for exactly this reason. No desktop platform ever emits a suspend, the windowing crate's callback argument has no public constructor, and the harness cannot host the loop that would produce one — so no lane that runs on a desktop can enter it. The epoch half IS covered: close_epoch is driven by the unit suite with an epoch genuinely open, and close_surface's delegation to it is pinned by the modifier-reset test. The residue — the platform branch, the delegation call, and the park that stops a backgrounded loop polling — waits on the first execution lane, whose opening suspend cycle is its regression test; none of it is assumed covered."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [959, 962]
+lines = [1091, 1094]
 reason = "The key arm of typed_characters: the only arm that reads text off an OS key event. winit's KeyEvent carries a pub(crate) platform_specific field, so it cannot be constructed outside that crate and this arm cannot be entered from a test - checked in the pinned source rather than assumed. What the arm decides is covered without it: committed is a free function driven directly with both press and release, printable is driven over the control range, and the synthetic-event filter is a pattern in the match rather than a branch of its own. Deliberately narrow: the `_ => None` arm below is NOT exempted, because every non-key event a test dispatches enters it."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [711, 712]
+lines = [843, 844]
 reason = "Delivering the characters an OS key event committed - the delivery line and the loop close the gate attributes with it. Unreachable for the same root cause as the typed_characters key arm below: the loop only has a body to run when that arm yields text, and that needs an unconstructible KeyEvent. The narrowness is measured rather than asserted: the guard above and the loop head itself are entered by every dispatched non-commanding event and the gate reports both covered. What is exempt here is the delivery, not the decision to deliver."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [832, 833, 834, 835, 836, 837, 838, 839, 840, 841]
+lines = [964, 965, 966, 967, 968, 969, 970, 971, 972, 973]
 reason = "Delivering raw device motion. No lane has a mouse - the windowed runs happen under a virtual display, which reports no device movement - so this callback is never entered there. What it decides IS covered: translate_device_event is driven with constructed winit events, and the sample's accumulator and whole-degree boundary are driven with constructed deltas. This is the arm, not the argument. Deliberately narrow: the cursor grab and its reapplication on focus are NOT exempted, because a window under a virtual display does receive focus events and the gate is the authority on whether those arms run. Note for local runs: a machine with a real mouse enters this callback during the window smoke test and most of these lines then report as stale exemptions; under CI's virtual display they are stable."
 
 [[exempt]]
