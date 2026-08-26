@@ -1109,6 +1109,9 @@ impl WindowTarget {
                 }
                 device.cmd_end_rendering(cmd);
             }
+            // Every pass recorded: kept images remember where this
+            // frame left them, so the next frame's walk arrives there.
+            walk.settle();
 
             // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC; not a pass — the
             // terminal literal, pinned by unit test beside the core it

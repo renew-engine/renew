@@ -93,10 +93,16 @@ display server, and the golden-image tests attest the bytes.
 - `RenderImage` — what one pass renders into and a later pass samples:
   one physical image, kinded Color (`Rgba8Unorm`) or Depth (the
   device's chosen format) at creation, with the format pre-checked
-  against the adapter's own sampled/attachment features. Its
+  against the adapter's own sampled/attachment features. By default its
   **contents are frame-scoped** — every frame's first use starts
   undefined, enforced by the same walk that plans its barriers — while
-  the image itself is retained by any frame that names it. A pass
+  the image itself is retained by any frame that names it. An image
+  created **kept** (`RenderImageDesc::kept`) persists its contents
+  instead: a later frame may open it with `LoadOp::Load` or sample it
+  without rendering it at all — the shape of any render-to-texture on
+  its own cadence (a shadow map under a slow sun, a probe, a minimap).
+  The first frame ever must still render before anything reads, and a
+  discarding write takes the permission back; both refused by name. A pass
   renders into one via `Pass::render_to` (the image's kind decides the
   pass shape, so a mismatch is unrepresentable), and items sample it
   through an ordinary binding. The per-frame identity rules — write

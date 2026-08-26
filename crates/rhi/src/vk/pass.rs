@@ -18,6 +18,8 @@ use crate::vk::transition::ImageUse;
 
 use std::rc::Rc;
 
+use crate::vk::render_image::KeptContents;
+
 /// How many distinct render images one frame may touch — as targets,
 /// as sampled sources, or both. A fixed ceiling so the contract's walk
 /// table and the record paths' barrier arrays are stack-sized and the
@@ -714,6 +716,48 @@ pub(crate) const MAX_ITEM_RESOURCES: usize = 2 + MAX_SAMPLED_BINDINGS;
 /// legal, feeding them to `transition::pass_boundary`. Two targets
 /// selecting masks independently is how barrier drift happens; two
 /// consumers of one walk cannot drift.
+/// Why a first-frame-use `LoadOp::Load` on a render image is refused,
+/// if it is — `None` exactly when kept contents are there to load. A
+/// pure function so the refusals read as one table.
+fn load_refusal(kept: bool, arrived: KeptContents) -> Option<&'static str> {
+    match (kept, arrived) {
+        (true, KeptContents::Stored | KeptContents::Sampled) => None,
+        (true, KeptContents::Undefined) => Some(
+            "LoadOp::Load on a kept render image no frame has ever rendered loads undefined \
+             contents — render it once before loading it",
+        ),
+        (true, KeptContents::Discarded) => Some(
+            "LoadOp::Load on a kept render image whose last keeping frame discarded its \
+             contents loads undefined pixels — store what a later frame loads",
+        ),
+        (false, _) => Some(
+            "LoadOp::Load on a render image's first use this frame loads undefined contents \
+             — render-image contents are frame-scoped and start undefined every frame",
+        ),
+    }
+}
+
+/// Why sampling a render image no pass this frame has rendered is
+/// refused, if it is — `None` exactly when kept contents are there to
+/// read.
+fn sample_refusal(kept: bool, arrived: KeptContents) -> Option<&'static str> {
+    match (kept, arrived) {
+        (true, KeptContents::Stored | KeptContents::Sampled) => None,
+        (true, KeptContents::Undefined) => Some(
+            "an item samples a kept render image no frame has ever rendered — render it once \
+             before reading it",
+        ),
+        (true, KeptContents::Discarded) => Some(
+            "an item samples a kept render image whose last keeping frame discarded its \
+             contents — store what a later frame reads",
+        ),
+        (false, _) => Some(
+            "an item samples a render image no pass in this frame has rendered — render-image \
+             contents are frame-scoped, so a frame that reads one must write it first",
+        ),
+    }
+}
+
 pub(crate) struct FrameWalk {
     surface_color_used: bool,
     target_depth_used: bool,
@@ -729,6 +773,13 @@ struct ImageEntry {
     /// — what decides both whether a later `Load` reads anything and
     /// whether a later sample does.
     discarded: bool,
+    /// What an earlier frame left in it, snapshotted at the entry's
+    /// mint so both walks of one frame read one answer.
+    arrived: KeptContents,
+    /// The image to write the after-state into at [`FrameWalk::settle`]
+    /// — held exactly for kept images (`Some` IS the kept flag), and
+    /// only the record walks settle.
+    write_back: Option<Rc<crate::vk::render_image::RenderImageInner>>,
 }
 
 /// What one pass does to its target identities, as [`ImageUse`] pairs
@@ -768,7 +819,8 @@ impl FrameWalk {
     /// # Panics
     ///
     /// A fifth distinct image is refused by name.
-    fn entry_index(&mut self, key: *const u8, kind: RenderImageKind) -> usize {
+    fn entry_index(&mut self, inner: &Rc<crate::vk::render_image::RenderImageInner>) -> usize {
+        let key = Rc::as_ptr(inner).cast::<u8>();
         let known = self
             .images
             .iter()
@@ -786,10 +838,12 @@ impl FrameWalk {
         );
         self.images[occupied] = Some(ImageEntry {
             key,
-            kind,
+            kind: inner.kind,
             targeted: false,
             sampled: false,
             discarded: false,
+            arrived: inner.contents.get(),
+            write_back: inner.kept.then(|| Rc::clone(inner)),
         });
         occupied
     }
@@ -839,9 +893,8 @@ impl FrameWalk {
                 }
             }
             PassTarget::Image(image, attachment) => {
-                let key = Rc::as_ptr(&image.inner).cast::<u8>();
                 let kind = image.inner.kind;
-                let slot = self.entry_index(key, kind);
+                let slot = self.entry_index(&image.inner);
                 let Some(entry) = self.images[slot].as_mut() else {
                     unreachable!("entry_index returns an occupied slot")
                 };
@@ -852,12 +905,17 @@ impl FrameWalk {
                      writes an image must precede the first pass that reads it"
                 );
                 let first_use = !entry.targeted;
-                assert!(
-                    !first_use || !matches!(attachment.load, LoadOp::Load),
-                    "pass {index}: LoadOp::Load on a render image's first use this frame \
-                     loads undefined contents — render-image contents are frame-scoped and \
-                     start undefined every frame"
-                );
+                if first_use && matches!(attachment.load, LoadOp::Load) {
+                    // A kept image with live contents may open with a
+                    // load; everything else meets the frame-scoped
+                    // refusals, each naming its own reason.
+                    let refusal = load_refusal(entry.write_back.is_some(), entry.arrived);
+                    assert!(
+                        refusal.is_none(),
+                        "pass {index}: {}",
+                        refusal.unwrap_or_default()
+                    );
+                }
                 // Loading what the last targeting pass threw away is the
                 // same undefined read one pass later.
                 assert!(
@@ -866,23 +924,36 @@ impl FrameWalk {
                      pass discarded its contents loads undefined pixels — store what a \
                      later pass loads"
                 );
+                // The first frame-use pair: a frame-scoped image (or a
+                // kept one nothing ever rendered) starts undefined; a
+                // kept image re-enters from whichever layout its last
+                // frame left — the attachment layout preserves through
+                // the plain between-pass arms, the sampled layout walks
+                // back through the Kept*FromSampled arms.
+                let kept = entry.write_back.is_some();
+                let kept_alive = kept && entry.arrived != KeptContents::Undefined;
+                let from_sampled = kept && entry.arrived == KeptContents::Sampled;
                 entry.targeted = true;
                 entry.discarded = matches!(attachment.store, StoreOp::Discard);
                 match kind {
                     RenderImageKind::Color => TargetUses {
-                        color: Some(if first_use {
-                            (ImageUse::RenderColorFirstUse, ImageUse::ColorAttachment)
-                        } else {
+                        color: Some(if !first_use || kept_alive && !from_sampled {
                             (ImageUse::ColorAttachment, ImageUse::ColorAttachment)
+                        } else if from_sampled {
+                            (ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment)
+                        } else {
+                            (ImageUse::RenderColorFirstUse, ImageUse::ColorAttachment)
                         }),
                         depth: None,
                     },
                     RenderImageKind::Depth => TargetUses {
                         color: None,
-                        depth: Some(if first_use {
-                            (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment)
-                        } else {
+                        depth: Some(if !first_use || kept_alive && !from_sampled {
                             (ImageUse::DepthAttachment, ImageUse::DepthAttachment)
+                        } else if from_sampled {
+                            (ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment)
+                        } else {
+                            (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment)
                         }),
                     },
                     // No rest arm: `#[non_exhaustive]` does not bind
@@ -929,22 +1000,32 @@ impl FrameWalk {
                      into -- feedback within one pass is undefined; split it into a \
                      writing pass and a reading pass"
                 );
-                let entry = self
+                // A kept image with live contents may be sampled without
+                // any pass this frame rendering it; everything else must
+                // have been written this frame, refused by name.
+                let slot = self
                     .images
-                    .iter_mut()
-                    .flatten()
-                    .find(|entry| entry.key == key && entry.targeted);
-                assert!(
-                    entry.is_some(),
-                    "pass {index}: an item samples a render image no pass in this frame \
-                     has rendered — render-image contents are frame-scoped, so a frame \
-                     that reads one must write it first"
-                );
-                let Some(entry) = entry else {
-                    unreachable!("asserted just above")
+                    .iter()
+                    .position(|slot| matches!(slot, Some(entry) if entry.key == key));
+                let written_this_frame =
+                    slot.is_some_and(|slot| self.images[slot].iter().any(|entry| entry.targeted));
+                if !written_this_frame {
+                    let refusal = sample_refusal(inner.kept, inner.contents.get());
+                    assert!(
+                        refusal.is_none(),
+                        "pass {index}: {}",
+                        refusal.unwrap_or_default()
+                    );
+                }
+                let slot = match slot {
+                    Some(slot) => slot,
+                    None => self.entry_index(inner),
+                };
+                let Some(entry) = self.images[slot].as_mut() else {
+                    unreachable!("entry_index returns an occupied slot")
                 };
                 assert!(
-                    !entry.discarded,
+                    !(entry.targeted && entry.discarded),
                     "pass {index}: an item samples a render image whose last targeting \
                      pass discarded its contents — a targeting pass whose image is read \
                      later must Store"
@@ -953,6 +1034,16 @@ impl FrameWalk {
                     continue;
                 }
                 entry.sampled = true;
+                // The crossing barrier. Written this frame: from the
+                // attachment life this frame built. Kept and untouched:
+                // from the attachment life an earlier frame stored — the
+                // same pair, because the layouts and hazards match. Kept
+                // and already sampled when it arrived: it never left the
+                // sampled layout, and read-after-read needs no barrier
+                // at all.
+                if !entry.targeted && entry.arrived == KeptContents::Sampled {
+                    continue;
+                }
                 out[count] = Some(SampleUse {
                     image: inner.image,
                     range: match entry.kind {
@@ -980,6 +1071,33 @@ impl FrameWalk {
     /// Whether any pass so far targeted the surface.
     pub(crate) fn surface_used(&self) -> bool {
         self.surface_color_used
+    }
+
+    /// Write each kept image's after-state back onto the image, so the
+    /// next frame's walk arrives where this one left.
+    ///
+    /// **Record walks only.** The contract's dry walk reads the same
+    /// cross-frame state and must not move it — the dry walk and the
+    /// record walk of one frame have to read one answer, and a frame
+    /// that is refused must leave no trace.
+    pub(crate) fn settle(&self) {
+        for entry in self.images.iter().flatten() {
+            let Some(inner) = &entry.write_back else {
+                continue;
+            };
+            let after = if entry.sampled {
+                KeptContents::Sampled
+            } else if entry.targeted {
+                if entry.discarded {
+                    KeptContents::Discarded
+                } else {
+                    KeptContents::Stored
+                }
+            } else {
+                continue;
+            };
+            inner.contents.set(after);
+        }
     }
 }
 

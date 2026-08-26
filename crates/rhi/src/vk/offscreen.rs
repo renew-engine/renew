@@ -907,6 +907,9 @@ impl OffscreenTarget {
                 }
                 device.cmd_end_rendering(self.cmd);
             }
+            // Every pass recorded: kept images remember where this
+            // frame left them, so the next frame's walk arrives there.
+            walk.settle();
 
             // COLOR_ATTACHMENT_OPTIMAL → TRANSFER_SRC_OPTIMAL for the
             // copy. Not a pass boundary — the terminal literal, pinned

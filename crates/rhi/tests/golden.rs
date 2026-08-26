@@ -888,6 +888,121 @@ fn a_rendered_image_samples_back_byte_exact() {
     assert_no_validation_errors(&device);
 }
 
+/// **Kept contents cross frames.** Frame one renders the atlas into a
+/// kept image and samples it to the surface; frame two contains ONLY
+/// the sampling pass — the writing half omitted, which is the shape
+/// the kept contract exists for (a shadow map under a slow sun, a
+/// probe, a minimap); frame three re-opens the image with `LoadOp::Load`
+/// and draws nothing over it. All three read back byte-identical to
+/// the same CPU oracle: the pixels are the proof that the contents,
+/// the layouts, and the cross-frame barriers all survived — on a
+/// frame-scoped image frames two and three are refused outright, and
+/// the byte oracle catches a silent discard that a mere absence of
+/// validation errors would wave through.
+#[test]
+fn a_kept_image_survives_frames_that_never_render_it() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 2;
+    #[rustfmt::skip]
+    const ATLAS: [u8; 16] = [
+        10, 20, 30, 255,    40, 50, 60, 255,
+        70, 80, 90, 255,    100, 110, 120, 255,
+    ];
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let (texture, sampler, atlas_binding) =
+        atlas_fixture(&device, TEXELS, &ATLAS).expect("atlas fixture");
+    let image = device
+        .create_render_image(
+            &RenderImageDesc::new(
+                RenderImageKind::Color,
+                Extent {
+                    width: SIZE,
+                    height: SIZE,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept render image");
+    let image_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
+        .expect("image binding");
+    let into_image_pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("render-image pipeline");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("sampled pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    let clear_value = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(1.0, 0.0, 1.0, 1.0))),
+        StoreOp::Store,
+    );
+    let load_value = Attachment::new(LoadOp::Load, StoreOp::Store);
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let into_image = [Item::new(&into_image_pipeline).bindings(&[&atlas_binding])];
+    let onto_surface = [Item::new(&pipeline).bindings(&[&image_binding])];
+
+    let writing_frame = [
+        Pass::render_to(&image, clear_value, &into_image),
+        Pass::new(&color, &onto_surface),
+    ];
+    let sampling_frame = [Pass::new(&color, &onto_surface)];
+    let loading_frame = [
+        Pass::render_to(&image, load_value, &[]),
+        Pass::new(&color, &onto_surface),
+    ];
+
+    let mut pixels = vec![0u8; target.byte_len()];
+    let frames: [(&str, &[Pass<'_>]); 3] = [
+        ("writes and samples", &writing_frame),
+        ("samples what frame one kept", &sampling_frame),
+        ("loads what frame two left sampled", &loading_frame),
+    ];
+    for (label, passes) in frames {
+        target
+            .render(&RenderDesc::new(passes))
+            .expect("a kept frame renders");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
+                let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
+                let offset = ((y * SIZE + x) as usize) * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    expected,
+                    "the frame that {label}: pixel ({x},{y}) should carry texel {texel} on \
+                     adapter {:?}",
+                    device.adapter()
+                );
+            }
+        }
+    }
+
+    drop(target);
+    drop(pipeline);
+    drop(into_image_pipeline);
+    drop(image_binding);
+    drop(atlas_binding);
+    drop(image);
+    drop(texture);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
 /// A quad over the left half of clip space at `depth`, packed to the
 /// mesh layout's 36-byte records: positions pass straight through the
 /// mesh vertex stage; colour and uv ride along unread — the layout

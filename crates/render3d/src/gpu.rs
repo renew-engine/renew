@@ -1187,6 +1187,17 @@ const _: () = assert!(SHADOW_PUSH_BYTES as usize == 128);
 /// 2. a surface pass whose [`Self::item`]s draw the same world through
 ///    the camera, dimmed where the map recorded something nearer.
 ///
+/// # Contract
+///
+/// **The caster pass runs on the shadow's cadence, not the frame's.**
+/// The map is a kept render image: after any frame has run the caster
+/// pass, later frames may omit step 1 entirely and their lit passes
+/// sample what the last casting frame stored — the frame contract
+/// permits it because the map keeps its contents. Re-render the map
+/// when the light or the casters move; skip it when they have not.
+/// The one obligation is the first frame: nothing may sample a map no
+/// frame has rendered, and the contract refuses it by name.
+///
 /// # Colour is not carried through unchanged
 ///
 /// As [`CameraRenderer`]: this path fades toward a horizon with
@@ -1238,13 +1249,21 @@ impl ShadowedCameraRenderer {
             &sampler,
         ))?;
         let shadow_map = device
-            .create_render_image(&renew_rhi::RenderImageDesc::new(
-                renew_rhi::RenderImageKind::Depth,
-                renew_rhi::Extent {
-                    width: shadow_size,
-                    height: shadow_size,
-                },
-            ))
+            .create_render_image(
+                &renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Depth,
+                    renew_rhi::Extent {
+                        width: shadow_size,
+                        height: shadow_size,
+                    },
+                )
+                // Kept, so a consumer may re-render the map on its own
+                // cadence: a frame whose light and casters have not
+                // moved omits the caster pass and the lit pass samples
+                // what the last casting frame stored. See the frame
+                // shape on the type.
+                .kept(),
+            )
             // A depthless adapter refuses the map by name, and that
             // refusal is this crate's own variant rather than a
             // texture failure — the same translation the depth-tested
