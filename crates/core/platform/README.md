@@ -96,6 +96,14 @@ datagrams — each a thin, explicit seam.
   survivor is a contract violation, fatal in dev builds. Desktop
   platforms close no epochs, so desktop-only applications inherit no
   obligation.
+- **A window's icon is the application's picture.** `WindowApp::icon`
+  is asked once per surface epoch, immediately before the window is
+  created, and defaults to nothing. It is on the trait rather than in
+  `WindowConfig` because an icon arrives from a decoder or an asset
+  pack, where the config is a handful of settings written by hand; the
+  bytes are checked against the dimensions when the `WindowIcon` is
+  built, so nothing has to be reported from inside a platform callback.
+  A platform with no notion of a window icon ignores it.
 - **No ambient state.** No global clock, no environment reads; everything
   is a value or an explicit call.
 - **Errors carry context** — paths and thread names, in crate-local
@@ -146,3 +154,7 @@ no `unsafe` code.
   looks like; guessing now would speculate its API.
 - **Named threads or no threads** — a nameless thread in a profiler or a
   panic message is a debugging tax nobody needs to pay.
+- **An icon is validated where the caller is, not where the window is**
+  — four bytes a pixel is an assumption every caller makes and none of
+  them states, and a window is created at the one moment there is
+  nowhere useful to report a mistake to.

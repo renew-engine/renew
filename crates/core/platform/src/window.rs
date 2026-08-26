@@ -17,6 +17,105 @@ use core::fmt;
 use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 
+/// A window's icon, as straight RGBA rows.
+///
+/// **Plain data, like everything else that crosses this seam.** No
+/// windowing-library type appears here for the reason the module doc
+/// gives: a consumer naming an icon must not be compiling a windowing
+/// library to do it. The bytes are eight-bit red, green, blue and alpha
+/// in that order, row-major from the top-left, which is what every image
+/// decoder on the way in already produces.
+///
+/// **Validated at construction rather than at the window.** A window is
+/// created once, deep inside a platform callback, at the one moment
+/// there is nowhere useful to report a mistake to; the size of a byte
+/// slice against two dimensions is arithmetic that can be done anywhere,
+/// so it is done where the caller is still holding the error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl WindowIcon {
+    /// Take `rgba` as a `width` by `height` image.
+    ///
+    /// # Errors
+    ///
+    /// [`IconError::Empty`] for an image with no pixels in it, and
+    /// [`IconError::WrongLength`] when the bytes and the dimensions
+    /// disagree — which is the mistake this type exists to catch, since
+    /// four bytes a pixel is the assumption every caller makes silently.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, IconError> {
+        if width == 0 || height == 0 {
+            return Err(IconError::Empty);
+        }
+        let wanted = usize::try_from(width)
+            .ok()
+            .and_then(|width| usize::try_from(height).ok().map(|height| (width, height)))
+            .and_then(|(width, height)| width.checked_mul(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(IconError::Empty)?;
+        if rgba.len() != wanted {
+            return Err(IconError::WrongLength {
+                expected: wanted,
+                found: rgba.len(),
+            });
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// How wide it is, in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// How tall it is, in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Its rows, as RGBA bytes.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+/// Why a set of bytes is not an icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconError {
+    /// No pixels: a zero on either side.
+    Empty,
+    /// The bytes and the dimensions disagree, at four bytes a pixel.
+    WrongLength {
+        /// What `width * height * 4` came to.
+        expected: usize,
+        /// How many bytes arrived.
+        found: usize,
+    },
+}
+
+impl fmt::Display for IconError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "an icon with no pixels in it"),
+            Self::WrongLength { expected, found } => {
+                write!(f, "an icon of {expected} bytes arrived as {found}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IconError {}
+
 /// Plain-data window configuration.
 #[derive(Debug, Clone)]
 pub struct WindowConfig {
@@ -277,6 +376,27 @@ pub trait WindowApp {
     /// one revoking platform is Android; iOS suspends without revoking
     /// and deliberately does not reach this callback.
     fn surface_lost(&mut self) {}
+
+    /// The icon this application's window should carry, if it has one.
+    ///
+    /// Asked once per surface epoch, immediately before the window is
+    /// created, so an application that rebuilds its icon between epochs
+    /// gets the one it has now.
+    ///
+    /// **Defaulted to nothing, and on the trait rather than in
+    /// [`WindowConfig`].** An icon is a picture the application owns, in
+    /// a format only the application knows how to produce - it arrives
+    /// from a decoder, an asset pack or a build script - where the
+    /// config is a handful of plain settings a caller writes by hand.
+    /// Defaulting it also means every application that already exists
+    /// keeps compiling and keeps the icon the system gives an unadorned
+    /// executable, which is what it had before.
+    ///
+    /// A platform with no notion of a window icon ignores this, which
+    /// is why it answers with a picture rather than a promise.
+    fn icon(&self) -> Option<WindowIcon> {
+        None
+    }
 
     /// The application has stopped being the one in front.
     ///
@@ -648,13 +768,25 @@ impl Adapter<'_> {
         if self.epoch.window().is_some() || self.failure.is_some() {
             return;
         }
-        let attributes = winit::window::Window::default_attributes()
+        let mut attributes = winit::window::Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.logical_width,
                 self.config.logical_height,
             ));
+        // The icon is asked for here rather than held on the config
+        // because it is the application's picture; see `WindowApp::icon`.
+        // Its bytes were checked against its dimensions when it was
+        // built, so the only way the conversion below can refuse is a
+        // rule this seam does not know about - and a window that opens
+        // without its icon is worth more than one that does not open.
+        if let Some(icon) = self.app.icon() {
+            let (width, height) = (icon.width(), icon.height());
+            if let Ok(icon) = winit::window::Icon::from_rgba(icon.rgba().to_vec(), width, height) {
+                attributes = attributes.with_window_icon(Some(icon));
+            }
+        }
         match create(attributes) {
             Ok(window) => {
                 let window = std::sync::Arc::new(window);
@@ -1138,6 +1270,74 @@ fn translate_wheel(delta: winit::event::MouseScrollDelta) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// An icon is its bytes and its dimensions agreeing.
+    ///
+    /// **The mistake this type exists to catch is four bytes a pixel**,
+    /// which every caller assumes and none of them states. A window is
+    /// created once, inside a platform callback, at the one moment
+    /// there is nowhere to report a bad picture to — so the arithmetic
+    /// is done where the caller still holds the error, and the wrong
+    /// count has to be refused there rather than dropped there.
+    ///
+    /// Probed by comparing against `width * height` rather than
+    /// `width * height * 4`: a quarter-sized buffer is accepted and the
+    /// first case fails.
+    #[test]
+    fn an_icon_is_refused_unless_its_bytes_match_its_size() {
+        use super::{IconError, WindowIcon};
+
+        let square = WindowIcon::from_rgba(2, 2, vec![0; 16]).expect("four pixels, sixteen bytes");
+        assert_eq!(square.width(), 2);
+        assert_eq!(square.height(), 2);
+        assert_eq!(square.rgba().len(), 16);
+
+        // A rectangle, so that a rule which multiplied one side by
+        // itself would be caught.
+        assert!(WindowIcon::from_rgba(4, 2, vec![0; 32]).is_ok());
+        assert_eq!(
+            WindowIcon::from_rgba(4, 2, vec![0; 16]),
+            Err(IconError::WrongLength {
+                expected: 32,
+                found: 16
+            })
+        );
+        assert_eq!(
+            WindowIcon::from_rgba(2, 2, vec![0; 17]),
+            Err(IconError::WrongLength {
+                expected: 16,
+                found: 17
+            })
+        );
+        for (width, height) in [(0, 4), (4, 0), (0, 0)] {
+            assert_eq!(
+                WindowIcon::from_rgba(width, height, Vec::new()),
+                Err(IconError::Empty),
+                "{width}x{height} is not a picture"
+            );
+        }
+    }
+
+    /// **An application that says nothing about an icon has none**, which
+    /// is what every application in the tree said until this seam
+    /// existed. The default is what keeps this an addition rather than a
+    /// break: an implementation written before the method has to keep
+    /// compiling and keep behaving.
+    ///
+    /// Probed by defaulting the method to a picture instead of `None`:
+    /// an application that never mentioned an icon suddenly carries one.
+    #[test]
+    fn an_application_that_says_nothing_carries_no_icon() {
+        use super::{LoopControl, WindowApp, WindowEvent, WindowRef};
+
+        struct Silent;
+        impl WindowApp for Silent {
+            fn ready(&mut self, _window: &WindowRef<'_>) {}
+            fn event(&mut self, _event: WindowEvent) {}
+            fn update(&mut self, _control: &mut LoopControl) {}
+        }
+        assert_eq!(Silent.icon(), None, "an icon appeared from nowhere");
+    }
 
     /// Text is delivered; the keys that also report text are not.
     ///
