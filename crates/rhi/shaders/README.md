@@ -666,3 +666,28 @@ Target: SPIR-V 1.0
 ```
 
 2800 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-26
+
+The sway gains its vertical half. `bend.w` is how far a bent vertex
+rises and falls, taken from the cosine of the same wave the lean takes
+its sine from - a quarter turn behind, so a vertex traces an ellipse
+rather than sliding along a slope. A surface that only leans reads as a
+rigid sheet translating, however small the throw; the orbit is what a
+particle in a surface wave does and what makes a flat draw read as a
+surface. Zero, and every draw that has never asked for a lift, keeps
+the position it always had. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2948 bytes, read off disk after compiling.

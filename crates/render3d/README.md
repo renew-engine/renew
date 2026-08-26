@@ -119,6 +119,16 @@ no contract. Only the textured and cutout pipelines bend; the plain and
 shadowed paths ignore the words, and a golden holds each of these
 sentences.
 
+The sway displaces across the ground plane, and for anything flat that
+is not enough on its own: every vertex goes the same way at the same
+moment, so the draw translates and a plane sliding sideways reads as a
+plane sliding sideways however small the throw. [`Air::lifting`] adds
+the vertical half, taken a quarter turn behind the lean, so a vertex
+traces an ellipse instead of a line — which is what a particle in a
+surface wave does, and why the two halves must not share a phase. A
+lift of zero, and every air that never asks for one, keeps the picture
+byte for byte.
+
 ## Two decisions worth knowing
 
 **The depth refusal is a translation, not a second detection.** The

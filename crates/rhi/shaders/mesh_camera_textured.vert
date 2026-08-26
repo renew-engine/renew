@@ -48,7 +48,9 @@ layout(push_constant) uniform Camera {
 // is where the weight rides: zero means the vertex's own alpha, spent
 // below; nonzero is a per-draw even weight, for meshes whose alpha is
 // spoken for — the blended pair reads it as translucency, and one
-// channel cannot mean both (see Air::bending_evenly).
+// channel cannot mean both (see Air::bending_evenly). `bend.w` is how
+// far a bent vertex rises and falls, a quarter turn behind the lean, so
+// that a flat draw orbits instead of sliding (see Air::lifting).
 layout(std140, set = 1, binding = 0) uniform Air {
     vec4 horizon;
     vec4 sway;
@@ -84,9 +86,21 @@ void main() {
     // field reads as weather rather than as a scan.
     bool evenly = air.bend.z != 0.0;
     float weight = evenly ? air.bend.z : vertex_colour.a;
-    float swing = sin(air.sway.z + (vertex_position.x + 0.7 * vertex_position.z) * air.sway.w);
+    // The wave, twice: the lean is its sine and the rise is its cosine,
+    // a quarter turn behind. A vertex under both traces an ellipse -
+    // which is what a particle in a surface wave does, and why the two
+    // halves must not share a phase. In step they would compose into a
+    // slide along a slope and a flat draw would still read rigid.
+    // `bend.w` is the vertical reach; zero is every draw that has never
+    // asked for one, and zero times a cosine leaves the position it
+    // always had.
+    float wave = air.sway.z + (vertex_position.x + 0.7 * vertex_position.z) * air.sway.w;
+    float swing = sin(wave);
+    float heave = cos(wave);
     vec3 placed = bent
-        ? vertex_position + vec3(air.sway.x, 0.0, air.sway.y) * (swing * weight)
+        ? vertex_position
+            + vec3(air.sway.x, 0.0, air.sway.y) * (swing * weight)
+            + vec3(0.0, air.bend.w, 0.0) * (heave * weight)
         : vertex_position;
     gl_Position = camera.view_projection * vec4(placed, 1.0);
     // A swaying draw spends the weight here: the fragment stage sees
