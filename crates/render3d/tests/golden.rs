@@ -1215,6 +1215,88 @@ fn the_fade_completes_where_the_caller_says() -> Result<(), Box<dyn std::error::
 
 /// One blended frame: a solid red backdrop through the opaque textured
 /// pipeline, then `layers` drawn through the blended one, in order.
+/// **A surface that only leans reads as a rigid sheet sliding.** The
+/// sway displaces across the ground plane and nowhere else, so a flat
+/// draw under it translates - every vertex the same way at the same
+/// moment - and a plane moving sideways looks like a plane moving
+/// sideways however small the throw. `bend.w` is the vertical half, a
+/// quarter turn behind, so a vertex traces an ellipse instead of a
+/// line.
+///
+/// **The quarter turn is what this test is really about**, and the
+/// phase makes it visible: at phase zero the lean is `sin(0)`, which is
+/// nothing at all, while the lift is `cos(0)`, which is the whole
+/// reach. So the leaning arm here is byte-identical to the still one -
+/// if the two halves shared a phase, it could not be - and every pixel
+/// the lifted arm moves is the lift's doing.
+///
+/// The columns are held as well as the rows: a vertical reach must not
+/// move anything sideways, or the two words are not independent and a
+/// caller cannot tune one without the other.
+///
+/// Probed by driving the vertical from `sin` like the lean: at phase
+/// zero both halves are then nothing, the lifted arm stops moving at
+/// all, and "left the quad's edge exactly where it was" names it. That
+/// is the failure a shared phase produces here, and it is worth being
+/// exact about - the first assertion would catch a lift driven from
+/// something that is *not* zero at phase zero, which is the other way
+/// to get this wrong.
+#[test]
+fn the_lift_moves_a_draw_the_lean_leaves_still() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // Phase zero: sin is nothing, cos is everything.
+    let calm = Air::CLEAR_BLACK.swaying([0.5, 0.0], 0.0, 0.0);
+    let mut quad = Scene::new();
+    // A quad over the lower-left quarter of clip space, so there is
+    // room above it to move into and an edge to measure.
+    quad.quad(
+        [
+            [-1.0, -1.0, 0.5],
+            [0.0, -1.0, 0.5],
+            [0.0, 0.0, 0.5],
+            [-1.0, 0.0, 0.5],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let still = textured_frame(&device, &quad, Air::CLEAR_BLACK)?;
+    let leaning = textured_frame(&device, &quad, calm)?;
+    let lifted = textured_frame(&device, &quad, calm.lifting(0.5))?;
+
+    assert_eq!(
+        still, leaning,
+        "a swing of sin(0) moved something: the lean and the lift share a phase"
+    );
+
+    // Where the quad's edge sits in a column that runs through it, and
+    // which columns it covers in a row that runs through it. Read from
+    // the picture rather than worked out from the matrix, because which
+    // way clip y points is the API's business and not this claim's.
+    let covered = |pixels: &[u8], x: u32, y: u32| at(pixels, x, y)[0] > 0;
+    let edge = |pixels: &[u8]| -> Option<u32> {
+        let column = SIZE / 4;
+        (0..SIZE).find(|y| covered(pixels, column, *y))
+    };
+    let width = |pixels: &[u8]| -> usize {
+        let row = SIZE / 4;
+        (0..SIZE).filter(|x| covered(pixels, *x, row)).count()
+    };
+
+    let resting = edge(&still).expect("the quad is drawn at all");
+    let raised = edge(&lifted).expect("the lifted quad is drawn at all");
+    assert_ne!(
+        resting, raised,
+        "a lift of half a unit left the quad's edge exactly where it was"
+    );
+    assert_eq!(
+        width(&still),
+        width(&lifted),
+        "the lift moved the quad sideways: the vertical word is not independent of the lean"
+    );
+    Ok(())
+}
+
 /// **The even weight moves what alpha pins.** `bend.z` is where a
 /// swaying draw's weight rides when its alpha is spoken for: a quad
 /// authored at alpha zero — pinned under the alpha contract, and the
@@ -1346,6 +1428,27 @@ fn an_even_weight_of_zero_is_the_alpha_contract() {
         wind.bending_evenly(0.0).bytes(),
         wind.bytes(),
         "a zero even weight moved a byte; silent callers are no longer identical"
+    );
+}
+
+/// **A lift of zero is the air that never asked for one.** The same
+/// zero-means-default the fade distance and the even weight ride: a
+/// caller that says nothing, or says zero, gets the picture it always
+/// got, byte for byte, because the builder writes the same zeros the
+/// block was born with. The vertical term is taken through the same
+/// multiply whatever the reach, and zero times a cosine is zero.
+#[test]
+fn a_lift_of_zero_is_the_air_that_never_asked() {
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 1.0, 0.7);
+    assert_eq!(
+        wind.lifting(0.0).bytes(),
+        wind.bytes(),
+        "a zero lift moved a byte; silent callers are no longer identical"
+    );
+    assert_ne!(
+        wind.lifting(0.02).bytes(),
+        wind.bytes(),
+        "a lift that is not zero left the block unchanged, so nothing reads it"
     );
 }
 

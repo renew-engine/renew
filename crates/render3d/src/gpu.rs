@@ -389,6 +389,45 @@ impl Air {
         self
     }
 
+    /// The same air, with a swaying vertex rising and falling by
+    /// `reach` as well as leaning.
+    ///
+    /// **A surface that only leans reads as a rigid sheet sliding.**
+    /// The sway displaces across the ground plane and nowhere else, so
+    /// a flat draw under it translates: every vertex goes the same way
+    /// at the same moment, and a plane moving sideways looks like a
+    /// plane moving sideways however small the throw. What makes a
+    /// surface read as a surface is the vertical half.
+    ///
+    /// The vertical rides a quarter turn behind the horizontal, so a
+    /// vertex traces an ellipse rather than a diagonal line. That is
+    /// not a flourish: it is what a particle in a surface wave does,
+    /// and it is why the two halves must not share a phase. In step,
+    /// the vertex slides along a slope and the sheet still reads rigid;
+    /// a quarter apart, it orbits, and the crest travelling through the
+    /// mesh is what the eye reads as a wave.
+    ///
+    /// Composes with [`Air::swaying`], which remains the opt-in - this
+    /// word alone lifts nothing - and with [`Air::bending_evenly`],
+    /// whose weight scales both halves alike. Zero, and every `Air`
+    /// built without this call, leans exactly as it always did, byte
+    /// for byte: the stage takes the term through the same multiply
+    /// whatever the reach, and zero times a cosine is zero.
+    ///
+    /// In world units, like the horizontal reach, and honest about
+    /// scale: a pond's swell is a couple of centimetres, and anything
+    /// a viewer can measure against a wall is too much.
+    #[must_use]
+    pub const fn lifting(mut self, reach: f32) -> Self {
+        let word = reach.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[44 + byte] = word[byte];
+            byte += 1;
+        }
+        self
+    }
+
     /// The same air, with every vertex bending by `weight` instead of
     /// by its own alpha.
     ///
