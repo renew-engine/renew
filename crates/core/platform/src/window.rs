@@ -1318,25 +1318,33 @@ mod tests {
         }
     }
 
-    /// **An application that says nothing about an icon has none**, which
-    /// is what every application in the tree said until this seam
-    /// existed. The default is what keeps this an addition rather than a
-    /// break: an implementation written before the method has to keep
-    /// compiling and keep behaving.
+    /// Every refusal says which one it is and carries its numbers.
     ///
-    /// Probed by defaulting the method to a picture instead of `None`:
-    /// an application that never mentioned an icon suddenly carries one.
+    /// **A message that does not name the sizes is a message that sends
+    /// somebody to count bytes by hand.** The whole value of validating
+    /// an icon where the caller is standing is that the caller can be
+    /// told what went wrong; a `Display` that said "bad icon" would
+    /// throw that away at the last step.
+    ///
+    /// Probed by printing the same sentence for both variants: the two
+    /// assertions collapse onto each other and the second fails.
     #[test]
-    fn an_application_that_says_nothing_carries_no_icon() {
-        use super::{LoopControl, WindowApp, WindowEvent, WindowRef};
+    fn an_icon_refusal_names_itself_and_its_numbers() {
+        use super::IconError;
 
-        struct Silent;
-        impl WindowApp for Silent {
-            fn ready(&mut self, _window: &WindowRef<'_>) {}
-            fn event(&mut self, _event: WindowEvent) {}
-            fn update(&mut self, _control: &mut LoopControl) {}
+        assert_eq!(IconError::Empty.to_string(), "an icon with no pixels in it");
+        let wrong = IconError::WrongLength {
+            expected: 64,
+            found: 16,
         }
-        assert_eq!(Silent.icon(), None, "an icon appeared from nowhere");
+        .to_string();
+        assert!(wrong.contains("64"), "the wanted size is missing: {wrong}");
+        assert!(wrong.contains("16"), "the found size is missing: {wrong}");
+        assert_ne!(
+            wrong,
+            IconError::Empty.to_string(),
+            "two different refusals read the same"
+        );
     }
 
     /// Text is delivered; the keys that also report text are not.
@@ -1825,6 +1833,21 @@ mod tests {
         /// What to ask of the cursor, if anything. `None` asks nothing,
         /// which is the case that must leave the grab alone.
         ask_cursor: Option<bool>,
+    }
+
+    /// **An application that says nothing about an icon has none.**
+    ///
+    /// The default is what keeps the seam an addition rather than a
+    /// break: an implementation written before the method existed has to
+    /// keep compiling and keep behaving. Asked of a double that was
+    /// written before it, which is the strongest form of that claim
+    /// available here.
+    ///
+    /// Probed by defaulting the trait method to a picture: a recorder
+    /// that has never mentioned an icon starts carrying one.
+    #[test]
+    fn an_application_that_says_nothing_carries_no_icon() {
+        assert_eq!(Recorder::default().icon(), None);
     }
 
     impl WindowApp for Recorder {
