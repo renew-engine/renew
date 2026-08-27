@@ -247,7 +247,7 @@ reason = "The same narrowing on both sides of the channel. On the send side the 
 
 [[exempt]]
 file = "crates/net/src/session.rs"
-lines = [748, 802, 1115, 1127, 1151]
+lines = [783, 837, 1150, 1162, 1186]
 reason = "Five arms no input can drive. `render` cannot be called with the terminal emission because the cursor that produces it returns None first, and `render_inputs` cannot see a zero local tick because inputs are only emitted once the session is playing, which requires at least one submission. The backwards walk's missing-frame break cannot fire either: it looks at most eight ticks back and the ring holds sixty-four, so those frames are always present. The remaining two are region ends inside `next_outbound` and `write_frame` whose bodies are covered. All five are kept rather than deleted because each states a bound that would stop being true if a ceiling moved, which is exactly when a silent wrong answer would cost the most."
 
 [[exempt]]
