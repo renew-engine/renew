@@ -458,3 +458,75 @@ fn a_goodbye_hands_out_the_ticks_it_already_confirmed() {
         "the goodbye discarded every confirmed tick the roster had agreed to"
     );
 }
+
+/// **A session part-way through a step is told to finish it, not that it
+/// is over.**
+///
+/// `advance` owes the caller a `commit` before it will hand out anything
+/// else, and that check sits ahead of the outcome deliberately: a caller
+/// holding a step it has not run yet needs to run it, and telling it the
+/// session ended would strand exactly the work the ending is not allowed
+/// to discard.
+///
+/// Probed by moving the `uncommitted` check back below the outcome: red,
+/// the second `advance` reporting the session over while a step was still
+/// in the caller's hand.
+#[test]
+fn a_session_owed_a_commit_says_so_before_anything_else() {
+    let mut local = Box::new(session(0, 2));
+    let mut far = Box::new(session(1, 2));
+
+    let mut inflight: Vec<Wire> = Vec::new();
+    for _ in 0..24 {
+        for (index, peer) in [&mut local, &mut far].into_iter().enumerate() {
+            if peer.wants_local() {
+                let byte = u8::try_from(index).unwrap_or(0);
+                let _ = peer.submit(&[byte]);
+            }
+        }
+        inflight.extend(pump(&mut local, 0));
+        inflight.extend(pump(&mut far, 1));
+        for (sender, bytes) in inflight.drain(..) {
+            let target: &mut Session = if sender == 0 { &mut far } else { &mut local };
+            let _ = target.deliver(seat(sender), &bytes);
+        }
+    }
+
+    let Advance::Step(held) = local.advance() else {
+        panic!("the fixture never reached a confirmed tick")
+    };
+
+    // **And an ending, delivered while that step is still in hand.**
+    // Without this the test proves nothing: with no outcome set, the two
+    // checks can be in either order and answer the same. The whole claim
+    // is about which one wins when both apply.
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let addressing = wire::Addressing {
+        sender: seat(1),
+        session: NonZeroU64::new(SESSION).expect("not zero"),
+    };
+    let len = wire::write_bye(&mut out, addressing, &wire::ByeBody { tick: 0 });
+    assert!(
+        matches!(local.deliver(seat(1), &out[..len]), Delivery::Ends(_)),
+        "the goodbye was not taken as an ending"
+    );
+
+    // Owed a commit and holding an ending: the commit is what it is told
+    // about, because the step in the caller's hand is exactly the work
+    // the ending is not allowed to discard.
+    assert_eq!(
+        local.advance(),
+        Advance::Waiting,
+        "a session owed a commit reported something else while a step was in hand"
+    );
+
+    // And once it is paid, the run continues.
+    let owed = held.digest_due().then_some(held.tick());
+    local
+        .commit(held.tick(), owed)
+        .expect("the step it just handed out");
+    assert!(
+        matches!(local.advance(), Advance::Step(_)),
+        "the session did not resume once its commit was paid"
+    );
+}
