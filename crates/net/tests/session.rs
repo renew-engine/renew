@@ -11,6 +11,7 @@ use core::num::NonZeroU64;
 
 use renew_net::{
     Advance, Delivery, MAX_DATAGRAM_BYTES, Outcome, PeerId, Session, SessionParams, SubmitError,
+    wire,
 };
 
 const SESSION: u64 = 0xfeed_face_dead_beef;
@@ -367,4 +368,165 @@ fn a_starved_peer_still_catches_up_after_a_one_way_blackout() {
         "a one-way blackout reached a confirmed value"
     );
     assert_eq!(digests[0], perfect_digests[0]);
+}
+
+/// **A goodbye does not discard a tick the roster already agreed to.**
+///
+/// Every tick this session has confirmed was confirmed with the departing
+/// peer's own input in it — the roster had to be complete or `pending`
+/// would never have reached it. Reporting the ending before handing those
+/// out throws away work every participant agreed to, including the one
+/// that left.
+///
+/// The visible cost is two peers reporting different tick counts for the
+/// same session: whoever consumed the last step before the goodbye landed
+/// is one ahead of whoever did not, and two worlds one step apart agree
+/// about nothing. That reads as a desync and is not one.
+///
+/// Written against the old behaviour first, where it failed with zero
+/// steps drained: `advance` returned `Ended` on its first line, before
+/// `pending` was looked at.
+#[test]
+fn a_goodbye_hands_out_the_ticks_it_already_confirmed() {
+    let mut local = Box::new(session(0, 2));
+    let mut far = Box::new(session(1, 2));
+
+    // Both peers up and running, with a window of confirmed ticks that
+    // neither has consumed. The far peer's inputs are what make them
+    // confirmable, so what follows is agreed by the peer about to leave.
+    let mut inflight: Vec<Wire> = Vec::new();
+    for _ in 0..24 {
+        for (index, peer) in [&mut local, &mut far].into_iter().enumerate() {
+            if peer.wants_local() {
+                let byte = u8::try_from(index).unwrap_or(0);
+                let _ = peer.submit(&[byte]);
+            }
+        }
+        inflight.extend(pump(&mut local, 0));
+        inflight.extend(pump(&mut far, 1));
+        for (sender, bytes) in inflight.drain(..) {
+            let target: &mut Session = if sender == 0 { &mut far } else { &mut local };
+            let _ = target.deliver(seat(sender), &bytes);
+        }
+    }
+
+    // How much the local peer is holding, unconsumed, before anything
+    // leaves. Counted by draining a clone-free dry run is not available,
+    // so it is counted by draining for real below and compared against
+    // this floor instead.
+    let held_before = local.outcome();
+    assert!(
+        held_before.is_none(),
+        "the session ended before the test began: {held_before:?}"
+    );
+
+    // The far peer says goodbye at the last tick it confirmed.
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let addressing = wire::Addressing {
+        sender: seat(1),
+        session: NonZeroU64::new(SESSION).expect("not zero"),
+    };
+    let len = wire::write_bye(&mut out, addressing, &wire::ByeBody { tick: 0 });
+    assert!(
+        matches!(local.deliver(seat(1), &out[..len]), Delivery::Ends(_)),
+        "the goodbye was not taken as an ending"
+    );
+
+    // Now drain. Every step handed out here was agreed before the
+    // goodbye; the ending must come after them, not instead of them.
+    let mut drained = 0u64;
+    loop {
+        match local.advance() {
+            Advance::Step(step) => {
+                let tick = step.tick();
+                // A digest is owed on the period, and a drained tick is
+                // no different from any other in that respect.
+                let owed = step.digest_due().then_some(tick);
+                drained = drained.saturating_add(1);
+                local.commit(tick, owed).expect("a step it just handed out");
+            }
+            Advance::Ended(Outcome::PeerLeft { peer, .. }) => {
+                assert_eq!(peer, seat(1), "the wrong seat was named as having left");
+                break;
+            }
+            other => panic!("a drained session should end, not {other:?}"),
+        }
+    }
+
+    assert!(
+        drained > 0,
+        "the goodbye discarded every confirmed tick the roster had agreed to"
+    );
+}
+
+/// **A session part-way through a step is told to finish it, not that it
+/// is over.**
+///
+/// `advance` owes the caller a `commit` before it will hand out anything
+/// else, and that check sits ahead of the outcome deliberately: a caller
+/// holding a step it has not run yet needs to run it, and telling it the
+/// session ended would strand exactly the work the ending is not allowed
+/// to discard.
+///
+/// Probed by moving the `uncommitted` check back below the outcome: red,
+/// the second `advance` reporting the session over while a step was still
+/// in the caller's hand.
+#[test]
+fn a_session_owed_a_commit_says_so_before_anything_else() {
+    let mut local = Box::new(session(0, 2));
+    let mut far = Box::new(session(1, 2));
+
+    let mut inflight: Vec<Wire> = Vec::new();
+    for _ in 0..24 {
+        for (index, peer) in [&mut local, &mut far].into_iter().enumerate() {
+            if peer.wants_local() {
+                let byte = u8::try_from(index).unwrap_or(0);
+                let _ = peer.submit(&[byte]);
+            }
+        }
+        inflight.extend(pump(&mut local, 0));
+        inflight.extend(pump(&mut far, 1));
+        for (sender, bytes) in inflight.drain(..) {
+            let target: &mut Session = if sender == 0 { &mut far } else { &mut local };
+            let _ = target.deliver(seat(sender), &bytes);
+        }
+    }
+
+    let Advance::Step(held) = local.advance() else {
+        panic!("the fixture never reached a confirmed tick")
+    };
+
+    // **And an ending, delivered while that step is still in hand.**
+    // Without this the test proves nothing: with no outcome set, the two
+    // checks can be in either order and answer the same. The whole claim
+    // is about which one wins when both apply.
+    let mut out = [0u8; MAX_DATAGRAM_BYTES];
+    let addressing = wire::Addressing {
+        sender: seat(1),
+        session: NonZeroU64::new(SESSION).expect("not zero"),
+    };
+    let len = wire::write_bye(&mut out, addressing, &wire::ByeBody { tick: 0 });
+    assert!(
+        matches!(local.deliver(seat(1), &out[..len]), Delivery::Ends(_)),
+        "the goodbye was not taken as an ending"
+    );
+
+    // Owed a commit and holding an ending: the commit is what it is told
+    // about, because the step in the caller's hand is exactly the work
+    // the ending is not allowed to discard.
+    assert_eq!(
+        local.advance(),
+        Advance::Waiting,
+        "a session owed a commit reported something else while a step was in hand"
+    );
+
+    // And once it is paid, the run continues.
+    let owed = held.digest_due().then_some(held.tick());
+    local
+        .commit(held.tick(), owed)
+        .expect("the step it just handed out");
+    assert!(
+        matches!(local.advance(), Advance::Step(_)),
+        "the session did not resume once its commit was paid"
+    );
 }
