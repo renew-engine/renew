@@ -674,11 +674,11 @@ mod tests {
             let at = |offset: usize| {
                 f32::from_ne_bytes(bytes[base + offset..base + offset + 4].try_into().unwrap())
             };
-            assert!(
-                at(0) > 0.0,
-                "a burst aimed along +x has a particle at x = {}",
-                at(0)
-            );
+            // Bound rather than called inside the message: an argument
+            // only evaluated on failure is a line the suite can never
+            // cover, and this repository counts those.
+            let x = at(0);
+            assert!(x > 0.0, "a burst aimed along +x has a particle at x = {x}");
             assert_eq!(
                 at(4).to_bits(),
                 0.0f32.to_bits(),
