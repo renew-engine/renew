@@ -191,9 +191,34 @@ impl ParticleSystem {
     /// actually spawn, which makes the draw count part of the
     /// reproducibility contract rather than an accident of load.
     pub fn burst(&mut self, at: [f32; 3], count: u32) {
+        self.burst_along(at, self.desc.velocity.axis, count);
+    }
+
+    /// The same burst, with the cone pointed along `axis` rather than
+    /// along the effect's own.
+    ///
+    /// **An effect says how matter leaves a surface; only the caller
+    /// knows which surface.** `EffectDesc` is authored once and a pool
+    /// is built once from it, so an axis living there is a per-effect
+    /// fact — which is right for a fire, whose sparks rise whatever lit
+    /// it, and wrong for anything knocked off a face, whose direction is
+    /// a property of the blow and changes with every burst. Without this
+    /// such a caller had one axis for all time and had to choose it
+    /// blind, which reads as a fountain rather than as debris.
+    ///
+    /// `axis` need not be normalized: the jitter scales with the axis
+    /// length, so the spread means the same shape whatever units it
+    /// arrives in — the same rule the effect's own axis follows. A zero
+    /// axis falls back exactly as a zero axis in `EffectDesc` does.
+    ///
+    /// **Reproducibility is untouched.** The draws happen in the same
+    /// order and the same number, because the axis is read after the
+    /// jitter rather than before it; passing the effect's own axis here
+    /// is bit-identical to [`Self::burst`], which is asserted.
+    pub fn burst_along(&mut self, at: [f32; 3], axis: [f32; 3], count: u32) {
         let room = self.desc.capacity.saturating_sub(self.live());
         for _ in 0..count.min(room) {
-            let direction = self.cone_direction();
+            let direction = self.cone_direction(axis);
             let speed = lerp(
                 self.desc.velocity.speed.0,
                 self.desc.velocity.speed.1,
@@ -296,8 +321,13 @@ impl ParticleSystem {
         self.live()
     }
 
-    /// A direction inside the effect's cone: the axis plus a point in
-    /// a jitter ball, normalized.
+    /// A direction inside a cone: `axis` plus a point in a jitter ball,
+    /// normalized.
+    ///
+    /// The axis is a parameter rather than a read of the effect, because
+    /// a burst may be aimed — see [`ParticleSystem::burst_along`]. The
+    /// jitter is drawn *before* the axis is used, so which axis arrives
+    /// cannot change how many values the generator gives out.
     ///
     /// The ball point comes from rejection sampling — draw a point in
     /// the unit cube, keep it when it lands inside the unit ball — so
@@ -307,7 +337,7 @@ impl ParticleSystem {
     /// number of draws varies with the rejections, and that variation
     /// is deterministic too: it depends only on the generator's state,
     /// which depends only on the seed and the call sequence.
-    fn cone_direction(&mut self) -> [f32; 3] {
+    fn cone_direction(&mut self, axis: [f32; 3]) -> [f32; 3] {
         let jitter = loop {
             let x = self.unit() * 2.0 - 1.0;
             let y = self.unit() * 2.0 - 1.0;
@@ -317,7 +347,6 @@ impl ParticleSystem {
                 break [x, y, z];
             }
         };
-        let axis = self.desc.velocity.axis;
         let spread = self.desc.velocity.spread;
         // The jitter scales with the axis length, so "spread 0.5" means
         // the same shape whatever units the axis is in.
@@ -567,6 +596,99 @@ mod tests {
             let z = f32::from_ne_bytes(bytes[base + 8..base + 12].try_into().unwrap());
             assert_eq!(x.to_bits(), 0.0f32.to_bits(), "no sideways drift");
             assert_eq!(z.to_bits(), 0.0f32.to_bits(), "no sideways drift");
+        }
+    }
+
+    /// **An aimed burst with the effect's own axis is the plain burst,
+    /// bit for bit.**
+    ///
+    /// `burst` is `burst_along` on the effect's own axis, and this is
+    /// what holds it to that: the plain entry point must keep meaning
+    /// exactly what it meant before the aimed one existed.
+    ///
+    /// The stream is safe for a different reason, worth writing down
+    /// because this test does *not* cover it: the axis is read after the
+    /// jitter is drawn, so which axis arrives cannot change how many
+    /// values the generator gives out. Both paths here run the same code,
+    /// so a draw added inside it would move them together and this would
+    /// stay green — what catches that is
+    /// `the_packed_bytes_hash_to_the_committed_value_on_every_platform`,
+    /// confirmed by inserting a spare draw and watching it, not this, go
+    /// red.
+    ///
+    /// Probed by having `burst` pass a zero axis instead of the effect's:
+    /// "an aimed burst on the effect's own axis is not the plain burst".
+    #[test]
+    fn an_aimed_burst_along_the_effect_s_own_axis_is_the_plain_burst() {
+        let desc = burst_effect();
+        let bytes_of = |aimed: bool| {
+            let mut system =
+                ParticleSystem::new(&desc, Seed::from_u64(23), StreamId::from_name("same"));
+            for at in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]] {
+                if aimed {
+                    system.burst_along(at, desc.velocity.axis, 4);
+                } else {
+                    system.burst(at, 4);
+                }
+                system.step(DT);
+            }
+            let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+            let packed = system.write_instances(&mut bytes);
+            (packed, bytes)
+        };
+        let (plain_count, plain) = bytes_of(false);
+        let (aimed_count, aimed) = bytes_of(true);
+        assert!(plain_count > 0, "the fixture packed nothing");
+        assert_eq!(
+            plain_count, aimed_count,
+            "an aimed burst spawned a different number"
+        );
+        assert_eq!(
+            plain, aimed,
+            "an aimed burst on the effect's own axis is not the plain burst"
+        );
+    }
+
+    /// **And an aimed burst actually goes where it was aimed.** Zero
+    /// spread, so the cone is exactly the axis: a burst aimed along +x
+    /// flies +x, whatever the effect was authored to do.
+    ///
+    /// Probed by having `burst_along` ignore its argument and read the
+    /// effect: every particle flies +y and this names it.
+    #[test]
+    fn an_aimed_burst_flies_where_it_was_aimed_and_not_where_the_effect_says() {
+        let mut desc = burst_effect();
+        desc.velocity.spread = 0.0;
+        desc.velocity.axis = [0.0, 1.0, 0.0];
+        desc.gravity = [0.0, 0.0, 0.0];
+        desc.drag_per_step = 1.0;
+        let mut system =
+            ParticleSystem::new(&desc, Seed::from_u64(29), StreamId::from_name("aimed"));
+        system.burst_along([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], 8);
+        system.step(DT);
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        system.write_instances(&mut bytes);
+        assert!(system.live() > 0, "the aimed burst spawned nothing");
+        for index in 0..system.live() as usize {
+            let base = index * INSTANCE_STRIDE;
+            let at = |offset: usize| {
+                f32::from_ne_bytes(bytes[base + offset..base + offset + 4].try_into().unwrap())
+            };
+            // Bound rather than called inside the message: an argument
+            // only evaluated on failure is a line the suite can never
+            // cover, and this repository counts those.
+            let x = at(0);
+            assert!(x > 0.0, "a burst aimed along +x has a particle at x = {x}");
+            assert_eq!(
+                at(4).to_bits(),
+                0.0f32.to_bits(),
+                "it flew the effect's axis, not the aim"
+            );
+            assert_eq!(
+                at(8).to_bits(),
+                0.0f32.to_bits(),
+                "no sideways drift at zero spread"
+            );
         }
     }
 

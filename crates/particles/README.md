@@ -12,6 +12,11 @@ maturity, dependencies and core status.
   `step` advances at the fixed cadence, `write_instances` packs live
   particles into 48-byte records with the count and the bytes derived
   from one walk so they cannot disagree.
+- `burst_along` is `burst` with the cone pointed somewhere other than
+  the effect's own axis. An effect says *how* matter leaves a surface
+  and is authored once; only the caller knows *which* surface, and for
+  anything knocked off a face that changes with every burst. `burst` is
+  `burst_along` on the effect's axis, held to that by test.
 
 ## Contract
 
@@ -26,7 +31,10 @@ maturity, dependencies and core status.
   correctly-rounded operations — add, subtract, multiply, divide, min,
   max, square root; no transcendental function runs per particle, which
   is why the cone takes a jitter radius rather than an angle and drag
-  is a per-step factor rather than a per-second power.
+  is a per-step factor rather than a per-second power. Aiming a burst
+  does not touch this: the jitter is drawn before the axis is used, so
+  which axis arrives cannot change how many values the generator gives
+  out.
 - **All allocation happens at construction**, gate-tested from the
   first commit; a burst past capacity saturates.
 
