@@ -119,10 +119,47 @@ impl std::error::Error for IconError {}
 /// Plain-data window configuration.
 #[derive(Debug, Clone)]
 pub struct WindowConfig {
+    /// What the title bar says.
     pub title: String,
+    /// How wide the window opens, in logical pixels, before
+    /// [`Self::min_logical_width`] is applied to it.
     pub logical_width: f64,
+    /// How tall the window opens, in logical pixels, before
+    /// [`Self::min_logical_height`] is applied to it.
     pub logical_height: f64,
+    /// Whether the user may resize it at all.
     pub resizable: bool,
+    /// The narrowest the window may be dragged to, in logical pixels.
+    /// Nought is no floor, and is the default.
+    ///
+    /// **A layout can always be checked against the size the window
+    /// opened at; a floor is the only size it can be checked against
+    /// and rely on.** The opening size is one a user takes away by
+    /// dragging a corner, so a guard measured against it outlives the
+    /// thing it measured. This is the size that is still there.
+    ///
+    /// **Nought rather than an `Option`, because the platform does not
+    /// make the distinction.** A floor of nought and no floor produce
+    /// the same window everywhere this runs, so an `Option` would carry
+    /// a state nothing downstream can tell apart — and two named
+    /// scalars match the two fields above them, where a pair could be
+    /// written the wrong way round and still compile.
+    ///
+    /// Anything not finite, or below nought, is **read as no floor**.
+    /// See [`floor_of`] for why that is a sanitised value rather than
+    /// an error or a pass-through.
+    ///
+    /// A floor above [`Self::logical_width`] raises it, so that the
+    /// window is not smaller than its floor on any platform — the
+    /// backends do not agree about that on their own.
+    ///
+    /// Unsupported on iOS, Android and Orbital, where the windowing
+    /// library ignores it.
+    pub min_logical_width: f64,
+    /// The shortest the window may be dragged to, in logical pixels.
+    /// Nought is no floor, and is the default. See
+    /// [`Self::min_logical_width`], which this matches in every respect.
+    pub min_logical_height: f64,
 }
 
 impl Default for WindowConfig {
@@ -132,7 +169,40 @@ impl Default for WindowConfig {
             logical_width: 1280.0,
             logical_height: 720.0,
             resizable: true,
+            // No floor: what every window did before these two existed,
+            // so a caller that says nothing gets what it used to get.
+            min_logical_width: 0.0,
+            min_logical_height: 0.0,
         }
+    }
+}
+
+/// One floor dimension as the window seam will use it: finite, not
+/// negative, and nought where the caller asked for nonsense.
+///
+/// **Sanitised here rather than passed on, and the reason is a crash.**
+/// The windowing library clamps the requested size between the floor
+/// and a ceiling, and that clamp asserts `min <= max` — so a floor of
+/// `f64::NAN` or `f64::INFINITY` fails an assertion inside a dependency,
+/// during window creation, in a seam whose whole documented character is
+/// that failures come back as a `Result`. A negative floor is the
+/// quieter half of the same problem: it converts to an unsigned pixel
+/// count by saturating at nought, so it silently means no floor already.
+///
+/// **Sanitised rather than refused**, because refusing needs an error
+/// this seam has nowhere to report from: a window is created deep inside
+/// a platform callback, which is the one moment there is nobody to hand
+/// a `Result` to. `WindowIcon` makes the other choice and validates at
+/// construction — it can, because an icon is built by the caller before
+/// the loop starts. A config is a struct literal with no constructor to
+/// check it in, so the check lives here and its answer is documented
+/// rather than surprising.
+#[must_use]
+pub fn floor_of(asked: f64) -> f64 {
+    if asked.is_finite() && asked > 0.0 {
+        asked
+    } else {
+        0.0
     }
 }
 
@@ -768,13 +838,29 @@ impl Adapter<'_> {
         if self.epoch.window().is_some() || self.failure.is_some() {
             return;
         }
+        // **The opening size is raised to the floor here, so that every
+        // platform opens the same window.** Left to the backends they
+        // disagree: two of the three clamp the requested size up to the
+        // minimum and the third sets the minimum as a hint and opens at
+        // whatever was asked for. A caller who writes a floor larger
+        // than the size it opens at has contradicted itself, and the
+        // honest reading of "no smaller than this" is that the window is
+        // not smaller than this — on every machine.
+        let floor = (
+            floor_of(self.config.min_logical_width),
+            floor_of(self.config.min_logical_height),
+        );
         let mut attributes = winit::window::Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_inner_size(winit::dpi::LogicalSize::new(
-                self.config.logical_width,
-                self.config.logical_height,
+                self.config.logical_width.max(floor.0),
+                self.config.logical_height.max(floor.1),
             ));
+        if floor.0 > 0.0 || floor.1 > 0.0 {
+            attributes =
+                attributes.with_min_inner_size(winit::dpi::LogicalSize::new(floor.0, floor.1));
+        }
         // The icon is asked for here rather than held on the config
         // because it is the application's picture; see `WindowApp::icon`.
         // Its bytes were checked against its dimensions when it was
@@ -1893,6 +1979,214 @@ mod tests {
         }
     }
 
+    /// Build an adapter, open one window through a source that records
+    /// what it was handed, and give the attributes back.
+    ///
+    /// **The call is counted, and every caller asserts on the count.**
+    /// A test whose assertions all live inside the source closure
+    /// passes, having run none of them, the moment a change stops
+    /// opening the window at all. The refusal test below had that guard
+    /// already; the first draft of the ones above had dropped it.
+    fn attributes_for(config: &WindowConfig) -> winit::window::WindowAttributes {
+        let seen = core::cell::RefCell::new(None);
+        let calls = core::cell::Cell::new(0_u32);
+        let source: &WindowSource<'_> = &|attributes| {
+            calls.set(calls.get() + 1);
+            *seen.borrow_mut() = Some(attributes);
+            Err("no display".to_string())
+        };
+        let mut app = Recorder::default();
+        new_adapter(config, &mut app).open(source);
+        assert_eq!(calls.get(), 1, "the window was never asked for");
+        seen.into_inner()
+            .unwrap_or_else(winit::window::Window::default_attributes)
+    }
+
+    /// A logical size as the attributes carry it, for comparing.
+    fn logical(width: f64, height: f64) -> winit::dpi::Size {
+        winit::dpi::LogicalSize::new(width, height).into()
+    }
+
+    /// **A floor reaches the window, and no floor reaches it as none.**
+    ///
+    /// Two separate claims: that a floor asked for is passed on, and
+    /// that a window whose caller said nothing is not given one anyway.
+    /// The second is what every caller written before this field existed
+    /// relies on.
+    ///
+    /// **The two dimensions are varied independently.** Setting both and
+    /// then neither leaves a whole class of mutant alive: nesting one
+    /// field's branch inside the other's passes a both-or-neither test
+    /// while silently dropping the floor for anyone who sets one.
+    #[test]
+    fn a_windows_floor_reaches_the_window_and_its_absence_reaches_it_as_absence() {
+        let asked = |width: f64, height: f64| WindowConfig {
+            title: "renew-floored".to_string(),
+            logical_width: 900.0,
+            logical_height: 700.0,
+            resizable: true,
+            min_logical_width: width,
+            min_logical_height: height,
+        };
+        assert_eq!(
+            attributes_for(&asked(320.0, 240.0)).min_inner_size,
+            Some(logical(320.0, 240.0)),
+            "a floor in both dimensions did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(320.0, 0.0)).min_inner_size,
+            Some(logical(320.0, 0.0)),
+            "a floor on the width alone did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(0.0, 240.0)).min_inner_size,
+            Some(logical(0.0, 240.0)),
+            "a floor on the height alone did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(0.0, 0.0)).min_inner_size,
+            None,
+            "a window asked for no floor was given one"
+        );
+        assert_eq!(
+            attributes_for(&WindowConfig::default()).min_inner_size,
+            None,
+            "the default carries a floor, so every caller that predates it has one"
+        );
+    }
+
+    /// **Nonsense is read as no floor, and never handed on.**
+    ///
+    /// Not fussiness. The windowing library clamps the requested size
+    /// between the floor and a ceiling, and that clamp asserts
+    /// `min <= max` — so a floor of `NaN` or `INFINITY` fails an
+    /// assertion inside a dependency, during window creation, in a seam
+    /// whose whole character is that failures come back as a `Result`.
+    /// This crate builds with `panic = "abort"`, so it would not even
+    /// unwind.
+    ///
+    /// Negative is the quiet half of the same problem: it saturates to
+    /// nought on the way to an unsigned pixel count, so it already meant
+    /// no floor, silently. It means it out loud now.
+    #[test]
+    fn a_floor_that_is_not_a_size_is_no_floor() {
+        for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let config = WindowConfig {
+                min_logical_width: nonsense,
+                min_logical_height: nonsense,
+                ..WindowConfig::default()
+            };
+            let attributes = attributes_for(&config);
+            assert_eq!(
+                attributes.min_inner_size, None,
+                "a floor of {nonsense} reached the window instead of reading as no floor"
+            );
+            assert_eq!(
+                attributes.inner_size,
+                Some(logical(1280.0, 720.0)),
+                "a floor of {nonsense} moved the size the window opens at"
+            );
+        }
+    }
+
+    /// **A floor above the opening size raises it here, rather than on
+    /// two platforms out of three.**
+    ///
+    /// Left to the backends they disagree: two clamp the requested size
+    /// up to the minimum, the third opens at what was asked and sets the
+    /// minimum as a hint afterwards. A caller writing a floor larger
+    /// than its opening size has contradicted itself, and the honest
+    /// reading of "no smaller than this" is that the window is not
+    /// smaller than this — on every machine.
+    #[test]
+    fn a_floor_above_the_opening_size_raises_it_on_every_platform() {
+        let config = WindowConfig {
+            logical_width: 640.0,
+            logical_height: 480.0,
+            min_logical_width: 1024.0,
+            min_logical_height: 768.0,
+            ..WindowConfig::default()
+        };
+        let attributes = attributes_for(&config);
+        assert_eq!(
+            attributes.inner_size,
+            Some(logical(1024.0, 768.0)),
+            "the window opens smaller than the floor it was given"
+        );
+        assert_eq!(
+            attributes.min_inner_size,
+            Some(logical(1024.0, 768.0)),
+            "the floor was lost while the opening size was being raised"
+        );
+        // A floor under the opening size leaves it alone, which is the
+        // ordinary case and the one the raise must not disturb.
+        let ordinary = WindowConfig {
+            logical_width: 900.0,
+            logical_height: 700.0,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+            ..WindowConfig::default()
+        };
+        assert_eq!(
+            attributes_for(&ordinary).inner_size,
+            Some(logical(900.0, 700.0)),
+            "an ordinary floor moved the size the window opens at"
+        );
+    }
+
+    /// **A floor is passed on whether or not the window can be resized.**
+    ///
+    /// This crate does not decide what a fixed-size window does with a
+    /// floor — the platforms do, and they differ — but it must not
+    /// quietly drop one on the way, which is the combination the field's
+    /// own doc talks about and nothing checked.
+    #[test]
+    fn a_fixed_size_window_still_carries_the_floor_it_was_given() {
+        let config = WindowConfig {
+            resizable: false,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+            ..WindowConfig::default()
+        };
+        let attributes = attributes_for(&config);
+        assert!(
+            !attributes.resizable,
+            "the fixture stopped being fixed-size"
+        );
+        assert_eq!(
+            attributes.min_inner_size,
+            Some(logical(320.0, 240.0)),
+            "a fixed-size window had its floor dropped on the way to the platform"
+        );
+    }
+
+    /// **Nothing else the window was asked for moved.** The floor is one
+    /// of five things this function sets, and a test reading only the
+    /// one it changed cannot see the others being disturbed.
+    #[test]
+    fn adding_a_floor_disturbs_nothing_else_the_window_was_asked_for() {
+        let config = WindowConfig {
+            title: "renew-intact".to_string(),
+            logical_width: 900.0,
+            logical_height: 700.0,
+            resizable: true,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+        };
+        let attributes = attributes_for(&config);
+        assert_eq!(attributes.title, "renew-intact");
+        assert!(attributes.resizable);
+        assert_eq!(attributes.inner_size, Some(logical(900.0, 700.0)));
+        assert_eq!(
+            attributes.max_inner_size, None,
+            "a ceiling appeared beside the floor, pinning the window to one size"
+        );
+        assert!(
+            attributes.fullscreen.is_none(),
+            "the window opened fullscreen, which nothing asked for"
+        );
+    }
+
     #[test]
     fn a_refused_window_is_reported_once_and_never_retried() {
         let config = WindowConfig {
@@ -1900,6 +2194,7 @@ mod tests {
             logical_width: 640.0,
             logical_height: 480.0,
             resizable: false,
+            ..WindowConfig::default()
         };
         let attempts = std::cell::Cell::new(0_u32);
         let refuse: &WindowSource<'_> = &|attributes| {

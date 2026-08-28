@@ -651,6 +651,7 @@ fn main() {
         logical_width: 320.0,
         logical_height: 240.0,
         resizable: true,
+        ..WindowConfig::default()
     };
     let run = run_window_app(&config, &mut app);
     // Drop GPU objects before the verdict, matching the sibling suite:

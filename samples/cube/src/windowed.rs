@@ -896,6 +896,7 @@ pub fn run(options: &Options) -> Result<Report, WindowError> {
         logical_width: 960.0,
         logical_height: 720.0,
         resizable: true,
+        ..WindowConfig::default()
     };
     run_window_app(&config, &mut app)?;
     // Said out loud rather than folded into the return: the simulation

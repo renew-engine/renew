@@ -36,6 +36,7 @@ pub fn run(options: &Options) -> Result<Report, SampleError> {
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
+        ..WindowConfig::default()
     };
     let outcome = run_window_app(&config, &mut app);
     verdict(outcome, app.report())

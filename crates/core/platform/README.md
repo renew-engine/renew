@@ -104,6 +104,27 @@ datagrams — each a thin, explicit seam.
   bytes are checked against the dimensions when the `WindowIcon` is
   built, so nothing has to be reported from inside a platform callback.
   A platform with no notion of a window icon ignores it.
+- **A window can be given a floor.** `WindowConfig::min_logical_width`
+  and `min_logical_height` are the smallest the user may drag the window
+  to; nought is no floor and is the default. A layout can always be
+  checked against the live size — `WindowRef::physical_size` and the
+  `Resized` event both give it — and against the size the window opened
+  at. What a floor adds is a size the user cannot take away, so a check
+  made once still holds later.
+
+  Two things happen here rather than on three platforms differently. A
+  floor above the opening size **raises the opening size**, because the
+  backends disagree about that and "no smaller than this" should mean
+  the same everywhere. And a floor that is not a size — negative, NaN,
+  infinite — is **read as no floor**: passed on, NaN and infinity fail an
+  assertion inside the windowing library during window creation, which
+  is not a failure this seam can report. Both are enforced here and
+  tested at the creation call.
+
+  Passed on whatever `resizable` says: what a fixed-size window does with
+  a floor is the platform's business, and the three differ. Unsupported
+  on iOS, Android and Orbital, where the windowing library ignores it —
+  the same way a platform with no notion of a window icon ignores one.
 - **No ambient state.** No global clock, no environment reads; everything
   is a value or an explicit call.
 - **Errors carry context** — paths and thread names, in crate-local

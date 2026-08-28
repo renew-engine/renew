@@ -688,6 +688,7 @@ fn main() {
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
+        ..WindowConfig::default()
     };
     let run = run_window_app(&config, &mut app);
     // Tear down GPU objects BEFORE reading the report so validation

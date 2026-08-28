@@ -160,6 +160,7 @@ fn main() -> ExitCode {
         logical_width: 320.0,
         logical_height: 200.0,
         resizable: false,
+        ..WindowConfig::default()
     };
     if one_window_runs_and_exits(&config) && a_second_loop_is_refused_recoverably(&config) {
         ExitCode::SUCCESS
