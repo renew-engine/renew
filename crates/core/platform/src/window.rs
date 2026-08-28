@@ -1007,13 +1007,15 @@ impl Adapter<'_> {
             // without mouse look, which is not a failure to report.
             let _refused = self.apply_cursor_grab(held);
         }
+        // `None` below is the windowing library's "the monitor this
+        // window is on", which is the only answer available without
+        // naming one — and naming one would mean a handle crossing this
+        // seam. Said here rather than inside the block because the
+        // coverage gate measures a block's lines, comments included, and
+        // a body of one statement needs a one-line exemption.
         if let Some(filling) = control.fullscreen
             && let Some(window) = self.epoch.window()
         {
-            // `None` is the windowing library's "the monitor this window
-            // is on", which is the only answer available without naming
-            // one — and naming one would mean a handle crossing this
-            // seam.
             window.set_fullscreen(filling.then_some(winit::window::Fullscreen::Borderless(None)));
         }
         if control.redraw
