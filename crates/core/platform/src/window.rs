@@ -1014,7 +1014,7 @@ impl Adapter<'_> {
             // is on", which is the only answer available without naming
             // one — and naming one would mean a handle crossing this
             // seam.
-            window.set_fullscreen(filling.then(|| winit::window::Fullscreen::Borderless(None)));
+            window.set_fullscreen(filling.then_some(winit::window::Fullscreen::Borderless(None)));
         }
         if control.redraw
             && let Some(window) = self.epoch.window()
@@ -1894,6 +1894,47 @@ mod tests {
         );
     }
 
+    /// **A fullscreen request survives the iteration it was made in and
+    /// reaches the window, and asking nothing reaches nothing.**
+    ///
+    /// The window itself cannot be asserted on — there is none under a
+    /// unit test — so what is checked is that the request is *taken*:
+    /// the loop reads it, evaluates whether there is a window to hand it
+    /// to, and does not fall over when there is not. That last part is
+    /// the whole of what a headless iteration can prove, and it is worth
+    /// proving: an application that asks for the screen before a window
+    /// exists must be an ordinary iteration rather than a panic.
+    ///
+    /// **Unlike the cursor, nothing is remembered**, and that asymmetry
+    /// is deliberate — see `LoopControl::set_fullscreen`. So there is no
+    /// memory to assert against, and the absence of one is the claim.
+    #[test]
+    fn a_fullscreen_request_is_taken_even_with_no_window_to_apply_it_to() {
+        let config = WindowConfig::default();
+
+        for asked in [Some(true), Some(false), None] {
+            let mut app = Recorder {
+                ask_fullscreen: asked,
+                ..Recorder::default()
+            };
+            {
+                let mut adapter = new_adapter(&config, &mut app);
+                assert!(
+                    !adapter.tick(),
+                    "asking about the screen ({asked:?}) was read as asking to leave the loop"
+                );
+                assert!(
+                    !adapter.cursor_wanted.get(),
+                    "asking about the screen ({asked:?}) also took the cursor"
+                );
+            }
+            assert_eq!(
+                app.updates, 1,
+                "the iteration did not reach the application"
+            );
+        }
+    }
+
     /// The accessors report the fields the loop reads, and a silent
     /// iteration is distinguishable from one that asked for something.
     ///
@@ -2020,6 +2061,8 @@ mod tests {
         /// What to ask of the cursor, if anything. `None` asks nothing,
         /// which is the case that must leave the grab alone.
         ask_cursor: Option<bool>,
+        /// What to ask about filling the screen, if anything.
+        ask_fullscreen: Option<bool>,
     }
 
     /// **An application that says nothing about an icon has none.**
@@ -2059,6 +2102,9 @@ mod tests {
             }
             if let Some(held) = self.ask_cursor {
                 control.hold_cursor(held);
+            }
+            if let Some(filling) = self.ask_fullscreen {
+                control.set_fullscreen(filling);
             }
         }
 
