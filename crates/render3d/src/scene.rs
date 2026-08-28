@@ -56,6 +56,29 @@ pub(crate) const VERTEX_STRIDE: u32 = 36;
 /// wrong if they did not.
 const WHOLE_TILE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
+/// The place a packed vertex record names.
+///
+/// The first twelve bytes are the three position floats in native
+/// order, exactly as [`Scene::push_vertex`] writes them; this is the
+/// only reader of that layout outside the upload.
+///
+/// The record is a whole one by its type, so this cannot fail and does
+/// not pretend it might: taking `[u8; VERTEX_STRIDE]` rather than a
+/// slice moves the "is this a complete vertex" question to the split
+/// that produced it, where it is answered once for the whole buffer
+/// instead of re-asked, unanswerably, per corner.
+///
+/// Position is the first three words, and the zip stops there — the
+/// colour and texture words that follow are not places.
+fn position_of(record: &[u8; VERTEX_STRIDE as usize]) -> [f32; 3] {
+    let (words, _) = record.as_chunks::<{ size_of::<f32>() }>();
+    let mut at = [0.0_f32; 3];
+    for (slot, word) in at.iter_mut().zip(words) {
+        *slot = f32::from_ne_bytes(*word);
+    }
+    at
+}
+
 /// Geometry accumulated on the host, ready to be uploaded once.
 ///
 /// Cheap to build and cheap to throw away: a scene owns two vectors and
@@ -221,6 +244,55 @@ impl Scene {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
+    }
+
+    /// The smallest box holding every corner pushed so far, as
+    /// `(lowest, highest)` — or nothing at all if no quad has been.
+    ///
+    /// **A scene could say how much it held and never where.**
+    /// [`Self::vertex_count`] answers a question about size in memory;
+    /// this answers one about size in the world, and a caller had no way
+    /// to ask it. Three of them want to: framing a camera on what was
+    /// just built, deciding whether a scene is worth submitting at all,
+    /// and — the case that prompted this — checking that geometry
+    /// assembled from a scale factor came out the size it was meant to.
+    /// That last one is a test's question, and without an extent the
+    /// only available answer is to look at a picture and believe it.
+    ///
+    /// **Nothing rather than a zero box when empty**, because a box at
+    /// the origin is a real answer a caller would act on: it would frame
+    /// a camera on a point, or report a body of no size as one correctly
+    /// placed at nothing. An empty scene has no extent, and saying so is
+    /// the only honest option.
+    ///
+    /// Positions only. A vertex record carries colour and texture
+    /// coordinates after its position and neither is a place, so neither
+    /// is asked — which is a property worth a test rather than a
+    /// comment, and has one.
+    ///
+    /// Whatever floats were pushed are the floats measured: a scene does
+    /// not screen its geometry, so a corner pushed as NaN puts NaN in
+    /// the answer. That is reported rather than repaired, because a box
+    /// silently shrunk to exclude a bad corner is the same wrong answer
+    /// with the evidence removed.
+    #[must_use]
+    pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        // The remainder is empty by construction - every push writes a
+        // whole record, which the stride property test holds to - so a
+        // partial tail here would be corruption upstream, not geometry
+        // this could meaningfully report on.
+        let (records, _) = self.vertices.as_chunks::<{ VERTEX_STRIDE as usize }>();
+        let (first, rest) = records.split_first()?;
+        let first = position_of(first);
+        let (mut low, mut high) = (first, first);
+        for record in rest {
+            let corner = position_of(record);
+            for ((lowest, highest), value) in low.iter_mut().zip(high.iter_mut()).zip(corner) {
+                *lowest = lowest.min(value);
+                *highest = highest.max(value);
+            }
+        }
+        Some((low, high))
     }
 
     /// Forget every quad, keeping the allocation for the next build.
@@ -499,6 +571,81 @@ mod tests {
         assert!(scene.is_empty());
         assert_eq!(scene.vertex_count(), 0);
         assert_eq!(scene.index_count(), 0);
+    }
+
+    /// An empty scene has no extent, and says so rather than reporting a
+    /// box at the origin — which is a real answer a caller would act on.
+    #[test]
+    fn an_empty_scene_has_no_bounds() {
+        assert_eq!(Scene::new().bounds(), None);
+        let mut cleared = Scene::new();
+        cleared.quad(CORNERS, WHITE);
+        cleared.clear();
+        assert_eq!(
+            cleared.bounds(),
+            None,
+            "a cleared scene still claimed an extent"
+        );
+    }
+
+    /// One quad's bounds are its own corners; a second quad widens them
+    /// to the union rather than replacing them.
+    #[test]
+    fn bounds_are_the_union_of_every_corner() {
+        let mut scene = Scene::new();
+        scene.quad(
+            [
+                [-1.0, -2.0, 0.0],
+                [1.0, -2.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [-1.0, 2.0, 0.0],
+            ],
+            WHITE,
+        );
+        assert_eq!(scene.bounds(), Some(([-1.0, -2.0, 0.0], [1.0, 2.0, 0.0])));
+        scene.quad(
+            [
+                [0.0, 0.0, 5.0],
+                [3.0, 0.0, 5.0],
+                [3.0, 1.0, 5.0],
+                [0.0, 1.0, 5.0],
+            ],
+            WHITE,
+        );
+        assert_eq!(
+            scene.bounds(),
+            Some(([-1.0, -2.0, 0.0], [3.0, 2.0, 5.0])),
+            "the second quad replaced the extent instead of widening it"
+        );
+    }
+
+    /// **Positions only.** A vertex record carries colour and texture
+    /// coordinates after its position, and neither is a place. Reading
+    /// the wrong offset would fold them in — and colour and uv both sit
+    /// in nought-to-one, so on ordinary geometry the mistake would look
+    /// like a slightly wrong box rather than an obviously wrong one.
+    ///
+    /// So the colours here are far outside the corners: if either leaks
+    /// into the answer, the extent is not the quad's.
+    #[test]
+    fn colour_and_texture_are_not_places() {
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mut scene = Scene::new();
+        scene.quad_uv(
+            corners,
+            [[-50.0, 90.0, -70.0, 40.0]; 4],
+            [[-30.0, 60.0], [-30.0, 60.0], [-30.0, 60.0], [-30.0, 60.0]],
+        );
+        assert_eq!(
+            scene.bounds(),
+            Some(([0.0, 0.0, 0.0], [1.0, 1.0, 0.0])),
+            "something other than a position reached the extent"
+        );
     }
 
     /// The capacity hint changes no output — it is a hint, and a test
