@@ -1042,6 +1042,79 @@ fn left_half_quad(depth: f32) -> Vec<u8> {
 /// is the depth buffer itself: the quad's clip-space z where it
 /// covered, the reversed-Z far clear where it did not — a CPU oracle
 /// over the whole rendered-depth path.
+/// **A pipeline that generates its own vertices can now cast.** Until
+/// `PipelineDesc::depth_only` existed it could not: the only depth-only
+/// constructor hard-set `vertex_input: Some(layout)`, and the frame
+/// contract asserts that an item names geometry exactly when its pipeline
+/// declares per-vertex input. So a generative renderer could be seen and
+/// could not cast a shadow, which is not a limitation anybody chose.
+///
+/// What this proves is the seam rather than the picture: the pipeline
+/// builds, and a depth pass whose item names **no geometry** is accepted
+/// and submitted with no validation error. It deliberately does not read
+/// the depth back — the only stage available here writes `z = 0.0`, which
+/// under reversed-Z is the clear value, so a readback cannot tell a draw
+/// that happened from one that did not. Claiming otherwise would be a
+/// test that looks like it checked something.
+///
+/// Probed by swapping `depth_only` for `depth_mesh`: the contract refuses
+/// the item, naming geometry it has no pipeline for.
+#[test]
+fn a_generative_pipeline_can_write_into_a_depth_target() {
+    const SIZE: u32 = 8;
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let image = match device.create_render_image(&RenderImageDesc::new(
+        RenderImageKind::Depth,
+        Extent {
+            width: SIZE,
+            height: SIZE,
+        },
+    )) {
+        Ok(image) => image,
+        Err(error) => {
+            assert!(
+                !strict(),
+                "RENEW_GOLDEN=1 but the depth render image was refused: {error}"
+            );
+            eprintln!("SKIP: depth render image refused: {error}");
+            return;
+        }
+    };
+    let caster = device
+        .create_pipeline(
+            &PipelineDesc::depth_only(builtin::TRIANGLE_VS_SPV, 3)
+                .depth_state(DepthState::read_write()),
+        )
+        .expect("a generative depth-only pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    // No mesh: the whole point. The stage writes its own three vertices.
+    let items = [Item::new(&caster)];
+    let depth_ops = Attachment::new(LoadOp::Clear(ClearValue::Depth(0.0)), StoreOp::Store);
+    // A frame needs at least one surface pass, so the depth pass is
+    // followed by a bare clear. Nothing reads the depth image back — see
+    // the note above for why it could not tell us anything if it did.
+    let color = clear(Color::new(0.0, 0.0, 0.0, 1.0));
+    let passes = [
+        Pass::render_to(&image, depth_ops, &items),
+        Pass::new(&color, &[]),
+    ];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("a generative caster renders");
+
+    drop(target);
+    drop(caster);
+    assert_no_validation_errors(&device);
+}
+
 #[test]
 fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     const SIZE: u32 = 8;
