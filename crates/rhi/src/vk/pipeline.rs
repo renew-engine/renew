@@ -277,6 +277,8 @@ pub struct PipelineDesc<'a> {
     /// [`Blend::Opaque`] — no blending — unless the builder says
     /// otherwise.
     pub blend: Blend,
+    /// Which side of a triangle this pipeline draws. See [`Facing`].
+    pub facing: Facing,
     /// How many sampled-binding slots this pipeline's shaders read;
     /// zero for none.
     ///
@@ -404,6 +406,55 @@ pub(crate) fn validate_sampled_bindings(count: u32) {
         declared <= MAX_SAMPLED_BINDINGS,
         "a pipeline declares at most {MAX_SAMPLED_BINDINGS} sampled bindings (the guaranteed          device minimum for bound sets), got {declared}"
     );
+}
+
+/// Which side of a triangle a pipeline draws.
+///
+/// **Every pipeline drew both, and for closed geometry that is half the
+/// rasterisation thrown away.** A triangle whose back is turned to the
+/// camera is either inside a solid, where nothing can see it, or behind
+/// one, where the depth test discards it *after* it has been rasterised,
+/// shaded and tested at full price. Dropping it before the rasteriser is
+/// what `cull_mode` is for, and it costs nothing: the hardware decides
+/// from the sign of the triangle's screen-space area.
+///
+/// **Per pipeline rather than per device, and that is the whole design.**
+/// Closed solids want their backs dropped. Foliage, water surfaces,
+/// banners, decals and anything else a viewer is meant to see from
+/// behind want both sides — and culling those makes geometry vanish from
+/// one direction only, which is the hardest kind of rendering fault to
+/// notice because half the time it looks right.
+///
+/// **Front is counter-clockwise in clip space** — the winding a
+/// right-handed mesher gives the outside of a solid. So `Front` keeps
+/// what you can see and drops what is inside the rock, which is the only
+/// reading of the name that is any use.
+///
+/// Getting that took a deliberate choice, and it is worth knowing about
+/// before writing a mesher against this. Vulkan applies its front-face
+/// rule in **framebuffer** space, where Y points down, so a
+/// counter-clockwise clip-space triangle arrives at the rasteriser wound
+/// clockwise. Declaring the intuitive `COUNTER_CLOCKWISE` therefore
+/// culls precisely the geometry a caller can see. The rasteriser state
+/// declares `CLOCKWISE` to undo that, once, here — rather than leaving
+/// every caller of this crate to discover the flip by watching their
+/// world turn inside out.
+///
+/// An input enum, so `#[non_exhaustive]`: a fourth mode later must not be
+/// a breaking change for downstream matchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Facing {
+    /// Draw both sides. Today's behavior, and the default — because it
+    /// is the answer that is never *wrong*, only sometimes wasteful, and
+    /// a default that can make geometry disappear is not a default.
+    Both,
+    /// Draw only triangles wound counter-clockwise on screen: the
+    /// outside of a closed solid.
+    Front,
+    /// Draw only the ones wound clockwise: the inside of a volume, a
+    /// skybox seen from within, a cutaway.
+    Back,
 }
 
 /// How a pipeline's output is combined with what the target already
@@ -535,6 +586,7 @@ impl<'a> PipelineDesc<'a> {
             target_format,
             vertex_count: shaders.vertex_count,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: None,
@@ -542,6 +594,13 @@ impl<'a> PipelineDesc<'a> {
             depth_state: None,
             push_constant_size: 0,
         }
+    }
+
+    /// Draw only one side of each triangle. See [`Facing`].
+    #[must_use]
+    pub const fn facing(mut self, facing: Facing) -> Self {
+        self.facing = facing;
+        self
     }
 
     /// Combine output with the target per `blend` instead of replacing
@@ -587,6 +646,7 @@ impl<'a> PipelineDesc<'a> {
             // supply it and nothing consults it.
             vertex_count: 0,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: Some(layout),
@@ -624,6 +684,7 @@ impl<'a> PipelineDesc<'a> {
             target_format: TargetFormat::DepthOnly,
             vertex_count: 0,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: Some(layout),
@@ -1456,8 +1517,34 @@ impl Device {
             .scissor_count(1);
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .cull_mode(match desc.facing {
+                Facing::Both => vk::CullModeFlags::NONE,
+                // Cull the BACK to draw the front, and the front to draw
+                // the back: the flag names what is *discarded*, and
+                // reading it as what is kept is the mistake this match
+                // exists to keep away from callers.
+                Facing::Front => vk::CullModeFlags::BACK,
+                Facing::Back => vk::CullModeFlags::FRONT,
+            })
+            // **Clockwise, and that is not a typo.** Vulkan applies
+            // this in *framebuffer* space, where Y points down — so a
+            // triangle written counter-clockwise in clip space, which
+            // is how every right-handed mesher winds the outside of a
+            // solid, arrives at the rasteriser wound clockwise.
+            // Declaring COUNTER_CLOCKWISE here would make
+            // `Facing::Front` cull exactly the geometry a caller can
+            // see and keep the geometry inside the rock.
+            //
+            // It had no effect at all until `Facing` existed, because
+            // the cull mode was always NONE. So this is a free choice
+            // made once, here, rather than a Y-flip exported to every
+            // caller of this crate for ever.
+            //
+            // `a_pipeline_draws_the_side_of_a_triangle_it_was_asked_for`
+            // is what holds it: it renders one triangle both ways round
+            // under all three modes, and the mirror pair is what would
+            // catch this being flipped back.
+            .front_face(vk::FrontFace::CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);

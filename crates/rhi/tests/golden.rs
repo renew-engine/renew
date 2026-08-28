@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use renew_rhi::{
     AdapterKind, Attachment, BindingDesc, BindingSource, Blend, ClearValue, Color, DepthState,
-    Device, DeviceDesc, DeviceError, Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
+    Device, DeviceDesc, DeviceError, Extent, Facing, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
     RenderDesc, RenderImageDesc, RenderImageKind, SamplerDesc, StoreOp, TargetFormat, TextureDesc,
     Validation, builtin,
 };
@@ -1597,6 +1597,101 @@ fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
 /// either, so every pixel has one right value on every conformant
 /// adapter.
 ///
+/// **A pipeline that draws one side of a triangle draws exactly that
+/// side.**
+///
+/// Every pipeline drew both, and for closed geometry that is half the
+/// rasterisation thrown away: a triangle with its back to the camera is
+/// either inside a solid or behind one, and the depth test discards it
+/// only after it has cost full price.
+///
+/// **Three renders of one triangle**, because the failure modes are
+/// mirror images and each looks like success from the other side:
+/// `Both` draws it whichever way it is wound, `Front` draws only the
+/// counter-clockwise winding, `Back` only the clockwise one. Asked of
+/// the *same* geometry with its corner order reversed rather than of two
+/// different triangles, so nothing but the winding can account for the
+/// difference.
+///
+/// The mirror pair is what makes this more than a smoke test, and it
+/// earned its keep on the first run. A `cull_mode` wired to the wrong
+/// flag — `FRONT` where `BACK` belongs — passes any test that only ever
+/// asks for one mode. **And the first run failed**: `Front` culled the
+/// counter-clockwise triangle, because Vulkan applies its front-face
+/// rule in framebuffer space where Y points down, so a
+/// counter-clockwise clip-space triangle reaches the rasteriser wound
+/// clockwise. The rasteriser declares `CLOCKWISE` to undo that, and this
+/// is what holds it there — the assertions below are written the way a
+/// caller would expect them to read, which is the point.
+#[test]
+fn a_pipeline_draws_the_side_of_a_triangle_it_was_asked_for()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 16;
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+
+    // The middle of the target, so no edge rule can be what decides it.
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let corners = [[-0.5f32, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]];
+    let mut anticlockwise = Vec::new();
+    for corner in corners {
+        anticlockwise.extend(mesh_vertex(corner, green));
+    }
+    let mut clockwise = Vec::new();
+    for corner in [corners[0], corners[2], corners[1]] {
+        clockwise.extend(mesh_vertex(corner, green));
+    }
+    let one_way = device.create_mesh(&MeshDesc::new(
+        &anticlockwise,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2],
+    ))?;
+    let other_way = device.create_mesh(&MeshDesc::new(
+        &clockwise,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2],
+    ))?;
+
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+    let middle = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+
+    for (facing, one_shows, other_shows) in [
+        (Facing::Both, true, true),
+        (Facing::Front, true, false),
+        (Facing::Back, false, true),
+    ] {
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH, TargetFormat::Rgba8Srgb, builtin::MESH_LAYOUT)
+                .facing(facing),
+        )?;
+        for (mesh, should_show, wound) in [
+            (&one_way, one_shows, "counter-clockwise"),
+            (&other_way, other_shows, "clockwise"),
+        ] {
+            let items = [Item::new(&pipeline).mesh(mesh)];
+            target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+            target.read_back_into(&mut pixels);
+            let drawn = pixels[middle..middle + 4] == [0, 255, 0, 255];
+            assert_eq!(
+                drawn,
+                should_show,
+                "{facing:?}: a {wound} triangle {} drawn and {} have been - the cull flag is \
+                 wired to the wrong side, or to nothing",
+                if drawn { "was" } else { "was not" },
+                if should_show { "should" } else { "should not" }
+            );
+        }
+    }
+    Ok(())
+}
+
 /// **A draw over part of a mesh's index list.**
 ///
 /// The test above proves the index buffer is read, using a second mesh

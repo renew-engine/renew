@@ -65,7 +65,14 @@ display server, and the golden-image tests attest the bytes.
   supplies it; `PipelineDesc::depth_mesh` takes one vertex stage over a
   per-vertex layout — no fragment stage, no color attachment,
   `TargetFormat::DepthOnly` — for pipelines that draw only into
-  depth-kinded render images. `builtin` carries the embedded shader bundles — a colored
+  depth-kinded render images. Any of them may drop one side of every
+  triangle (`PipelineDesc::facing`, a `Facing`): closed solids keep
+  `Facing::Front` and pay nothing for their own backs, while foliage,
+  water and anything else meant to be seen from behind stays `Both`,
+  which is the default because a default that can make geometry vanish
+  is not one. Front is counter-clockwise **in clip space** — Vulkan
+  applies its rule in framebuffer space where Y points down, and the
+  rasteriser state undoes that once here so callers do not each meet it. `builtin` carries the embedded shader bundles — a colored
   triangle, textured full-target quads over one and two sampled slots,
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in
