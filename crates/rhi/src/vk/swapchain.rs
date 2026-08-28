@@ -1102,7 +1102,8 @@ impl WindowTarget {
                     // geometry for a mesh draw, the shader for a stage
                     // that writes its own vertex list.
                     if let Some(mesh) = item.mesh {
-                        device.cmd_draw_indexed(cmd, mesh.inner.index_count, instances, 0, 0, 0);
+                        let (indices, first) = super::pass::indexed_draw(item, mesh);
+                        device.cmd_draw_indexed(cmd, indices, instances, first, 0, 0);
                     } else {
                         device.cmd_draw(cmd, item.pipeline.vertex_count, instances, 0, 0);
                     }

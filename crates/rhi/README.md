@@ -29,14 +29,18 @@ display server, and the golden-image tests attest the bytes.
   `ClearValue`, so a clear value without a clearing load is
   unrepresentable); depth is a per-target internal image a pass opts
   into, sized and owned by the target. An `Item` may name geometry
-  (`Item::mesh`), which makes its draw indexed, and may carry push data
+  (`Item::mesh`), which makes its draw indexed — over the whole index list,
+  or over a slice of it (`Item::indices`, an `IndexRange`) so that geometry
+  meshed in contiguous pieces can be culled or sorted per piece without a
+  second buffer — and may carry push data
   (`Item::push_data`) for a pipeline that declares a range. Malformed
   frames — no passes, no surface pass, a first-use `Load` on any
   attachment identity, a clear value of the wrong kind, a
   depth-testing pipeline in a depthless pass, two items carrying
   different data for one per-frame buffer, an item whose geometry and
   whose pipeline's per-vertex input disagree, a mesh whose stride the
-  pipeline does not pack to, push data or bindings missing,
+  pipeline does not pack to, an index range without a mesh or reaching
+  past the end of one, push data or bindings missing,
   mis-counted or of the wrong class against the declaration, uniform data
   missing, surplus or mis-sized, a block buffer a different size from the
   block its pipeline declares, a frame that reads a render

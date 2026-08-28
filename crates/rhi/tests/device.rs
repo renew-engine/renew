@@ -789,6 +789,46 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
+    // An index range with nothing to slice. Refused rather than
+    // ignored: dropping it would draw the whole mesh where the caller
+    // asked for a piece, which is the quiet wrong draw every rule here
+    // exists to prevent.
+    refused(
+        "an index range on an item that names no mesh",
+        "only alongside geometry",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&pipeline).indices(0, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // A range past the end of the list. The sibling of the stride rule
+    // below and refused for the same reason: creation proved every index
+    // *in* the list is inside the vertex count, which says nothing about
+    // indices past the list's end — those are whatever the allocation
+    // holds, fetched as vertices.
+    refused(
+        "an index range reaching past the end of its mesh",
+        "must stay inside its mesh",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&mesh_pipeline).mesh(&mesh).indices(1, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // The same rule reached by overflow rather than by size, which is
+    // why `IndexRange::end` saturates: a wrapping sum would make this
+    // three-index mesh accept a range of four billion.
+    refused(
+        "an index range whose first plus count wraps",
+        "must stay inside its mesh",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&mesh_pipeline).mesh(&mesh).indices(u32::MAX, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+
     // A stride the pipeline does not pack to: the mesh's own indices stay
     // inside its own vertex count, and the fetch still runs off the end,
     // which is why this rule exists separately from the creation check.

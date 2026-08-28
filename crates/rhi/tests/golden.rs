@@ -1597,6 +1597,139 @@ fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
 /// either, so every pixel has one right value on every conformant
 /// adapter.
 ///
+/// **A draw over part of a mesh's index list.**
+///
+/// The test above proves the index buffer is read, using a second mesh
+/// built from a prefix of the same indices — which means every line of
+/// it is satisfied by a path that honours a count and ignores an offset,
+/// because a prefix has no offset. This one names slices of *one* mesh,
+/// including one that does not start at zero, which nothing a prefix can
+/// express reaches.
+///
+/// Why the feature exists: geometry that changes in pieces is meshed in
+/// pieces laid out as contiguous runs of one index list, so replacing a
+/// piece is a splice. Drawing a piece is then a `firstIndex` and an
+/// `indexCount`, and without them the choice is the whole mesh or none of
+/// it.
+#[test]
+fn an_index_range_draws_the_slice_it_names() -> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 32;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(&PipelineDesc::mesh(
+        builtin::MESH,
+        TargetFormat::Rgba8Srgb,
+        builtin::MESH_LAYOUT,
+    ))?;
+
+    // The same four corners and two triangles as the test above: 0
+    // top-left, 1 top-right, 2 bottom-right, 3 bottom-left, sharing the
+    // 0-2 diagonal. Indices 0..3 are the top-right half, 3..6 the
+    // bottom-left half, and the two corners that tell them apart are the
+    // ones asserted below.
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let mut vertices = Vec::new();
+    for corner in [
+        [-1.0f32, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ] {
+        vertices.extend(mesh_vertex(corner, green));
+    }
+    let mesh = device.create_mesh(&MeshDesc::new(
+        &vertices,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2, 0, 2, 3],
+    ))?;
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    // **The other triangle, from the same mesh, by index range.** This
+    // is the half above run backwards, and the asymmetry is the whole
+    // proof: `whole[..3]` can only ever reach a prefix, so every earlier
+    // line here is satisfied by a path that honours `indexCount` and
+    // ignores `firstIndex` entirely. Indices 3..6 are `0, 2, 3` —
+    // top-left, bottom-right, bottom-left — which is the *complement* of
+    // the triangle drawn above. A path that dropped the offset would
+    // draw triangle one again and put green in the top-right corner,
+    // where this asserts the clear colour.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(3, 3)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, 0, SIZE - 1),
+        [0, 255, 0, 255],
+        "the bottom-left corner is inside the second triangle, which only a range starting          at index 3 can name"
+    );
+    assert_eq!(
+        at(&pixels, SIZE - 1, 0),
+        [255, 0, 255, 255],
+        "the top-right corner is outside it — a path honouring the count but ignoring the          first index would draw triangle one and cover this pixel"
+    );
+
+    // And the whole list named explicitly is the whole list: a range
+    // covering everything must equal no range at all, or the offset
+    // arithmetic is off by something that the two partial draws above
+    // both happen to survive.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(0, 6)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    let mut all = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut all);
+    let items = [Item::new(&pipeline).mesh(&mesh)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        all, pixels,
+        "a range over the whole index list draws what naming no range draws"
+    );
+
+    // A zero-count range records a draw that covers nothing — the arm a
+    // caller looping over pieces relies on so an empty piece needs no
+    // branch. The target keeps its clear colour everywhere.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(3, 0)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| *px == [255, 0, 255, 255]),
+        "a zero-count range draws nothing at all, leaving the clear colour"
+    );
+
+    // The loop terminus, and the reason the bound is `end() <= count`
+    // rather than `first < count`: a caller walking contiguous pieces
+    // computes each `first` as a running offset, so the piece after the
+    // last one starts exactly at the end of the list. With a count of
+    // zero that names nothing and must be accepted, or every such loop
+    // needs a special case for its own final step.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(6, 0)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| *px == [255, 0, 255, 255]),
+        "an empty range starting at the end of the list is the terminus of a walk over          pieces, not a mistake"
+    );
+
+    Ok(())
+}
+
 /// **What makes this prove indices rather than merely draw:** the second
 /// frame keeps the same four vertices and submits half the index list.
 /// A path that ignored the index buffer would draw the same picture
