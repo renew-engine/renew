@@ -892,14 +892,10 @@ impl OffscreenTarget {
                     // that writes its own vertex list. The frame contract
                     // already refused the mismatch.
                     match item.mesh {
-                        Some(mesh) => device.cmd_draw_indexed(
-                            self.cmd,
-                            mesh.inner.index_count,
-                            instances,
-                            0,
-                            0,
-                            0,
-                        ),
+                        Some(mesh) => {
+                            let (indices, first) = super::pass::indexed_draw(item, mesh);
+                            device.cmd_draw_indexed(self.cmd, indices, instances, first, 0, 0);
+                        }
                         None => {
                             device.cmd_draw(self.cmd, item.pipeline.vertex_count, instances, 0, 0);
                         }

@@ -81,7 +81,7 @@ reason = "The full-table answer of the block-write tracker, which reports a buff
 
 [[exempt]]
 file = "crates/rhi/src/vk/pass.rs"
-lines = [1550]
+lines = [1658]
 reason = "The unreachable arm of the write-claim table: no free slot to record a claim in. The ceiling assert does not bound it directly any more, because a uniform write records a claim without charging a retention slot - so the argument is one step longer. Every distinct uniform buffer implies at least one distinct Binding, charged in the same item iteration just above the uniform loop, so the number of records never exceeds the charged count and that count is what the ceiling bounds. Stated in the arm itself, because it depends on the loop order in check_retention_bound and a reorder would break it silently."
 
 [[exempt]]
@@ -91,33 +91,33 @@ reason = "The unreachable arm of the walk's surface-depth barrier: a depth-carry
 
 [[exempt]]
 file = "crates/rhi/src/vk/pass.rs"
-lines = [1101]
+lines = [1169]
 reason = "The settle arm for an entry that is neither sampled nor targeted. Unreachable by the walk's own construction: an entry is minted either by advance_target, which sets targeted before returning, or by advance_sampling, which either marks the entry sampled or panics the frame away in a refusal - and a refused frame never settles. The arm exists so settle states its answer as a total decision rather than an expect over invariants that live two functions away."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [1313, 1314]
+lines = [1318, 1319]
 reason = "The depthless-adapter arm of the shadow map's refusal, which translates the rendering crate's DepthUnsupported into this crate's own variant rather than reporting it as a texture failure. Unreachable wherever a depth format exists, which is every measuring lane's adapter: the format is chosen at device bring-up from a void query no fault layer can mutate, and the layer's quirk list carries no depthless-adapter quirk either. The sibling arm (any other creation failure) is driven by the R10 fault scenario."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [781]
+lines = [786]
 reason = "The creation-failure propagation on the cutout pipeline's bring-up. Never taken where creation succeeds, which is every measuring lane's adapter: provoking it needs a device refusing a pipeline the sibling paths already build, and the fault layer's quirk list carries no such refusal."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [877]
+lines = [882]
 reason = "The creation-failure propagation on the blended pipeline's bring-up - the same arm the cutout carries above it, for the same reason: no measuring lane's adapter refuses a pipeline its sibling paths already build."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [811, 812, 813]
+lines = [816, 817, 818]
 reason = "A Debug impl writing the renderer's constant name. Calling it needs a live renderer, which needs a device, and a device-bound test that exists to print a constant string would be coverage without a claim; the impl exists so an error context can name the renderer."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [907, 908, 909]
-reason = "The blended renderer's Debug impl - the cutout's twin at 743, exempt for the same reason: a device-bound test that prints a constant string is coverage without a claim."
+lines = [912, 913, 914]
+reason = "The blended renderer's Debug impl - the cutout's twin at 816, exempt for the same reason: a device-bound test that prints a constant string is coverage without a claim."
 
 [[exempt]]
 file = "crates/rhi/src/vk/render_image.rs"
@@ -156,7 +156,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/swapchain.rs"
-lines = [1462]
+lines = [1463]
 reason = "The depthless-adapter side of chain population, where no per-slot depth images are built. Unreachable wherever a depth format exists, which is every measuring lane's adapter."
 
 [[exempt]]

@@ -176,7 +176,12 @@ impl MeshRenderer {
 
     /// The draw for `mesh`, ready to sit in a pass.
     ///
-    /// Every index the mesh holds, in the order the scene pushed them.
+    /// Every index the mesh holds, in the order the scene pushed them —
+    /// and a caller wanting fewer narrows the returned item with
+    /// [`Item::indices`], which is why this layer has no opinion about
+    /// ranges of its own. A scene uploaded as one mesh with its pieces
+    /// in contiguous runs can then be culled or sorted per piece against
+    /// that one buffer.
     #[must_use]
     pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
         Item::new(&self.pipeline).mesh(mesh)

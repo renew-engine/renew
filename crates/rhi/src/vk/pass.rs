@@ -208,6 +208,51 @@ pub enum ClearValue {
     Depth(f32),
 }
 
+/// A slice of a mesh's index list: `count` indices from `first`.
+///
+/// **Why a draw needs to name part of a mesh.** Geometry that changes in
+/// pieces is meshed in pieces — a terrain chunk, a batched sprite atlas,
+/// an instanced crowd — and the pieces are laid out as contiguous runs of
+/// one index list so that replacing one is a splice rather than a new
+/// allocation. Culling, sorting, or fading such a thing per piece then
+/// wants to draw a run and skip its neighbours, which is a `firstIndex`
+/// and an `indexCount` and nothing more: no second mesh, no re-upload, no
+/// copy. Without this the choice is all of the mesh or none of it, and a
+/// caller who wants finer grain has to give up the shared buffer that
+/// made the layout worth having.
+///
+/// A `count` of zero is a draw that records nothing, deliberately
+/// allowed: a caller looping over pieces should not need a branch for
+/// the piece that turned out empty. An empty range starting exactly at
+/// the end of the list is allowed for the same reason — that is where a
+/// running offset lands after the last piece, and the bound is on
+/// [`Self::end`] rather than on `first` so the walk needs no special
+/// case for its own final step. A `first` past the end is refused
+/// whatever the count, because nothing computes that but a bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexRange {
+    /// The first index walked, counted in indices from the list's start.
+    pub first: u32,
+    /// How many indices are walked.
+    pub count: u32,
+}
+
+impl IndexRange {
+    /// `count` indices from `first`.
+    #[must_use]
+    pub const fn new(first: u32, count: u32) -> Self {
+        Self { first, count }
+    }
+
+    /// One past the last index walked, saturating rather than wrapping —
+    /// the contract asserts on this, so it must not itself be the thing
+    /// that loses the overflow it is there to catch.
+    #[must_use]
+    pub const fn end(self) -> u32 {
+        self.first.saturating_add(self.count)
+    }
+}
+
 /// One draw: a pipeline, optionally the geometry it walks, and
 /// optionally this frame's bytes.
 #[derive(Clone, Copy)]
@@ -228,6 +273,15 @@ pub struct Item<'a> {
     /// be pointer-identical under the one-buffer-one-`FrameData` rule
     /// below.
     pub mesh: Option<&'a Mesh>,
+    /// Which slice of [`Item::mesh`]'s index list this draw walks;
+    /// `None` walks all of it.
+    ///
+    /// Present only alongside a mesh, and never reaching past that
+    /// mesh's index count — both refused by the frame contract before
+    /// any GPU call, because a range past the end fetches indices the
+    /// mesh does not own and a range without geometry names a slice of
+    /// nothing.
+    pub indices: Option<IndexRange>,
     /// `FrameData` contained, not forked; room to grow (a
     /// first-instance or vertex-offset field) without touching existing
     /// callers.
@@ -295,6 +349,7 @@ impl<'a> Item<'a> {
         Self {
             pipeline,
             mesh: None,
+            indices: None,
             frame_data: None,
             uniform_data: None,
             push_data: None,
@@ -306,6 +361,14 @@ impl<'a> Item<'a> {
     #[must_use]
     pub fn mesh(mut self, mesh: &'a Mesh) -> Self {
         self.mesh = Some(mesh);
+        self
+    }
+
+    /// Walk only `count` indices from `first` of this item's mesh,
+    /// rather than the whole list. See [`IndexRange`].
+    #[must_use]
+    pub const fn indices(mut self, first: u32, count: u32) -> Self {
+        self.indices = Some(IndexRange::new(first, count));
         self
     }
 
@@ -641,6 +704,11 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOUR
     let Item {
         pipeline: _,
         mesh,
+        // Two integers recorded into the draw call itself. They name a
+        // slice of the mesh above, and retaining that mesh is what keeps
+        // the memory the slice reads alive — a range retains nothing of
+        // its own.
+        indices: _,
         frame_data,
         // Copied into the command stream by the record path's push
         // call, so no allocation outlives `render` — nothing to retain.
@@ -1114,6 +1182,22 @@ impl FrameWalk {
 /// two copies into one region) or a draw that renders differently than
 /// written. The per-item device and format checks stay beside each
 /// target's own device state, where they always were.
+/// The `(index_count, first_index)` a mesh draw records: the item's
+/// slice if it named one, the whole list otherwise.
+///
+/// **Shared so the two record paths cannot drift.** The window and
+/// offscreen targets record the same draw twice, in two files, and a
+/// range honoured by one and ignored by the other would show only as a
+/// picture that differs between a golden test and a real window — the
+/// most expensive shape of bug this crate can have. The contract has
+/// already proved the range fits.
+pub(crate) fn indexed_draw(item: &Item<'_>, mesh: &Mesh) -> (u32, u32) {
+    match item.indices {
+        Some(range) => (range.count, range.first),
+        None => (mesh.inner.index_count, 0),
+    }
+}
+
 pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
     assert!(
         !desc.passes.is_empty(),
@@ -1190,6 +1274,30 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                      end of the mesh",
                     mesh.vertex_stride(),
                     item.pipeline.vertex_stride
+                );
+            }
+            // A slice of an index list only means something when
+            // there is a list. Refused rather than ignored: silently
+            // dropping the range would draw the whole mesh where the
+            // caller asked for a piece of it, which is the quiet wrong
+            // draw this file refuses everywhere else.
+            assert!(
+                item.indices.is_none() || item.mesh.is_some(),
+                "pass {index}: an item names an index range only alongside geometry — a                  range without a mesh slices a list that does not exist"
+            );
+            // Retained, and for the same reason as the stride rule
+            // above: this bounds the fetch. Mesh creation proved every
+            // index in the list is inside the vertex count, which says
+            // nothing about indices past the list's own end — those are
+            // whatever the allocation happens to hold, fetched as
+            // vertices.
+            if let (Some(mesh), Some(range)) = (item.mesh, item.indices) {
+                assert!(
+                    range.end() <= mesh.index_count(),
+                    "pass {index}: an index range must stay inside its mesh — asked for {}                      indices from {} of a {}-index mesh, and the tail reads indices the mesh                      does not own",
+                    range.count,
+                    range.first,
+                    mesh.index_count()
                 );
             }
             // The same presence rule as geometry and depth, plus an
