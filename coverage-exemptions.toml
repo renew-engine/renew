@@ -176,8 +176,8 @@ reason = "The two places a window resize is acted on: rebuilding the crosshair f
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
-lines = [1018, 1019, 1020]
-reason = "Handing a fullscreen request to the live window - the block's brace, its one statement and its close. The decision above it is covered - LoopControl carries the request three-valued, a unit test drives every combination of it, and another drives one through the loop iteration so both conditions on the line above are evaluated. What is left is the one line that touches the windowing crate, and reaching it needs a real window on a real monitor: the harness cannot host the event loop that would produce one, and the runs that do have a window are under a virtual display where nothing asks for fullscreen. Deliberately narrow: the conditions above are NOT exempted, because the loop test reaches them."
+lines = [1018, 1019]
+reason = "Handing a fullscreen request to the live window - its brace and its one statement. The closing brace is reached by every iteration that evaluates the condition, so it is covered and is not listed. The decision above it is covered - LoopControl carries the request three-valued, a unit test drives every combination of it, and another drives one through the loop iteration so both conditions on the line above are evaluated. What is left is the one line that touches the windowing crate, and reaching it needs a real window on a real monitor: the harness cannot host the event loop that would produce one, and the runs that do have a window are under a virtual display where nothing asks for fullscreen. Deliberately narrow: the conditions above are NOT exempted, because the loop test reaches them."
 
 [[exempt]]
 file = "crates/core/platform/src/window.rs"
