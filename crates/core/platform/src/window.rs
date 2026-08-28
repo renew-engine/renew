@@ -241,6 +241,9 @@ pub struct LoopControl {
     /// A change of mind about the cursor, if the app had one this
     /// iteration. `None` leaves the grab as it is.
     cursor: Option<bool>,
+    /// A change of mind about filling the screen, on the same terms as
+    /// the cursor: `None` leaves the window as it is.
+    fullscreen: Option<bool>,
 }
 
 impl LoopControl {
@@ -271,6 +274,41 @@ impl LoopControl {
         self.cursor = Some(held);
     }
 
+    /// Fill the screen, or go back to a window.
+    ///
+    /// **Between events, and for the same reason the cursor is.** An
+    /// application learns whether it wants the screen long after the
+    /// window opened: it is a line in a settings menu and a key on the
+    /// keyboard, and a flag readable only at bring-up gives a player no
+    /// way out of a fullscreen they turned on. That argument is
+    /// [`Self::hold_cursor`]'s, unchanged; it was made there first and
+    /// it applies here exactly.
+    ///
+    /// Borderless, on whichever monitor the window is on. Exclusive
+    /// fullscreen needs a monitor handle and a video mode, which are two
+    /// windowing-library types this seam exists to keep out — see the
+    /// module doc — and nothing has asked for one. A `bool` is what an
+    /// application wants to say.
+    ///
+    /// Idempotent, and asking twice for the same thing costs one call to
+    /// the platform that changes nothing.
+    ///
+    /// **Applied to the live window and not remembered**, which is the
+    /// one way this differs from the cursor beside it. The cursor is
+    /// remembered because focus loss makes the OS drop the grab and the
+    /// loop has to put it back; nothing takes fullscreen away, so there
+    /// is nothing to reapply. The case that would need a memory is a
+    /// surface epoch closing and reopening — and it cannot arise:
+    /// desktop platforms close no epochs (see the module doc), and the
+    /// platform that does is one where the windowing library does not
+    /// support fullscreen at all. Written down because "the request is
+    /// dropped when there is no window" is otherwise a silent hole, and
+    /// the day a platform both closes epochs and honours this is the day
+    /// to give it the cursor's treatment.
+    pub fn set_fullscreen(&mut self, filling: bool) {
+        self.fullscreen = Some(filling);
+    }
+
     /// Whether [`exit`](Self::exit) was called this iteration.
     #[must_use]
     pub fn exiting(&self) -> bool {
@@ -288,6 +326,15 @@ impl LoopControl {
     #[must_use]
     pub fn cursor_request(&self) -> Option<bool> {
         self.cursor
+    }
+
+    /// What the app asked about filling the screen this iteration, if
+    /// anything. Three-valued for the same reason the cursor is: saying
+    /// nothing leaves the window alone, which is a different instruction
+    /// from asking for a window back.
+    #[must_use]
+    pub fn fullscreen_request(&self) -> Option<bool> {
+        self.fullscreen
     }
 }
 
@@ -959,6 +1006,15 @@ impl Adapter<'_> {
             // same thing: a desktop that refuses confinement plays on
             // without mouse look, which is not a failure to report.
             let _refused = self.apply_cursor_grab(held);
+        }
+        if let Some(filling) = control.fullscreen
+            && let Some(window) = self.epoch.window()
+        {
+            // `None` is the windowing library's "the monitor this window
+            // is on", which is the only answer available without naming
+            // one — and naming one would mean a handle crossing this
+            // seam.
+            window.set_fullscreen(filling.then(|| winit::window::Fullscreen::Borderless(None)));
         }
         if control.redraw
             && let Some(window) = self.epoch.window()
@@ -1841,11 +1897,15 @@ mod tests {
     /// The accessors report the fields the loop reads, and a silent
     /// iteration is distinguishable from one that asked for something.
     ///
-    /// **The cursor is three-valued and the other two are not.** Saying
+    /// **Two of the four are three-valued and two are not.** Saying
     /// nothing about the cursor leaves the grab alone, which is a
     /// different instruction from asking for it to be released — so a
     /// reader that collapsed `None` into `false` would turn every quiet
-    /// iteration into a release request.
+    /// iteration into a release request. Fullscreen is the same shape
+    /// for the same reason, and is checked here rather than in a test of
+    /// its own because what is being asserted is a property of this
+    /// type: every request is independent, and a quiet iteration asks
+    /// for nothing.
     #[test]
     fn loop_control_reports_what_was_asked() {
         let quiet = LoopControl::default();
@@ -1873,6 +1933,47 @@ mod tests {
         assert!(
             !released.exiting(),
             "a cursor request must not be read as an exit"
+        );
+
+        // **Fullscreen is three-valued on the same terms**, and saying
+        // nothing about it must not read as asking for a window back —
+        // which is the mistake the cursor's own doc above warns of, in
+        // the one other place this type can make it.
+        assert_eq!(
+            quiet.fullscreen_request(),
+            None,
+            "saying nothing about the screen is not asking for a window back"
+        );
+        let mut screen = LoopControl::default();
+        screen.set_fullscreen(true);
+        assert_eq!(screen.fullscreen_request(), Some(true));
+        screen.set_fullscreen(false);
+        assert_eq!(
+            screen.fullscreen_request(),
+            Some(false),
+            "the last word in an iteration must win, as it does for the cursor"
+        );
+
+        // The three requests are independent: asking for one must not
+        // set another. A single `Option` reused for two questions would
+        // pass every assertion above and fail this one.
+        let mut only_screen = LoopControl::default();
+        only_screen.set_fullscreen(true);
+        assert_eq!(
+            only_screen.cursor_request(),
+            None,
+            "asking for the screen also asked something of the cursor"
+        );
+        assert!(
+            !only_screen.exiting() && !only_screen.redraw_requested(),
+            "asking for the screen also asked to exit or to redraw"
+        );
+        let mut only_cursor = LoopControl::default();
+        only_cursor.hold_cursor(true);
+        assert_eq!(
+            only_cursor.fullscreen_request(),
+            None,
+            "asking for the cursor also asked something of the screen"
         );
     }
 

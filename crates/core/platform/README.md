@@ -125,6 +125,15 @@ datagrams — each a thin, explicit seam.
   a floor is the platform's business, and the three differ. Unsupported
   on iOS, Android and Orbital, where the windowing library ignores it —
   the same way a platform with no notion of a window icon ignores one.
+- **Fullscreen is asked for between events, not at bring-up.**
+  `LoopControl::set_fullscreen` fills the screen or gives a window back,
+  borderless, on whichever monitor the window is on. It is a runtime
+  request for the same reason the cursor grab is one: an application
+  learns whether it wants the screen long after the window opened — it
+  is a line in a settings menu and a key on the keyboard — and a flag
+  readable only at bring-up gives a player no way out of a fullscreen
+  they turned on. Exclusive fullscreen would need a monitor handle and a
+  video mode, two windowing-library types this seam exists to keep out.
 - **No ambient state.** No global clock, no environment reads; everything
   is a value or an explicit call.
 - **Errors carry context** — paths and thread names, in crate-local
