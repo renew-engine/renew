@@ -85,7 +85,7 @@ pub use vk::pass::{
     Pass, PassTarget, RenderDesc, StoreOp, color_attachment,
 };
 pub use vk::pipeline::{
-    AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES,
+    AddressMode, Blend, DepthState, Facing, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES,
     MAX_UNIFORM_BLOCK_BYTES, MeshShaders, PipelineDesc, RenderPipeline, Sampler, SamplerDesc,
     Shaders, TargetFormat, VertexAttribute,
 };
