@@ -343,6 +343,11 @@ pub(crate) fn draw_scene(
         },
         &crate::atlas::pixels(),
         SHADOW_MAP_SIZE,
+        // Both sides, which is what this sample has always drawn. Its
+        // geometry is a voxel shell and would take `Front` happily, but
+        // a sample exists to show the ordinary path and changing what it
+        // draws is not part of adding the option.
+        renew_rhi::Facing::Both,
     )
     .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
