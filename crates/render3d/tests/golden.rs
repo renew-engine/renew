@@ -1831,6 +1831,7 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         texture_extent,
         &white,
         256,
+        renew_rhi::Facing::Both,
     )?;
     let mesh = renderer.upload(&device, &scene)?;
 
@@ -1937,6 +1938,107 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// **The cull mode reaches the lit pass and not the caster, and a
+/// back-wound blocker proves both halves at once.**
+///
+/// `ShadowedCameraRenderer` builds two pipelines over the same meshes.
+/// Giving them one cull mode is the obvious thing and it is wrong: a
+/// shadow map wants every surface that can occlude the *light*, and
+/// which faces those are depends on where the light is, not where the
+/// eye is. Culling the caster by the eye's rule drops occluders and
+/// punches holes in shadows nowhere near the camera.
+///
+/// So the blocker here is wound **backwards** and the renderer is built
+/// `Facing::Front`. Two things must both be true, and each would hide
+/// the other's failure if only one were asked:
+///
+/// * the blocker is **not drawn** — the lit pass culled it,
+/// * its **shadow still falls** on the floor — the caster did not.
+///
+/// The floor is wound the normal way and stays visible throughout, so a
+/// render that drew nothing at all cannot pass either.
+#[test]
+fn the_cull_mode_reaches_the_lit_pass_and_spares_the_caster()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 64;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = renew_rhi::Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.3, [1.0, 1.0, 1.0, 1.0]);
+    // The same blocker as the shadow golden below, with its corners in
+    // the opposite order — the one difference that decides whether a
+    // `Front` pipeline draws it.
+    scene.quad(
+        [
+            [-0.25, 0.0, 0.8],
+            [0.25, 0.0, 0.8],
+            [0.25, -1.0, 0.8],
+            [-0.25, -1.0, 0.8],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let mut light_columns = IDENTITY;
+    light_columns[2][0] = 0.5;
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns).through(Air::CLEAR_BLACK);
+
+    let renderer = ShadowedCameraRenderer::new(
+        &device,
+        TargetFormat::Rgba8Srgb,
+        renew_rhi::Extent {
+            width: 1,
+            height: 1,
+        },
+        &[255, 255, 255, 255],
+        256,
+        renew_rhi::Facing::Front,
+    )?;
+    let mesh = renderer.upload(&device, &scene)?;
+
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let casting = [renderer.caster_item(&mesh, &camera)];
+    let items = [renderer.item(&mesh, &camera)];
+    let passes = [renderer.shadow_pass(&casting), pass(&clear, &items)];
+    target.render(&RenderDesc::new(&passes))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    // Where the blocker's own face would be, if it were drawn: inside
+    // the strip, in the half of the screen it covers.
+    let on_blocker = at(&pixels, SIZE / 2, SIZE / 4);
+    // Its shadow, cast onto the floor beside it.
+    let shadowed = at(&pixels, 11 * SIZE / 16, SIZE / 4);
+    // Open floor, well away from both.
+    let open = at(&pixels, SIZE / 4, 3 * SIZE / 4);
+
+    assert_ne!(
+        open,
+        [255, 0, 255, 255],
+        "the floor is wound the ordinary way and must still be drawn - if this is the clear \
+         colour the render produced nothing and the two claims below are vacuous"
+    );
+    assert_ne!(
+        on_blocker, open,
+        "a back-wound blocker was drawn by a Facing::Front lit pass"
+    );
+    assert_ne!(
+        shadowed, open,
+        "the back-wound blocker cast no shadow, so the caster was culled too - a shadow map \
+         needs the faces the LIGHT sees, not the ones the eye does"
+    );
+    Ok(())
+}
+
 /// **A scene light dims a shadowed world without moving its shadow** —
 /// the thing this path could not do until the light and the light's
 /// matrix fitted in one push block together.
@@ -2015,6 +2117,7 @@ fn a_scene_light_dims_a_shadowed_world_without_moving_its_shadow()
         texture_extent,
         &white,
         256,
+        renew_rhi::Facing::Both,
     )?;
     let mesh = renderer.upload(&device, &scene)?;
     let mut target = device.create_offscreen_target(extent)?;

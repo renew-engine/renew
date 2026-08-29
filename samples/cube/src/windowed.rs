@@ -515,6 +515,7 @@ impl CubeApp {
             },
             &crate::atlas::pixels(),
             crate::render::SHADOW_MAP_SIZE,
+            renew_rhi::Facing::Both,
         )
         .map_err(|error| format!("building the camera pipeline: {error}"))?;
         let grid = self.world.grid();

@@ -96,7 +96,7 @@ reason = "The settle arm for an entry that is neither sampled nor targeted. Unre
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [1318, 1319]
+lines = [1336, 1337]
 reason = "The depthless-adapter arm of the shadow map's refusal, which translates the rendering crate's DepthUnsupported into this crate's own variant rather than reporting it as a texture failure. Unreachable wherever a depth format exists, which is every measuring lane's adapter: the format is chosen at device bring-up from a void query no fault layer can mutate, and the layer's quirk list carries no depthless-adapter quirk either. The sibling arm (any other creation failure) is driven by the R10 fault scenario."
 
 [[exempt]]
@@ -171,7 +171,7 @@ reason = "The determinism emit half past its first child, plus the two arms that
 
 [[exempt]]
 file = "samples/cube/src/windowed.rs"
-lines = [633, 634, 635, 636, 637, 638, 712]
+lines = [634, 635, 636, 637, 638, 639, 713]
 reason = "The two places a window resize is acted on: rebuilding the crosshair for the new shape, and telling the swapchain its new size. Both need a real window-system resize, and the lane that measures coverage has none - its windowed runs happen under a virtual display with no window manager, so the window it opens is the only size it will ever be. Note for anyone running coverage on a desktop: these lines ARE covered there, because a real window manager sends a resize on the way up, and the gate will call this exemption stale. The gate that decides is the headless one. Everything these lines follow from is covered everywhere: record_present drives the recovery from a dormant swapchain with a constructed outcome, the resize event handler is driven with a constructed event, and the crosshair geometry is checked at four aspects without a device."
 
 [[exempt]]
