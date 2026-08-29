@@ -1269,6 +1269,23 @@ impl ShadowedCameraRenderer {
     /// Build the map at `shadow_size` texels square, both pipelines,
     /// and the bindings, uploading `pixels` as the atlas.
     ///
+    /// `facing` chooses which side of a triangle the **lit** pass draws.
+    /// `Facing::Both` is what this renderer has always done and is the
+    /// right answer for anything a viewer may see from behind. Geometry
+    /// that is a closed solid — a voxel world's outer shell, a set of
+    /// boxes — pays for its own backs under `Both`: every triangle
+    /// turned away from the camera is rasterised, shaded and depth
+    /// tested before being discarded. `Facing::Front` drops them at the
+    /// rasteriser instead, for free.
+    ///
+    /// **Only if the geometry is wound consistently outward.** A single
+    /// triangle wound the other way disappears the moment this is
+    /// anything but `Both`, and disappears *from one side only*, which
+    /// is a fault that looks like correct rendering half the time.
+    ///
+    /// The **caster** pass is not affected, deliberately — see the
+    /// comment where the two pipelines are built.
+    ///
     /// # Errors
     ///
     /// As [`TexturedCameraRenderer::new`], plus the shadow map's own
@@ -1283,6 +1300,7 @@ impl ShadowedCameraRenderer {
         extent: renew_rhi::Extent,
         pixels: &[u8],
         shadow_size: u32,
+        facing: renew_rhi::Facing,
     ) -> Result<Self, Render3dError> {
         let texture = device
             .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
@@ -1329,11 +1347,24 @@ impl ShadowedCameraRenderer {
                 .push_constant_size(SHADOW_PUSH_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
+        // **The lit pass takes the caller's cull mode; the caster above
+        // deliberately does not.** They draw the same meshes, so the
+        // temptation is to give them the same state — and it would be
+        // wrong. A shadow map wants every surface that can occlude
+        // light, and which faces those are depends on where the *light*
+        // is, not on where the eye is. Culling the caster by the eye's
+        // rule drops occluders the light can see and punches holes in
+        // shadows that are nowhere near the camera. Culling it by the
+        // light's rule is a real technique — front-face culling is how
+        // peter-panning is usually cured — but it is a *different*
+        // choice with a different failure mode, and folding it into this
+        // argument would make one flag mean two things.
         let lit = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_SHADOW, format, LAYOUT)
                 .push_constant_size(SHADOW_PUSH_BYTES)
                 .uniform_block(AIR_BYTES)
                 .sampled_bindings(2)
+                .facing(facing)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
         let air_binding = air_binding(device)?;

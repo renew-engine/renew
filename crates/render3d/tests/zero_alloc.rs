@@ -120,6 +120,7 @@ fn the_steady_state_shadowed_frame_allocates_nothing() {
         texture_extent,
         &white,
         SHADOW_MAP,
+        renew_rhi::Facing::Both,
     ) {
         Ok(renderer) => renderer,
         Err(Render3dError::DepthUnsupported { chain })

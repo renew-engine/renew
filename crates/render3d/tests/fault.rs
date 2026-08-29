@@ -27,7 +27,9 @@ use renew_render3d::{
     CameraRenderer, MeshRenderer, Render3dError, Scene, ShadowedCameraRenderer,
     TexturedCameraRenderer, TexturedMeshRenderer,
 };
-use renew_rhi::{Device, DeviceDesc, DeviceError, Extent, TargetError, TargetFormat, Validation};
+use renew_rhi::{
+    Device, DeviceDesc, DeviceError, Extent, Facing, TargetError, TargetFormat, Validation,
+};
 
 /// The CI lane sets this: a skip becomes a failure.
 fn strict() -> bool {
@@ -271,12 +273,25 @@ fn textured_constructors_report_their_own_failures() {
     // second proves the lit one's. A constructor that built them in
     // the other order, or that ignored the first result, would pass
     // one of these and fail the other.
+    // One construction, named once: the same six arguments appear at
+    // every arm below, and `cargo fmt` splits them over eight lines
+    // apiece.
+    let shadowed = |device: &Device| {
+        ShadowedCameraRenderer::new(
+            device,
+            TargetFormat::Rgba8Srgb,
+            small,
+            &WHITE,
+            64,
+            Facing::Both,
+        )
+    };
     for (label, ordinal) in [("R8", 1u32), ("R9", 2)] {
         arm(&format!(
             "vkCreateGraphicsPipelines=ERROR_OUT_OF_HOST_MEMORY@{ordinal}"
         ));
         let device = new_device().expect("the device should come up with only a pipeline armed");
-        match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, small, &WHITE, 64) {
+        match shadowed(&device) {
             Err(error @ Render3dError::Pipeline(_)) => {
                 assert!(
                     error.to_string().starts_with("building the mesh pipeline:"),
@@ -296,7 +311,7 @@ fn textured_constructors_report_their_own_failures() {
     // at the atlas, which is fine.
     arm("vkCreateImage=ERROR_OUT_OF_HOST_MEMORY@2");
     let device = new_device().expect("device for R10");
-    match ShadowedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, small, &WHITE, 64) {
+    match shadowed(&device) {
         Err(error @ Render3dError::Texture(_)) => {
             assert!(
                 error.to_string().starts_with("creating the texture:"),

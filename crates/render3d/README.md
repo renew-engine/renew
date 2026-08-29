@@ -29,6 +29,12 @@ mesh comes out, and a draw item goes into a frame the caller composes.
   brightly the scene is lit.
   One record for both, so the map cannot be written with one light and
   sampled with another; the caster simply reads fewer of its members.
+  `new` takes a `Facing` for the **lit** pass, so closed-solid geometry
+  can stop paying to rasterise its own backs; the caster deliberately
+  keeps both sides, because a shadow map wants the faces the *light*
+  sees and culling it by the eye's rule punches holes in shadows nowhere
+  near the camera. `Facing::Both` is what it has always done, and the
+  right answer for anything a viewer may see from behind.
   The light's fourth row is not carried: an orthographic projection over
   a rigid view is affine, so that row is exactly `(0, 0, 0, 1)` and both
   shaders write a literal one. Those sixteen bytes are what let a scene
