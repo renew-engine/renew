@@ -26,11 +26,11 @@
 //!   corners on every platform. A region that is ever turned owes a
 //!   one-texel transparent gutter ([`Region`]).
 //!
-//! The pure half ([`Canvas`], [`Region`], [`Sprite`], [`Instance`], the
-//! corner transform, the turn's sine and cosine, the ortho and UV maps)
-//! lives apart from the device half ([`SpriteRenderer`]) so the math is
-//! testable without a GPU and the rendering-crate seam stays one module
-//! wide.
+//! The pure half ([`Canvas`], [`Region`], [`SubRegion`], [`Sprite`],
+//! [`Instance`], the corner transform, the turn's sine and cosine, the
+//! ortho and UV maps) lives apart from the device half
+//! ([`SpriteRenderer`]) so the math is testable without a GPU and the
+//! rendering-crate seam stays one module wide.
 
 // Diagnostics go through sinks; the standard output macros are banned in
 // this crate by construction, not convention.
@@ -39,5 +39,5 @@
 mod fill;
 mod gpu;
 
-pub use fill::{Canvas, Instance, Region, Sprite};
+pub use fill::{Canvas, Instance, Region, Sprite, SubRegion};
 pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer};
