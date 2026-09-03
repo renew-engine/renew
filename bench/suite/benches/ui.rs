@@ -3,12 +3,25 @@
 //! order of magnitude past any menu the samples draw, so the numbers
 //! bound a real document rather than flatter a toy.
 //!
-//! Four costs, in the order a running game meets them: solving a tree
-//! from cold, re-solving after one node's layout changed, re-solving
-//! after a colour-only flip (today identical to the layout re-solve,
-//! recorded so the state-table work can show the drop when colour
-//! stops dirtying layout), and capturing the solved tree into the
-//! presenter's snapshot pair.
+//! Five costs, in the order a running game meets them: solving a tree
+//! from cold, re-solving after one node's layout changed, wearing a
+//! colour-only state patch, capturing the solved tree into the
+//! presenter's snapshot pair, and blending that pair into the frame's
+//! quads.
+//!
+//! **The frame blend had no number until now**, which mattered:
+//! presentation is the half a visual vocabulary grows — a node that
+//! can carry an image, a nine-slice or a label emits more quads and
+//! cuts a source rectangle as well as a destination one — and a change
+//! is only measurable against a before. `ui_frame_1024` is that
+//! before, taken while a node is still one white quad.
+//!
+//! **`emit` is deliberately not benched.** It pushes into a
+//! `SpriteRenderer`, which uploads an atlas and builds a pipeline, so
+//! timing it means a GPU device and a dependency this suite does not
+//! have (section 11 presumes a new dependency rejected). `frame` is
+//! the whole of the CPU work `emit` does before the push, so the
+//! number that moves when presentation grows is the one here.
 //!
 //! The allocation gates for these paths do not live here: the tree
 //! commits to zero steady-state allocation in its own crate's
@@ -17,9 +30,14 @@
 //! times what those tests already gate.
 
 use std::hint::black_box;
+use std::num::NonZeroU64;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use renew_ui::{Align, Direction, Fixed, Size, Style, Ui, UiLimits};
+use renew_math::Alpha;
+use renew_ui::{
+    Align, Direction, Fixed, NO_PATCH, STATE_COMBINATIONS, Size, StatePatch, Style, Ui, UiEvent,
+    UiLimits,
+};
 use renew_ui_render::UiPresenter;
 
 /// Nodes in the benched tree: one root, `ROWS` rows, the rest split
@@ -31,6 +49,10 @@ const PER_ROW: u32 = (NODES - 1 - ROWS) / ROWS;
 
 /// The viewport every solve answers for.
 const VIEW: (i32, i32) = (1280, 720);
+
+/// A two-tick step, for the halfway blend. Built up from `MIN`, which
+/// is one, so the constant carries no panic path.
+const TWO: NonZeroU64 = NonZeroU64::MIN.saturating_add(1);
 
 /// A tree of exactly [`NODES`] nodes, styled so the solver's paths
 /// all run: rows grow by weight into the column's leftover height,
@@ -146,32 +168,57 @@ fn ui_benches(c: &mut Criterion) {
         });
     });
 
-    // A colour-only flip: geometry is untouched, and today the tree
-    // re-solves anyway — one dirty flag, no damage classes. This
-    // number exists to be compared against `re_solve_one_dirty_1024`
-    // now (they should match) and against itself when styling stops
-    // dirtying layout (it should collapse).
+    // A colour-only flip, through the mechanism that exists for it.
+    //
+    // **This benchmark used to call `set_style`**, which replaces the
+    // authored base and dirties layout unconditionally — so the line
+    // measured a full re-solve and could never show the drop it was
+    // written to watch, whatever the state tables did. It wears a
+    // pooled patch now, flipped by moving the pointer on and off the
+    // leaf, which is what a hovered button actually does: `wear` swaps
+    // one resolved style, and a patch whose `touches_layout` is false
+    // must leave `layout_passes` where it was.
     c.bench_function("ui_state_flip_colour_1024", |b| {
         let mut ui = build_tree();
         solve(&mut ui);
         let leaf = last_leaf(&ui);
-        let mut lit = false;
+        let base = ui.base_style(leaf).unwrap_or_default();
+        // One patch: the same box, a different colour. Geometry is
+        // untouched, so it declares itself layout-free.
+        let lit = StatePatch {
+            style: Style {
+                background: [90, 120, 200, 255],
+                ..base
+            },
+            touches_layout: false,
+        };
+        assert!(ui.set_patch_pool(vec![lit]), "the pool was refused");
+        let mut table = [NO_PATCH; STATE_COMBINATIONS];
+        // Every combination carrying the hover bit wears the patch.
+        for (bits, entry) in table.iter_mut().enumerate() {
+            if u8::try_from(bits).unwrap_or(0) & renew_ui::STATE_HOVER != 0 {
+                *entry = 0;
+            }
+        }
+        assert!(ui.set_state_table(leaf, table), "the table was refused");
+        solve(&mut ui);
+        // On the leaf, and far away from it: the two pointer positions
+        // the flip alternates between.
+        // Pointer coordinates are whole physical pixels, so the centre
+        // is taken in the integer space `contains` compares in.
+        let rect = ui.rect(leaf).unwrap_or_default();
+        let mid = |edge: Fixed, span: Fixed| {
+            let low = edge.trunc_int();
+            let high = (edge + span).trunc_int();
+            i32::try_from(i64::midpoint(low, high)).unwrap_or(0)
+        };
+        let on = (mid(rect.x, rect.width), mid(rect.y, rect.height));
+        let off = (-1, -1);
+        let mut hovered = false;
         b.iter(|| {
-            lit = !lit;
-            let background = if lit {
-                [90, 120, 200, 255]
-            } else {
-                [40, 44, 52, 230]
-            };
-            ui.set_style(
-                leaf,
-                Style {
-                    width: Size::Px(Fixed::from_int(8)),
-                    height: Size::Px(Fixed::from_int(10)),
-                    background,
-                    ..Style::default()
-                },
-            );
+            hovered = !hovered;
+            let (x, y) = if hovered { on } else { off };
+            ui.handle(UiEvent::PointerMoved { x, y });
             solve(&mut ui);
             black_box(ui.rect(leaf));
         });
@@ -187,6 +234,38 @@ fn ui_benches(c: &mut Criterion) {
         presenter.advance(&ui);
         b.iter(|| {
             presenter.advance(black_box(&ui));
+        });
+    });
+
+    // The frame blend: the snapshot pair interpolated, clipped to
+    // ancestor boxes and turned into quads, at the display rate rather
+    // than the tick rate — so a 144 Hz screen pays this more often than
+    // anything else in this file.
+    //
+    // Drained, because the work is in the iterator: `frame` returns a
+    // lazy walk and a caller that does not consume it measures a
+    // function call. The half-alpha is the honest case — every position
+    // and tint is a live blend of two snapshots rather than a copy of
+    // one.
+    c.bench_function("ui_frame_1024", |b| {
+        let mut ui = build_tree();
+        solve(&mut ui);
+        let mut presenter = UiPresenter::new(NODES);
+        // Two advances, so the pair holds two distinct snapshots and
+        // the blend has something to interpolate between.
+        presenter.advance(&ui);
+        presenter.advance(&ui);
+        // Exactly halfway between the pair: one tick's remainder over a
+        // two-tick step, so the blend is a real interpolation rather
+        // than a copy of either snapshot.
+        let alpha = Alpha::new(1, TWO);
+        b.iter(|| {
+            let mut quads = 0u32;
+            for quad in presenter.frame(black_box(alpha)) {
+                black_box(&quad);
+                quads += 1;
+            }
+            black_box(quads);
         });
     });
 }
