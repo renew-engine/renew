@@ -60,6 +60,21 @@ const TWO: NonZeroU64 = NonZeroU64::MIN.saturating_add(1);
 /// content, gaps and cross-axis centring exercise arrangement. Built
 /// dirty; the caller decides when the first solve happens.
 fn build_tree() -> Ui {
+    build_tree_with(OverflowS::Contained)
+}
+
+/// Whether the leaves fit inside their row, or stand out of it.
+///
+/// A leaf taller than its row is clipped top and bottom by the row's
+/// own box, which is how the presenter's cut path is reached without
+/// inventing a scroll container the solver does not have yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OverflowS {
+    Contained,
+    LeavesOverflowTheirRow,
+}
+
+fn build_tree_with(overflow: OverflowS) -> Ui {
     let mut ui = Ui::new(UiLimits { nodes: NODES });
     let root = ui.root();
     ui.set_style(
@@ -85,6 +100,13 @@ fn build_tree() -> Ui {
                 // past the leaves' content that their own growers get
                 // leftover to split too.
                 width: Size::Px(Fixed::from_int(1000)),
+                // Fixed and short in the overflow shape, so the taller
+                // leaves inside genuinely stand out of it.
+                height: if overflow == OverflowS::Contained {
+                    Size::Auto
+                } else {
+                    Size::Px(Fixed::from_int(20))
+                },
                 grow: 1 + row % 3,
                 gap: Fixed::from_int(1),
                 align_cross: Align::Center,
@@ -99,7 +121,11 @@ fn build_tree() -> Ui {
                 leaf,
                 Style {
                     width: Size::Px(Fixed::from_int(8 + i32::try_from(child % 5).unwrap_or(0))),
-                    height: Size::Px(Fixed::from_int(10)),
+                    height: Size::Px(Fixed::from_int(if overflow == OverflowS::Contained {
+                        10
+                    } else {
+                        40
+                    })),
                     grow: child % 2,
                     background: [40, 44, 52, 230],
                     ..Style::default()
@@ -270,5 +296,32 @@ fn ui_benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, ui_benches);
+fn ui_clipped_benches(c: &mut Criterion) {
+    // The same blend, with the cut path taken.
+    //
+    // Every leaf is forty pixels tall inside a twenty-pixel row, so
+    // the row's own box cuts it top and bottom: 992 of the 1,024
+    // nodes take the proportional path while the 32 rows and the root
+    // take the early-out. Subtracting `ui_frame_1024` and dividing by
+    // 992 gives the added cost of a cut, which is the number the
+    // clipping work is answerable for.
+    c.bench_function("ui_frame_clipped_1024", |b| {
+        let mut ui = build_tree_with(OverflowS::LeavesOverflowTheirRow);
+        solve(&mut ui);
+        let mut presenter = UiPresenter::new(NODES);
+        presenter.advance(&ui);
+        presenter.advance(&ui);
+        let alpha = Alpha::new(1, TWO);
+        b.iter(|| {
+            let mut quads = 0u32;
+            for quad in presenter.frame(black_box(alpha)) {
+                black_box(&quad);
+                quads += 1;
+            }
+            black_box(quads);
+        });
+    });
+}
+
+criterion_group!(benches, ui_benches, ui_clipped_benches);
 criterion_main!(benches);
