@@ -48,8 +48,12 @@ else, which the build matrix proves by building and testing without it.
   here is zero.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
   (premultiplied blending, nearest/clamped sampling) and the per-frame
-  buffer; `begin`/`push` fill; `item` is the frame's draw, for a pass
-  the caller composes with `renew_rhi::color_attachment(clear)`:
+  buffer; `begin`/`push` fill; `set_offset` and `set_alpha` move and
+  fade every sprite pushed after them, so a whole group slides or
+  dissolves without the code that builds each sprite knowing (the fade
+  scales all four premultiplied channels, and `begin` resets both);
+  `item` is the frame's draw, for a pass the caller composes with
+  `renew_rhi::color_attachment(clear)`:
 
   ```rust
   let color = [renew_rhi::color_attachment(SKY)];
@@ -66,9 +70,12 @@ exists anywhere in the crate.
 
 Unit tests pin the maps (all four canvas corners, exact) and the packed
 bytes against hand-written records; a property test holds the ortho map
-monotone, corner-exact, and invertible over random canvases. A computed
-image oracle proves placement, region selection, and fill-order
-overwrite byte-exactly on every adapter; a committed golden proves the
+monotone, corner-exact, and invertible over random canvases, and two
+more hold the batch fade to the premultiplied rule (every channel by
+the same factor, composing to the product, never brightening) and the
+batch offsets to adding. A computed image oracle proves placement,
+region selection, fill-order overwrite and the batch offset byte-exactly
+on every adapter; a committed golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed
