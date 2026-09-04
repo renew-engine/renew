@@ -133,6 +133,8 @@ pub struct SpriteRenderer {
     max_sprites: u32,
     canvas: Canvas,
     atlas_extent: Extent,
+    offset: (f32, f32),
+    alpha: f32,
 }
 
 impl SpriteRenderer {
@@ -186,6 +188,8 @@ impl SpriteRenderer {
             max_sprites: max_sprites.get(),
             canvas,
             atlas_extent: atlas.extent,
+            offset: (0.0, 0.0),
+            alpha: 1.0,
         })
     }
 
@@ -197,6 +201,58 @@ impl SpriteRenderer {
     /// empty frame.
     pub fn begin(&mut self) {
         self.count = 0;
+        // The offset and the fade reset with the fill. They are state
+        // that changes what a later call draws, and state that
+        // outlives the frame that set it is the kind a caller forgets
+        // to clear exactly once and then cannot find.
+        self.offset = (0.0, 0.0);
+        self.alpha = 1.0;
+    }
+
+    /// Move every sprite pushed after this by (`x`, `y`) logical
+    /// pixels.
+    ///
+    /// Lets a caller slide a whole group — a panel, a page, a row of
+    /// cards — without threading an offset through the code that
+    /// builds each sprite. Set it back to `(0.0, 0.0)` when the group
+    /// ends; [`Self::begin`] does that for the next fill.
+    pub fn set_offset(&mut self, x: f32, y: f32) {
+        self.offset = (x, y);
+    }
+
+    /// The offset every later push is moved by.
+    #[must_use]
+    pub fn offset(&self) -> (f32, f32) {
+        self.offset
+    }
+
+    /// Fade every sprite pushed after this to `alpha` of its opacity,
+    /// clamped to `0.0..=1.0`.
+    ///
+    /// # Panics
+    ///
+    /// On a NaN `alpha`. `f32::clamp` passes NaN straight through, so
+    /// an unguarded clamp would multiply it into all four channels of
+    /// every later sprite and draw nothing, frame after frame, with no
+    /// error anywhere — a silent wrong picture rather than a named
+    /// refusal. Infinities need no such guard: they clamp.
+    ///
+    /// **The tint is premultiplied, so this scales all four channels
+    /// and not just the fourth.** In premultiplied RGBA the colour
+    /// already carries its own alpha, so halving only the alpha leaves
+    /// the colour arriving at full strength while occluding less — the
+    /// group brightens as it fades, which is the opposite of the
+    /// intent. Scaling the whole tuple is what "half as opaque" means
+    /// under this convention, and the convention is the crate's, end
+    /// to end.
+    pub fn set_alpha(&mut self, alpha: f32) {
+        self.alpha = fill::fade(alpha);
+    }
+
+    /// The fade every later push is multiplied by.
+    #[must_use]
+    pub fn alpha(&self) -> f32 {
+        self.alpha
     }
 
     /// Append `sprite`; it draws over everything pushed before it.
@@ -218,7 +274,13 @@ impl SpriteRenderer {
             "sprite capacity {} exceeded; size the renderer for its scene",
             self.max_sprites
         );
-        let packed = fill::pack(sprite, self.canvas, self.atlas_extent);
+        // Applied here rather than by the caller, which is the whole
+        // point: the code that builds a sprite should not have to know
+        // whether the group it belongs to is mid-slide. The arithmetic
+        // lives in `fill::placed` so it can be checked without a
+        // device.
+        let moved = fill::placed(sprite, self.offset, self.alpha);
+        let packed = fill::pack(&moved, self.canvas, self.atlas_extent);
         let offset = self.count as usize * fill::INSTANCE_STRIDE;
         self.scratch[offset..offset + fill::INSTANCE_STRIDE].copy_from_slice(&packed);
         self.count += 1;
