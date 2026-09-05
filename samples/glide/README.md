@@ -52,6 +52,18 @@ burst is seeded from the tick the run stood at when its pool was made,
 so replaying the trace draws the same sparks in the same places; the
 picture is a function of the run, not of when it was rendered.
 
+**A spark trail follows the living bird**, shed backwards off its
+trailing edge for as long as it is flying and stopping on the tick it
+dies. It is the same kind of light as the crash — added to the sky,
+hiding nothing — out of the same one pipeline, but it is its own effect
+rather than the crash's aimed sideways: an explosion throws hard and
+wide and falls fast, a trail is dropped gently and lags behind, and one
+set of numbers cannot be both. It is also its own pool. Sharing the
+crash's would have let a trail that happened to be full on the tick the
+bird died silently shorten the burst, because a pool that is out of room
+drops what it cannot fit without saying so — and the crash is the one
+moment in this game that has to look right.
+
 ## Running it
 
 ```
@@ -66,11 +78,13 @@ Every run prints one digest line last; two runs with the same seed,
 trace and length print bit-identical lines, cross-process, and the
 test suite holds that.
 
-The library also exposes `world_at(trace, tick)` — the same replay
-loop the runs use, promoted so image oracles need not copy it — and a
-pure `scene` module that turns a world into draw-order rectangles with
-no GPU crate in the normal graph. The frame-capture test consumes
-both: committed traces replayed to a checkpoint, drawn through the
+The library also exposes `world_at(trace, tick)` and its sibling
+`drawn_at(trace, tick)`, which returns the presentation effects beside
+the world — the same replay loop the runs use, promoted so image
+oracles need not copy it — and a pure `scene` module that turns a
+world into draw-order rectangles with no GPU crate in the normal
+graph. The frame-capture test consumes both: committed traces
+replayed to a checkpoint, drawn through the
 sprite renderer offscreen, compared against committed images. The GPU
 crates enter the normal graph only behind the `window` feature (and
 the dev graph for the oracle); the default build carries none of
@@ -209,16 +223,26 @@ synthetic clock, and owns every file that is read or written.
 Traces index events by tick from zero, exactly as the loader returns
 them; there is no frame-numbering shift anywhere in this sample.
 
-The crash sparks are **presentation state**, like the snapshots the
-blended picture interpolates: a particle pool seeded from the tick and
-advanced once per executed step, watching the world for the one moment
-liveness falls. It reads the world and never writes it, so the digest is
-the same whether or not anything is drawing — which the driver's tests
-assert either side of a burst rather than leave to inspection. Seeding
-from the tick is what makes the sparks a function of the replay, so the
-same trace draws the same burst on any machine. The pool's arithmetic
-needs no GPU, so it lives in the game's ordinary dependencies and the
-headless build carries it without a rendering crate in sight.
+The sparks are **presentation state**, like the snapshots the blended
+picture interpolates: two particle pools seeded from the tick and
+advanced once per executed step, one watching the world for the moment
+liveness falls and one shedding for as long as it has not. They read the
+world and never write it, so the digest is the same whether or not
+anything is drawing — which the driver's tests assert either side of a
+burst rather than leave to inspection. Seeding from the tick is what
+makes the sparks a function of the replay, so the same trace draws the
+same sparks on any machine; the two pools draw from separate streams, so
+how long the bird flew before it died cannot change what the crash looks
+like. The pools' arithmetic needs no GPU, so they live in the game's
+ordinary dependencies and the headless build carries them without a
+rendering crate in sight.
+
+Because the trail is accumulated over a whole flight rather than implied
+by the world's final state, an image oracle cannot rebuild it from a
+finished world — so `drawn_at(trace, tick)` returns the pools the run
+actually accumulated beside the world, out of the same replay loop the
+runs use. That is the same reason `world_at` was promoted rather than
+copied: one loop, however many consumers.
 
 The picture is drawn on a 320x240 canvas, and the window presents that
 canvas stretched to whatever size the window is. A turn is isotropic on

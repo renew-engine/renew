@@ -14,7 +14,7 @@
 //! no GPU type crosses it, and the sample's headless build carries the
 //! pool without carrying a renderer.
 
-use renew_particles::{EffectDesc, ParticleSystem, Shape, VelocityCone};
+use renew_particles::{EffectDesc, Emitter, ParticleSystem, Shape, VelocityCone};
 use renew_rng::{Seed, StreamId};
 use renew_sample_glide_world::World;
 
@@ -73,15 +73,84 @@ fn effect() -> EffectDesc {
     }
 }
 
-/// The game's presentation-side effects: one pool, and the liveness it
-/// watches for the edge that fires it.
+/// How many sparks a second the living bird sheds.
+///
+/// Forty-five a second against a sixtieth-of-a-second step is three
+/// sparks every four ticks, which reads as a stream rather than as a
+/// row of separate dots, and leaves the trail well inside its pool.
+const TRAIL_PER_SECOND: f32 = 45.0;
+
+/// The trail effect: a thin stream of embers shed backwards by a bird
+/// that is still flying.
+///
+/// **Its own description, not the crash's.** The two are the same kind
+/// of light and nothing else: an explosion throws hard and wide and
+/// falls fast, a trail is dropped gently and lags behind. Reusing
+/// [`effect`] here would have shed the crash's spray — up the screen at
+/// forty to a hundred and twenty units a second under three times the
+/// world's gravity — off a bird in level flight, which is not a trail,
+/// it is a bird on fire.
+///
+/// Alpha is zero at both ends of the ramp, for the same reason and with
+/// the same consequence as the crash: these are light, added to the sky
+/// rather than painted over it.
+#[must_use]
+fn trail_effect() -> EffectDesc {
+    EffectDesc {
+        capacity: crate::scene::TRAIL_CAPACITY,
+        // Short: an ember is meant to be behind the bird, not halfway
+        // across the canvas. The longest life here is what decides
+        // whether the trail is still in the air at the crash
+        // checkpoint, six ticks after the death.
+        lifetime: (0.2, 0.45),
+        velocity: VelocityCone {
+            // Backwards. The bird's column is fixed and the world
+            // scrolls past it, so "behind" is screen-left.
+            axis: [-1.0, 0.0, 0.0],
+            // Narrow, so the stream stays a stream.
+            spread: 0.25,
+            speed: (10.0, 30.0),
+        },
+        // Gentle, about the world's own pull: an ember sags, it does
+        // not dive.
+        gravity: [0.0, 60.0, 0.0],
+        drag_per_step: 0.97,
+        size: (2.0, 0.5),
+        // Dimmer than the crash at both ends — a trail that matched the
+        // burst would make the death invisible, because the frame would
+        // already be full of that light.
+        color: ([0.6, 0.5, 0.25, 0.0], [0.15, 0.05, 0.0, 0.0]),
+        // Unused on the sprite path, as in `effect`.
+        tile: [0.0; 4],
+        angle: (0.0, 1.0),
+        spin: (-1.0, 1.0),
+    }
+}
+
+/// The game's presentation-side effects: two pools, and the liveness
+/// that decides which of them is running.
 ///
 /// A struct rather than a bare pool because the burst is an **edge**,
 /// not a state: it fires on the step where the bird stops being alive,
-/// and nothing else in the sample knows that edge has passed.
+/// and nothing else in the sample knows that edge has passed. The trail
+/// is the complement — a **state**, running for exactly as long as the
+/// bird is alive.
+///
+/// **Why two pools rather than one bigger one.** [`ParticleSystem`]
+/// saturates at capacity: `burst_in` spawns `count.min(room)` and drops
+/// the rest without a word. Emitting the trail into the crash's pool
+/// would therefore let a trail that happened to be full on the tick the
+/// bird died silently shorten the crash burst — the single moment in
+/// this game that has to look right. It would also cost the crash tests
+/// their meaning, since `live` could no longer answer "how much of the
+/// burst is in the air" without knowing how much of the trail was.
+/// Two pools cost one extra system and one extra stream, and remove the
+/// coupling entirely rather than sizing around it.
 #[derive(Debug)]
 pub struct Effects {
     sparks: ParticleSystem,
+    trail: ParticleSystem,
+    emitter: Emitter,
     was_alive: bool,
 }
 
@@ -105,6 +174,18 @@ impl Effects {
                 Seed::from_u64(world.tick()),
                 StreamId::from_name("sparks"),
             ),
+            // The same seed, a different stream. Two pools drawing from
+            // one stream would interleave: how many numbers the trail
+            // happened to have taken would decide what the crash looked
+            // like, so the burst would change with the length of the
+            // flight that preceded it. Separate streams make each pool a
+            // function of the seed alone.
+            trail: ParticleSystem::new(
+                &trail_effect(),
+                Seed::from_u64(world.tick()),
+                StreamId::from_name("trail"),
+            ),
+            emitter: Emitter::new(TRAIL_PER_SECOND),
             was_alive: world.alive(),
         }
     }
@@ -125,10 +206,11 @@ impl Effects {
         reason = "canvas units are bounded by the view constants, far below f32's exact range — the same allowance the scene module carries for the same numbers"
     )]
     pub fn observe(&mut self, world: &World) {
+        let half = BIRD_HALF as f32;
+        let centre_x = BIRD_X as f32;
+        let centre_y = world.bird_y_units() as f32;
+
         if self.was_alive && !world.alive() {
-            let half = BIRD_HALF as f32;
-            let centre_x = BIRD_X as f32;
-            let centre_y = world.bird_y_units() as f32;
             self.sparks.burst_in(
                 Shape::Box {
                     min: [centre_x - half, centre_y - half, 0.0],
@@ -138,20 +220,59 @@ impl Effects {
                 BURST,
             );
         }
-        // A fixed step, matching the world's own cadence: the pool ages
+
+        // The trail runs on liveness as a state, not on an edge: it
+        // sheds while the bird is flying and stops on the tick it is
+        // not. `alive` is read from the world just stepped, so the tick
+        // the bird dies sheds nothing and the burst has that frame to
+        // itself.
+        if world.alive() {
+            // Along the bird's trailing edge — its screen-left side,
+            // since the column is fixed and the world scrolls past it.
+            // A segment rather than a point so the stream has the
+            // bird's height and does not look like it comes out of one
+            // spot.
+            let trailing_x = centre_x - half;
+            self.trail.burst_in(
+                Shape::Segment {
+                    from: [trailing_x, centre_y - half, 0.0],
+                    to: [trailing_x, centre_y + half, 0.0],
+                },
+                [-1.0, 0.0, 0.0],
+                self.emitter.advance(1.0 / 60.0),
+            );
+        }
+
+        // A fixed step, matching the world's own cadence: the pools age
         // by the simulation's clock, never by the frame's.
         self.sparks.step(1.0 / 60.0);
+        self.trail.step(1.0 / 60.0);
         self.was_alive = world.alive();
     }
 
-    /// How many sparks are in the air.
+    /// How many **crash** sparks are in the air.
     ///
     /// Public so a test can assert the burst happened before it looks
     /// for it in a picture — a golden over an empty pool would pass
     /// vacuously.
+    ///
+    /// **The burst only.** The trail is counted by [`Effects::trail_live`]
+    /// and deliberately not folded in here: every test that reasons
+    /// about the burst — that it fires once, that it throws its whole
+    /// count, that nothing fires before the death — needs a number that
+    /// the flight preceding the crash cannot move.
     #[must_use]
     pub fn live(&self) -> u32 {
         self.sparks.live()
+    }
+
+    /// How many trail sparks are in the air.
+    ///
+    /// The trail's counterpart to [`Effects::live`], separate for the
+    /// reason given there.
+    #[must_use]
+    pub fn trail_live(&self) -> u32 {
+        self.trail.live()
     }
 
     /// Append every live spark to `out`, in pool order, as sprites.
@@ -164,8 +285,27 @@ impl Effects {
     /// A spark's rectangle is centred on its position, because a
     /// particle's position is its centre and a sprite's is its
     /// top-left corner.
+    ///
+    /// # Contract
+    ///
+    /// **The trail is appended first and the burst last**, so the last
+    /// [`Effects::live`] sprites of what this call adds are the crash
+    /// sparks. Both are additive light, so the order changes no pixel;
+    /// it is fixed because a test reads the burst back out of a filled
+    /// vector and needs to know where it is, and an order that held only
+    /// by accident would make that test quietly wrong the day it
+    /// changed.
     pub fn fill(&self, out: &mut Vec<SceneSprite>) {
-        for particle in self.sparks.particles() {
+        Self::fill_from(&self.trail, out);
+        Self::fill_from(&self.sparks, out);
+    }
+
+    /// Append one pool's live particles to `out`.
+    ///
+    /// Shared by both pools: a trail spark and a crash spark differ in
+    /// the effect that made them, never in how they are drawn.
+    fn fill_from(pool: &ParticleSystem, out: &mut Vec<SceneSprite>) {
+        for particle in pool.particles() {
             let size = particle.size;
             out.push(SceneSprite {
                 tile: Tile::Spark,
@@ -325,6 +465,18 @@ mod tests {
     /// Probed by seeding from a constant instead of `world.tick()`: red
     /// here, and green in every other test in this crate — which is the
     /// gap this test exists to close.
+    ///
+    /// **Why it compares the burst alone and not the whole fill.** The
+    /// two runs shed trails of different lengths — one has been flying
+    /// ten ticks longer — so their trail sparks differ in count and in
+    /// age no matter what either pool was seeded with. Comparing every
+    /// sprite would therefore pass with the seed hardcoded, which is
+    /// exactly the vacuity this test was written to remove. The burst is
+    /// the only part of the picture the two runs produce under identical
+    /// conditions, so the burst is the only part whose difference means
+    /// anything. [`Effects::fill`]'s Contract puts it last, and both
+    /// runs' bursts are the same size, which the premise below asserts
+    /// rather than assumes.
     #[test]
     fn the_seed_is_the_tick_the_effects_were_built_at() {
         // Built at tick 0, the fresh world's own tick.
@@ -355,18 +507,142 @@ mod tests {
             "premise: the same burst size, so only the seed differs"
         );
 
+        // The burst only — see the note above. `fill` appends it last,
+        // and both bursts are the size the premise just checked.
+        let burst = from_zero.live() as usize;
         let mut a = Vec::new();
         from_zero.fill(&mut a);
         let mut b = Vec::new();
         from_ten.fill(&mut b);
+        assert!(
+            a.len() >= burst && b.len() >= burst,
+            "premise: each fill must contain its own burst"
+        );
+        let a = &a[a.len() - burst..];
+        let b = &b[b.len() - burst..];
+
         let same = a
             .iter()
-            .zip(&b)
+            .zip(b)
             .all(|(l, r)| l.x.to_bits() == r.x.to_bits() && l.y.to_bits() == r.y.to_bits());
         assert!(
             !same,
             "two pools built at different ticks drew identical sparks, so the seed \
              is not coming from the tick"
+        );
+    }
+
+    /// The trail runs while the bird is alive, and only then.
+    ///
+    /// Both halves matter and neither implies the other. A trail that
+    /// never started would satisfy "nothing after the death"; one that
+    /// never stopped would satisfy "something during the flight". So the
+    /// sequence is flown a tick at a time and read in three parts: it
+    /// must be shedding well before the death, it must stop adding on
+    /// the death tick, and it must drain to nothing and stay there.
+    ///
+    /// Probed by dropping the `world.alive()` guard from the emission,
+    /// so the trail keeps shedding off the corpse: red on the tail,
+    /// which never reaches zero.
+    #[test]
+    fn the_trail_only_runs_while_alive() {
+        let mut world = World::new(7);
+        let mut effects = Effects::new(&world);
+        let mut counts = Vec::new();
+        let mut death = None;
+        for _ in 0..200 {
+            world.step(false);
+            effects.observe(&world);
+            if death.is_none() && !world.alive() {
+                death = Some(counts.len());
+            }
+            counts.push(effects.trail_live());
+        }
+        let death = death.expect("premise: the bird must die inside the window");
+
+        assert!(
+            counts[..death].iter().any(|&n| n > 0),
+            "the living bird shed no trail at all"
+        );
+
+        // After the death the trail may only fall: nothing is added to
+        // it again. A single rise anywhere in the tail is a trail still
+        // emitting off a corpse.
+        for (offset, pair) in counts[death..].windows(2).enumerate() {
+            let (earlier, later) = (pair[0], pair[1]);
+            assert!(
+                later <= earlier,
+                "the trail grew from {earlier} to {later} at {offset} steps past the death, \
+                 so it is still shedding off the corpse"
+            );
+        }
+        assert_eq!(
+            counts.last().copied(),
+            Some(0),
+            "the trail must drain after the death and stay drained"
+        );
+    }
+
+    /// The trail sheds at the rate the emitter was given.
+    ///
+    /// Read over the first twelve ticks, which is the window in which
+    /// nothing has expired yet: the shortest life the trail effect
+    /// allows is 0.2 s — twelve ticks — so the count in the air is
+    /// exactly the count emitted, and the emitter's arithmetic is the
+    /// whole of what is being measured. Forty-five a second at a
+    /// sixtieth of a second a step is three quarters of a spark per
+    /// step, and twelve steps of that is nine.
+    ///
+    /// **A literal nine, not a re-derivation of the rate.** Computing
+    /// the expectation from `TRAIL_PER_SECOND` would move with it and
+    /// pin nothing — the same defect as comparing a constant against
+    /// itself. The rate is a decision about how the game looks, and
+    /// changing it should have to argue with a red test first.
+    ///
+    /// Probed by halving `TRAIL_PER_SECOND`: red, six instead of nine.
+    #[test]
+    fn the_trail_sheds_at_its_stated_rate() {
+        let mut world = World::new(7);
+        let mut effects = Effects::new(&world);
+        for _ in 0..12 {
+            world.step(false);
+            effects.observe(&world);
+            assert!(
+                world.alive(),
+                "premise: the bird must still be flying through the whole window"
+            );
+        }
+        assert_eq!(
+            effects.trail_live(),
+            9,
+            "twelve steps at three quarters of a spark each is nine, and none has expired yet"
+        );
+    }
+
+    /// A trail running right up to the death does not eat into the
+    /// crash burst.
+    ///
+    /// **This is the property the second pool exists for.**
+    /// `ParticleSystem::burst_in` spawns `count.min(room)` and drops the
+    /// remainder silently, so a trail sharing the crash's pool would
+    /// shorten the burst by however much of itself happened to be in the
+    /// air — a crash that looked different depending on how long the
+    /// bird had flown, with nothing anywhere reporting it.
+    ///
+    /// Probed by emitting the trail into `self.sparks` instead of
+    /// `self.trail` and dropping the second pool: red here, because the
+    /// burst arrives short.
+    #[test]
+    fn the_trail_never_shortens_the_crash() {
+        let (_, effects) = fall(120);
+        assert!(
+            effects.live() > 0,
+            "premise: the burst must have fired inside the window"
+        );
+        assert_eq!(
+            effects.live(),
+            24,
+            "the burst arrived short, so something else had taken the pool's room"
         );
     }
 

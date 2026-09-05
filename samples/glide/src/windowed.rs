@@ -703,6 +703,13 @@ impl GlideApp {
             stats: self.stats,
             world: self.world,
             session_hash,
+            // The windowed run's pools, as it leaves them. Nothing
+            // reads them from here — a window has already drawn what
+            // they were for — but the field is on the report so an
+            // oracle can read a scripted run's, and a driver that
+            // silently filled it with a fresh pool would be reporting
+            // a flight that did not happen.
+            effects: self.effects,
         })
     }
 }

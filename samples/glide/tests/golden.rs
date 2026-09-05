@@ -29,7 +29,7 @@ use renew_rhi::{
     AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
     Validation,
 };
-use renew_sample_glide::{Effects, SPRITE_BUDGET, SceneSprite, Tile, scene, world_at};
+use renew_sample_glide::{Effects, SPRITE_BUDGET, SceneSprite, Tile, drawn_at, scene, world_at};
 use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH, World};
 
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions — the sky.
@@ -266,14 +266,27 @@ fn reflown_sink(ticks: u64) -> (World, Effects) {
     (world, effects)
 }
 
-/// Effects for a checkpoint whose bird is still alive.
+/// The world and its effects at a checkpoint, both out of the one loop.
 ///
-/// Nothing can have burst: the burst is the falling edge of liveness,
-/// and a world that is alive now has not crossed it. Building the pool
-/// from the world rather than re-flying is therefore exact and cheap —
-/// and the tests assert `live() == 0` rather than trusting this note.
-fn no_effects_yet(world: &World) -> Effects {
-    Effects::new(world)
+/// **Building the pool from the finished world would be wrong now, and
+/// silently so.** It was exact while the only effect was the crash
+/// burst: that fires on the falling edge of liveness, so a world still
+/// alive has crossed no edge and an empty pool is the right answer —
+/// which the living tests still assert with `live() == 0` rather than
+/// trust. The trail is not an edge but a state, accumulated over the
+/// whole flight, and a pool built from the world it ended at holds none
+/// of it. A checkpoint drawn that way would show a bird with no trail
+/// and its committed picture would prove the feature absent.
+#[allow(
+    clippy::expect_used,
+    reason = "the committed traces are part of the test's own fixture: one that stops \
+              parsing is a broken checkpoint, not a condition a picture oracle recovers \
+              from — the same position this file already takes for its colour helper. \
+              The lint fires here only because this is a helper rather than a `#[test]` \
+              body; every call site of it is one"
+)]
+fn drawn(name: &str, tick: u64) -> (World, Effects) {
+    drawn_at(name, tick).expect("the committed trace replays")
 }
 fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let base = ((y * VIEW_WIDTH + x) * 4) as usize;
@@ -449,9 +462,23 @@ fn assert_bird_structure(
 ///
 /// **What the bound is derived from, so it is not a number someone
 /// liked.** Only a pixel a spark actually covers can round differently,
-/// and the burst's footprint is a 22-by-20 box — 440 pixels — measured
-/// on the committed frame. The bound is that footprint. Against it, the
+/// so the bound is the sparks' own footprint: the union of their
+/// rectangles, each grown to the box that holds it at any rotation — a
+/// square of side `s` turned by any angle fits in a box of side
+/// `s·√2`. Measured over this checkpoint's own sprites, both by
+/// re-flying the fall and by replaying the committed trace, which agree:
+/// 32 sparks — 24 from the burst and 8 of the trail still in the air six
+/// ticks after the death — covering **387 pixels**. Against it, the
 /// observed disagreement is 7.
+///
+/// **The derivation changed when the trail landed, and tightened.** It
+/// used to be one box around the whole burst: 22 by 20, 440 pixels. A
+/// trail streams backwards away from the bird, so a single enclosing box
+/// now measures 572 pixels — most of it sky no spark ever touches — and
+/// carrying that number forward would have loosened this gate by a third
+/// as a side effect of adding a feature. Taking the union of the sparks'
+/// own boxes instead measures what the sentence above actually claims,
+/// and lands *below* the bound it replaces.
 ///
 /// **What it still catches.** A real change to this frame moves the
 /// sparks: it changes where they are, how many there are, or what colour
@@ -460,7 +487,7 @@ fn assert_bird_structure(
 /// leave every spark in place and shift a handful of them by the
 /// smallest representable amount — which is not a rendering change, it is
 /// the same picture.
-const CRASH_MAX_DIFFERING_PIXELS: usize = 440;
+const CRASH_MAX_DIFFERING_PIXELS: usize = 387;
 /// One. A quantisation boundary moves a byte by one step and no more;
 /// anything larger is a different colour, not a different rounding.
 const CRASH_MAX_CHANNEL_DELTA: u8 = 1;
@@ -655,7 +682,7 @@ fn soar_at_tick_600_matches_the_committed_image() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
         return;
     };
-    let world = world_at("soar", 600).expect("the committed trace replays");
+    let (world, effects) = drawn("soar", 600);
 
     // Premises: a picture of a dead or empty world proves nothing.
     assert!(world.alive(), "soar must still be flying at the checkpoint");
@@ -679,11 +706,18 @@ fn soar_at_tick_600_matches_the_committed_image() {
         "the replayed trace and the re-flown pilot diverged — the loop drifted"
     );
 
-    let effects = no_effects_yet(&world);
     assert_eq!(
         effects.live(),
         0,
         "a living bird has crossed no death edge, so nothing may have burst"
+    );
+    // And the other half, which the burst count cannot give: this bird
+    // has been flying for hundreds of ticks, so it must be shedding.
+    // Without this the picture could be re-recorded with the trail
+    // silently switched off and nothing here would notice.
+    assert!(
+        effects.trail_live() > 0,
+        "a living bird must be shedding a trail, or this picture shows none"
     );
     let digest_before_rendering = world.digest();
     let pixels = capture(&device, &world, &effects).expect("capture");
@@ -744,6 +778,20 @@ fn sink_at_tick_240_matches_the_committed_image() {
         0,
         "the sparks burst at the crash and must be long dead by this tick, \
          or this frame is not the still life it is recorded as"
+    );
+    // **The trail's half of the same claim, and the reason this one
+    // picture did not move when the trail landed.** The trail stops
+    // emitting on the tick the bird dies and its longest life is well
+    // under the interval from that tick to this one, so by 240 there is
+    // nothing of it left. That is what makes this checkpoint's bytes
+    // unchanged a *checked* fact rather than a hoped-for one: if the
+    // trail ever outlived the corpse, this assertion fires here instead
+    // of the golden quietly disagreeing on a lane far away.
+    assert_eq!(
+        effects.trail_live(),
+        0,
+        "the trail must have died with the bird long before this tick, \
+         or this still life is not still"
     );
     let digest_before_rendering = world.digest();
     let pixels = capture(&device, &world, &effects).expect("capture");
@@ -827,7 +875,7 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
         return;
     };
-    let world = world_at("soar", 361).expect("the committed trace replays");
+    let (world, effects) = drawn("soar", 361);
 
     // Premises: a still bird has no ghost to photograph.
     assert!(world.alive(), "the diver must still be flying");
@@ -843,11 +891,18 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
         "the full complement of pipes is on screen"
     );
 
-    let effects = no_effects_yet(&world);
     assert_eq!(
         effects.live(),
         0,
         "a living bird has crossed no death edge, so nothing may have burst"
+    );
+    // And the other half, which the burst count cannot give: this bird
+    // has been flying for hundreds of ticks, so it must be shedding.
+    // Without this the picture could be re-recorded with the trail
+    // silently switched off and nothing here would notice.
+    assert!(
+        effects.trail_live() > 0,
+        "a living bird must be shedding a trail, or this picture shows none"
     );
     let digest_before_rendering = world.digest();
     let pixels = capture(&device, &world, &effects).expect("capture");
@@ -1133,7 +1188,7 @@ fn a_crash_at_tick_114_throws_sparks_as_light() {
 fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
     // Written as a literal rather than derived from the constant: see
     // the note at the bound checks below.
-    const AT_THE_BOUND: usize = 440;
+    const AT_THE_BOUND: usize = 387;
 
     let base = vec![128u8; (VIEW_WIDTH as usize) * (VIEW_HEIGHT as usize) * 4];
 
@@ -1169,7 +1224,7 @@ fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
     // Deriving the counts from `CRASH_MAX_DIFFERING_PIXELS` would make
     // this tautological: writing `N + 1` pixels against an assertion of
     // `> N` passes for every N, so the constant could be widened to any
-    // value and the test would stay green. Writing 440 and 441 pins the
+    // value and the test would stay green. Writing 387 and 388 pins the
     // number itself — raise the constant and the refusal below fails;
     // lower it and the admission fails.
     let mut exactly = base.clone();
