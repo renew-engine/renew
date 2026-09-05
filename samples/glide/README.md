@@ -7,11 +7,11 @@ feature, playable in a window with the score in the title. Behind
 
 ## What it looks like
 
-![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, green pipes, blue sky](soar-600.png)
+![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, with a scatter of small pale sparks trailing behind it; green pipes, blue sky](soar-600.png)
 
-![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, with a short vertical ghost trailing it along its fall](dive-361.png)
+![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, smeared into a vertical orange streak along its fall, with its spark trail left above and behind it](dive-361.png)
 
-![The moment after a crash: the corpse lying on the floor at the left of the frame with a spray of yellow-white sparks flying up out of it, each one turning, brightening the blue sky they cross without hiding any of it; two green pipes stand well away to the right](crash-114.png)
+![The moment after a crash: the grey corpse on the floor at the left of the frame with a spray of cream-white sparks flying up out of it, each one turning, brightening the blue sky they cross without hiding any of it; a few paler sparks of the trail linger to its left; two green pipes stand well away to the right](crash-114.png)
 
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
@@ -37,6 +37,21 @@ a camera records of anything moving during an exposure. In
 `sink-240.png` the bird has hit the floor, and the corpse lies nose-down
 at a full eighth turn — the tilt its terminal fall left it with — with
 no ghost at all, because a corpse is not going anywhere.
+
+**The trail is visible in both of the living frames, and it is paler
+than you might expect.** A spark adds its colour to whatever is behind
+it, and the sky is blue-most: adding the trail's warm light to a sky
+that already has most of its brightness in the blue channel lands on a
+cool near-white rather than on an ember. The crash's sparks are brighter
+at the same point of their life and saturate to cream instead. Both are
+the same mechanism and the same pipeline — the difference is only how
+much light each carries. In `soar-600.png` the trail scatters behind
+the climbing bird; in `dive-361.png` it sits *above* it, because the
+bird is falling as fast as the rules allow and has dropped past the
+sparks it shed a few ticks earlier. **`sink-240.png` has none**: the
+trail stops on the tick the bird dies, and by that checkpoint every
+spark of it has long expired — which is why that one picture is
+byte-identical to the one committed before the trail existed.
 
 `crash-114.png` is that same fall six ticks after it ended, drawn from
 the `sink` trace at tick 114. Two dozen sparks are thrown up out of the

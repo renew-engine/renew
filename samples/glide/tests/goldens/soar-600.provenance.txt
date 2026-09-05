@@ -1,5 +1,5 @@
 soar-600.rgba — RGBA8, tightly packed, row-major, 320x240
-fnv1a-64 of the pixel bytes: 0xdee6d146e9d2a0a0
+fnv1a-64 of the pixel bytes: 0xf565ca3e3022dacc
 rendered by: llvmpipe (LLVM 18.1.3, 256 bits) (kind SoftwareRasterizer, vendor 0x10005, device 0x0000, driver 109056003)
 shaders: crates/render2d/shaders (see its compile record)
 scene: the committed trace named in the file name, replayed to the
