@@ -6,11 +6,14 @@
 //! proves the state *looks* right — placement, occlusion, the corpse
 //! where the rules froze it — which is the half no hash can see.
 //!
-//! Three checkpoints over two committed traces: `soar` alive among
+//! Four checkpoints over two committed traces: `soar` alive among
 //! pipes, the same trace earlier at its fastest dive — where the bird
-//! is smeared along its fall — and `sink` a still life (death freezes
-//! pipe advance, and a corpse does not smear). Exact comparison
-//! on the pinned software-rasterizer lane via the candidate ritual;
+//! is smeared along its fall — `sink` a still life (death freezes pipe
+//! advance, and a corpse does not smear), and the crash six ticks after
+//! that fall ends, where sparks are still in the air. Exact comparison
+//! on the pinned software-rasterizer lane via the candidate ritual —
+//! except the crash, whose stacked additive light is not reproducible
+//! across the runner pool and is compared within a stated tolerance;
 //! structural assertions everywhere else. Golden-based rather than
 //! computed on purpose: the coming linear-space change kills computed
 //! pixels, and these images re-golden through the refresh ritual.
@@ -425,6 +428,104 @@ fn assert_bird_structure(
     }
 }
 
+/// The most pixels that may differ, and by how much, in the one frame
+/// whose bytes are not reproducible across the runner pool.
+///
+/// **Only the crash frame gets this, and that scoping is the whole
+/// point.** The other three checkpoints are compared byte for byte and
+/// must stay that way: they are flat rectangles over a flat sky, they
+/// have never varied, and a tolerance applied where it is not needed is
+/// how a suite stops measuring.
+///
+/// **Why this frame varies.** It is two dozen overlapping additive
+/// quads. The attachment is eight-bit sRGB, so it quantises after every
+/// blend, and where sparks stack the order of those roundings is enough
+/// for two runs of the same renderer on different machines in the pool
+/// to land a single code apart. Observed between the refresh run and the
+/// rendering lane, both reporting `llvmpipe (LLVM 18.1.3, 256 bits)`:
+/// **7 bytes of 307,200, every one differing by exactly 1.** The
+/// rendering crate's own triangle golden has the same disagreement for
+/// the same reason and answers it the same way.
+///
+/// **What the bound is derived from, so it is not a number someone
+/// liked.** Only a pixel a spark actually covers can round differently,
+/// and the burst's footprint is a 22-by-20 box — 440 pixels — measured
+/// on the committed frame. The bound is that footprint. Against it, the
+/// observed disagreement is 7.
+///
+/// **What it still catches.** A real change to this frame moves the
+/// sparks: it changes where they are, how many there are, or what colour
+/// they are, and that moves hundreds of pixels or moves them by far more
+/// than one step. A regression hiding under this bound would have to
+/// leave every spark in place and shift a handful of them by the
+/// smallest representable amount — which is not a rendering change, it is
+/// the same picture.
+const CRASH_MAX_DIFFERING_PIXELS: usize = 440;
+/// One. A quantisation boundary moves a byte by one step and no more;
+/// anything larger is a different colour, not a different rounding.
+const CRASH_MAX_CHANNEL_DELTA: u8 = 1;
+
+/// How two images of this game differ, in the terms the tolerance is
+/// stated in.
+struct Difference {
+    /// Pixels with any differing channel.
+    pixels: usize,
+    /// The largest single-channel difference seen.
+    largest_channel: u8,
+}
+
+impl Difference {
+    fn between(rendered: &[u8], golden: &[u8]) -> Self {
+        if rendered.len() != golden.len() {
+            return Self {
+                pixels: usize::MAX,
+                largest_channel: u8::MAX,
+            };
+        }
+        let mut pixels = 0;
+        let mut largest_channel = 0;
+        for (a, b) in rendered
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(golden.as_chunks::<4>().0.iter())
+        {
+            let mut differs = false;
+            for (x, y) in a.iter().zip(b.iter()) {
+                let delta = x.abs_diff(*y);
+                if delta > 0 {
+                    differs = true;
+                    largest_channel = largest_channel.max(delta);
+                }
+            }
+            if differs {
+                pixels += 1;
+            }
+        }
+        Self {
+            pixels,
+            largest_channel,
+        }
+    }
+
+    fn within_crash_tolerance(&self) -> bool {
+        self.pixels <= CRASH_MAX_DIFFERING_PIXELS && self.largest_channel <= CRASH_MAX_CHANNEL_DELTA
+    }
+}
+
+/// Does this render match its golden?
+///
+/// Byte for byte for every checkpoint but the crash, which is compared
+/// within the stated tolerance above because its stacked additive light
+/// is not reproducible across the runner pool.
+fn image_matches(rendered: &[u8], golden: &[u8], name: &str) -> bool {
+    if name == "crash-114" {
+        Difference::between(rendered, golden).within_crash_tolerance()
+    } else {
+        rendered == golden
+    }
+}
+
 /// The full ritual for one checkpoint: structural checks everywhere,
 /// exact bytes against the committed golden on the pinned lane only,
 /// candidate + provenance + a refusing Err when the golden does not
@@ -504,7 +605,7 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
 
     let expected =
         std::fs::read(&golden).map_err(|error| format!("read committed golden: {error}"))?;
-    if pixels != expected {
+    if !image_matches(pixels, &expected, name) {
         let actual = dir.join(format!("{name}.actual.rgba"));
         std::fs::write(&actual, pixels)
             .map_err(|error| format!("write actual for diffing: {error}"))?;
@@ -940,4 +1041,83 @@ fn a_crash_at_tick_114_throws_sparks_as_light() {
     }
 
     compare_against_golden(&device, "crash-114", &pixels).expect("the golden ritual");
+}
+
+/// The crash frame's tolerance admits a rounding difference and nothing
+/// larger.
+///
+/// **A tolerance is a hole unless something checks its edges**, and the
+/// pressure on this one only ever goes one way: the next person to meet
+/// a red rendering lane will be tempted to widen it. This makes that a
+/// deliberate act rather than a quiet one — the same guard the rendering
+/// crate put on its own triangle tolerance, for the same reason.
+///
+/// The numbers are the real ones. **Seven pixels differing by a single
+/// code** is the observed disagreement between two runs of
+/// `llvmpipe (LLVM 18.1.3, 256 bits)` on different machines in the
+/// runner pool — the refresh's render of this frame against the
+/// rendering lane's. A burst that moved would move hundreds of pixels,
+/// or move them by far more than one. The bound sits sixty-two times
+/// above the first and well below the second.
+///
+/// It also pins that **the tolerance is scoped**: the same difference
+/// offered under any other checkpoint's name is rejected, because only
+/// the crash frame stacks additive light.
+#[test]
+fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
+    let base = vec![128u8; (VIEW_WIDTH as usize) * (VIEW_HEIGHT as usize) * 4];
+
+    // The disagreement this tolerance exists for: seven pixels, one code.
+    let mut rounding = base.clone();
+    for pixel in 0..7 {
+        rounding[pixel * 4 + 1] = 129;
+    }
+    let admitted = Difference::between(&rounding, &base);
+    assert_eq!(admitted.pixels, 7);
+    assert_eq!(admitted.largest_channel, 1);
+    assert!(
+        admitted.within_crash_tolerance(),
+        "the disagreement this tolerance exists for must pass"
+    );
+    assert!(
+        image_matches(&rounding, &base, "crash-114"),
+        "and it must pass under the crash frame's name"
+    );
+
+    // Scoped: the very same bytes are refused under any other name.
+    assert!(
+        !image_matches(&rounding, &base, "sink-240"),
+        "every other checkpoint is compared byte for byte"
+    );
+    assert!(
+        !image_matches(&rounding, &base, "soar-600"),
+        "every other checkpoint is compared byte for byte"
+    );
+
+    // One pixel past the bound is refused.
+    let mut too_many = base.clone();
+    for pixel in 0..=CRASH_MAX_DIFFERING_PIXELS {
+        too_many[pixel * 4 + 1] = 129;
+    }
+    assert!(
+        !Difference::between(&too_many, &base).within_crash_tolerance(),
+        "one pixel past the bound must be refused"
+    );
+
+    // A difference of two codes is refused however few pixels carry it.
+    let mut too_far = base.clone();
+    too_far[1] = 130;
+    let rejected = Difference::between(&too_far, &base);
+    assert_eq!(rejected.pixels, 1);
+    assert_eq!(rejected.largest_channel, 2);
+    assert!(
+        !rejected.within_crash_tolerance(),
+        "two codes is a different colour, not a different rounding"
+    );
+
+    // A length mismatch is never within tolerance.
+    assert!(
+        !Difference::between(&base[..base.len() - 4], &base).within_crash_tolerance(),
+        "a truncated image is not a rounding difference"
+    );
 }
