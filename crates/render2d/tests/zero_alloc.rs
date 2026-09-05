@@ -179,7 +179,15 @@ fn steady_state_fill_and_render_allocates_nothing() {
                  index: usize| {
         renderer.begin();
         renderer.push(&Sprite::new(RED, 8.0, 8.0).size(8.0, 8.0));
-        renderer.push(&Sprite::new(GREEN, WANDER[index % WANDER.len()], 40.0).size(8.0, 8.0));
+        // Mirrored on both axes so the swap is inside the measured
+        // window; the region is one solid colour, so the picture the
+        // liveness checks read is unchanged by it.
+        renderer.push(
+            &Sprite::new(GREEN, WANDER[index % WANDER.len()], 40.0)
+                .size(8.0, 8.0)
+                .flip_x(true)
+                .flip_y(true),
+        );
         assert!(
             renderer.sprites() > 0,
             "the measured frame must be non-empty"

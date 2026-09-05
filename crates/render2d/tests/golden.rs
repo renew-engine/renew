@@ -324,6 +324,97 @@ fn opaque_sprites_match_the_computed_image_exactly() {
     }
 }
 
+/// A mirrored sprite reads its texels backwards, exactly: the same
+/// computed oracle as above, over regions whose texels differ along
+/// the flipped axis, so a flip that did nothing — or flipped the
+/// wrong axis — paints the wrong colour into a known pixel.
+///
+/// The atlas's top row is red, red, green, green and its left column
+/// red, red, blue, blue; each texel is drawn over exactly four pixels
+/// per axis, texel-aligned, so nearest sampling is exact on every
+/// adapter. Probed by having `mirrored` return its inputs: the two
+/// flipped sprites paint unflipped and the comparison reds.
+#[test]
+fn a_mirrored_sprite_reads_its_texels_backwards_exactly() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let atlas = atlas_bytes();
+    let mut renderer = renderer(&device, &atlas, 8).expect("sprite renderer");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    // The top row of the atlas, RED RED GREEN GREEN, four texels wide.
+    let top_row = Region {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 2,
+    };
+    // The left column, RED over BLUE, four texels tall.
+    let left_column = Region {
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 4,
+    };
+    renderer.begin();
+    renderer.push(&Sprite::new(top_row, 8.0, 8.0).size(16.0, 8.0));
+    renderer.push(&Sprite::new(top_row, 8.0, 24.0).size(16.0, 8.0).flip_x(true));
+    renderer.push(
+        &Sprite::new(left_column, 32.0, 8.0)
+            .size(8.0, 16.0)
+            .flip_y(true),
+    );
+    let color = [renew_rhi::color_attachment(CLEAR)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("mirrored render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    drop(target);
+    drop(renderer);
+    assert_no_validation_errors(&device);
+
+    let mut expected = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for _ in 0..SIZE * SIZE {
+        expected.extend_from_slice(&clear_bytes());
+    }
+    // Unflipped: red on the left, green on the right.
+    paint(&mut expected, 8, 8, 8, 8, [255, 0, 0, 255]);
+    paint(&mut expected, 16, 8, 8, 8, [0, 255, 0, 255]);
+    // Flipped across: green on the left, red on the right.
+    paint(&mut expected, 8, 24, 8, 8, [0, 255, 0, 255]);
+    paint(&mut expected, 16, 24, 8, 8, [255, 0, 0, 255]);
+    // Flipped down: blue on top, red below.
+    paint(&mut expected, 32, 8, 8, 8, [0, 0, 255, 255]);
+    paint(&mut expected, 32, 16, 8, 8, [255, 0, 0, 255]);
+
+    if pixels != expected {
+        let first_diff = pixels
+            .iter()
+            .zip(expected.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(usize::MAX);
+        let pixel = first_diff / 4;
+        panic!(
+            "a mirrored sprite diverges from the computed image on adapter {:?}: first \
+             difference at byte {first_diff} (pixel {}, {}), fnv1a {:#018x} vs {:#018x}",
+            device.adapter(),
+            pixel % SIZE as usize,
+            pixel / SIZE as usize,
+            fnv1a(&pixels),
+            fnv1a(&expected)
+        );
+    }
+}
+
 /// Semi-transparent overlaps against the committed golden: the
 /// premultiplied compositing convention, in bytes, on the pinned lane —
 /// structure everywhere else.

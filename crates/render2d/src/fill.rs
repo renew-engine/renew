@@ -71,11 +71,12 @@ pub struct Region {
     pub height: u32,
 }
 
-/// One sprite: an atlas region, a place on the canvas, a size, a tint.
+/// One sprite: an atlas region, a place on the canvas, a size, a tint,
+/// and — an identity by default — a mirror on either axis.
 ///
 /// `#[non_exhaustive]` with a constructor and builders, the descriptor
 /// pattern this tree uses everywhere: the fields a later version adds
-/// (rotation, origin) arrive as builders touching no existing caller.
+/// (rotation, a pivot) arrive as builders touching no existing caller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Sprite {
@@ -92,8 +93,16 @@ pub struct Sprite {
     /// Premultiplied RGBA tint, multiplied into every sampled texel.
     /// Opaque white — the default — is the identity. Like the atlas
     /// bytes themselves, the tint carries its alpha multiplied in;
-    /// one convention end to end.
+    /// one convention end to end. A uniform tint `[a, a, a, a]` is a
+    /// fade to `a` of the sprite's opacity: the tint is premultiplied,
+    /// so scaling all four channels is what "`a` as opaque" means, and
+    /// scaling only the fourth would brighten the sprite as it faded.
     pub tint: [f32; 4],
+    /// Mirror the sampled texels left for right. The canvas rectangle
+    /// stays where it is; only which texel each pixel reads changes.
+    pub flip_x: bool,
+    /// Mirror top for bottom, the same way.
+    pub flip_y: bool,
 }
 
 impl Sprite {
@@ -112,6 +121,8 @@ impl Sprite {
             width: region.width as f32,
             height: region.height as f32,
             tint: [1.0, 1.0, 1.0, 1.0],
+            flip_x: false,
+            flip_y: false,
         }
     }
 
@@ -128,6 +139,20 @@ impl Sprite {
     #[must_use]
     pub fn tint(mut self, tint: [f32; 4]) -> Self {
         self.tint = tint;
+        self
+    }
+
+    /// Mirror left for right when `flip` is true; the last call wins.
+    #[must_use]
+    pub fn flip_x(mut self, flip: bool) -> Self {
+        self.flip_x = flip;
+        self
+    }
+
+    /// Mirror top for bottom when `flip` is true; the last call wins.
+    #[must_use]
+    pub fn flip_y(mut self, flip: bool) -> Self {
+        self.flip_y = flip;
         self
     }
 
@@ -224,9 +249,32 @@ pub(crate) fn placed(sprite: &Sprite, offset: (f32, f32), alpha: f32) -> Sprite 
     moved
 }
 
+/// The UV corners after the flips: the axis that mirrors swaps its two
+/// edges, so the vertex stage's interpolation from the first corner to
+/// the second runs backwards along it.
+///
+/// A mirror is a UV swap and nothing else. The geometry — and with it
+/// the winding — is untouched, so a flipped sprite costs the pipeline
+/// nothing and cannot be culled by a facing rule.
+pub(crate) fn mirrored(uv_min: Vec2, uv_max: Vec2, flip_x: bool, flip_y: bool) -> (Vec2, Vec2) {
+    let (x0, x1) = if flip_x {
+        (uv_max.x, uv_min.x)
+    } else {
+        (uv_min.x, uv_max.x)
+    };
+    let (y0, y1) = if flip_y {
+        (uv_max.y, uv_min.y)
+    } else {
+        (uv_min.y, uv_max.y)
+    };
+    (Vec2::new(x0, y0), Vec2::new(x1, y1))
+}
+
 /// One instance record, packed exactly as the layout slice declares:
-/// NDC min, NDC max, UV min, UV max — each two `f32`s — then the
-/// four-`f32` tint, native-endian, in declaration order.
+/// NDC min, NDC max, UV at the first corner, UV at the last — each two
+/// `f32`s — then the four-`f32` tint, native-endian, in declaration
+/// order. The two UV lanes are the region's min and max unless a flip
+/// swapped them.
 #[allow(
     clippy::cast_precision_loss,
     reason = "past 2^24 texels the packing degrades visibly, never unsafely; real regions sit far below it"
@@ -239,8 +287,12 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
 
     let texel_min = Vec2::new(sprite.region.x as f32, sprite.region.y as f32);
     let texel_max = texel_min + Vec2::new(sprite.region.width as f32, sprite.region.height as f32);
-    let uv_min = to_uv(texel_min, atlas);
-    let uv_max = to_uv(texel_max, atlas);
+    let (uv_min, uv_max) = mirrored(
+        to_uv(texel_min, atlas),
+        to_uv(texel_max, atlas),
+        sprite.flip_x,
+        sprite.flip_y,
+    );
 
     let values: [f32; 12] = [
         ndc_min.x,
@@ -425,7 +477,96 @@ mod tests {
         );
     }
 
+    /// The twelve `f32` lanes of a packed record, for tests that name
+    /// a lane rather than a byte.
+    fn lanes(record: &[u8; INSTANCE_STRIDE]) -> [u32; 12] {
+        let mut out = [0u32; 12];
+        for (lane, chunk) in out.iter_mut().zip(record.as_chunks::<4>().0) {
+            *lane = f32::from_ne_bytes(*chunk).to_bits();
+        }
+        out
+    }
+
+    /// A flip swaps the two UV edges of its axis and touches nothing
+    /// else: the placement lanes, the other axis and the tint are the
+    /// unflipped record's, bit for bit.
+    ///
+    /// Probed by having `mirrored` return its inputs: both flipped
+    /// records equal the plain one and the swap assertions red.
+    #[test]
+    fn a_flip_swaps_the_uv_edges_and_nothing_else() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let plain = lanes(&pack(&swatch(), c, atlas));
+        let across = lanes(&pack(&swatch().flip_x(true), c, atlas));
+        let down = lanes(&pack(&swatch().flip_y(true), c, atlas));
+        // Lanes 4 and 6 are the two u edges; 5 and 7 the two v edges.
+        assert_eq!(
+            (across[4], across[6]),
+            (plain[6], plain[4]),
+            "flip_x swaps u"
+        );
+        assert_eq!(
+            (across[5], across[7]),
+            (plain[5], plain[7]),
+            "flip_x left v alone"
+        );
+        assert_eq!((down[5], down[7]), (plain[7], plain[5]), "flip_y swaps v");
+        assert_eq!(
+            (down[4], down[6]),
+            (plain[4], plain[6]),
+            "flip_y left u alone"
+        );
+        for lane in (0..4).chain(8..12) {
+            assert_eq!(across[lane], plain[lane], "flip_x moved lane {lane}");
+            assert_eq!(down[lane], plain[lane], "flip_y moved lane {lane}");
+        }
+        // The swap is its own inverse, and the two axes commute.
+        let both = lanes(&pack(&swatch().flip_x(true).flip_y(true), c, atlas));
+        let both_reversed = lanes(&pack(&swatch().flip_y(true).flip_x(true), c, atlas));
+        assert_eq!(both, both_reversed);
+        assert_eq!(
+            (both[4], both[6], both[5], both[7]),
+            (plain[6], plain[4], plain[7], plain[5])
+        );
+    }
+
     proptest! {
+        /// A flip set and then unset packs the unflipped bytes, whatever
+        /// was asked in between — the last call wins, and the geometry
+        /// never learned about any of it.
+        #[test]
+        fn a_flip_set_back_to_false_packs_the_unflipped_bytes(
+            x in prop::bool::ANY,
+            y in prop::bool::ANY,
+        ) {
+            let c = canvas(64, 32);
+            let atlas = Extent { width: 8, height: 8 };
+            let plain = pack(&swatch(), c, atlas);
+            let unset = pack(&swatch().flip_x(x).flip_y(y).flip_x(false).flip_y(false), c, atlas);
+            prop_assert_eq!(unset, plain);
+        }
+
+        /// A flip never touches placement or tint: over every
+        /// combination of flips the NDC lanes and the tint lanes are the
+        /// unflipped record's, bit for bit.
+        #[test]
+        fn a_flip_never_touches_placement_or_tint(
+            x in prop::bool::ANY,
+            y in prop::bool::ANY,
+        ) {
+            let c = canvas(64, 32);
+            let atlas = Extent { width: 8, height: 8 };
+            let plain = lanes(&pack(&swatch(), c, atlas));
+            let flipped = lanes(&pack(&swatch().flip_x(x).flip_y(y), c, atlas));
+            for lane in (0..4).chain(8..12) {
+                prop_assert_eq!(flipped[lane], plain[lane], "lane {} moved", lane);
+            }
+        }
+
         /// Fading twice is fading once by the product, and a fade never
         /// makes a sprite more opaque than it was.
         ///

@@ -41,7 +41,12 @@ else, which the build matrix proves by building and testing without it.
 
 - `Canvas`, `Region`, `Sprite` — the pure vocabulary: a logical pixel
   space (y down from the top-left), a rectangle of atlas texels, and
-  one placed, sized, tinted sprite.
+  one placed, sized, tinted sprite, mirrored on either axis when asked
+  (`flip_x`/`flip_y` — a swap of the sampled edges, so the geometry and
+  its winding never move). A uniform tint `[a, a, a, a]` is a fade to
+  `a` of the sprite's opacity: the tint is premultiplied, so scaling all
+  four channels is what "`a` as opaque" means, and scaling only the
+  fourth would brighten the sprite as it faded.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
@@ -98,9 +103,11 @@ bytes against hand-written records; a property test holds the ortho map
 monotone, corner-exact, and invertible over random canvases, and two
 more hold the batch fade to the premultiplied rule (every channel by
 the same factor, composing to the product, never brightening) and the
-batch offsets to adding. A computed image oracle proves placement,
-region selection, fill-order overwrite and the batch offset byte-exactly
-on every adapter; a committed golden proves the
+batch offsets to adding; a flip swaps exactly the two UV lanes of its
+axis and nothing else, pinned lane by lane. A computed image oracle
+proves placement, region selection, fill-order overwrite, the batch
+offset and both mirrors byte-exactly on every adapter; a committed
+golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed
