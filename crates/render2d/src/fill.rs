@@ -58,7 +58,8 @@ impl Canvas {
     }
 }
 
-/// A rectangle of atlas texels: which part of the atlas a sprite shows.
+/// A rectangle of atlas texels on texel boundaries: the whole-texel
+/// input a sprite is usually built from, and what a baker records.
 ///
 /// Plain data with public fields — every combination is meaningful to
 /// construct, and the UV map is total over it. A region reaching past
@@ -86,9 +87,69 @@ pub struct Region {
     pub height: u32,
 }
 
-/// One sprite: an atlas region, a place on the canvas, a size, a tint,
-/// and — each an identity by default — a mirror on either axis, a turn
-/// about a pivot and a scale about the same pivot.
+/// A rectangle of atlas texels whose edges need not fall on texel
+/// boundaries: what a clipped or nine-sliced sprite samples.
+///
+/// "Sub" is *sub-texel*, not sub-rectangle - nothing here is checked
+/// against an enclosing [`Region`], and a whole region converts into one
+/// of these unchanged.
+///
+/// **A widened [`Region`] packs the bytes the integer field packed**, for
+/// every `u32` and with no bound on the coordinate: the old path cast
+/// `region.x as f32` on the way into the packer and this one casts it in
+/// the [`From`] impl below, so the two agree bit for bit even where the
+/// cast rounds. Pinned over the whole `u32` domain by
+/// `widening_a_region_packs_the_bytes_the_integer_path_packed`.
+///
+/// **What this type admits that [`Region`] did not.** Floats carry NaN,
+/// the infinities, and negative extents, and the fields are public, so
+/// all three are constructible. None is rejected: they reach the vertex
+/// buffer and draw nothing recognisable, the same way a region past the
+/// atlas edge draws clamped texels. That is visible nonsense rather than
+/// unsoundness - no sampler can be made unsafe by a UV - but unlike
+/// `Region`'s one degenerate case it is not *useful* nonsense, so a
+/// caller computing these should keep them finite and positive.
+///
+/// **Sampling is nearest and clamped**, so a pixel centre resolves to
+/// `floor(u)`. Edges falling inside a texel are therefore safe only when
+/// the source was cut *in proportion to the destination* - then the
+/// linear map is unchanged and every surviving pixel samples the texel
+/// it would have sampled uncut. A source cut by any other rule can
+/// resolve past its own edge into neighbouring art; a caller doing that
+/// owes its regions a transparent gutter.
+///
+/// Exhaustive on purpose, where [`Sprite`] is `#[non_exhaustive]`:
+/// presentation crates build these by struct literal when they cut one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubRegion {
+    /// Left edge, in texels from the atlas's left.
+    pub x: f32,
+    /// Top edge, in texels from the atlas's top.
+    pub y: f32,
+    /// Width in texels.
+    pub width: f32,
+    /// Height in texels.
+    pub height: f32,
+}
+
+impl From<Region> for SubRegion {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "past 2^24 texels the widening degrades visibly, never unsafely; real atlases sit far below it"
+    )]
+    fn from(region: Region) -> Self {
+        Self {
+            x: region.x as f32,
+            y: region.y as f32,
+            width: region.width as f32,
+            height: region.height as f32,
+        }
+    }
+}
+
+/// One sprite: a source rectangle, a place on the canvas, a size, a
+/// tint, and — each an identity by default — a mirror on either axis, a
+/// turn about a pivot and a scale about the same pivot.
 ///
 /// `#[non_exhaustive]` with a constructor and builders, the descriptor
 /// pattern this tree uses everywhere: the fields a later version adds
@@ -96,8 +157,10 @@ pub struct Region {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Sprite {
-    /// The atlas texels this sprite shows.
-    pub region: Region,
+    /// The atlas texels this sprite shows. Sub-texel edges, so a
+    /// clipped or nine-sliced sprite can name a fraction of a texel;
+    /// a whole [`Region`] widens into one exactly.
+    pub source: SubRegion,
     /// Left edge on the canvas, logical pixels.
     pub x: f32,
     /// Top edge on the canvas, logical pixels.
@@ -161,20 +224,21 @@ pub struct Sprite {
 }
 
 impl Sprite {
-    /// `region` drawn with its top-left corner at (`x`, `y`), at the
-    /// region's own size, untinted.
+    /// The source rectangle drawn with its top-left corner at (`x`,
+    /// `y`), at its own texel size, untinted.
+    ///
+    /// Takes a whole [`Region`] or an already-cut [`SubRegion`] alike,
+    /// so a caller holding a cut rectangle builds from it directly
+    /// rather than naming a region it does not have.
     #[must_use]
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "past 2^24 texels the placement degrades visibly, never unsafely; real atlases sit far below it"
-    )]
-    pub fn new(region: Region, x: f32, y: f32) -> Self {
+    pub fn new(source: impl Into<SubRegion>, x: f32, y: f32) -> Self {
+        let source = source.into();
         Self {
-            region,
+            source,
             x,
             y,
-            width: region.width as f32,
-            height: region.height as f32,
+            width: source.width,
+            height: source.height,
             tint: [1.0, 1.0, 1.0, 1.0],
             flip_x: false,
             flip_y: false,
@@ -184,8 +248,23 @@ impl Sprite {
         }
     }
 
-    /// Draw at `width × height` canvas pixels instead of the region's
-    /// own size.
+    /// Replace the source rectangle, sampling `source` instead.
+    ///
+    /// The canvas size is deliberately left alone: a caller cutting a
+    /// source is usually cutting the destination too, and by its own
+    /// ratio rather than this one. The consequence is worth stating
+    /// because it is silent - a source-only cut *rescales* the sprite,
+    /// stretching fewer texels over the footprint [`Sprite::new`] took
+    /// from the original rectangle, unless [`Sprite::size`] follows.
+    /// Order between the two does not matter.
+    #[must_use]
+    pub fn source(mut self, source: SubRegion) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// Draw at `width × height` canvas pixels instead of the source
+    /// rectangle's own texel size.
     #[must_use]
     pub fn size(mut self, width: f32, height: f32) -> Self {
         self.width = width;
@@ -284,9 +363,17 @@ pub(crate) fn to_ndc(point: Vec2, canvas: Canvas) -> Vec2 {
     )
 }
 
-/// Region texels to UV: `texel / atlas_extent` per axis. Region edges
-/// land on texel boundaries; nearest sampling then picks interior
-/// texels, so no half-texel inset exists to get wrong.
+/// Texels to UV: `texel / atlas_extent` per axis, and nothing else -
+/// no half-texel inset, in either direction.
+///
+/// The argument is a [`SubRegion`] edge, so it need not land on a texel
+/// boundary. Sampling is nearest and clamped, which makes the rule easy
+/// to state and easy to get wrong: a pixel centre resolves to
+/// `floor(u)`, so a whole-texel edge names the texel it touches, and a
+/// fractional edge names whichever texel the fraction falls inside.
+/// That is what the caller wants exactly when the source was cut in
+/// proportion to the destination; [`SubRegion`] carries the full
+/// statement and the obligation it puts on a caller.
 #[allow(
     clippy::cast_precision_loss,
     reason = "past 2^24 texels the map degrades visibly, never unsafely; real atlases sit far below it"
@@ -466,17 +553,13 @@ pub(crate) fn corners(sprite: &Sprite) -> [Vec2; 4] {
 /// the four corners in NDC — local top-left, top-right, bottom-left,
 /// bottom-right, each two `f32`s — then the UV at the first corner and
 /// at the last, then the four-`f32` tint, native-endian, in
-/// declaration order. The two UV lanes are the region's min and max
+/// declaration order. The two UV lanes are the source's min and max
 /// unless a flip swapped them.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "past 2^24 texels the packing degrades visibly, never unsafely; real regions sit far below it"
-)]
 pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
     let [a, b, c, d] = corners(sprite).map(|corner| to_ndc(corner, canvas));
 
-    let texel_min = Vec2::new(sprite.region.x as f32, sprite.region.y as f32);
-    let texel_max = texel_min + Vec2::new(sprite.region.width as f32, sprite.region.height as f32);
+    let texel_min = Vec2::new(sprite.source.x, sprite.source.y);
+    let texel_max = texel_min + Vec2::new(sprite.source.width, sprite.source.height);
     let (uv0, uv1) = mirrored(
         to_uv(texel_min, atlas),
         to_uv(texel_max, atlas),
@@ -582,7 +665,7 @@ mod tests {
     ///
     /// The batch offset exists so a caller can slide a whole group
     /// without the code that builds each sprite knowing the group is
-    /// moving. If it touched the size, the region or the tint it would
+    /// moving. If it touched the size, the source or the tint it would
     /// stop being a slide.
     #[test]
     fn an_offset_moves_a_sprite_and_leaves_the_rest_alone() {
@@ -590,7 +673,7 @@ mod tests {
         let after = placed(&before, (7.0, -3.0), 1.0);
         assert_eq!((after.x, after.y), (17.0, 17.0));
         assert_eq!((after.width, after.height), (before.width, before.height));
-        assert_eq!(after.region, before.region);
+        assert_eq!(sub_bits(after.source), sub_bits(before.source));
         assert_eq!(
             tint_bits(after.tint),
             tint_bits(before.tint),
@@ -1439,6 +1522,190 @@ mod tests {
         }
     }
 
+    /// Bits, so a comparison of source rectangles is exact and carries
+    /// no float-equality judgement.
+    fn sub_bits(s: SubRegion) -> [u32; 4] {
+        [
+            s.x.to_bits(),
+            s.y.to_bits(),
+            s.width.to_bits(),
+            s.height.to_bits(),
+        ]
+    }
+
+    /// **`Sprite::source` replaces the source and touches nothing
+    /// else** — the two promises its doc makes, which nothing pinned
+    /// until a review pointed out the builder had no caller and no test
+    /// at all.
+    ///
+    /// This matters more than it looks. The clipping work appends
+    /// `.source(cut)` to a chain that already carries `.size(w, h)`; a
+    /// builder that also wrote the canvas size would collapse every
+    /// clipped quad from its layout footprint to its texel count — a
+    /// whole interface rendered a few pixels tall — and no other test
+    /// in this crate would have gone red.
+    ///
+    /// Probed twice, both red here and nowhere else: discarding the
+    /// argument (`let _ = source; self`), and adding
+    /// `self.width = source.width; self.height = source.height;`.
+    #[test]
+    fn replacing_the_source_leaves_the_placement_and_tint_alone() {
+        let region = Region {
+            x: 1,
+            y: 2,
+            width: 4,
+            height: 8,
+        };
+        let base = Sprite::new(region, 3.5, 4.25)
+            .size(100.0, 60.0)
+            .tint([0.25, 0.5, 0.75, 1.0]);
+        let cut = SubRegion {
+            x: 1.5,
+            y: 2.5,
+            width: 2.0,
+            height: 3.0,
+        };
+        let after = base.source(cut);
+
+        assert_eq!(
+            sub_bits(after.source),
+            sub_bits(cut),
+            "the cut did not land"
+        );
+        assert_eq!(
+            [
+                after.x.to_bits(),
+                after.y.to_bits(),
+                after.width.to_bits(),
+                after.height.to_bits()
+            ],
+            [
+                base.x.to_bits(),
+                base.y.to_bits(),
+                base.width.to_bits(),
+                base.height.to_bits()
+            ],
+            "replacing the source moved or resized the sprite"
+        );
+        assert_eq!(
+            after.tint.map(f32::to_bits),
+            base.tint.map(f32::to_bits),
+            "replacing the source disturbed the tint"
+        );
+
+        // And the two builders commute, which the doc also promises.
+        let sized_then_cut = Sprite::new(region, 3.5, 4.25).size(100.0, 60.0).source(cut);
+        let cut_then_sized = Sprite::new(region, 3.5, 4.25).source(cut).size(100.0, 60.0);
+        assert_eq!(
+            (
+                sub_bits(sized_then_cut.source),
+                sized_then_cut.width.to_bits(),
+                sized_then_cut.height.to_bits()
+            ),
+            (
+                sub_bits(cut_then_sized.source),
+                cut_then_sized.width.to_bits(),
+                cut_then_sized.height.to_bits()
+            ),
+            "the order of `size` and `source` changed the sprite"
+        );
+    }
+
+    /// **A fractional source packs hand-computed UVs**, byte for byte,
+    /// against arithmetic this test owns rather than borrows.
+    ///
+    /// The property test beside it cannot do this job: its expectation
+    /// calls `to_uv`, so a rounding step placed *inside* `to_uv` would
+    /// round both sides and agree with itself. A review demonstrated
+    /// exactly that with a 1/256-texel snap that left the whole suite
+    /// green.
+    ///
+    /// So the numbers below are written out by hand. The source edges
+    /// are deliberately **not** multiples of 1/256 — `x` is 257/512 —
+    /// because a snap coarser than the value cannot be detected by a
+    /// value it already divides. Every expected UV is exact in binary:
+    /// on an 8-texel axis, `(257/512)/8 = 257/4096`.
+    ///
+    /// Probed with the same 1/256 snap inside `to_uv`: red here, green
+    /// everywhere else, which is the point.
+    #[test]
+    fn a_fractional_source_packs_hand_computed_uvs() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let source = SubRegion {
+            x: 257.0 / 512.0,
+            y: 0.25,
+            width: 1.5,
+            height: 2.5,
+        };
+        let packed = pack(&Sprite::new(source, 0.0, 0.0), c, atlas);
+
+        let uv = |slot: usize| {
+            let mut four = [0u8; 4];
+            four.copy_from_slice(&packed[slot * 4..slot * 4 + 4]);
+            f32::from_ne_bytes(four)
+        };
+        // Written as the fractions they are: each numerator is small
+        // and each denominator a power of two, so every one of these is
+        // exact in an f32 and the reader can check the arithmetic.
+        assert_eq!(uv(8).to_bits(), (257.0f32 / 4096.0).to_bits(), "uv min x");
+        assert_eq!(uv(9).to_bits(), (2.0f32 / 64.0).to_bits(), "uv min y");
+        assert_eq!(uv(10).to_bits(), (1025.0f32 / 4096.0).to_bits(), "uv max x");
+        assert_eq!(uv(11).to_bits(), (2.75f32 / 8.0).to_bits(), "uv max y");
+    }
+
+    /// **The degenerate sources draw nonsense rather than being
+    /// rejected** — the contract `SubRegion`'s doc states, pinned, so
+    /// that a later assertion or clamp is a deliberate change and not a
+    /// silent one.
+    ///
+    /// `Region`'s `u32` domain could express none of these. Floats can,
+    /// the fields are public, and nothing rejects them: a negative
+    /// extent inverts the rectangle in both spaces, and a non-finite
+    /// edge reaches the vertex buffer intact. No sampler can be made
+    /// unsafe by a UV, so this is visible nonsense, not unsoundness -
+    /// but it is nonsense the type now admits and the doc now promises.
+    #[test]
+    fn a_degenerate_source_reaches_the_buffer_rather_than_being_refused() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let uv = |packed: &[u8; INSTANCE_STRIDE], slot: usize| {
+            let mut four = [0u8; 4];
+            four.copy_from_slice(&packed[slot * 4..slot * 4 + 4]);
+            f32::from_ne_bytes(four)
+        };
+
+        // A negative extent inverts: the max edge lands below the min.
+        let inverted = SubRegion {
+            x: 4.0,
+            y: 4.0,
+            width: -4.0,
+            height: -4.0,
+        };
+        let packed = pack(&Sprite::new(inverted, 0.0, 0.0), c, atlas);
+        assert!(
+            uv(&packed, 10) < uv(&packed, 8) && uv(&packed, 11) < uv(&packed, 9),
+            "a negative extent stopped inverting the sampled rectangle"
+        );
+
+        // A non-finite edge propagates rather than being scrubbed.
+        let unreal = SubRegion {
+            x: f32::NAN,
+            y: 0.0,
+            width: f32::INFINITY,
+            height: 1.0,
+        };
+        let packed = pack(&Sprite::new(unreal, 0.0, 0.0), c, atlas);
+        assert!(uv(&packed, 8).is_nan(), "the NaN edge was scrubbed");
+        assert!(uv(&packed, 10).is_nan(), "the NaN edge did not propagate");
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             rng_seed: RngSeed::Fixed(0x2D5A_F00E),
@@ -1477,6 +1744,126 @@ mod tests {
             let back = Vec2::new((here.x + 1.0) * w / 2.0, (here.y + 1.0) * h / 2.0);
             prop_assert!((back.x - x).abs() <= w * 1e-6 + 1e-3);
             prop_assert!((back.y - y).abs() <= h * 1e-6 + 1e-3);
+        }
+
+        /// **A whole-texel source packs the bytes the integer field
+        /// packed** - exactly, for every `u32`, with no bound on the
+        /// coordinate.
+        ///
+        /// A sprite's source rectangle carries `f32` edges, so a whole
+        /// region reaches the packer through a widening. Drift there
+        /// would be close to invisible - a sprite half a texel off
+        /// samples its neighbour's art rather than crashing - so the
+        /// claim is stated at the only level that cannot be fudged:
+        /// the packed bytes must be identical, bit for bit.
+        ///
+        /// The domain is the **entire** `u32` range, not a plausible
+        /// slice of it, because the guarantee does not depend on the
+        /// magnitude: both paths perform the same `as f32` cast, so
+        /// they agree even where that cast rounds. An earlier draft of
+        /// this test sampled `0..=4096` and justified itself by a 2^24
+        /// bound below which the cast is lossless - which was the wrong
+        /// reason for a true conclusion, and under-claimed the result.
+        ///
+        /// The expectation recomputes the *plumbing* independently —
+        /// that `Sprite::new` takes its canvas size from the source and
+        /// that `pack` reads `sprite.source` — while deliberately
+        /// sharing `to_ndc`, `to_uv` and the packing loop with the code
+        /// under test. It is not two implementations; claiming that
+        /// would overstate it. What it owns is the field wiring, and
+        /// that is what a widening can get wrong.
+        ///
+        /// Probed with `x: region.x as u16 as f32` in `SubRegion::from`
+        /// — a truncation above 65535 — which reddens **this** test
+        /// and shrinks to `rx = 65536`. Chosen over the more obvious
+        /// off-by-one probe because that one also reddens
+        /// `packing_is_byte_exact_against_a_hand_computed_record`, and a
+        /// probe the existing suite already catches says nothing about
+        /// what this test adds.
+        #[test]
+        fn widening_a_region_packs_the_bytes_the_integer_path_packed(
+            rx in any::<u32>(),
+            ry in any::<u32>(),
+            rw in any::<u32>(),
+            rh in any::<u32>(),
+            cw in 1u32..=u32::MAX,
+            ch in 1u32..=u32::MAX,
+            aw in 1u32..=u32::MAX,
+            ah in 1u32..=u32::MAX,
+            x in -65536.0f32..=65536.0,
+            y in -65536.0f32..=65536.0,
+        ) {
+            let region = Region { x: rx, y: ry, width: rw, height: rh };
+            let c = canvas(cw, ch);
+            let atlas = Extent { width: aw, height: ah };
+
+            // The integer path, written out: what `pack` computed when
+            // the source rectangle had no fractional edges. The record
+            // carries the four corners, so the oracle names all four;
+            // an unturned, unscaled sprite's corners are its rectangle's,
+            // which is the branch `corners` takes here.
+            let canvas_min = Vec2::new(x, y);
+            let canvas_max = canvas_min + Vec2::new(rw as f32, rh as f32);
+            let texel_min = Vec2::new(rx as f32, ry as f32);
+            let texel_max = texel_min + Vec2::new(rw as f32, rh as f32);
+            let ndc_a = to_ndc(canvas_min, c);
+            let ndc_b = to_ndc(Vec2::new(canvas_max.x, canvas_min.y), c);
+            let ndc_c = to_ndc(Vec2::new(canvas_min.x, canvas_max.y), c);
+            let ndc_d = to_ndc(canvas_max, c);
+            let uv_min = to_uv(texel_min, atlas);
+            let uv_max = to_uv(texel_max, atlas);
+            let values: [f32; INSTANCE_LANES] = [
+                ndc_a.x, ndc_a.y, ndc_b.x, ndc_b.y,
+                ndc_c.x, ndc_c.y, ndc_d.x, ndc_d.y,
+                uv_min.x, uv_min.y, uv_max.x, uv_max.y,
+                1.0, 1.0, 1.0, 1.0,
+            ];
+            let mut expected = [0u8; INSTANCE_STRIDE];
+            for (slot, value) in expected.as_chunks_mut::<4>().0.iter_mut().zip(values) {
+                slot.copy_from_slice(&value.to_ne_bytes());
+            }
+
+            prop_assert_eq!(pack(&Sprite::new(region, x, y), c, atlas), expected);
+        }
+
+        /// A fractional source reaches the packer unrounded: the UVs
+        /// it produces are the fraction's own, not the enclosing
+        /// texel's. Without this, a float source rectangle would be a
+        /// type change with no capability behind it.
+        ///
+        /// Built straight from the `SubRegion`, which is the point of
+        /// `Sprite::new` taking anything that converts: a caller
+        /// holding a cut rectangle names no region it does not have.
+        #[test]
+        fn a_fractional_source_reaches_the_uvs_unrounded(
+            fx in 0.0f32..=1024.0,
+            fy in 0.0f32..=1024.0,
+            fw in 0.25f32..=1024.0,
+            fh in 0.25f32..=1024.0,
+        ) {
+            let atlas = Extent { width: 2048, height: 2048 };
+            let c = canvas(256, 256);
+            let source = SubRegion { x: fx, y: fy, width: fw, height: fh };
+            let sprite = Sprite::new(source, 0.0, 0.0);
+
+            let packed = pack(&sprite, c, atlas);
+            let uv = |slot: usize| {
+                let mut four = [0u8; 4];
+                four.copy_from_slice(&packed[slot * 4..slot * 4 + 4]);
+                f32::from_ne_bytes(four)
+            };
+            // Slots 8..12 are UV min then UV max, in declaration order,
+            // after the four corners.
+            prop_assert_eq!(uv(8).to_bits(), to_uv(Vec2::new(fx, fy), atlas).x.to_bits());
+            prop_assert_eq!(uv(9).to_bits(), to_uv(Vec2::new(fx, fy), atlas).y.to_bits());
+            prop_assert_eq!(
+                uv(10).to_bits(),
+                to_uv(Vec2::new(fx + fw, fy + fh), atlas).x.to_bits()
+            );
+            prop_assert_eq!(
+                uv(11).to_bits(),
+                to_uv(Vec2::new(fx + fw, fy + fh), atlas).y.to_bits()
+            );
         }
     }
 }

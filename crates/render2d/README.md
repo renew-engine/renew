@@ -58,18 +58,24 @@ else, which the build matrix proves by building and testing without it.
 
 ## What is here
 
-- `Canvas`, `Region`, `Sprite` — the pure vocabulary: a logical pixel
-  space (y down from the top-left), a rectangle of atlas texels, and
-  one placed, sized, tinted sprite, mirrored on either axis when asked
-  (`flip_x`/`flip_y` — a swap of the sampled edges, so the geometry and
-  its winding never move), turned about a fractional pivot and scaled
-  about it (`rotation` in turns — a quarter turn is `0.25`, clockwise on
-  screen; `pivot`, the centre by default; `scale` per axis, where a
-  negative factor is the geometric mirror). A uniform tint
-  `[a, a, a, a]` is a fade to `a` of the sprite's opacity: the tint is
-  premultiplied, so scaling all four channels is what "`a` as opaque"
-  means, and scaling only the fourth would brighten the sprite as it
-  faded.
+- `Canvas`, `Region`, `SubRegion`, `Sprite` — the pure vocabulary: a
+  logical pixel space (y down from the top-left), a rectangle of atlas
+  texels on texel boundaries, the same rectangle with sub-texel edges
+  for a cut or nine-sliced sprite, and one placed, sized, tinted
+  sprite, mirrored on either axis when asked (`flip_x`/`flip_y` — a swap
+  of the sampled edges, so the geometry and its winding never move),
+  turned about a fractional pivot and scaled about it (`rotation` in
+  turns — a quarter turn is `0.25`, clockwise on screen; `pivot`, the
+  centre by default; `scale` per axis, where a negative factor is the
+  geometric mirror). A sprite built from a whole `Region` packs the same
+  bytes it packed when the field was integral — both paths take the same
+  `as f32` cast, so they agree even for coordinates past 2^24 where that
+  cast rounds. ("Converts exactly" would be the stronger and false
+  claim: `Region { x: 16_777_217, .. }` widens to `16_777_216.0`.) A
+  uniform tint `[a, a, a, a]` is a fade to `a` of the sprite's opacity:
+  the tint is premultiplied, so scaling all four channels is what "`a`
+  as opaque" means, and scaling only the fourth would brighten the
+  sprite as it faded.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
@@ -111,7 +117,7 @@ Every sprite becomes one 64-byte record: seven attributes, sixteen
 | 1 | `Vec2` | corner b — the local top-right |
 | 2 | `Vec2` | corner c — the local bottom-left |
 | 3 | `Vec2` | corner d — the local bottom-right |
-| 4 | `Vec2` | UV at corner a — the region's min, or its max on a flipped axis |
+| 4 | `Vec2` | UV at corner a — the source's min, or its max on a flipped axis |
 | 5 | `Vec2` | UV at corner d |
 | 6 | `Vec4` | premultiplied tint |
 
@@ -133,11 +139,14 @@ together.
 
 Unit tests pin the maps (all four canvas corners, exact) and the packed
 bytes against hand-written records; a property test holds the ortho map
-monotone, corner-exact, and invertible over random canvases, and two
-more hold the batch fade to the premultiplied rule (every channel by
-the same factor, composing to the product, never brightening) and the
-batch offsets to adding; a flip swaps exactly the two UV lanes of its
-axis and nothing else, pinned lane by lane. The turn is pinned three
+monotone, corner-exact, and invertible over random canvases, two more
+hold the batch fade to the premultiplied rule (every channel by the
+same factor, composing to the product, never brightening) and the
+batch offsets to adding, and two more hold a whole `Region` widened
+into a `SubRegion` packing the bytes the integer field packed over the
+entire `u32` domain and a fractional source reaching the UVs unrounded;
+a flip swaps exactly the two UV lanes of its axis and nothing else,
+pinned lane by lane. The turn is pinned three
 ways: the untransformed sprite packs the rectangle bit for bit on a
 fixture whose general path would round; quarter and half turns and the
 negative-scale mirror permute integer corners exactly; and properties

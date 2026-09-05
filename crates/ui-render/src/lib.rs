@@ -12,12 +12,16 @@
 //! puts the dying underneath the living, so what CAN change abruptly
 //! is stacking, never existence.)
 //!
-//! **Clipping is CPU rectangle intersection.** Every node clips to the
-//! intersection of its ancestors' boxes, computed at capture and
-//! blended with the rest. The one atlas region v0 samples is a uniform
-//! white texel, so clipping the rectangle *is* clipping the image —
-//! the proportional-UV half of the job arrives with the first
-//! non-uniform region, where texel granularity has to be answered.
+//! **Clipping is CPU rectangle intersection, and the source is cut with
+//! it.** Every node clips to the intersection of its ancestors' boxes,
+//! computed at capture and blended with the rest, and the quad's source
+//! rectangle is cut by the same linear map that cut the rectangle — so
+//! the map is unchanged and every surviving pixel samples the texel it
+//! would have sampled uncut. The one atlas region v0 samples is still a
+//! uniform white texel, so no committed picture moves yet; the
+//! arithmetic is in place for the first non-uniform region, where texel
+//! granularity is answered by the proportion rather than by a rule of
+//! its own.
 //!
 //! **Emission is sprites.** One generated atlas (a white fill tile and
 //! a chrome tile beside it, reserved for borders), one premultiplied
@@ -37,7 +41,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use renew_math::Alpha;
-use renew_render2d::{Sprite, SpriteRenderer};
+use renew_render2d::{Sprite, SpriteRenderer, SubRegion};
 use renew_ui::{NodeId, Ui};
 
 pub mod atlas;
@@ -188,7 +192,7 @@ impl UiPresenter {
             if successor.present && successor.generation == old.generation {
                 return None;
             }
-            clipped(old.rect, old.clip, old.tint)
+            clipped(old.rect, old.clip, atlas::white().into(), old.tint)
         });
         let living = self.current.order.iter().filter_map(move |&index| {
             let entry = self.current.entries[index as usize];
@@ -201,7 +205,7 @@ impl UiPresenter {
             } else {
                 (entry.rect, entry.clip)
             };
-            clipped(rect, clip, entry.tint)
+            clipped(rect, clip, atlas::white().into(), entry.tint)
         });
         dying.chain(living)
     }
@@ -223,7 +227,7 @@ impl UiPresenter {
     pub fn emit(&self, alpha: Alpha, sprites: &mut SpriteRenderer) {
         for quad in self.frame(alpha) {
             sprites.push(
-                &Sprite::new(atlas::white(), quad.x, quad.y)
+                &Sprite::new(quad.source, quad.x, quad.y)
                     .size(quad.width, quad.height)
                     .tint(quad.tint),
             );
@@ -269,13 +273,54 @@ pub struct Quad {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// The atlas texels this quad samples, cut by the same proportion
+    /// that cut the rectangle. Today every node names the white texel,
+    /// so every source here is that one region and the picture is what
+    /// it was before quads carried a source at all.
+    pub source: SubRegion,
     /// Premultiplied RGBA.
     pub tint: [f32; 4],
 }
 
-/// Clip `rect` to `clip`: the visible quad, or `None` when nothing
-/// remains or the tint draws nothing at all.
-fn clipped(rect: [f32; 4], clip: [f32; 4], tint: [f32; 4]) -> Option<Quad> {
+/// Clip `rect` to `clip`, cutting `source` by the same proportion: the
+/// visible quad, or `None` when nothing remains or the tint draws
+/// nothing at all.
+///
+/// **The source is cut by the same linear map that cut the destination,
+/// so the map is unchanged and every surviving pixel samples the texel
+/// it would have sampled uncut.** Uncut, the shader interpolates between
+/// the source edges, so a pixel centre `p` maps to
+/// `u(p) = sx + sw*(p - x)/w`. Clipped to `[L, R]` the source runs from
+/// `su0 = sx + sw*(L - x)/w` to `su1 = sx + sw*(R - x)/w`, so
+/// `su1 - su0 = sw*(R - L)/w` and
+///
+/// ```text
+/// u'(p) = su0 + (p - L)/(R - L) * (su1 - su0)
+///       = sx + sw*(L - x)/w + sw*(p - L)/w
+///       = sx + sw*(p - x)/w
+///       = u(p)
+/// ```
+///
+/// Identically the same function. It holds by construction, and only
+/// because both fractions come from the same reciprocal - recomputing
+/// per edge is where an implementation loses it.
+///
+/// Two cases are exact rather than merely close. At 1:1 - every glyph,
+/// every nine-slice corner - `source.width / w` is a value divided by
+/// itself, exactly `1.0`, so the cut edge is `sx + (L - x)`: a
+/// difference and a sum of integers, bit-exact. At a power-of-two scale
+/// the reciprocal is exact too. Elsewhere the residue is a few ULPs,
+/// orders below the half texel that could move a `floor`.
+///
+/// Nearest-and-clamped sampling cannot bleed: `0 <= fx0 < fx1 <= 1`, so
+/// a cut only shrinks the sampled rectangle strictly inside the
+/// original, and the computed edges are additionally clamped into it so
+/// a rounding hair cannot reach a neighbouring asset.
+#[expect(
+    clippy::float_cmp,
+    reason = "the early-out fires exactly when no edge moved; a tolerance would take the cut path for a quad that was not cut, which is the one case this must not do"
+)]
+fn clipped(rect: [f32; 4], clip: [f32; 4], source: SubRegion, tint: [f32; 4]) -> Option<Quad> {
     if tint == [0.0, 0.0, 0.0, 0.0] {
         return None;
     }
@@ -287,11 +332,47 @@ fn clipped(rect: [f32; 4], clip: [f32; 4], tint: [f32; 4]) -> Option<Quad> {
     if right <= left || bottom <= top {
         return None;
     }
+
+    // Nothing was cut: four compares, no division, and the source
+    // passes through untouched - which is what carries every existing
+    // golden byte for byte.
+    if left == x && top == y && right == x + width && bottom == y + height {
+        return Some(Quad {
+            x,
+            y,
+            width,
+            height,
+            source,
+            tint,
+        });
+    }
+
+    let inv_w = 1.0 / width;
+    let inv_h = 1.0 / height;
+    let fx0 = (left - x) * inv_w;
+    let fx1 = (right - x) * inv_w;
+    let fy0 = (top - y) * inv_h;
+    let fy1 = (bottom - y) * inv_h;
+    let (sx, sy) = (source.x, source.y);
+    let (sw, sh) = (source.width, source.height);
+    // Clamped into the original source: the arithmetic above cannot
+    // leave it by more than a rounding step, and this makes "cannot" a
+    // fact rather than an argument.
+    let cut_left = sw.mul_add(fx0, sx).max(sx);
+    let cut_top = sh.mul_add(fy0, sy).max(sy);
+    let cut_right = sw.mul_add(fx1, sx).min(sx + sw);
+    let cut_bottom = sh.mul_add(fy1, sy).min(sy + sh);
     Some(Quad {
         x: left,
         y: top,
         width: right - left,
         height: bottom - top,
+        source: SubRegion {
+            x: cut_left,
+            y: cut_top,
+            width: cut_right - cut_left,
+            height: cut_bottom - cut_top,
+        },
         tint,
     })
 }
@@ -638,7 +719,237 @@ mod tests {
         assert_eq!(build(), build());
     }
 
+    /// **An uncut quad passes its source through untouched.**
+    ///
+    /// The early-out is what carries every existing golden: while no
+    /// node names anything but the white texel, a quad inside its clip
+    /// must reach the renderer with the identical source it started
+    /// with, bit for bit, and no division must have been performed to
+    /// get there.
+    ///
+    /// Probed by deleting the early-out so the general path runs on an
+    /// uncut quad: red here, because `1.0/w * w` is not `1.0` for every
+    /// `w`.
+    #[test]
+    fn an_uncut_quad_keeps_its_source_bit_for_bit() {
+        let source = SubRegion {
+            x: 2.0,
+            y: 2.0,
+            width: 4.0,
+            height: 4.0,
+        };
+        // Swept, and seeded with widths chosen against the code
+        // rather than for it.
+        //
+        // A single arbitrary width proves nothing here, and neither
+        // does a sweep of whole numbers: deleting the early-out leaves
+        // both green, because the round trip closes exactly for every
+        // integer width.
+        //
+        // The seeds below are the ones that break the expression the
+        // code actually evaluates - `((x + w) - x) * (1.0 / w)`, where
+        // the subtraction is the lossy step - rather than the tidier
+        // identity `w * (1.0 / w)`. The two disagree about which
+        // inputs are adversarial, and only the first is the one under
+        // test: 8.2 million f32 widths between 1 and 4096 lose bits
+        // this way, the smallest being 1.0000001, and without the
+        // early-out an uncut source of width 4 comes back as 3.9999995.
+        let clip = [0.0, 0.0, 100_000.0, 100_000.0];
+        for span in [
+            f32::from_bits(0x3f80_0001),
+            f32::from_bits(0x3f80_0002),
+            f32::from_bits(0x3f80_0003),
+        ] {
+            let quad = clipped([10.0, 20.0, span, span + 1.0], clip, source, [1.0; 4])
+                .expect("an uncut quad is visible");
+            assert_eq!(
+                [quad.source.x.to_bits(), quad.source.width.to_bits()],
+                [source.x.to_bits(), source.width.to_bits()],
+                "an uncut quad of span {span} went through the cut"
+            );
+        }
+        let mut span = 1.0f32;
+        while span <= 2000.0 {
+            let quad = clipped([10.0, 20.0, span, span + 1.0], clip, source, [1.0; 4])
+                .expect("an uncut quad is visible");
+            assert_eq!(
+                [
+                    quad.source.x.to_bits(),
+                    quad.source.y.to_bits(),
+                    quad.source.width.to_bits(),
+                    quad.source.height.to_bits()
+                ],
+                [
+                    source.x.to_bits(),
+                    source.y.to_bits(),
+                    source.width.to_bits(),
+                    source.height.to_bits()
+                ],
+                "an uncut quad of span {span} went through the cut"
+            );
+            span += 1.0;
+        }
+    }
+
+    /// **At 1:1 on whole pixels the cut is bit-exactly integral** - the
+    /// case every glyph and every nine-slice corner lands in.
+    ///
+    /// At 1:1 the scale `source.width / width` is a value divided by
+    /// itself, exactly `1.0` in IEEE, so the cut edge is `sx + (L - x)`:
+    /// a difference and a sum of small integers, exact. If this were
+    /// merely close, text clipped by a scroll viewport would sample
+    /// half a neighbouring glyph.
+    ///
+    /// A 16x16 source drawn at 16x16 pixels, clipped three pixels in
+    /// from the left and five from the top, eight wide and eight tall.
+    #[test]
+    fn a_one_to_one_cut_lands_on_whole_texels() {
+        let source = SubRegion {
+            x: 32.0,
+            y: 48.0,
+            width: 16.0,
+            height: 16.0,
+        };
+        let quad = clipped(
+            [100.0, 200.0, 16.0, 16.0],
+            [103.0, 205.0, 111.0, 213.0],
+            source,
+            [1.0, 1.0, 1.0, 1.0],
+        )
+        .expect("visible");
+        assert_eq!(quad.source.x.to_bits(), 35.0f32.to_bits(), "cut left texel");
+        assert_eq!(quad.source.y.to_bits(), 53.0f32.to_bits(), "cut top texel");
+        assert_eq!(quad.source.width.to_bits(), 8.0f32.to_bits(), "cut width");
+        assert_eq!(quad.source.height.to_bits(), 8.0f32.to_bits(), "cut height");
+    }
+
+    /// **A non-positive span is invisible, and the edge test is what
+    /// makes it so** - there is no separate guard, because there is no
+    /// room for one to matter.
+    ///
+    /// The design this implements specified an explicit
+    /// `width <= 0.0 || height <= 0.0` guard ahead of the reciprocal.
+    /// It was written, and then removed, because a probe would not
+    /// redden it: `right > left` requires
+    /// `min(x + width, clip.2) > max(x, clip.0) >= x`, hence
+    /// `x + width > x`, hence `width > 0`. The division is reached only
+    /// when both spans are already positive, so the guard was
+    /// unreachable - and it would not have helped against the one case
+    /// people reach for it for, since `width <= 0.0` is false for NaN
+    /// and `(x + NaN).min(c)` returns `c` rather than NaN.
+    ///
+    /// What is left is worth pinning on its own: these rectangles draw
+    /// nothing. Probed by weakening the edge test to `right < left`,
+    /// which lets a zero-width rectangle through to a division by zero:
+    /// red here.
+    #[test]
+    fn a_non_positive_span_draws_nothing() {
+        let source = SubRegion {
+            x: 2.0,
+            y: 2.0,
+            width: 4.0,
+            height: 4.0,
+        };
+        let clip = [-1000.0, -1000.0, 1000.0, 1000.0];
+        let opaque = [1.0, 1.0, 1.0, 1.0];
+        assert_eq!(clipped([5.0, 5.0, 0.0, 10.0], clip, source, opaque), None);
+        assert_eq!(clipped([5.0, 5.0, 10.0, 0.0], clip, source, opaque), None);
+        assert_eq!(clipped([5.0, 5.0, -3.0, 10.0], clip, source, opaque), None);
+    }
+
     proptest::proptest! {
+        /// **A cut samples what the uncut quad would have sampled.**
+        ///
+        /// Three statements over arbitrary geometry, and the third is
+        /// the one that matters. *Contained*: the cut source never
+        /// leaves the original, so nearest-and-clamped sampling cannot
+        /// reach a neighbour's art. *Proportional*: texels-per-pixel is
+        /// unchanged, so nothing is stretched by being clipped. *Same
+        /// map*: for pixel centres across the surviving span, the UV
+        /// the cut quad interpolates equals the one the uncut quad
+        /// would have, which is the actual correctness claim - the
+        /// other two are its corollaries.
+        ///
+        /// The tolerance is relative to the source extent because the
+        /// residue is a few ULPs of it; the claim being tested is not
+        /// "close enough to look right" but "the same linear function,
+        /// evaluated in floating point".
+        ///
+        /// Probed by recomputing the reciprocal per edge
+        /// (`(right - x) / width` in place of `(right - x) * inv_w`):
+        /// still close, and still red here at the tolerance below,
+        /// which is the point of stating the claim this way.
+        #[test]
+        fn a_cut_source_samples_what_the_uncut_quad_would_have(
+            x in -500.0f32..500.0,
+            y in -500.0f32..500.0,
+            w in 1.0f32..1000.0,
+            h in 1.0f32..1000.0,
+            cut_l in 0.1f32..1.0,
+            cut_r in 0.1f32..1.0,
+            sx in 0.0f32..2000.0,
+            sy in 0.0f32..2000.0,
+            sw in 0.5f32..512.0,
+            sh in 0.5f32..512.0,
+        ) {
+            // A clip that bites into the rectangle from both sides by a
+            // random fraction, so the cut path is the one exercised. The
+            // fractions start at a tenth rather than at zero because a
+            // vanishing bite is the early-out, not a cut: proptest shrinks
+            // toward zero, and every assertion below is trivially true of
+            // an uncut quad, so a property drawn from zero would stay green
+            // against a `clipped` that never cut anything at all. The
+            // assertion after the call holds the range to that promise.
+            let lo = cut_l.min(cut_r);
+            let hi = cut_l.max(cut_r);
+            let clip = [
+                w.mul_add(lo * 0.5, x),
+                h.mul_add(lo * 0.5, y),
+                w.mul_add(1.0 - hi * 0.5, x),
+                h.mul_add(1.0 - hi * 0.5, y),
+            ];
+            let source = SubRegion { x: sx, y: sy, width: sw, height: sh };
+            if let Some(q) = clipped([x, y, w, h], clip, source, [1.0, 1.0, 1.0, 1.0]) {
+                // The cut really happened: without this the property is
+                // satisfied by the quad it was handed back unchanged.
+                proptest::prop_assert!(
+                    q.width < w && q.height < h,
+                    "the clip took the early-out: {} x {} of {} x {}",
+                    q.width, q.height, w, h
+                );
+
+                let slack = 1e-4 * (1.0 + sw.max(sh));
+
+                // Contained.
+                proptest::prop_assert!(q.source.x >= source.x);
+                proptest::prop_assert!(q.source.y >= source.y);
+                proptest::prop_assert!(q.source.x + q.source.width <= source.x + sw + slack);
+                proptest::prop_assert!(q.source.y + q.source.height <= source.y + sh + slack);
+                proptest::prop_assert!(q.source.width >= 0.0 && q.source.height >= 0.0);
+
+                // Proportional: texels per pixel is what it was.
+                proptest::prop_assert!(
+                    (q.source.width / q.width - sw / w).abs() <= 1e-3 * (1.0 + sw / w)
+                );
+                proptest::prop_assert!(
+                    (q.source.height / q.height - sh / h).abs() <= 1e-3 * (1.0 + sh / h)
+                );
+
+                // The same map, sampled across the surviving span.
+                for step in 0u8..=8 {
+                    let t = f32::from(step) / 8.0;
+                    let p = q.width.mul_add(t, q.x);
+                    let uncut = sw.mul_add((p - x) / w, sx);
+                    let cut = q.source.width.mul_add((p - q.x) / q.width, q.source.x);
+                    proptest::prop_assert!(
+                        (cut - uncut).abs() <= slack,
+                        "at t={} the cut samples {} where the uncut quad sampled {}",
+                        t, cut, uncut
+                    );
+                }
+            }
+        }
+
         /// However rectangles and clips fall, a clipped quad sits
         /// inside both and clipping is stable — to within a few
         /// rounding steps, because the quad stores a width whose
@@ -668,7 +979,7 @@ mod tests {
                 [clip_b[0], clip_b[1], clip_b[0] + clip_b[2].abs(), clip_b[1] + clip_b[3].abs()],
             );
             let tint = [1.0, 1.0, 1.0, 1.0];
-            if let Some(quad) = clipped(rect, clip, tint) {
+            if let Some(quad) = clipped(rect, clip, atlas::white().into(), tint) {
                 let mag =
                     quad.x.abs() + quad.y.abs() + quad.width.abs() + quad.height.abs();
                 let within = |value: f32, bound: f32| value <= bound + step(mag + bound.abs());
@@ -682,8 +993,13 @@ mod tests {
                 proptest::prop_assert!(quad.width > 0.0 && quad.height > 0.0);
                 // Stable: clipping the clipped quad moves nothing by
                 // more than the one rounding step above.
-                let again = clipped([quad.x, quad.y, quad.width, quad.height], clip, tint)
-                    .expect("a visible quad stays visible");
+                let again = clipped(
+                    [quad.x, quad.y, quad.width, quad.height],
+                    clip,
+                    atlas::white().into(),
+                    tint,
+                )
+                .expect("a visible quad stays visible");
                 proptest::prop_assert!(close(again.x, quad.x));
                 proptest::prop_assert!(close(again.y, quad.y));
                 proptest::prop_assert!(close(again.width, quad.width));
@@ -698,7 +1014,12 @@ mod tests {
         ) {
             let clip = [f32::MIN, f32::MIN, f32::MAX, f32::MAX];
             proptest::prop_assert_eq!(
-                clipped([rect[0], rect[1], rect[2] + 1.0, rect[3] + 1.0], clip, [0.0; 4]),
+                clipped(
+                    [rect[0], rect[1], rect[2] + 1.0, rect[3] + 1.0],
+                    clip,
+                    atlas::white().into(),
+                    [0.0; 4]
+                ),
                 None
             );
         }
