@@ -24,8 +24,8 @@ static SPRITE_FS_SPV: &[u8] = include_bytes!("../shaders/sprite.frag.spv");
 const SPRITE_LAYOUT: &[VertexAttribute] = &[
     VertexAttribute::Vec2, // NDC min
     VertexAttribute::Vec2, // NDC max
-    VertexAttribute::Vec2, // UV min
-    VertexAttribute::Vec2, // UV max
+    VertexAttribute::Vec2, // UV at the first corner (swapped by a flip)
+    VertexAttribute::Vec2, // UV at the last corner
     VertexAttribute::Vec4, // premultiplied tint
 ];
 

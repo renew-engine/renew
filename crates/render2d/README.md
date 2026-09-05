@@ -18,10 +18,13 @@ else, which the build matrix proves by building and testing without it.
 - **Fill order is draw order.** Sprites composite in exactly the order
   pushed — painter's algorithm. **No sort keys, no batch splitting**; a
   caller that wants order sorts before pushing.
-- **Everything is premultiplied.** Atlas texels and tints alike carry
-  their alpha multiplied into their color channels, and the pipeline
-  composites `src + dst * (1 - src.a)`. Bytes that break the convention
-  composite wrong — visibly, not unsafely.
+- **Everything composites premultiplied.** Atlas bytes are authored,
+  straight alpha: the hardware decodes them on sample and the fragment
+  stage multiplies each texel's colour by its alpha. Tints are
+  premultiplied by the caller. The pipeline composites
+  `src + dst * (1 - src.a)`. Bytes that break either convention —
+  already-premultiplied atlas bytes, a straight-alpha tint — composite
+  wrong, visibly, not unsafely.
 - **All allocations happen at creation.** `begin`, `push`, and `item`
   allocate nothing; a gate measures it over frames it first proves are
   alive and drawing — including the caller-side frame composition,
@@ -41,11 +44,18 @@ else, which the build matrix proves by building and testing without it.
 
 - `Canvas`, `Region`, `Sprite` — the pure vocabulary: a logical pixel
   space (y down from the top-left), a rectangle of atlas texels, and
-  one placed, sized, tinted sprite.
-- `AtlasDesc` — dimensions plus premultiplied RGBA8 bytes. This crate
-  parses nothing: where the bytes come from (an asset pack, a test
-  fixture) is the caller's business, and the untrusted-input surface
-  here is zero.
+  one placed, sized, tinted sprite, mirrored on either axis when asked
+  (`flip_x`/`flip_y` — a swap of the sampled edges, so the geometry and
+  its winding never move). A uniform tint `[a, a, a, a]` is a fade to
+  `a` of the sprite's opacity: the tint is premultiplied, so scaling all
+  four channels is what "`a` as opaque" means, and scaling only the
+  fourth would brighten the sprite as it faded.
+- `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
+  bytes: the hardware decodes them on sample and the fragment stage
+  premultiplies afterwards, so handing this API already-premultiplied
+  bytes double-multiplies them. This crate parses nothing: where the
+  bytes come from (an asset pack, a test fixture) is the caller's
+  business, and the untrusted-input surface here is zero.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
   (premultiplied blending, nearest/clamped sampling) and the per-frame
   buffer; `begin`/`push` fill; `set_offset` and `set_alpha` move and
@@ -66,6 +76,27 @@ The ortho and UV maps run on the CPU at push time — each instance
 carries its own NDC rectangle, so no uniform, matrix, or push constant
 exists anywhere in the crate.
 
+## The instance record
+
+Every sprite becomes one 48-byte record: five attributes, twelve
+`f32`s, native-endian, in the order the vertex stage declares them.
+
+| location | attribute | content |
+|---|---|---|
+| 0 | `Vec2` | NDC min corner |
+| 1 | `Vec2` | NDC max corner |
+| 2 | `Vec2` | UV at the first corner — the region's min, or its max on a flipped axis |
+| 3 | `Vec2` | UV at the last corner |
+| 4 | `Vec4` | premultiplied tint |
+
+`Sprite::instance(canvas, atlas)` packs one without a device, as an
+opaque `Instance` whose `bytes()` are what `push` writes when no batch
+offset or fade is set — `push` applies the batch state first, then
+packs. Public so the packer can be timed and pinned; opaque so the
+layout stays the pipeline's: the shader's locations, the layout slice
+in the device half and the packer describe the same bytes and change
+together.
+
 ## Testing
 
 Unit tests pin the maps (all four canvas corners, exact) and the packed
@@ -73,9 +104,11 @@ bytes against hand-written records; a property test holds the ortho map
 monotone, corner-exact, and invertible over random canvases, and two
 more hold the batch fade to the premultiplied rule (every channel by
 the same factor, composing to the product, never brightening) and the
-batch offsets to adding. A computed image oracle proves placement,
-region selection, fill-order overwrite and the batch offset byte-exactly
-on every adapter; a committed golden proves the
+batch offsets to adding; a flip swaps exactly the two UV lanes of its
+axis and nothing else, pinned lane by lane. A computed image oracle
+proves placement, region selection, fill-order overwrite, the batch
+offset and both mirrors byte-exactly on every adapter; a committed
+golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed
