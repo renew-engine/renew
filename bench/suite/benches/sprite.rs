@@ -95,9 +95,34 @@ fn sprite_pack(c: &mut Criterion) {
             .collect();
         b.iter(|| {
             for sprite in &sprites {
-                // Fenced by value: the record is forty-eight bytes the
-                // renderer would copy into its scratch, and a fold would
-                // let the optimiser skip lanes nothing reads.
+                // Fenced by value: the record is the bytes the renderer
+                // would copy into its scratch, and a fold would let the
+                // optimiser skip lanes nothing reads.
+                black_box(sprite.instance(canvas, atlas));
+            }
+        });
+    });
+    c.bench_function("sprite_pack_transformed_2048", |b| {
+        // The same sprites, every one turned and scaled: the pivot
+        // arithmetic and the crate's own sine and cosine, per sprite.
+        let Some(canvas) = Canvas::new(320, 240) else {
+            unreachable!("320 by 240 is nonzero");
+        };
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprites: Vec<Sprite> = destinations()
+            .iter()
+            .map(|rect| {
+                Sprite::new(WHITE, rect[0], rect[1])
+                    .size(rect[2], rect[3])
+                    .rotation(0.05)
+                    .scale(1.5, 0.75)
+            })
+            .collect();
+        b.iter(|| {
+            for sprite in &sprites {
                 black_box(sprite.instance(canvas, atlas));
             }
         });

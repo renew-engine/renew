@@ -7,7 +7,7 @@ reject. Same ritual as the rendering crate's `shaders/` directory.
 
 ## Compile record (provenance)
 
-Compiled 2026-08-03 with `glslc` from the pinned Vulkan SDK 1.4.328.1,
+Compiled 2026-09-05 with `glslc` from the pinned Vulkan SDK 1.4.328.1,
 version output observed at compile time:
 
 ```
@@ -21,6 +21,11 @@ Target: SPIR-V 1.0
 > glslc -O sprite.vert -o sprite.vert.spv
 > glslc -O sprite.frag -o sprite.frag.spv
 ```
+
+`sprite.vert.spv` (1592 bytes) is the four-corner vertex stage compiled
+that day; `sprite.frag.spv` (740 bytes) was recompiled from its
+unchanged source by the same compiler and compared byte for byte
+against the committed blob, which it reproduced.
 
 To recompile: install the same SDK version, run the same commands, and
 update this record with the observed `--version` output in the same

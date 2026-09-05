@@ -155,6 +155,14 @@ fn steady_state_fill_and_render_allocates_nothing() {
             [255, 0, 0, 255],
             "{when}: the fixed sprite never drew — the gate would measure a blank frame"
         );
+        // The turned sprite's centre pixel: its centre is under a
+        // pixel from the pivot, inside the square at any angle, so the
+        // trigonometry path is proved to be drawing inside the window.
+        assert_eq!(
+            pixel_at(pixels, 44, 12),
+            [255, 0, 0, 255],
+            "{when}: the turned sprite never drew"
+        );
         let wander_x = WANDER[index % WANDER.len()];
         #[allow(
             clippy::cast_possible_truncation,
@@ -188,6 +196,10 @@ fn steady_state_fill_and_render_allocates_nothing() {
                 .flip_x(true)
                 .flip_y(true),
         );
+        // A turned sprite, so the sine-and-cosine path is inside the
+        // measured window too; it sits clear of every pixel the
+        // liveness checks read except its own centre.
+        renderer.push(&Sprite::new(RED, 40.0, 8.0).size(8.0, 8.0).rotation(0.11));
         assert!(
             renderer.sprites() > 0,
             "the measured frame must be non-empty"
