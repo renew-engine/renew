@@ -310,13 +310,16 @@ jobs:
           cargo build $sel
           cargo test $sel
       # The particle pool: arithmetic over the seeded generator. Its
-      # one consumer is the voxel game, which bursts dust on a broken
-      # block behind its render feature — excluded with it, as the
-      # removability rule asks of dependents. renew-bench reaches the
-      # pool from its bench targets, like the job pool before it.
+      # consumers are the voxel game, which bursts dust on a broken
+      # block behind its render feature, and the side-scroller, whose
+      # crash sparks are in its NORMAL graph — the pool's pure half
+      # needs no GPU, so that game carries it headless. Both are
+      # excluded with it, as the removability rule asks of dependents.
+      # renew-bench reaches the pool from its bench targets, like the
+      # job pool before it.
       - name: Build and test without the particle pool
         run: |
-          sel="--workspace --exclude renew-particles --exclude renew-sample-cube --exclude renew-bench"
+          sel="--workspace --exclude renew-particles --exclude renew-sample-cube --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-particles $sel
           cargo build $sel
           cargo test $sel

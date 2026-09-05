@@ -27,6 +27,7 @@ use renew_sample_glide_world::{Action, VIEW_HEIGHT, VIEW_WIDTH, World};
 #[cfg(feature = "audio")]
 use crate::audio::Audio;
 use crate::cli::{Options, Report};
+use crate::effects::Effects;
 use crate::scene::{Presentation, SceneSprite, Tile};
 use crate::{SampleError, scripted};
 
@@ -52,8 +53,10 @@ const BIRD_TEXEL: [u8; 4] = [255, 208, 0, 255];
 /// its negative paints the same shape.
 const BEAK_TEXEL: [u8; 4] = [255, 96, 0, 255];
 const PIPE_TEXEL: [u8; 4] = [0, 160, 40, 255];
+/// The spark texel: opaque white, so what a spark shows is its tint.
+const SPARK_TEXEL: [u8; 4] = [255, 255, 255, 255];
 const ATLAS_EXTENT: Extent = Extent {
-    width: 8,
+    width: 16,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
@@ -64,6 +67,13 @@ const BIRD_REGION: Region = Region {
 };
 const PIPE_REGION: Region = Region {
     x: 5,
+    y: 0,
+    width: 2,
+    height: 2,
+};
+/// White: a spark shows its tint and nothing of its own.
+const SPARK_REGION: Region = Region {
+    x: 9,
     y: 0,
     width: 2,
     height: 2,
@@ -81,9 +91,10 @@ const WEDGE_AFTER: Nanos = Nanos::from_nanos(5_000_000_000);
 /// where a window manager sends resizes.
 const REBUILD_AFTER_FRAME: u64 = 2;
 
-/// Sprite capacity: worst case is five pipes as two bars each plus the
-/// bird; headroom beyond that.
-const SPRITE_CAPACITY: u32 = 32;
+/// Sprite capacity for the world layer: the scene plus a full spark
+/// pool, named once in `scene` so this driver and the offscreen oracle
+/// size the same batch.
+const SPRITE_CAPACITY: u32 = crate::scene::SPRITE_BUDGET;
 
 /// Open the window and play until closed, wedged, or the tick bound.
 pub fn run(options: &Options) -> Result<Report, SampleError> {
@@ -230,6 +241,10 @@ pub struct GlideApp {
     /// them draws between them rather than repeating whichever tick
     /// happened last.
     presentation: Presentation,
+    /// The crash sparks. Presentation state like the snapshots above,
+    /// seeded from the world and advanced beside them, never read by
+    /// anything the digest covers.
+    effects: Effects,
     /// How far past the last executed step this frame stands. Stored
     /// rather than passed, because drawing is an event the platform
     /// raises and not a tail of the update that computed it.
@@ -275,6 +290,7 @@ impl GlideApp {
             seed: options.seed,
             ticks_wanted: options.window_ticks,
             presentation: Presentation::new(&world),
+            effects: Effects::new(&world),
             alpha: Alpha::ZERO,
             world,
             input: scripted::input_map(),
@@ -315,13 +331,14 @@ impl GlideApp {
     /// rotated edge resolves to a texel inside its own region only up to
     /// rounding — and the beak is what makes a tilt's sign visible,
     /// since a solid square looks the same tilted either way.
-    fn atlas_bytes() -> [u8; 64] {
-        let mut bytes = [0u8; 64];
+    fn atlas_bytes() -> [u8; 128] {
+        let mut bytes = [0u8; 128];
         for (index, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let texel = match index % 8 {
+            let texel = match index % 16 {
                 1 => BIRD_TEXEL,
                 2 => BEAK_TEXEL,
                 5 | 6 => PIPE_TEXEL,
+                9 | 10 => SPARK_TEXEL,
                 _ => [0, 0, 0, 0],
             };
             chunk.copy_from_slice(&texel);
@@ -400,18 +417,21 @@ impl GlideApp {
             return;
         };
         self.presentation.fill(self.alpha, &mut self.scene_scratch);
+        self.effects.fill(&mut self.scene_scratch);
         renderer.begin();
         for sprite in &self.scene_scratch {
             let region = match sprite.tile {
                 Tile::Bird => BIRD_REGION,
                 Tile::Pipe => PIPE_REGION,
+                Tile::Spark => SPARK_REGION,
             };
             renderer.push(
                 &Sprite::new(region, sprite.x, sprite.y)
                     .size(sprite.width, sprite.height)
                     .rotation(sprite.rotation)
                     .saturation(sprite.saturation)
-                    .smear(sprite.smear[0], sprite.smear[1]),
+                    .smear(sprite.smear[0], sprite.smear[1])
+                    .tint(sprite.tint),
             );
         }
         // The UI over the world: the score always, the menu when
@@ -549,6 +569,15 @@ impl GlideApp {
                     // the old one's last position and drag every pipe
                     // across the screen for one interval.
                     self.presentation = Presentation::new(&self.world);
+                    // The sparks belong to that world too, and for a
+                    // sharper reason: they are the *record of a death*
+                    // that no longer happened. Kept across a restart,
+                    // two dozen of them would go on falling over a bird
+                    // that is alive again, for the rest of their
+                    // lifetime — and the pool's liveness edge would
+                    // already be armed, so the next death would not
+                    // burst.
+                    self.effects = Effects::new(&self.world);
                     self.alpha = Alpha::ZERO;
                     self.pending_flaps = 0;
                 }
@@ -591,6 +620,9 @@ impl GlideApp {
                 // that runs three catch-up steps must leave the earlier
                 // capture one tick back, not three.
                 self.presentation.capture(&self.world);
+                // Beside the capture and for the same reason: once per
+                // EXECUTED step, so the pool ages by the simulation.
+                self.effects.observe(&self.world);
             }
             self.input.advance();
             // The factor moves only while the world does. The plan's
@@ -1369,6 +1401,50 @@ mod tests {
             "the restarted bird stands at {}, not near a new world's {} — the captures              still reach into the world that was replaced",
             restarted_bird.y,
             fresh_bird.y
+        );
+    }
+
+    /// A restart replaces the sparks with the world too.
+    ///
+    /// Sharper than the captures above: the sparks are the record of a
+    /// *death that no longer happened*. Left in the pool across a
+    /// restart they would go on falling over a bird that is alive again
+    /// for the rest of their lifetime — and worse, the pool's liveness
+    /// edge would already be armed, so the next death would not burst at
+    /// all.
+    ///
+    /// Probed by deleting the `self.effects = ...` line from the restart
+    /// block: red here, and green everywhere else in the crate.
+    #[test]
+    fn a_restart_replaces_the_sparks_with_the_world() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // Far enough for the bird to hit the floor and burst: the
+        // windowed driver's bird never flaps unless a key is pressed.
+        for tick in 1..=140u64 {
+            app.update_at(Timestamp::from_nanos(tick * STEP), &mut control);
+        }
+        assert!(!app.world.alive(), "premise: the bird must have died");
+        let burst = app.effects.live();
+        assert!(burst > 0, "premise: the crash must have thrown sparks");
+
+        escape(&mut app);
+        app.size = Extent {
+            width: VIEW_WIDTH,
+            height: VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 1);
+        click_physical(&mut app, x, y);
+        app.update_at(Timestamp::from_nanos(141 * STEP), &mut control);
+        assert!(
+            app.world.alive(),
+            "premise: the restarted world must be alive again"
+        );
+
+        assert_eq!(
+            app.effects.live(),
+            0,
+            "the dead bird's sparks outlived it and are falling over a living one"
         );
     }
 

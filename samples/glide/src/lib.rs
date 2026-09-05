@@ -19,6 +19,7 @@
 //! contract is the driver's contract.
 
 mod cli;
+pub mod effects;
 mod error;
 pub mod menu;
 pub mod scene;
@@ -34,8 +35,9 @@ mod trace;
 mod windowed;
 
 pub use cli::{Options, Report};
+pub use effects::Effects;
 pub use error::SampleError;
-pub use scene::{SceneSprite, Tile, scene};
+pub use scene::{SPRITE_BUDGET, SceneSprite, Tile, scene};
 pub use scripted::world_at;
 pub use sound::{TickSounds, tick_sounds};
 pub use trace::{by_name, names};

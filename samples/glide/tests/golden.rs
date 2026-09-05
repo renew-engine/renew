@@ -6,11 +6,14 @@
 //! proves the state *looks* right — placement, occlusion, the corpse
 //! where the rules froze it — which is the half no hash can see.
 //!
-//! Three checkpoints over two committed traces: `soar` alive among
+//! Four checkpoints over two committed traces: `soar` alive among
 //! pipes, the same trace earlier at its fastest dive — where the bird
-//! is smeared along its fall — and `sink` a still life (death freezes
-//! pipe advance, and a corpse does not smear). Exact comparison
-//! on the pinned software-rasterizer lane via the candidate ritual;
+//! is smeared along its fall — `sink` a still life (death freezes pipe
+//! advance, and a corpse does not smear), and the crash six ticks after
+//! that fall ends, where sparks are still in the air. Exact comparison
+//! on the pinned software-rasterizer lane via the candidate ritual —
+//! except the crash, whose stacked additive light is not reproducible
+//! across the runner pool and is compared within a stated tolerance;
 //! structural assertions everywhere else. Golden-based rather than
 //! computed on purpose: the coming linear-space change kills computed
 //! pixels, and these images re-golden through the refresh ritual.
@@ -26,7 +29,7 @@ use renew_rhi::{
     AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
     Validation,
 };
-use renew_sample_glide::{SceneSprite, Tile, scene, world_at};
+use renew_sample_glide::{Effects, SPRITE_BUDGET, SceneSprite, Tile, scene, world_at};
 use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH, World};
 
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions — the sky.
@@ -48,14 +51,38 @@ const BIRD_BYTES: [u8; 4] = [255, 208, 0, 255];
 /// as the tilt goes positive.
 const BEAK_BYTES: [u8; 4] = [255, 96, 0, 255];
 const PIPE_BYTES: [u8; 4] = [0, 160, 40, 255];
+/// The spark texel: opaque white, so what a spark shows is its tint.
+const SPARK_BYTES: [u8; 4] = [255, 255, 255, 255];
 
-/// The 8×2 test card: an opaque bird region whose right column is the
-/// beak, an opaque pipe region, and a transparent texel on every side of
-/// both — the gutter a turned sprite needs, because a rotated edge
-/// resolves to a texel inside its own region only up to rounding, and
-/// without it a corner would sample its neighbour's art.
+/// The tick the `sink` bird hits the floor — observed by re-flying the
+/// trace, and asserted as a premise by the crash checkpoint rather than
+/// trusted here.
+const DEATH_TICK: u64 = 108;
+/// Six ticks after the crash: the burst is a tenth of a second old, so
+/// every spark is still in the air and none has expired.
+const CRASH_TICK: u64 = DEATH_TICK + 6;
+
+/// The 16×2 test card: an opaque bird region whose right column is the
+/// beak, an opaque pipe region, a white spark region the tint colours,
+/// and a transparent texel on every side of each — the gutter a turned
+/// sprite needs, because a rotated edge resolves to a texel inside its
+/// own region only up to rounding, and without it a corner would sample
+/// its neighbour's art. Every sprite this game draws now turns: the
+/// bird tilts, and a spark spins.
+///
+/// **Sixteen wide, not twelve, and that is arithmetic rather than
+/// roundness.** A region's UV is its texel index over the atlas width,
+/// and the fragment stage interpolates between two of them across the
+/// quad. At a power-of-two width every such UV is a dyadic rational and
+/// exactly representable; at twelve, `1/12` is not, and the boundary
+/// between the bird's two texel columns lands a hair either side of
+/// itself. On the corpse — the most turned sprite this game draws —
+/// that moved three pixels of its diagonal body/beak edge from one
+/// colour to the other, which is a committed picture changing for no
+/// reason anybody asked for. Sixteen costs four unused columns and
+/// keeps every picture still.
 const ATLAS_EXTENT: Extent = Extent {
-    width: 8,
+    width: 16,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
@@ -70,15 +97,24 @@ const PIPE_REGION: Region = Region {
     width: 2,
     height: 2,
 };
+/// White, so a spark's colour is entirely its tint's — the region
+/// carries coverage and nothing else.
+const SPARK_REGION: Region = Region {
+    x: 9,
+    y: 0,
+    width: 2,
+    height: 2,
+};
 
 fn atlas_bytes() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(8 * 2 * 4);
+    let mut bytes = Vec::with_capacity(16 * 2 * 4);
     for _y in 0..2u32 {
-        for x in 0..8u32 {
+        for x in 0..16u32 {
             let texel = match x {
                 1 => BIRD_BYTES,
                 2 => BEAK_BYTES,
                 5 | 6 => PIPE_BYTES,
+                9 | 10 => SPARK_BYTES,
                 _ => [0, 0, 0, 0],
             };
             bytes.extend_from_slice(&texel);
@@ -150,11 +186,15 @@ fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Re
     std::fs::write(path, ppm)
 }
 
-/// Render `world`'s scene once and read it back.
-fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
+/// Render `world`'s scene once and read it back, with `effects`' live
+/// sparks drawn over it.
+///
+/// The sparks are appended after the scene, which is what puts them on
+/// top: this crate's fill order is draw order.
+fn capture(device: &Device, world: &World, effects: &Effects) -> Result<Vec<u8>, String> {
     let atlas = atlas_bytes();
     let canvas = Canvas::new(VIEW_WIDTH, VIEW_HEIGHT).ok_or("zero view")?;
-    let capacity = core::num::NonZeroU32::new(32).ok_or("zero capacity")?;
+    let capacity = core::num::NonZeroU32::new(SPRITE_BUDGET).ok_or("zero capacity")?;
     let mut renderer = SpriteRenderer::new(
         device,
         &AtlasDesc::new(ATLAS_EXTENT, &atlas),
@@ -172,18 +212,21 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
 
     let mut sprites: Vec<SceneSprite> = Vec::new();
     scene(world, &mut sprites);
+    effects.fill(&mut sprites);
     renderer.begin();
     for sprite in &sprites {
         let region = match sprite.tile {
             Tile::Bird => BIRD_REGION,
             Tile::Pipe => PIPE_REGION,
+            Tile::Spark => SPARK_REGION,
         };
         renderer.push(
             &Sprite::new(region, sprite.x, sprite.y)
                 .size(sprite.width, sprite.height)
                 .rotation(sprite.rotation)
                 .saturation(sprite.saturation)
-                .smear(sprite.smear[0], sprite.smear[1]),
+                .smear(sprite.smear[0], sprite.smear[1])
+                .tint(sprite.tint),
         );
     }
     let color = [renew_rhi::color_attachment(SKY)];
@@ -204,6 +247,34 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
     Ok(pixels)
 }
 
+/// Re-fly the `sink` trace — a bird that never flaps — to `ticks`,
+/// observing the effects after every executed step.
+///
+/// **Re-flown rather than replayed** because the effects are a function
+/// of the world's *history*, not of any one state: the burst fires on
+/// the step where liveness falls, and a world handed to
+/// `Effects::new` after that step has already happened has no edge left
+/// to fire on. Every caller checks the re-flown digest against the
+/// committed trace's, so the two roads are held together.
+fn reflown_sink(ticks: u64) -> (World, Effects) {
+    let mut world = World::new(7);
+    let mut effects = Effects::new(&world);
+    for _ in 0..ticks {
+        world.step(false);
+        effects.observe(&world);
+    }
+    (world, effects)
+}
+
+/// Effects for a checkpoint whose bird is still alive.
+///
+/// Nothing can have burst: the burst is the falling edge of liveness,
+/// and a world that is alive now has not crossed it. Building the pool
+/// from the world rather than re-flying is therefore exact and cheap —
+/// and the tests assert `live() == 0` rather than trusting this note.
+fn no_effects_yet(world: &World) -> Effects {
+    Effects::new(world)
+}
 fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let base = ((y * VIEW_WIDTH + x) * 4) as usize;
     [
@@ -357,6 +428,104 @@ fn assert_bird_structure(
     }
 }
 
+/// The most pixels that may differ, and by how much, in the one frame
+/// whose bytes are not reproducible across the runner pool.
+///
+/// **Only the crash frame gets this, and that scoping is the whole
+/// point.** The other three checkpoints are compared byte for byte and
+/// must stay that way: they are flat rectangles over a flat sky, they
+/// have never varied, and a tolerance applied where it is not needed is
+/// how a suite stops measuring.
+///
+/// **Why this frame varies.** It is two dozen overlapping additive
+/// quads. The attachment is eight-bit sRGB, so it quantises after every
+/// blend, and where sparks stack the order of those roundings is enough
+/// for two runs of the same renderer on different machines in the pool
+/// to land a single code apart. Observed between the refresh run and the
+/// rendering lane, both reporting `llvmpipe (LLVM 18.1.3, 256 bits)`:
+/// **7 bytes of 307,200, every one differing by exactly 1.** The
+/// rendering crate's own triangle golden has the same disagreement for
+/// the same reason and answers it the same way.
+///
+/// **What the bound is derived from, so it is not a number someone
+/// liked.** Only a pixel a spark actually covers can round differently,
+/// and the burst's footprint is a 22-by-20 box — 440 pixels — measured
+/// on the committed frame. The bound is that footprint. Against it, the
+/// observed disagreement is 7.
+///
+/// **What it still catches.** A real change to this frame moves the
+/// sparks: it changes where they are, how many there are, or what colour
+/// they are, and that moves hundreds of pixels or moves them by far more
+/// than one step. A regression hiding under this bound would have to
+/// leave every spark in place and shift a handful of them by the
+/// smallest representable amount — which is not a rendering change, it is
+/// the same picture.
+const CRASH_MAX_DIFFERING_PIXELS: usize = 440;
+/// One. A quantisation boundary moves a byte by one step and no more;
+/// anything larger is a different colour, not a different rounding.
+const CRASH_MAX_CHANNEL_DELTA: u8 = 1;
+
+/// How two images of this game differ, in the terms the tolerance is
+/// stated in.
+struct Difference {
+    /// Pixels with any differing channel.
+    pixels: usize,
+    /// The largest single-channel difference seen.
+    largest_channel: u8,
+}
+
+impl Difference {
+    fn between(rendered: &[u8], golden: &[u8]) -> Self {
+        if rendered.len() != golden.len() {
+            return Self {
+                pixels: usize::MAX,
+                largest_channel: u8::MAX,
+            };
+        }
+        let mut pixels = 0;
+        let mut largest_channel = 0;
+        for (a, b) in rendered
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(golden.as_chunks::<4>().0.iter())
+        {
+            let mut differs = false;
+            for (x, y) in a.iter().zip(b.iter()) {
+                let delta = x.abs_diff(*y);
+                if delta > 0 {
+                    differs = true;
+                    largest_channel = largest_channel.max(delta);
+                }
+            }
+            if differs {
+                pixels += 1;
+            }
+        }
+        Self {
+            pixels,
+            largest_channel,
+        }
+    }
+
+    fn within_crash_tolerance(&self) -> bool {
+        self.pixels <= CRASH_MAX_DIFFERING_PIXELS && self.largest_channel <= CRASH_MAX_CHANNEL_DELTA
+    }
+}
+
+/// Does this render match its golden?
+///
+/// Byte for byte for every checkpoint but the crash, which is compared
+/// within the stated tolerance above because its stacked additive light
+/// is not reproducible across the runner pool.
+fn image_matches(rendered: &[u8], golden: &[u8], name: &str) -> bool {
+    if name == "crash-114" {
+        Difference::between(rendered, golden).within_crash_tolerance()
+    } else {
+        rendered == golden
+    }
+}
+
 /// The full ritual for one checkpoint: structural checks everywhere,
 /// exact bytes against the committed golden on the pinned lane only,
 /// candidate + provenance + a refusing Err when the golden does not
@@ -436,7 +605,7 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
 
     let expected =
         std::fs::read(&golden).map_err(|error| format!("read committed golden: {error}"))?;
-    if pixels != expected {
+    if !image_matches(pixels, &expected, name) {
         let actual = dir.join(format!("{name}.actual.rgba"));
         std::fs::write(&actual, pixels)
             .map_err(|error| format!("write actual for diffing: {error}"))?;
@@ -510,8 +679,14 @@ fn soar_at_tick_600_matches_the_committed_image() {
         "the replayed trace and the re-flown pilot diverged — the loop drifted"
     );
 
+    let effects = no_effects_yet(&world);
+    assert_eq!(
+        effects.live(),
+        0,
+        "a living bird has crossed no death edge, so nothing may have burst"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -552,8 +727,26 @@ fn sink_at_tick_240_matches_the_committed_image() {
     assert_eq!(world.tick(), 240);
     assert!(world.pipes() > 0, "the frozen pipes must be on screen");
 
+    // **Re-flown, not replayed, and the two roads must meet.** This
+    // checkpoint is far enough past the crash that every spark has
+    // expired, and proving that needs a pool that actually burst — so
+    // the effects come from re-flying the trace and observing each step,
+    // and the re-flown digest is checked against the committed trace's,
+    // which is the anchor the soaring checkpoint already carries.
+    let (reflown, effects) = reflown_sink(240);
+    assert_eq!(
+        world.digest(),
+        reflown.digest(),
+        "the replayed trace and the re-flown fall diverged — the loop drifted"
+    );
+    assert_eq!(
+        effects.live(),
+        0,
+        "the sparks burst at the crash and must be long dead by this tick, \
+         or this frame is not the still life it is recorded as"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -650,8 +843,14 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
         "the full complement of pipes is on screen"
     );
 
+    let effects = no_effects_yet(&world);
+    assert_eq!(
+        effects.live(),
+        0,
+        "a living bird has crossed no death edge, so nothing may have burst"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -729,4 +928,286 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
     }
 
     compare_against_golden(&device, "dive-361", &pixels).expect("the golden ritual");
+}
+
+/// The crash: sparks thrown up from the corpse, added as light.
+///
+/// **Why tick 114.** The `sink` trace never flaps, so the bird falls
+/// from the start and hits the floor at tick 108 — observed, not
+/// assumed, and asserted below. Six ticks later the burst is a tenth of
+/// a second old: every spark is still in the air, the fastest have
+/// cleared the corpse, and none has expired. That is the frame worth
+/// recording.
+///
+/// **What the structure claims, and why it is adapter-independent.**
+/// The sparks are drawn with a tint whose alpha is zero, which the
+/// sprite renderer's Contract makes additive out of its one pipeline:
+/// `src + dst·(1 − α_src)` at `α_src = 0` is addition, leaving the
+/// destination's alpha alone. So a spark can only ever *brighten* what
+/// it crosses, and it brightens it **warm** — the spark colour is
+/// red-most and blue-least at every point of its life, over a sky that
+/// is blue-most.
+///
+/// The test asserts that, and asks for the warmth on purpose: a pixel
+/// merely "brighter than the sky in all three channels" is something
+/// **the corpse alone produces**, because it is drawn desaturated to a
+/// grey that beats the sky in every channel. A predicate every frame
+/// satisfies with no sparks in it would have proved nothing. `r > g > b`
+/// is unreachable for a neutral grey and for the sky, so only a spark
+/// can satisfy it here. Alpha stays 255 everywhere, which is the other
+/// half of "added rather than covered". Both hold on any adapter,
+/// because neither depends on where the transfer function rounds.
+#[test]
+fn a_crash_at_tick_114_throws_sparks_as_light() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+
+    // The death tick is a premise, not a guess: re-fly one tick short of
+    // it and the bird must still be alive, re-fly to it and it must not.
+    let (before, _) = reflown_sink(DEATH_TICK - 1);
+    assert!(
+        before.alive(),
+        "the bird must still be flying one tick before the recorded death"
+    );
+    let (world, effects) = reflown_sink(CRASH_TICK);
+    assert!(!world.alive(), "the bird must be dead at the crash frame");
+    assert_eq!(world.tick(), CRASH_TICK);
+    assert!(world.pipes() > 0, "pipes must be on screen");
+    assert!(
+        effects.live() > 0,
+        "the burst must be in the air, or this picture proves nothing"
+    );
+
+    // The two roads meet here too: the committed trace replayed to this
+    // tick is the world we re-flew.
+    let replayed = world_at("sink", CRASH_TICK).expect("the committed trace replays");
+    assert_eq!(
+        replayed.digest(),
+        world.digest(),
+        "the replayed trace and the re-flown fall diverged — the loop drifted"
+    );
+
+    let digest_before_rendering = world.digest();
+    let pixels = capture(&device, &world, &effects).expect("capture");
+    assert_eq!(
+        world.digest(),
+        digest_before_rendering,
+        "rendering must be a read: the scene, the sparks and the capture may not move the state"
+    );
+    assert_no_validation_errors(&device);
+
+    for (x, y) in [
+        (0, 0),
+        (VIEW_WIDTH - 1, 0),
+        (0, VIEW_HEIGHT - 1),
+        (VIEW_WIDTH - 1, VIEW_HEIGHT - 1),
+    ] {
+        assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
+    }
+
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the corpse's centre is on-screen and non-negative at this checkpoint"
+    )]
+    let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
+
+    // Light, and only light — and the predicate has to be one **no other
+    // sprite in this frame can satisfy**, or the assertion proves nothing.
+    //
+    // "Brighter than the sky in all three channels" is NOT such a
+    // predicate, and believing it was is the trap here: the corpse is
+    // drawn desaturated to grey 213, and 213 beats the sky's 51, 102 and
+    // 153 in every channel. Measured on this frame, 41 of the qualifying
+    // pixels in the band below are corpse, not spark — so a capture that
+    // never drew a single spark would still satisfy it.
+    //
+    // What only a spark can do is add **warm** light to a cold sky. The
+    // sparks run from `(1.0, 0.9, 0.4)` to `(0.3, 0.1, 0.0)`, red-most
+    // and blue-least at every point of their life; the sky is
+    // blue-most; the corpse and its beak are neutral greys, where red
+    // equals green equals blue and `r > g` is false by construction.
+    // So `r > g > b` is reachable in this frame only where a spark
+    // landed. Observed: 66 such pixels.
+    let mut warm = 0u32;
+    let top = bird_y.saturating_sub(40);
+    for y in top..bird_y {
+        for x in bird_x.saturating_sub(24)..(bird_x + 24).min(VIEW_WIDTH - 1) {
+            let p = pixel_at(&pixels, x, y);
+            let brighter_than_sky =
+                p[0] > SKY_BYTES[0] && p[1] > SKY_BYTES[1] && p[2] > SKY_BYTES[2];
+            // Strictly ordered, so no neutral grey can pass.
+            let warm_light = p[0] > p[1] && p[1] > p[2];
+            if brighter_than_sky && warm_light {
+                warm += 1;
+            }
+        }
+    }
+    assert!(
+        warm > 0,
+        "no pixel above the corpse is both brighter than the sky in all three channels \
+         and warm (r > g > b), so no spark added light there — the corpse's own grey \
+         cannot satisfy this, which is the point of asking for it"
+    );
+
+    // Nothing in the band gives up any of the sky's blue.
+    //
+    // **This is the falsifiable half of "added rather than covered",
+    // and the blue channel is what makes it so.** Adding can only move a
+    // channel up, so over a sky whose blue is 153 every pixel here must
+    // stay at or above 153. A spark composited *over* the sky instead
+    // would replace that blue with its own, and a spark is warm — its
+    // blue is the channel it has least of, near zero at the ember end.
+    // So drawing the sparks as ink instead of light reddens this, which
+    // is the mutation the assertion exists to catch.
+    //
+    // **Scoped above the corpse, and the bound is derived.** The corpse
+    // is opaque: it replaces the sky rather than adding to it, and its
+    // beak's grey is 148 — below the sky's blue, legitimately. So the
+    // claim is made only where the corpse cannot reach. A twelve-unit
+    // square turned an eighth of a turn has a half-diagonal of 8.49
+    // units, so nothing of it reaches nine units above its centre.
+    // Sixty spark-coloured pixels live in that region, so the claim is
+    // made over real sparks and not over empty sky.
+    let above_corpse = bird_y - 9;
+    for y in top..above_corpse {
+        for x in bird_x.saturating_sub(24)..(bird_x + 24).min(VIEW_WIDTH - 1) {
+            let p = pixel_at(&pixels, x, y);
+            assert!(
+                p[2] >= SKY_BYTES[2],
+                "pixel ({x},{y}) has blue {} below the sky's {}, so something covered \
+                 the sky rather than adding to it",
+                p[2],
+                SKY_BYTES[2]
+            );
+        }
+    }
+
+    // **A guard, not a probe, and it says so rather than posing as one.**
+    // Alpha 255 everywhere cannot fail in this frame: the blend is
+    // `src.a + dst.a·(1 − src.a)` over an opaque clear, which is 1 for
+    // any source alpha whatever — so this would hold even if every spark
+    // were drawn as solid ink. It is kept because it is the assertion
+    // that would fire the day the sample clears to something
+    // transparent or the pipeline's blend state changes, and it costs
+    // one comparison per pixel.
+    for y in 0..VIEW_HEIGHT {
+        for x in 0..VIEW_WIDTH {
+            assert_eq!(
+                pixel_at(&pixels, x, y)[3],
+                255,
+                "the target stopped being opaque at ({x},{y})"
+            );
+        }
+    }
+
+    compare_against_golden(&device, "crash-114", &pixels).expect("the golden ritual");
+}
+
+/// The crash frame's tolerance admits a rounding difference and nothing
+/// larger.
+///
+/// **A tolerance is a hole unless something checks its edges**, and the
+/// pressure on this one only ever goes one way: the next person to meet
+/// a red rendering lane will be tempted to widen it. This makes that a
+/// deliberate act rather than a quiet one — the same guard the rendering
+/// crate put on its own triangle tolerance, for the same reason.
+///
+/// The numbers are the real ones. **Seven pixels differing by a single
+/// code** is the observed disagreement between two runs of
+/// `llvmpipe (LLVM 18.1.3, 256 bits)` on different machines in the
+/// runner pool — the refresh's render of this frame against the
+/// rendering lane's. A burst that moved would move hundreds of pixels,
+/// or move them by far more than one. The bound sits sixty-two times
+/// above the first and well below the second.
+///
+/// It also pins that **the tolerance is scoped**: the same difference
+/// offered under any other checkpoint's name is rejected, because only
+/// the crash frame stacks additive light.
+#[test]
+fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
+    // Written as a literal rather than derived from the constant: see
+    // the note at the bound checks below.
+    const AT_THE_BOUND: usize = 440;
+
+    let base = vec![128u8; (VIEW_WIDTH as usize) * (VIEW_HEIGHT as usize) * 4];
+
+    // The disagreement this tolerance exists for: seven pixels, one code.
+    let mut rounding = base.clone();
+    for pixel in 0..7 {
+        rounding[pixel * 4 + 1] = 129;
+    }
+    let admitted = Difference::between(&rounding, &base);
+    assert_eq!(admitted.pixels, 7);
+    assert_eq!(admitted.largest_channel, 1);
+    assert!(
+        admitted.within_crash_tolerance(),
+        "the disagreement this tolerance exists for must pass"
+    );
+    assert!(
+        image_matches(&rounding, &base, "crash-114"),
+        "and it must pass under the crash frame's name"
+    );
+
+    // Scoped: the very same bytes are refused under any other name.
+    assert!(
+        !image_matches(&rounding, &base, "sink-240"),
+        "every other checkpoint is compared byte for byte"
+    );
+    assert!(
+        !image_matches(&rounding, &base, "soar-600"),
+        "every other checkpoint is compared byte for byte"
+    );
+
+    // **The bound is pinned from both sides, with literals.**
+    //
+    // Deriving the counts from `CRASH_MAX_DIFFERING_PIXELS` would make
+    // this tautological: writing `N + 1` pixels against an assertion of
+    // `> N` passes for every N, so the constant could be widened to any
+    // value and the test would stay green. Writing 440 and 441 pins the
+    // number itself — raise the constant and the refusal below fails;
+    // lower it and the admission fails.
+    let mut exactly = base.clone();
+    for pixel in 0..AT_THE_BOUND {
+        exactly[pixel * 4 + 1] = 129;
+    }
+    let at_bound = Difference::between(&exactly, &base);
+    assert_eq!(at_bound.pixels, AT_THE_BOUND);
+    assert!(
+        at_bound.within_crash_tolerance(),
+        "the bound itself must be admitted, or the stated number is not the bound"
+    );
+
+    let mut too_many = base.clone();
+    for pixel in 0..=AT_THE_BOUND {
+        too_many[pixel * 4 + 1] = 129;
+    }
+    let past_bound = Difference::between(&too_many, &base);
+    assert_eq!(past_bound.pixels, AT_THE_BOUND + 1);
+    assert!(
+        !past_bound.within_crash_tolerance(),
+        "one pixel past the bound must be refused"
+    );
+
+    // A difference of two codes is refused however few pixels carry it.
+    let mut too_far = base.clone();
+    too_far[1] = 130;
+    let rejected = Difference::between(&too_far, &base);
+    assert_eq!(rejected.pixels, 1);
+    assert_eq!(rejected.largest_channel, 2);
+    assert!(
+        !rejected.within_crash_tolerance(),
+        "two codes is a different colour, not a different rounding"
+    );
+
+    // A length mismatch is never within tolerance.
+    assert!(
+        !Difference::between(&base[..base.len() - 4], &base).within_crash_tolerance(),
+        "a truncated image is not a rounding difference"
+    );
 }
