@@ -17,7 +17,9 @@
 //!   ordinary suite asserts on every lane. The update restricts itself
 //!   to IEEE correctly-rounded operations: add, subtract, multiply,
 //!   divide, min, max, and square root. No transcendental function
-//!   runs per particle anywhere in this crate.
+//!   runs per particle anywhere in this crate. A [`Shape`]'s draw count
+//!   is fixed per variant and stated on the type; an [`Emitter`] draws
+//!   nothing.
 //! - **All allocation happens at construction.** `step`,
 //!   [`ParticleSystem::burst`], [`ParticleSystem::write_instances`] and
 //!   the [`ParticleSystem::particles`] view allocate nothing,
@@ -103,6 +105,139 @@ pub struct VelocityCone {
     pub spread: f32,
     /// Speed at the slow and fast ends, drawn uniformly.
     pub speed: (f32, f32),
+}
+
+/// Where a burst spawns: a point, a segment or a box.
+///
+/// **The draw count is pinned per variant** — a point draws nothing
+/// from the generator, a segment one unit, a box three (in x, y, z
+/// order) — and a particle's shape draws come before its cone draws.
+/// That is what keeps [`ParticleSystem::burst`] and
+/// [`ParticleSystem::burst_along`] bit-identical to
+/// [`ParticleSystem::burst_in`] at a point, and the committed hash
+/// standing: a shape changes how many values the generator gives out
+/// by a fixed, stated amount, never by an accident of load.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Shape {
+    /// Every particle at this one position. Draws nothing.
+    Point([f32; 3]),
+    /// Uniform along the segment: `from + u · (to − from)`, one unit
+    /// `u` per particle, the same `u` on every axis.
+    Segment {
+        /// One end.
+        from: [f32; 3],
+        /// The other.
+        to: [f32; 3],
+    },
+    /// Uniform in the box: `min + u · (max − min)` per axis, one unit
+    /// per axis in x, y, z order. A flat box (`min[2] == max[2]`) keeps
+    /// its z exactly, because the lerp of equal endpoints is
+    /// `z + 0 · u`.
+    Box {
+        /// The corner with the smallest coordinates.
+        min: [f32; 3],
+        /// The corner with the largest.
+        max: [f32; 3],
+    },
+}
+
+impl Shape {
+    /// One position in the shape, drawing `unit` exactly as many times
+    /// as the variant states, in the stated order — count and order are
+    /// contract, held by test.
+    fn sample(&self, mut unit: impl FnMut() -> f32) -> [f32; 3] {
+        match *self {
+            Shape::Point(at) => at,
+            Shape::Segment { from, to } => {
+                let u = unit();
+                [
+                    lerp(from[0], to[0], u),
+                    lerp(from[1], to[1], u),
+                    lerp(from[2], to[2], u),
+                ]
+            }
+            Shape::Box { min, max } => {
+                let x = unit();
+                let y = unit();
+                let z = unit();
+                [
+                    lerp(min[0], max[0], x),
+                    lerp(min[1], max[1], y),
+                    lerp(min[2], max[2], z),
+                ]
+            }
+        }
+    }
+}
+
+/// Spawn-at-a-rate: how many particles fall due each step, the
+/// fraction carried to the next.
+///
+/// Kept outside the pool on purpose: several emitters may feed one
+/// pool, and an emitter never touches the generator, so adding one to a
+/// scene cannot move any committed hash — it only decides how many
+/// times a burst is asked for. The arithmetic is an add, a multiply and
+/// a floor, all correctly rounded, so the count sequence is the same on
+/// every platform; the carry stays in `[0, 1)` and the long-run total
+/// never drifts from `per_second · elapsed` by more than one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Emitter {
+    per_second: f32,
+    carry: f32,
+}
+
+impl Emitter {
+    /// An emitter spawning `per_second` particles per second, nothing
+    /// carried yet.
+    ///
+    /// `per_second` must be finite and non-negative — asserted in dev
+    /// builds, the pool's own rule for the same reason: a NaN rate
+    /// spawns nothing forever with no error anywhere.
+    #[must_use]
+    pub fn new(per_second: f32) -> Self {
+        debug_assert!(
+            per_second.is_finite() && per_second >= 0.0,
+            "an emitter's rate must be finite and non-negative: a NaN here spawns nothing \
+             forever rather than failing anywhere visible"
+        );
+        Self {
+            per_second,
+            carry: 0.0,
+        }
+    }
+
+    /// How many particles fall due in a step of `dt_seconds`:
+    /// `carry += per_second · dt; due = floor(carry); carry −= due`.
+    /// Saturates at `u32::MAX`. A step of zero seconds is due nothing
+    /// and moves nothing.
+    ///
+    /// `dt_seconds` must be finite and non-negative — asserted in dev
+    /// builds, because a NaN step poisons the carry and the emitter
+    /// falls silent for good.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a float-to-integer `as` saturates, which is the stated ceiling, and the \
+                  floor of a non-negative carry is never negative"
+    )]
+    pub fn advance(&mut self, dt_seconds: f32) -> u32 {
+        debug_assert!(
+            dt_seconds.is_finite() && dt_seconds >= 0.0,
+            "an emitter's step must be finite and non-negative: a NaN here silences the \
+             emitter for good"
+        );
+        self.carry += self.per_second * dt_seconds;
+        let due = self.carry.floor();
+        self.carry -= due;
+        due as u32
+    }
+
+    /// The rate this emitter was made with, particles per second.
+    #[must_use]
+    pub fn per_second(self) -> f32 {
+        self.per_second
+    }
 }
 
 /// One live particle as the pool sees it this step — what a consumer
@@ -254,10 +389,13 @@ impl ParticleSystem {
     /// Spawn up to `count` particles at `at`, saturating at capacity.
     ///
     /// The number of generator draws depends only on how many particles
-    /// actually spawn, which makes the draw count part of the
-    /// reproducibility contract rather than an accident of load.
+    /// actually spawn and on the shape's variant — a point, which this
+    /// is, draws nothing extra; a segment one unit; a box three — which
+    /// makes the draw count part of the reproducibility contract rather
+    /// than an accident of load. This is [`Self::burst_in`] at a point
+    /// along the effect's own axis.
     pub fn burst(&mut self, at: [f32; 3], count: u32) {
-        self.burst_along(at, self.desc.velocity.axis, count);
+        self.burst_in(Shape::Point(at), self.desc.velocity.axis, count);
     }
 
     /// The same burst, with the cone pointed along `axis` rather than
@@ -280,10 +418,27 @@ impl ParticleSystem {
     /// **Reproducibility is untouched.** The draws happen in the same
     /// order and the same number, because the axis is read after the
     /// jitter rather than before it; passing the effect's own axis here
-    /// is bit-identical to [`Self::burst`], which is asserted.
+    /// is bit-identical to [`Self::burst`], which is asserted. This is
+    /// [`Self::burst_in`] at a point — the general form, which also
+    /// takes a segment or a box.
     pub fn burst_along(&mut self, at: [f32; 3], axis: [f32; 3], count: u32) {
+        self.burst_in(Shape::Point(at), axis, count);
+    }
+
+    /// The general burst: up to `count` particles somewhere in `shape`,
+    /// the cone pointed along `axis`, saturating at capacity.
+    ///
+    /// Per spawned particle the draws are, in order: the shape's (none
+    /// for a point, one for a segment, three for a box), then the
+    /// cone's rejection loop, then the speed, then the lifetime — the
+    /// order the point-shaped bursts always had, with the shape's draws
+    /// in front. A point shape therefore reproduces [`Self::burst`] and
+    /// [`Self::burst_along`] bit for bit, and the committed hash guard
+    /// is the proof that the shapes' arrival moved nothing.
+    pub fn burst_in(&mut self, shape: Shape, axis: [f32; 3], count: u32) {
         let room = self.desc.capacity.saturating_sub(self.live());
         for _ in 0..count.min(room) {
+            let at = shape.sample(|| self.unit());
             let direction = self.cone_direction(axis);
             let speed = lerp(
                 self.desc.velocity.speed.0,
@@ -954,6 +1109,298 @@ mod tests {
         assert!(system.particles().next().is_none());
     }
 
+    /// FNV-1a 64 over packed bytes — the hash every committed constant
+    /// in this module is stated in.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// A shape draws exactly what its variant states, in axis order: a
+    /// point nothing, a segment one unit, a box three — x, then y, then
+    /// z. Fed a counted, known sequence, the position says which unit
+    /// went where; a variant that draws more than it states runs off
+    /// the end of the sequence.
+    #[test]
+    fn a_shape_draws_its_pinned_count_in_axis_order() {
+        let counted = |units: &[f32], shape: Shape| {
+            let mut next = 0usize;
+            let at = shape.sample(|| {
+                let unit = units[next];
+                next += 1;
+                unit
+            });
+            (next, at)
+        };
+        assert_eq!(
+            counted(&[], Shape::Point([1.0, 2.0, 3.0])),
+            (0, [1.0, 2.0, 3.0]),
+            "a point draws nothing and is where it says"
+        );
+        assert_eq!(
+            counted(
+                &[0.25],
+                Shape::Segment {
+                    from: [0.0, 0.0, 0.0],
+                    to: [4.0, 8.0, 12.0],
+                }
+            ),
+            (1, [1.0, 2.0, 3.0]),
+            "a segment draws one unit and lerps every axis by it"
+        );
+        assert_eq!(
+            counted(
+                &[0.25, 0.5, 0.75],
+                Shape::Box {
+                    min: [0.0, 0.0, 0.0],
+                    max: [4.0, 4.0, 4.0],
+                }
+            ),
+            (3, [1.0, 2.0, 3.0]),
+            "a box draws three units, x then y then z"
+        );
+    }
+
+    /// The packed bytes of the guard fixture after `spawn` and twelve
+    /// steps.
+    fn packed_after(spawn: impl FnOnce(&mut ParticleSystem)) -> Vec<u8> {
+        let mut system = ParticleSystem::new(
+            &burst_effect(),
+            Seed::from_u64(5),
+            StreamId::from_name("point"),
+        );
+        spawn(&mut system);
+        for _ in 0..12 {
+            system.step(DT);
+        }
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        let count = system.write_instances(&mut bytes);
+        assert!(count > 0, "the scenario must leave something to compare");
+        bytes
+    }
+
+    /// A burst at a point is the plain burst, bit for bit: the general
+    /// form given a point and the effect's own axis packs the same
+    /// bytes as `burst`, and as `burst_along` with that axis.
+    #[test]
+    fn a_point_burst_is_the_plain_burst_bit_for_bit() {
+        let at = [1.0, 2.0, 3.0];
+        let axis = burst_effect().velocity.axis;
+        let plain = packed_after(|system| system.burst(at, 30));
+        let aimed = packed_after(|system| system.burst_along(at, axis, 30));
+        let shaped = packed_after(|system| system.burst_in(Shape::Point(at), axis, 30));
+        assert_eq!(
+            shaped, plain,
+            "a point-shaped burst must be the plain burst byte for byte"
+        );
+        assert_eq!(
+            shaped, aimed,
+            "a point-shaped burst must be the aimed burst byte for byte"
+        );
+    }
+
+    /// The second committed guard, for the shaped bursts: a segment and
+    /// a box, each drawing its stated units in front of the cone's,
+    /// hash to one value on every platform the ordinary suite runs on.
+    /// The first guard cannot see a shape's draws — a point makes none
+    /// — so this one exists.
+    #[test]
+    fn a_shaped_scenario_hashes_to_the_committed_value_on_every_platform() {
+        let mut system = ParticleSystem::new(
+            &burst_effect(),
+            Seed::from_u64(20_260_811),
+            StreamId::from_name("guard"),
+        );
+        let axis = burst_effect().velocity.axis;
+        system.burst_in(
+            Shape::Segment {
+                from: [0.0, 0.0, 0.0],
+                to: [4.0, 0.0, 0.0],
+            },
+            axis,
+            20,
+        );
+        for _ in 0..10 {
+            system.step(DT);
+        }
+        system.burst_in(
+            Shape::Box {
+                min: [-1.0, -1.0, 0.0],
+                max: [1.0, 1.0, 0.0],
+            },
+            [0.0, -1.0, 0.0],
+            20,
+        );
+        for _ in 0..10 {
+            system.step(DT);
+        }
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        let count = system.write_instances(&mut bytes);
+        assert!(count > 0, "the scenario must leave something to hash");
+        assert_eq!(
+            fnv1a(&bytes),
+            0x3583_f9e4_c90d_3be6,
+            "the shaped bytes moved: either a shape's sampling changed (bump this constant \
+             in the same change, deliberately) or this platform computes differently \
+             (which is the finding)"
+        );
+    }
+
+    /// An effect that leaves particles where they were born — no
+    /// speed, no gravity, unit drag, immortal — so a packed position is
+    /// the shape's sample and nothing else.
+    fn still_effect() -> EffectDesc {
+        EffectDesc {
+            capacity: 64,
+            lifetime: (1.0e9, 1.0e9),
+            velocity: VelocityCone {
+                axis: [0.0, 1.0, 0.0],
+                spread: 0.5,
+                speed: (0.0, 0.0),
+            },
+            gravity: [0.0, 0.0, 0.0],
+            drag_per_step: 1.0,
+            size: (1.0, 1.0),
+            color: ([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]),
+            tile: [0.0, 0.0, 1.0, 1.0],
+        }
+    }
+
+    /// The packed positions of `count` still particles born in `shape`
+    /// and stepped once.
+    fn packed_positions(shape: Shape, count: u32) -> Vec<[f32; 3]> {
+        let mut system = ParticleSystem::new(
+            &still_effect(),
+            Seed::from_u64(11),
+            StreamId::from_name("shape"),
+        );
+        system.burst_in(shape, [0.0, 1.0, 0.0], count);
+        system.step(DT);
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        let packed = system.write_instances(&mut bytes) as usize;
+        assert_eq!(
+            packed, count as usize,
+            "every still particle must be packed"
+        );
+        bytes
+            .as_chunks::<INSTANCE_STRIDE>()
+            .0
+            .iter()
+            .map(|record| {
+                let slot =
+                    |k: usize| f32::from_ne_bytes(record[k * 4..k * 4 + 4].try_into().unwrap());
+                [slot(0), slot(1), slot(2)]
+            })
+            .collect()
+    }
+
+    /// A segment burst lies on its segment: along a diagonal from
+    /// `(1, 1, 3)` to `(5, 5, 3)` every particle has `x == y` bit for
+    /// bit (one unit lerps both), `z == 3` exactly, `x` inside the
+    /// span, and the particles do not all sit at one place.
+    #[test]
+    fn a_segment_burst_lies_on_its_segment() {
+        let positions = packed_positions(
+            Shape::Segment {
+                from: [1.0, 1.0, 3.0],
+                to: [5.0, 5.0, 3.0],
+            },
+            24,
+        );
+        for [x, y, z] in &positions {
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "one unit must place x and y alike"
+            );
+            assert_eq!(
+                z.to_bits(),
+                3.0f32.to_bits(),
+                "z is constant along this segment"
+            );
+            assert!((1.0..=5.0).contains(x), "x = {x} is off the segment");
+        }
+        let first = positions[0][0];
+        assert!(
+            positions
+                .iter()
+                .any(|[x, _, _]| x.to_bits() != first.to_bits()),
+            "a segment burst must spread along the segment"
+        );
+    }
+
+    /// A box burst lies inside its box on every axis, and the axes are
+    /// drawn separately: the particles do not all lie on the box's
+    /// diagonal, which one shared unit would put them on.
+    #[test]
+    fn a_box_burst_lies_inside_its_box() {
+        let min = [-1.0, -2.0, -3.0];
+        let max = [1.0, 2.0, 3.0];
+        let positions = packed_positions(Shape::Box { min, max }, 24);
+        for position in &positions {
+            for axis in 0..3 {
+                assert!(
+                    (min[axis]..=max[axis]).contains(&position[axis]),
+                    "{position:?} is outside the box on axis {axis}"
+                );
+            }
+        }
+        let off_diagonal = positions.iter().filter(|[x, y, _]| {
+            let along_x = (x - min[0]) / (max[0] - min[0]);
+            let along_y = (y - min[1]) / (max[1] - min[1]);
+            (along_x - along_y).abs() > 1.0e-3
+        });
+        assert!(
+            off_diagonal.count() > 0,
+            "a box burst must draw its axes separately, not lie on one diagonal"
+        );
+    }
+
+    /// A flat box keeps its z exactly: with `min[2] == max[2] == 0.1`,
+    /// every packed z is `0.1` bit for bit, because the lerp of equal
+    /// endpoints is `z + 0 · u`. The value has no short binary
+    /// expansion on purpose: the `(1 − u) · z + u · z` form of a lerp
+    /// keeps a dyadic z such as `2.5` exact by luck and drifts here by
+    /// an ulp, so this is the value that tells the two forms apart.
+    #[test]
+    fn a_flat_box_keeps_its_z_exactly() {
+        let positions = packed_positions(
+            Shape::Box {
+                min: [0.0, 0.0, 0.1],
+                max: [4.0, 4.0, 0.1],
+            },
+            64,
+        );
+        for [_, _, z] in &positions {
+            assert_eq!(
+                z.to_bits(),
+                0.1f32.to_bits(),
+                "a flat box drifted in z: {z}"
+            );
+        }
+    }
+
+    /// A NaN rate is a contract violation, refused where it is made.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite and non-negative")]
+    fn an_emitter_with_a_nan_rate_is_refused() {
+        let _ = Emitter::new(f32::NAN);
+    }
+
+    /// A NaN step is the same violation at the other call.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite and non-negative")]
+    fn an_emitter_with_a_nan_step_is_refused() {
+        let mut emitter = Emitter::new(1.0);
+        let _ = emitter.advance(f32::NAN);
+    }
+
     proptest::proptest! {
         // Fixed RNG seed: the suite explores the same inputs on every
         // run and every machine, so a property failure anywhere
@@ -1053,6 +1500,40 @@ mod tests {
                     system.lifetime[index]
                 );
             }
+        }
+
+        /// An emitter never drifts: over any rate, step and count, the
+        /// particles it says are due sum to within one of the exact
+        /// `floor(rate · elapsed)`, the carry is in `[0, 1)` after every
+        /// step, a zero step is due nothing, and a zero rate never
+        /// spawns.
+        #[test]
+        fn an_emitter_never_drifts(
+            rate in 0.0f32..=1000.0,
+            dt in 0.0f32..=0.05,
+            steps in 1u32..2000,
+        ) {
+            let mut emitter = Emitter::new(rate);
+            let mut idle = Emitter::new(0.0);
+            let mut total: u32 = 0;
+            for _ in 0..steps {
+                total += emitter.advance(dt);
+                proptest::prop_assert!(
+                    (0.0..1.0).contains(&emitter.carry),
+                    "the carry left [0, 1): {}",
+                    emitter.carry
+                );
+                proptest::prop_assert_eq!(idle.advance(dt), 0, "a zero rate spawned");
+            }
+            let exact = (f64::from(rate) * f64::from(dt) * f64::from(steps)).floor();
+            proptest::prop_assert!(
+                (f64::from(total) - exact).abs() <= 1.0,
+                "{} particles fell due against an exact {}",
+                total,
+                exact
+            );
+            proptest::prop_assert_eq!(emitter.advance(0.0), 0, "a zero step spawned");
+            proptest::prop_assert_eq!(emitter.per_second().to_bits(), rate.to_bits());
         }
     }
 }

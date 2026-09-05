@@ -1,5 +1,6 @@
 //! Mechanical enforcement of the crate's allocation contract: after
-//! construction, the steady state — burst, step, pack, view — performs no
+//! construction, the steady state — burst, shaped burst, emitter, step,
+//! pack, view — performs no
 //! heap allocation through the global allocator.
 //!
 //! Shipped with the crate's first commit rather than after it, because
@@ -10,7 +11,9 @@
 //! asserts so.
 
 use renew_memory::{CountingAllocator, counters};
-use renew_particles::{EffectDesc, INSTANCE_STRIDE, ParticleSystem, Seed, StreamId, VelocityCone};
+use renew_particles::{
+    EffectDesc, Emitter, INSTANCE_STRIDE, ParticleSystem, Seed, Shape, StreamId, VelocityCone,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -43,6 +46,9 @@ fn the_steady_state_allocates_nothing() {
         StreamId::from_name("gate"),
     );
     let mut bytes = vec![0u8; desc.capacity as usize * INSTANCE_STRIDE];
+    // An emitter is a value with two floats; nothing in it can allocate,
+    // and the window proves it.
+    let mut emitter = Emitter::new(240.0);
 
     // Warmup: reach a steady mix of spawning, aging and dying.
     for round in 0u8..8 {
@@ -56,6 +62,18 @@ fn the_steady_state_allocates_nothing() {
     let verdict = counters::quiet_window(5, || {
         for round in 0u8..16 {
             system.burst([f32::from(round), 0.5, 0.0], 24);
+            // A shaped burst at the rate the emitter says is due: four
+            // per step at 240 per second, drawn from a box.
+            let due = emitter.advance(1.0 / 60.0);
+            assert_eq!(due, 4, "the emitter must ask for something in the window");
+            system.burst_in(
+                Shape::Box {
+                    min: [0.0, 0.0, 0.0],
+                    max: [1.0, 1.0, 0.5],
+                },
+                [0.0, 1.0, 0.0],
+                due,
+            );
             for _ in 0..8 {
                 system.step(1.0 / 60.0);
             }

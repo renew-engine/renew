@@ -17,6 +17,17 @@ maturity, dependencies and core status.
   and is authored once; only the caller knows *which* surface, and for
   anything knocked off a face that changes with every burst. `burst` is
   `burst_along` on the effect's axis, held to that by test.
+- `burst_in` is the general burst: a `Shape` — a point, a segment or a
+  box — and an axis. The draw count is pinned per variant, a point
+  drawing nothing, a segment one unit, a box three in x, y, z order,
+  in front of the cone's draws; so `burst` and `burst_along` are
+  `burst_in` at a point, bit for bit, and the committed hash stood
+  when the shapes arrived.
+- `Emitter` — spawn at a rate: `advance(dt)` says how many particles
+  fall due this step and carries the fraction, never drifting from
+  `rate · elapsed` by more than one. It lives outside the pool and
+  draws nothing, so several may feed one pool and adding one moves no
+  hash.
 - `particles()` — the live pool, particle by particle, in the order
   `write_instances` packs: a `Particle` (centre, velocity, size, colour,
   progress) per entry, exact-size so a caller can size a batch before
@@ -39,6 +50,8 @@ maturity, dependencies and core status.
   is a per-step factor rather than a per-second power. Aiming a burst
   does not touch this: the jitter is drawn before the axis is used, so
   which axis arrives cannot change how many values the generator gives
+  out; a shape adds a fixed count per variant, stated on the type, in
+  front of the cone's draws, and an emitter draws nothing.
   out.
 - **All allocation happens at construction** — `burst`, `step`,
   `write_instances` and the `particles()` walk, each gate-tested from
@@ -84,7 +97,7 @@ the same arrays the packer walks and writes nothing.
 
 ## What this deliberately is not, yet
 
-No continuous-rate emission, no per-particle rotation, no tile ranges:
+No per-particle rotation, no tile ranges:
 each lands with the first consumer that needs it, because surface built
 ahead of use is the pattern this repository's own register warns about.
 Through the view a spin is the caller's to apply to its own sprite
