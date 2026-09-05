@@ -43,10 +43,18 @@ else, which the build matrix proves by building and testing without it.
   corners an axis-aligned sprite always packed, and the vertex stage
   reproduces the previous arithmetic operation for operation, so a
   picture with no turned sprite in it is unchanged by this crate
-  having rotation at all. Quarter turns, flips and mirrors are exact
-  too, which is what the computed oracles rely on. The sine and cosine
-  of a turn are this crate's own — adds, subtracts and multiplies only
-  — so a turned sprite packs the same corners on every platform.
+  having rotation at all. Quarter turns and the negative-scale mirror
+  permute an integer-cornered sprite's corners bit for bit, and a flip
+  is a lane swap — which is what the computed oracles rely on. The sine
+  and cosine of a turn are this crate's own — adds, subtracts and
+  multiplies only — so a turned sprite packs the same corners on every
+  platform.
+- **A region that is ever turned owes a gutter.** Sampling is nearest
+  and clamped at the atlas's edge, not the region's, and a turned edge
+  resolves to a texel inside the region only up to interpolation
+  rounding; so the texels bordering such a region are kept transparent
+  for one texel on every side. Axis-aligned sprites at texel-aligned
+  sizes never reach a neighbour and need none.
 
 ## What is here
 

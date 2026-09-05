@@ -11,9 +11,10 @@
 //! Everything in that line except `push` is device-free and is timed
 //! here as `sprite_build_2048`; the packer `push` runs afterwards is
 //! reachable without a device through `Sprite::instance` and is timed
-//! as `sprite_pack_2048`. Both exist so that a change to `Sprite`'s
-//! layout, to its constructor or to the packer's arithmetic has a
-//! before.
+//! as `sprite_pack_2048` for the untransformed sprite and as
+//! `sprite_pack_transformed_2048` with every sprite turned and scaled.
+//! All three exist so that a change to `Sprite`'s layout, to its
+//! constructor or to the packer's arithmetic has a before.
 //!
 //! The region is deliberately **not** wrapped in `black_box`: a
 //! presenter's region is a constant at the call site, and hiding it

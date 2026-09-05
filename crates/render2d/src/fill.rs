@@ -1,18 +1,24 @@
 //! The pure half: sprites in canvas space become instance bytes in NDC.
 //!
-//! Nothing here touches a device. The ortho map, the UV map, and the
-//! packing are plain functions so the unit and property tests below can
-//! pin them without bringing up Vulkan — the GPU half consumes exactly
-//! these bytes.
+//! Nothing here touches a device. The corner transform, the turn's sine
+//! and cosine, the ortho map, the UV map, and the packing are plain
+//! functions so the unit and property tests below can pin them without
+//! bringing up Vulkan — the GPU half consumes exactly these bytes.
 
 use renew_math::Vec2;
 use renew_rhi::Extent;
 
-/// One packed instance: seven attributes, sixteen `f32`s, 64 bytes. The
-/// shader's `location(0..=6)` list, the layout slice in `gpu.rs`, and
-/// [`pack`] describe the same bytes; change one and the others in the
-/// same commit or the draw reads garbage.
-pub(crate) const INSTANCE_STRIDE: usize = 64;
+/// The `f32` lanes of one packed instance: four corners, two UVs, a
+/// tint — sixteen, across seven attributes. The shader's
+/// `location(0..=6)` list, the layout slice in `gpu.rs`, and [`pack`]
+/// describe the same bytes; change one and the others in the same
+/// commit or the draw reads garbage.
+pub(crate) const INSTANCE_LANES: usize = 16;
+
+/// Bytes per packed instance: the lanes, four bytes each — 64. Derived
+/// so a record with the wrong number of lanes fails to compile rather
+/// than packing short.
+pub(crate) const INSTANCE_STRIDE: usize = INSTANCE_LANES * size_of::<f32>();
 
 /// The drawing surface's logical size in pixels. Sprites are placed in
 /// this space — y grows downward from the top-left, matching both how
@@ -59,6 +65,15 @@ impl Canvas {
 /// the atlas edge samples clamped edge texels rather than failing;
 /// that is visible art, not unsoundness, and the golden tests pin the
 /// in-bounds behavior that matters.
+///
+/// **A region that is ever turned owes a gutter.** Sampling is nearest
+/// and clamped at the atlas's edge, not the region's; a turned edge is
+/// rasterised by pixel coverage, and a covered pixel's centre resolves
+/// to a texel inside the region only up to interpolation rounding. So
+/// the texels bordering such a region are kept transparent for one
+/// texel on every side, and a read that lands past the edge reads
+/// nothing. An axis-aligned sprite drawn at a texel-aligned size never
+/// reaches a neighbour and needs none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
     /// Left edge, in texels from the atlas's left.
@@ -108,9 +123,9 @@ pub struct Sprite {
     /// Positive turns clockwise as seen on screen — canvas y grows
     /// downward, so the sprite's right edge swings toward the bottom.
     /// `0.0`, the default, is the axis-aligned rectangle exactly: that
-    /// value takes a path with no trigonometry and no pivot arithmetic
-    /// and packs the bytes an unrotated sprite always packed. Every
-    /// other value goes through this crate's own sine and cosine — a
+    /// value, with unit scale, takes a path with no trigonometry and no
+    /// pivot arithmetic and packs the bytes an unrotated sprite always
+    /// packed. Every other value goes through this crate's own sine and cosine — a
     /// polynomial evaluated in adds, subtracts and multiplies only, so
     /// the same turn packs the same corners on every platform and
     /// toolchain, and a picture of a turned sprite recorded on one
@@ -123,22 +138,25 @@ pub struct Sprite {
     /// nearest lookup clamped at the atlas edge, not the region's. A
     /// covered pixel's centre lies inside the quad, so its texel lies
     /// inside the region up to interpolation rounding; the one-texel
-    /// transparent gutter every declared region already owes (the UI
-    /// atlas's rule) is what makes "up to rounding" harmless, and it
-    /// becomes mandatory the day linear filtering exists. The turn is
-    /// isotropic in canvas pixels; a consumer that stretches its canvas
-    /// onto a surface of another aspect ratio stretches the turned
-    /// sprite with everything else, and owns that choice.
+    /// transparent gutter a turned region owes (see [`Region`]) is
+    /// what makes "up to rounding" harmless, and it becomes mandatory
+    /// the day linear filtering exists. The turn is isotropic in canvas
+    /// pixels; a consumer that stretches its canvas onto a surface of
+    /// another aspect ratio stretches the turned sprite with everything
+    /// else, and owns that choice.
     pub rotation: f32,
     /// The point the turn and the scale act about, as fractions of the
     /// sprite's own size from its top-left: `[0.5, 0.5]`, the centre,
     /// by default. Fractions rather than pixels so `size` never leaves
     /// the pivot stale.
     pub pivot: [f32; 2],
-    /// A scale about `pivot`, per axis; `[1.0, 1.0]` by default. A
-    /// negative factor mirrors the sprite through the pivot — the
-    /// geometry's winding reverses and both faces are drawn, so a card
-    /// can turn over by scaling its width through zero.
+    /// A scale about `pivot`, per axis; `[1.0, 1.0]` by default. It is
+    /// applied along the sprite's own axes before the turn, so a
+    /// stretched sprite turns as a stretched rectangle and never shears
+    /// into a parallelogram. A negative factor mirrors the sprite
+    /// through the pivot — the geometry's winding reverses and both
+    /// faces are drawn, so a card can turn over by scaling its width
+    /// through zero.
     pub scale: [f32; 2],
 }
 
@@ -197,8 +215,8 @@ impl Sprite {
     }
 
     /// Turn the sprite by `turns` about its pivot, clockwise on screen
-    /// for positive values; `0.0` is no turn and the exact axis-aligned
-    /// record.
+    /// for positive values; `0.0` with unit scale is no turn and the
+    /// exact axis-aligned record.
     #[must_use]
     pub fn rotation(mut self, turns: f32) -> Self {
         self.rotation = turns;
@@ -213,8 +231,9 @@ impl Sprite {
         self
     }
 
-    /// Scale the sprite about its pivot, per axis; a negative factor
-    /// mirrors it through the pivot.
+    /// Scale the sprite about its pivot, per axis, along its own axes
+    /// and before any turn; a negative factor mirrors it through the
+    /// pivot.
     #[must_use]
     pub fn scale(mut self, x: f32, y: f32) -> Self {
         self.scale = [x, y];
@@ -362,12 +381,15 @@ const C4: f32 = 0.000_024_383_655;
 /// Exact at every multiple of a quarter turn by construction: the
 /// reduction lands there with a residual of exactly zero, and the
 /// polynomials are written so that a zero residual gives `(0.0, 1.0)`
-/// without rounding. NaN propagates and draws nothing recognisable;
-/// past 2^23 turns every `f32` is an integer and the residual is zero.
+/// without rounding. A NaN turn is NaN, and so is an infinite one (the
+/// reduction subtracts an infinity from itself); either draws nothing
+/// recognisable. Past 2^23 turns every `f32` is an integer and the
+/// residual is zero.
 pub(crate) fn turn_sin_cos(turns: f32) -> (f32, f32) {
     // Whole turns are the identity: `t - round(t)` in [-0.5, 0.5],
-    // exact — below 2^23 the two operands are within a factor of two
-    // of each other (Sterbenz), above it every value is an integer.
+    // exact — the rounded value is zero, or the two operands are within
+    // a factor of two of each other (Sterbenz), or above 2^23 every
+    // value is an integer.
     let within_turn = turns - turns.round();
     // Quarters: a power-of-two scale, exact, in [-2, 2].
     let quarters = within_turn * 4.0;
@@ -382,15 +404,15 @@ pub(crate) fn turn_sin_cos(turns: f32) -> (f32, f32) {
     let squared = radians * radians;
     let sine = radians * (1.0 + squared * (S1 + squared * (S2 + squared * S3)));
     let cosine = 1.0 + squared * (C1 + squared * (C2 + squared * (C3 + squared * C4)));
-    // Unfold. The nearest quarter is a small integer in {-2, ..., 2},
-    // so its Euclidean remainder by four is exact and the cast is a
-    // value in 0..4.
+    // Unfold. The nearest quarter is a small integer-valued float in
+    // {-2, ..., 2}; as an integer its Euclidean remainder by four is
+    // the quadrant, in integer arithmetic with no library call. A NaN
+    // saturates to zero here and stays NaN in the values.
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the remainder of a small integer-valued float by four is one of 0.0, 1.0, 2.0, 3.0"
+        reason = "the nearest quarter is integer-valued and small; a NaN saturates to zero and the values carry the NaN"
     )]
-    let quadrant = nearest.rem_euclid(4.0) as u8;
+    let quadrant = (nearest as i32).rem_euclid(4);
     let (sine, cosine) = match quadrant {
         0 => (sine, cosine),
         1 => (cosine, -sine),
@@ -462,7 +484,7 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
         sprite.flip_y,
     );
 
-    let values: [f32; 16] = [
+    let values: [f32; INSTANCE_LANES] = [
         a.x,
         a.y,
         b.x,
@@ -495,6 +517,7 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
 
     fn canvas(width: u32, height: u32) -> Canvas {
         Canvas::new(width, height).expect("nonzero test canvas")
@@ -648,31 +671,29 @@ mod tests {
     /// The sixteen `f32` lanes of a packed record, for tests that name
     /// a lane rather than a byte: 0..8 the four corners, 8..12 the two
     /// UVs, 12..16 the tint.
-    fn lanes(record: &[u8; INSTANCE_STRIDE]) -> [u32; 16] {
-        let mut out = [0u32; 16];
+    fn lanes(record: &[u8; INSTANCE_STRIDE]) -> [u32; INSTANCE_LANES] {
+        let mut out = [0u32; INSTANCE_LANES];
         for (lane, chunk) in out.iter_mut().zip(record.as_chunks::<4>().0) {
             *lane = f32::from_ne_bytes(*chunk).to_bits();
         }
         out
     }
 
-    /// Distance in ulps between two `f32`s of the same sign; zero for
-    /// equal values (either zero counts as equal to the other), the
-    /// maximum when the signs differ.
+    /// Distance in ulps between two `f32`s: each bit pattern is mapped
+    /// to an integer that increases with the value (the negative half
+    /// is reflected below zero), so equal values give zero, the two
+    /// zeros give zero, and values of opposite sign give the honest
+    /// distance across zero. Total — no branch a test cannot reach.
     #[allow(
         clippy::cast_possible_wrap,
-        reason = "the bit patterns are compared as signed so a subtraction of same-sign values is their ulp distance"
+        reason = "the bit pattern is reinterpreted as a signed integer so that reflecting the negative half makes the map monotone"
     )]
     fn ulps(a: f32, b: f32) -> u32 {
-        if a.to_bits() == b.to_bits() || (a.abs().to_bits() == 0 && b.abs().to_bits() == 0) {
-            return 0;
-        }
-        if a.is_sign_negative() != b.is_sign_negative() {
-            return u32::MAX;
-        }
-        (a.to_bits() as i32)
-            .wrapping_sub(b.to_bits() as i32)
-            .unsigned_abs()
+        let ordered = |v: f32| {
+            let bits = v.to_bits() as i32;
+            if bits < 0 { i32::MIN - bits } else { bits }
+        };
+        ordered(a).abs_diff(ordered(b))
     }
 
     const SQUARE: Region = Region {
@@ -706,15 +727,41 @@ mod tests {
             Vec2::new(0.1, far.y),
             far,
         ];
-        for (got, want) in corners(&sprite).into_iter().zip(expected) {
-            assert_eq!(bits(got), bits(want));
-        }
-        // Unit scale, said explicitly, is the same arithmetic-free path.
-        for (got, want) in corners(&sprite.scale(1.0, 1.0)).into_iter().zip(expected) {
+        for (i, (got, want)) in corners(&sprite).into_iter().zip(expected).enumerate() {
             assert_eq!(
                 bits(got),
                 bits(want),
-                "an explicit unit scale left the branch"
+                "corner {i}: got {got:?}, want {want:?}"
+            );
+        }
+        // Unit scale, said explicitly, is the same arithmetic-free path.
+        for (i, (got, want)) in corners(&sprite.scale(1.0, 1.0))
+            .into_iter()
+            .zip(expected)
+            .enumerate()
+        {
+            assert_eq!(
+                bits(got),
+                bits(want),
+                "an explicit unit scale left the branch at corner {i}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    /// A NaN or infinite turn is NaN, never a panic: the reduction turns
+    /// an infinity into NaN (an infinity minus itself), the polynomial
+    /// carries it, the quadrant cast saturates to zero, and a corner
+    /// built from it is NaN — visible nonsense, the posture every
+    /// degenerate value in this crate takes.
+    #[test]
+    fn a_nan_or_infinite_turn_is_nan_and_never_panics() {
+        for turns in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let (s, c) = turn_sin_cos(turns);
+            assert!(s.is_nan() && c.is_nan(), "{turns} turns gave ({s}, {c})");
+            let corners = corners(&Sprite::new(SQUARE, 8.0, 8.0).rotation(turns));
+            assert!(
+                corners.iter().all(|p| p.x.is_nan() && p.y.is_nan()),
+                "{turns} turns gave {corners:?}"
             );
         }
     }
@@ -755,16 +802,10 @@ mod tests {
     #[test]
     fn turn_sin_cos_matches_the_tenth_turn_constants() {
         let (s, c) = turn_sin_cos(0.1);
-        assert!(
-            ulps(s, 0.587_785_25) <= 2,
-            "sin 36° is off by {} ulp",
-            ulps(s, 0.587_785_25)
-        );
-        assert!(
-            ulps(c, 0.809_017) <= 2,
-            "cos 36° is off by {} ulp",
-            ulps(c, 0.809_017)
-        );
+        let off_s = ulps(s, 0.587_785_25);
+        let off_c = ulps(c, 0.809_017);
+        assert!(off_s <= 2, "sin 36° is off by {off_s} ulp");
+        assert!(off_c <= 2, "cos 36° is off by {off_c} ulp");
     }
 
     /// The fixed sweep the two tests below share: 65,537 arguments
@@ -773,36 +814,50 @@ mod tests {
         (0..=65_536u32).map(|i| -2.0 + 4.0 * (i as f32) / 65_536.0)
     }
 
+    /// The double-precision reference, built by the same reduction the
+    /// function uses — whole turns and quarter turns taken out exactly
+    /// in `f64`, one multiply to radians, then the quadrant unfold — so
+    /// that at a multiple of a quarter turn it is exactly 0 or ±1
+    /// rather than the rounding of pi the platform's sine would return,
+    /// and the comparison can be in ulps everywhere.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the nearest quarter is a small integer-valued float; rounding the reference to single precision is the comparison"
+    )]
+    fn reference(turns: f32) -> (f32, f32) {
+        let turns = f64::from(turns);
+        let quarters = (turns - turns.round()) * 4.0;
+        let nearest = quarters.round();
+        let radians = (quarters - nearest) * core::f64::consts::FRAC_PI_2;
+        let (s, c) = radians.sin_cos();
+        let (s, c) = match (nearest as i32).rem_euclid(4) {
+            0 => (s, c),
+            1 => (c, -s),
+            2 => (-s, -c),
+            _ => (-c, s),
+        };
+        (s as f32, c as f32)
+    }
+
     /// Against double precision over the sweep: every result within
-    /// two ulps of the correctly rounded value, or within `1e-7`
-    /// absolutely where the reference itself is a rounding of pi at a
-    /// zero crossing (the double-precision sine of a whole number of
-    /// half turns is not zero, the polynomial's is).
+    /// two ulps of the correctly rounded value, at every one of the
+    /// 65,537 arguments and with no absolute allowance anywhere.
     #[test]
     fn turn_sin_cos_is_within_two_ulp_of_double_precision() {
-        let mut worst = 0u32;
+        let mut worst = (0u32, 0.0f32, (0.0f32, 0.0f32), (0.0f32, 0.0f32));
         for turns in sweep() {
-            let (s, c) = turn_sin_cos(turns);
-            let reduced = f64::from(turns) - f64::from(turns).round();
-            let (es, ec) = (reduced * core::f64::consts::TAU).sin_cos();
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "rounding the double-precision reference to single precision is the comparison"
-            )]
-            let (es, ec) = (es as f32, ec as f32);
-            let error_s = if (s - es).abs() <= 1e-7 {
-                0
-            } else {
-                ulps(s, es)
-            };
-            let error_c = if (c - ec).abs() <= 1e-7 {
-                0
-            } else {
-                ulps(c, ec)
-            };
-            worst = worst.max(error_s).max(error_c);
+            let got = turn_sin_cos(turns);
+            let want = reference(turns);
+            let error = ulps(got.0, want.0).max(ulps(got.1, want.1));
+            if error > worst.0 {
+                worst = (error, turns, got, want);
+            }
         }
-        assert!(worst <= 2, "the worst error over the sweep is {worst} ulp");
+        let (error, turns, got, want) = worst;
+        assert!(
+            error <= 2,
+            "the worst error over the sweep is {error} ulp, at {turns} turns: got {got:?}, want {want:?}"
+        );
     }
 
     /// The same bits on every platform: FNV-1a 64 over the sweep's
@@ -865,11 +920,16 @@ mod tests {
         };
         let plain = corners(&Sprite::new(wide, 8.0, 8.0));
         let turned = corners(&Sprite::new(wide, 8.0, 8.0).rotation(0.5));
-        for (got, want) in turned
+        for (i, (got, want)) in turned
             .into_iter()
             .zip([plain[3], plain[2], plain[1], plain[0]])
+            .enumerate()
         {
-            assert_eq!(bits(got), bits(want));
+            assert_eq!(
+                bits(got),
+                bits(want),
+                "corner {i}: got {got:?}, want {want:?}"
+            );
         }
     }
 
@@ -887,11 +947,16 @@ mod tests {
         };
         let plain = corners(&Sprite::new(wide, 8.0, 8.0));
         let mirrored = corners(&Sprite::new(wide, 8.0, 8.0).scale(-1.0, 1.0));
-        for (got, want) in mirrored
+        for (i, (got, want)) in mirrored
             .into_iter()
             .zip([plain[1], plain[0], plain[3], plain[2]])
+            .enumerate()
         {
-            assert_eq!(bits(got), bits(want));
+            assert_eq!(
+                bits(got),
+                bits(want),
+                "corner {i}: got {got:?}, want {want:?}"
+            );
         }
     }
 
@@ -986,6 +1051,15 @@ mod tests {
     }
 
     proptest! {
+        // Fixed RNG seed: the suite explores the same inputs on every
+        // run and every machine, so a property failure anywhere
+        // reproduces everywhere. Fresh exploration is a deliberate act
+        // (change the seed), never an ambient one.
+        #![proptest_config(ProptestConfig {
+            rng_seed: RngSeed::Fixed(0x2D5A_F00D),
+            ..ProptestConfig::default()
+        })]
+
         /// A turn is rigid about its pivot: the four corners keep their
         /// pairwise distances, and the pivot — the point at the sprite's
         /// own fractions along its two edges — stays where it was.
@@ -1027,8 +1101,14 @@ mod tests {
         }
 
         /// Turning by `a` and then by `b` about the same pivot is turning
-        /// by `a + b`, within the rounding of the two maps and the two
-        /// ulps of the trigonometry.
+        /// by `a + b`. The bound is the sum of what each step can round:
+        /// the maps' own rounding at the magnitudes involved (the first
+        /// term, the offset property's rule); the two-ulp trigonometry
+        /// of each of three turns over the corner's reach from the pivot,
+        /// at most `(w + h) / √2` (the second); and the rounding of
+        /// `a + b` itself — half an ulp of a value below two, which is
+        /// `EPSILON` turns, `TAU · EPSILON` radians, over the same reach
+        /// (the third).
         #[test]
         fn turns_compose(
             a in -1.0f32..1.0,
@@ -1042,10 +1122,18 @@ mod tests {
             let pivot = Vec2::new(x + 0.5 * w, y + 0.5 * h);
             let twice = corners(&sprite.rotation(a)).map(|corner| turned_about(corner, pivot, b));
             let once = corners(&sprite.rotation(a + b));
+            let reach = (w + h) * core::f32::consts::FRAC_1_SQRT_2;
             let bound = (x.abs() + y.abs() + w + h).max(1.0) * f32::EPSILON * 8.0
-                + (w + h) * 2.0 * f32::EPSILON;
-            for (p, q) in twice.into_iter().zip(once) {
-                prop_assert!((p - q).length() <= bound, "corners differ by {}", (p - q).length());
+                + reach * f32::EPSILON * 8.0
+                + reach * core::f32::consts::TAU * f32::EPSILON;
+            for (i, (p, q)) in twice.into_iter().zip(once).enumerate() {
+                prop_assert!(
+                    (p - q).length() <= bound,
+                    "corner {} differs by {} against a bound of {}",
+                    i,
+                    (p - q).length(),
+                    bound
+                );
             }
         }
 
@@ -1054,8 +1142,10 @@ mod tests {
         /// into pixels per axis, still span the sprite's own width and
         /// height. The mutant this exists for turns the NDC corners
         /// instead, which shears every non-square canvas by up to the
-        /// aspect ratio — an edge-length error of at least ~0.07 px on
-        /// this domain against a bound near 0.002 px.
+        /// aspect ratio — an edge-length error of at least ~0.04 px on
+        /// this domain (the width edge at the smallest size and angle;
+        /// the height edge by ~0.14 px) against a bound between 0.001
+        /// and 0.002 px.
         ///
         /// The bound is derived from what the test reads: each NDC lane
         /// is `2c/extent - 1` rounded once and carries up to an ulp of a
@@ -1316,6 +1406,11 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            rng_seed: RngSeed::Fixed(0x2D5A_F00E),
+            ..ProptestConfig::default()
+        })]
+
         /// Math earns property tests: over arbitrary canvases and points, the
         /// ortho map is monotone in both axes, exact at the corners,
         /// and inverts back to the input within one part in a million

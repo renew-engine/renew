@@ -5,7 +5,7 @@
 // instance from the one bound vertex buffer at instance rate.
 //
 // Layout here and the `VertexAttribute` slice declared as this
-// pipeline's instance input describe the same bytes: locations 0..3 =
+// pipeline's instance input describe the same bytes: locations 0 to 3 =
 // the four corners in NDC -- local top-left, top-right, bottom-left,
 // bottom-right, already turned, scaled and placed on the CPU --
 // location 4/5 = vec2 UV at the first and the last corner, location 6

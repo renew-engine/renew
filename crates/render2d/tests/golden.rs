@@ -13,6 +13,11 @@
 //! linear working space re-decides this test (convert to a committed
 //! golden or retire), as the README's Testing section records.
 //!
+//! **Computed with an edge margin, exact on every adapter:** a turned
+//! opaque square whose every pixel centre sits a fifth of a pixel or
+//! more from its diagonal edges, so the covered set is an exact count
+//! that no rasteriser's sub-pixel snap can move.
+//!
 //! **Committed, pinned-lane exact:** semi-transparent overlaps proving
 //! the premultiplied compositing convention in committed bytes, with
 //! the same candidate/provenance ritual as the rendering crate's
@@ -521,8 +526,9 @@ fn quarter_turns_half_turns_and_mirrors_match_the_computed_image_exactly() {
 /// terms are half-integers, so the sum is an integer at most 11, and
 /// per quadrant that is the sum of (11 − m) for m in 0..=10, which is
 /// 66 — 264 pixels in all. The nearest pixel centre to any edge is
-/// 0.22 px away, fifty times a rasteriser's sub-pixel snap, so no
-/// adapter can disagree about a single one of them.
+/// 0.22 px away, more than three times the coarsest sub-pixel snap
+/// Vulkan permits (four bits, a sixteenth of a pixel), so no adapter
+/// can disagree about a single one of them.
 #[test]
 fn a_diagonal_turn_stays_inside_its_box_and_keeps_its_centre() {
     let Some(device) = device_or_skip().expect("device bring-up") else {

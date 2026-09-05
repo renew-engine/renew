@@ -4,9 +4,9 @@
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use renew_rhi::{
-    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, FrameData,
-    Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders, TargetError,
-    TargetFormat, TextureDesc, VertexAttribute,
+    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, Facing,
+    FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders,
+    TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -177,7 +177,13 @@ impl SpriteRenderer {
             )
             .instance_input(SPRITE_LAYOUT)
             .sampled_bindings(1)
-            .blend(Blend::PremultipliedAlpha),
+            .blend(Blend::PremultipliedAlpha)
+            // Both faces, deliberately: a negative `Sprite::scale`
+            // reverses the quad's winding and must still draw — the
+            // crate promises it on the field, and the mirror oracle in
+            // `tests/golden.rs` pins it. A one-sided sprite pipeline
+            // would erase mirrored sprites with no error anywhere.
+            .facing(Facing::Both),
         )?;
         let capacity = max_sprites.get() as usize * fill::INSTANCE_STRIDE;
         let buffer = device.create_buffer(capacity, BufferUsage::PerFrame)?;
