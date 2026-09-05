@@ -4,9 +4,9 @@
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use renew_rhi::{
-    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, FrameData,
-    Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders, TargetError,
-    TargetFormat, TextureDesc, VertexAttribute,
+    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, Facing,
+    FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders,
+    TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -17,15 +17,17 @@ static SPRITE_VS_SPV: &[u8] = include_bytes!("../shaders/sprite.vert.spv");
 /// Fragment stage SPIR-V sampling the atlas at set 0, binding 0.
 static SPRITE_FS_SPV: &[u8] = include_bytes!("../shaders/sprite.frag.spv");
 
-/// The sprite quad's per-instance layout. The shader's `location(0..=4)`
-/// list, [`fill::pack`], and this slice describe the same 48 bytes;
+/// The sprite quad's per-instance layout. The shader's `location(0..=6)`
+/// list, [`fill::pack`], and this slice describe the same 64 bytes;
 /// change one and the others in the same commit or the draw reads
 /// garbage.
 const SPRITE_LAYOUT: &[VertexAttribute] = &[
-    VertexAttribute::Vec2, // NDC min
-    VertexAttribute::Vec2, // NDC max
-    VertexAttribute::Vec2, // UV at the first corner (swapped by a flip)
-    VertexAttribute::Vec2, // UV at the last corner
+    VertexAttribute::Vec2, // corner a: local top-left, NDC
+    VertexAttribute::Vec2, // corner b: local top-right
+    VertexAttribute::Vec2, // corner c: local bottom-left
+    VertexAttribute::Vec2, // corner d: local bottom-right
+    VertexAttribute::Vec2, // UV at corner a (swapped by a flip)
+    VertexAttribute::Vec2, // UV at corner d
     VertexAttribute::Vec4, // premultiplied tint
 ];
 
@@ -175,7 +177,13 @@ impl SpriteRenderer {
             )
             .instance_input(SPRITE_LAYOUT)
             .sampled_bindings(1)
-            .blend(Blend::PremultipliedAlpha),
+            .blend(Blend::PremultipliedAlpha)
+            // Both faces, deliberately: a negative `Sprite::scale`
+            // reverses the quad's winding and must still draw — the
+            // crate promises it on the field, and the mirror oracle in
+            // `tests/golden.rs` pins it. A one-sided sprite pipeline
+            // would erase mirrored sprites with no error anywhere.
+            .facing(Facing::Both),
         )?;
         let capacity = max_sprites.get() as usize * fill::INSTANCE_STRIDE;
         let buffer = device.create_buffer(capacity, BufferUsage::PerFrame)?;

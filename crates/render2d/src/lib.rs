@@ -19,11 +19,18 @@
 //!   color attachment; the caller composes the frame on its own stack
 //!   and hands it to whichever target it holds. This crate never
 //!   renders, never presents, and never touches a window.
+//! - **Zero rotation and unit scale are exact**, and quarter turns,
+//!   the negative-scale mirror and flips permute an integer-cornered
+//!   sprite's corners and lanes bit for bit; the sine and cosine of a
+//!   turn are this crate's own, so a turned sprite packs the same
+//!   corners on every platform. A region that is ever turned owes a
+//!   one-texel transparent gutter ([`Region`]).
 //!
 //! The pure half ([`Canvas`], [`Region`], [`Sprite`], [`Instance`], the
-//! ortho and UV maps) lives apart from the device half
-//! ([`SpriteRenderer`]) so the math is testable without a GPU and the
-//! rendering-crate seam stays one module wide.
+//! corner transform, the turn's sine and cosine, the ortho and UV maps)
+//! lives apart from the device half ([`SpriteRenderer`]) so the math is
+//! testable without a GPU and the rendering-crate seam stays one module
+//! wide.
 
 // Diagnostics go through sinks; the standard output macros are banned in
 // this crate by construction, not convention.

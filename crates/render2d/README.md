@@ -39,6 +39,22 @@ else, which the build matrix proves by building and testing without it.
 - **Capacity is refused by name.** Pushing past the size fixed at
   creation is a caller sizing bug and fails with a retained assertion
   saying so, never a truncated draw.
+- **Zero rotation and unit scale are exact.** Such a sprite packs the
+  corners an axis-aligned sprite always packed, and the vertex stage
+  reproduces the previous arithmetic operation for operation, so a
+  picture with no turned sprite in it is unchanged by this crate
+  having rotation at all. Quarter turns and the negative-scale mirror
+  permute an integer-cornered sprite's corners bit for bit, and a flip
+  is a lane swap — which is what the computed oracles rely on. The sine
+  and cosine of a turn are this crate's own — adds, subtracts and
+  multiplies only — so a turned sprite packs the same corners on every
+  platform.
+- **A region that is ever turned owes a gutter.** Sampling is nearest
+  and clamped at the atlas's edge, not the region's, and a turned edge
+  resolves to a texel inside the region only up to interpolation
+  rounding; so the texels bordering such a region are kept transparent
+  for one texel on every side. Axis-aligned sprites at texel-aligned
+  sizes never reach a neighbour and need none.
 
 ## What is here
 
@@ -46,10 +62,14 @@ else, which the build matrix proves by building and testing without it.
   space (y down from the top-left), a rectangle of atlas texels, and
   one placed, sized, tinted sprite, mirrored on either axis when asked
   (`flip_x`/`flip_y` — a swap of the sampled edges, so the geometry and
-  its winding never move). A uniform tint `[a, a, a, a]` is a fade to
-  `a` of the sprite's opacity: the tint is premultiplied, so scaling all
-  four channels is what "`a` as opaque" means, and scaling only the
-  fourth would brighten the sprite as it faded.
+  its winding never move), turned about a fractional pivot and scaled
+  about it (`rotation` in turns — a quarter turn is `0.25`, clockwise on
+  screen; `pivot`, the centre by default; `scale` per axis, where a
+  negative factor is the geometric mirror). A uniform tint
+  `[a, a, a, a]` is a fade to `a` of the sprite's opacity: the tint is
+  premultiplied, so scaling all four channels is what "`a` as opaque"
+  means, and scaling only the fourth would brighten the sprite as it
+  faded.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
@@ -73,21 +93,33 @@ else, which the build matrix proves by building and testing without it.
   ```
 
 The ortho and UV maps run on the CPU at push time — each instance
-carries its own NDC rectangle, so no uniform, matrix, or push constant
-exists anywhere in the crate.
+carries its own four NDC corners, turned and scaled on the CPU in
+canvas pixels before the per-axis ortho map, so a non-square canvas
+needs no aspect term and no uniform, matrix, or push constant exists
+anywhere in the crate. A consumer that stretches its canvas onto a
+surface of another aspect ratio stretches a turned sprite with
+everything else, and owns that choice.
 
 ## The instance record
 
-Every sprite becomes one 48-byte record: five attributes, twelve
+Every sprite becomes one 64-byte record: seven attributes, sixteen
 `f32`s, native-endian, in the order the vertex stage declares them.
 
 | location | attribute | content |
 |---|---|---|
-| 0 | `Vec2` | NDC min corner |
-| 1 | `Vec2` | NDC max corner |
-| 2 | `Vec2` | UV at the first corner — the region's min, or its max on a flipped axis |
-| 3 | `Vec2` | UV at the last corner |
-| 4 | `Vec4` | premultiplied tint |
+| 0 | `Vec2` | corner a — the local top-left, NDC, after pivot, turn and scale |
+| 1 | `Vec2` | corner b — the local top-right |
+| 2 | `Vec2` | corner c — the local bottom-left |
+| 3 | `Vec2` | corner d — the local bottom-right |
+| 4 | `Vec2` | UV at corner a — the region's min, or its max on a flipped axis |
+| 5 | `Vec2` | UV at corner d |
+| 6 | `Vec4` | premultiplied tint |
+
+The vertex stage selects a corner by a nested mix with weights of zero
+and one — along the top edge, along the bottom edge, then between the
+two — so for an axis-aligned sprite every position is the arithmetic
+the two-corner record used to produce, operation for operation, under
+either way a driver evaluates a mix.
 
 `Sprite::instance(canvas, atlas)` packs one without a device, as an
 opaque `Instance` whose `bytes()` are what `push` writes when no batch
@@ -105,10 +137,19 @@ monotone, corner-exact, and invertible over random canvases, and two
 more hold the batch fade to the premultiplied rule (every channel by
 the same factor, composing to the product, never brightening) and the
 batch offsets to adding; a flip swaps exactly the two UV lanes of its
-axis and nothing else, pinned lane by lane. A computed image oracle
-proves placement, region selection, fill-order overwrite, the batch
-offset and both mirrors byte-exactly on every adapter; a committed
-golden proves the
+axis and nothing else, pinned lane by lane. The turn is pinned three
+ways: the untransformed sprite packs the rectangle bit for bit on a
+fixture whose general path would round; quarter and half turns and the
+negative-scale mirror permute integer corners exactly; and properties
+hold a turn rigid about its pivot, compose two turns into one, and keep
+edge lengths on a 640×360 canvas (the mutant that turns in NDC shears
+by the aspect ratio). The crate's sine and cosine are exact at every
+quarter turn, within two ulps of double precision over a fixed sweep,
+and hashed to one constant asserted on every platform. A computed
+image oracle proves placement, region selection, fill-order overwrite,
+the batch offset, both mirrors, a quarter and a half turn, the
+negative-scale mirror, and a diagonal turn's exact 264-pixel diamond
+byte-exactly on every adapter; a committed golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed

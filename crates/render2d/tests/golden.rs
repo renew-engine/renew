@@ -13,6 +13,11 @@
 //! linear working space re-decides this test (convert to a committed
 //! golden or retire), as the README's Testing section records.
 //!
+//! **Computed with an edge margin, exact on every adapter:** a turned
+//! opaque square whose every pixel centre sits a fifth of a pixel or
+//! more from its diagonal edges, so the covered set is an exact count
+//! that no rasteriser's sub-pixel snap can move.
+//!
 //! **Committed, pinned-lane exact:** semi-transparent overlaps proving
 //! the premultiplied compositing convention in committed bytes, with
 //! the same candidate/provenance ritual as the rendering crate's
@@ -413,6 +418,184 @@ fn a_mirrored_sprite_reads_its_texels_backwards_exactly() {
             fnv1a(&expected)
         );
     }
+}
+
+/// Quarter turns, half turns and the geometric mirror of opaque
+/// sprites against a computed image, exactly: every corner lands on an
+/// integer pixel boundary, so the argument that makes the axis-aligned
+/// oracle exact on every adapter makes this one exact too.
+///
+/// The row region (red, red, green, green) at (8, 8) size (16, 8),
+/// turned a quarter turn about its centre (16, 12): the local x axis
+/// now points down the screen, so the footprint is x in [12, 20),
+/// y in [4, 20) with red on top and green below. The same row at
+/// (8, 24) turned a half turn reads green then red, exactly as the
+/// double flip does; at (8, 40) scaled by (-1, 1) it reads green then
+/// red, exactly as `flip_x` does — the geometric mirror and the sampled
+/// one paint the same pixels.
+///
+/// Probed by flipping the sign of the sine in the corner map: the
+/// quarter turn goes anticlockwise, green lands on top, and the
+/// comparison reds at the first row of the footprint.
+#[test]
+fn quarter_turns_half_turns_and_mirrors_match_the_computed_image_exactly() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let atlas = atlas_bytes();
+    let mut renderer = renderer(&device, &atlas, 8).expect("sprite renderer");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    let top_row = Region {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 2,
+    };
+    renderer.begin();
+    renderer.push(
+        &Sprite::new(top_row, 8.0, 8.0)
+            .size(16.0, 8.0)
+            .rotation(0.25),
+    );
+    renderer.push(
+        &Sprite::new(top_row, 8.0, 24.0)
+            .size(16.0, 8.0)
+            .rotation(0.5),
+    );
+    renderer.push(
+        &Sprite::new(top_row, 8.0, 40.0)
+            .size(16.0, 8.0)
+            .scale(-1.0, 1.0),
+    );
+    let color = [renew_rhi::color_attachment(CLEAR)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("turned render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    drop(target);
+    drop(renderer);
+    assert_no_validation_errors(&device);
+
+    let mut expected = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for _ in 0..SIZE * SIZE {
+        expected.extend_from_slice(&clear_bytes());
+    }
+    // A quarter turn clockwise: red on top, green below.
+    paint(&mut expected, 12, 4, 8, 8, [255, 0, 0, 255]);
+    paint(&mut expected, 12, 12, 8, 8, [0, 255, 0, 255]);
+    // A half turn: green then red, as the double flip reads.
+    paint(&mut expected, 8, 24, 8, 8, [0, 255, 0, 255]);
+    paint(&mut expected, 16, 24, 8, 8, [255, 0, 0, 255]);
+    // A negative scale: green then red, as `flip_x` reads.
+    paint(&mut expected, 8, 40, 8, 8, [0, 255, 0, 255]);
+    paint(&mut expected, 16, 40, 8, 8, [255, 0, 0, 255]);
+
+    if pixels != expected {
+        let first_diff = pixels
+            .iter()
+            .zip(expected.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(usize::MAX);
+        let pixel = first_diff / 4;
+        panic!(
+            "a turned sprite diverges from the computed image on adapter {:?}: first \
+             difference at byte {first_diff} (pixel {}, {}), fnv1a {:#018x} vs {:#018x}",
+            device.adapter(),
+            pixel % SIZE as usize,
+            pixel / SIZE as usize,
+            fnv1a(&pixels),
+            fnv1a(&expected)
+        );
+    }
+}
+
+/// A diagonal turn stays inside its box and keeps its centre, with an
+/// exact pixel count on every adapter: a 16×16 red square at (16, 16)
+/// turned an eighth of a turn about (24, 24) is a diamond whose edges
+/// sit 8·√2 ≈ 11.31 from the centre along the axes. A pixel centre
+/// (i + ½, j + ½) is covered when |i − 23.5| + |j − 23.5| ≤ 11.31; both
+/// terms are half-integers, so the sum is an integer at most 11, and
+/// per quadrant that is the sum of (11 − m) for m in 0..=10, which is
+/// 66 — 264 pixels in all. The nearest pixel centre to any edge is
+/// 0.22 px away, more than three times the coarsest sub-pixel snap
+/// Vulkan permits (four bits, a sixteenth of a pixel), so no adapter
+/// can disagree about a single one of them.
+#[test]
+fn a_diagonal_turn_stays_inside_its_box_and_keeps_its_centre() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let atlas = atlas_bytes();
+    let mut renderer = renderer(&device, &atlas, 8).expect("sprite renderer");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    renderer.begin();
+    renderer.push(
+        &Sprite::new(RED, 16.0, 16.0)
+            .size(16.0, 16.0)
+            .rotation(0.125),
+    );
+    let color = [renew_rhi::color_attachment(CLEAR)];
+    let items = [renderer.item()];
+    let passes = [Pass::new(&color, &items)];
+    target
+        .render(&RenderDesc::new(&passes))
+        .expect("diagonal render");
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    drop(target);
+    drop(renderer);
+    assert_no_validation_errors(&device);
+
+    let pixel_at = |x: u32, y: u32| {
+        let base = ((y * SIZE + x) * 4) as usize;
+        [
+            pixels[base],
+            pixels[base + 1],
+            pixels[base + 2],
+            pixels[base + 3],
+        ]
+    };
+    assert_eq!(pixel_at(24, 24), [255, 0, 0, 255], "the centre is red");
+    for (x, y) in [(16, 16), (31, 16), (16, 31), (31, 31)] {
+        assert_eq!(
+            pixel_at(x, y),
+            clear_bytes(),
+            "box corner ({x}, {y}) is clear"
+        );
+    }
+    let mut covered = 0u32;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let pixel = pixel_at(x, y);
+            if pixel != clear_bytes() {
+                assert_eq!(
+                    pixel,
+                    [255, 0, 0, 255],
+                    "pixel ({x}, {y}) is neither clear nor red"
+                );
+                covered += 1;
+                let inside =
+                    (f64::from(x) - 23.5).abs() + (f64::from(y) - 23.5).abs() <= 8.0 * 2f64.sqrt();
+                assert!(inside, "pixel ({x}, {y}) is red outside the diamond");
+            }
+        }
+    }
+    assert_eq!(covered, 264, "the diamond covers exactly 264 pixel centres");
 }
 
 /// Semi-transparent overlaps against the committed golden: the
