@@ -40,8 +40,9 @@ maturity, dependencies and core status.
   does not touch this: the jitter is drawn before the axis is used, so
   which axis arrives cannot change how many values the generator gives
   out.
-- **All allocation happens at construction**, gate-tested from the
-  first commit; a burst past capacity saturates.
+- **All allocation happens at construction** — `burst`, `step`,
+  `write_instances` and the `particles()` walk, each gate-tested from
+  its own first commit; a burst past capacity saturates.
 
 ## The renderer half, behind the `render` feature
 
@@ -65,10 +66,14 @@ A consumer with its own atlas and its own draw order — a sprite batch
 rather than the billboard pipeline — reads the pool through
 `particles()` and pushes one of its own sprites per entry. `position`
 is the particle's centre, so a square sprite of side `size` sits at
-`(x - size / 2, y - size / 2)` with `.size(size, size)`; `color` is
-premultiplied and goes straight into a premultiplied tint — `.tint(c)`
-for media that occlude, `.tint([r, g, b, 0.0])` for light that adds and
-never occludes; the source rectangle is the caller's, chosen from its
+`(x - size / 2, y - size / 2)` with `.size(size, size)`, where `x` and
+`y` are the first two components of `position`; the third component
+and the sign of the pool's axes are the effect's own — an effect drawn
+on a canvas whose y grows downward is authored with its gravity along
+`+y`, or the caller maps the axes. `color` is premultiplied and goes
+straight into a premultiplied tint (`.tint(color)`); whether a tint can
+add light without occluding is the sprite renderer's contract to state,
+not this crate's. The source rectangle is the caller's, chosen from its
 own atlas (by `progress`, if a flip-book by age is wanted), because
 `EffectDesc::tile` is the billboard atlas's and is not carried here;
 the painter's order is the caller's. Everything is premultiplied end to
@@ -82,7 +87,8 @@ the same arrays the packer walks and writes nothing.
 No continuous-rate emission, no per-particle rotation, no tile ranges:
 each lands with the first consumer that needs it, because surface built
 ahead of use is the pattern this repository's own register warns about.
-Through the view, a spin, a flip or a 2D placement is the caller's to
-apply to its own sprite until the pool carries one. No sorting: additive
-blending is order-independent by arithmetic, and the alpha mode
-documents its unsorted artifact where the choice is made.
+Through the view a spin is the caller's to apply to its own sprite
+until the pool carries one; a flip and the 2D placement stay the
+caller's. No sorting: additive blending is order-independent by
+arithmetic, and the alpha mode documents its unsorted artifact where
+the choice is made.

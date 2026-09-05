@@ -1,5 +1,5 @@
 //! Mechanical enforcement of the crate's allocation contract: after
-//! construction, the steady state — burst, step, pack — performs no
+//! construction, the steady state — burst, step, pack, view — performs no
 //! heap allocation through the global allocator.
 //!
 //! Shipped with the crate's first commit rather than after it, because
@@ -70,7 +70,10 @@ fn the_steady_state_allocates_nothing() {
             // size into a sum, fenced so nothing folds the walk away,
             // and asserted positive so the walk provably visited a
             // live particle.
-            let total: f32 = system.particles().map(|particle| particle.size).sum();
+            let total: f32 = system
+                .particles()
+                .map(|particle| std::hint::black_box(particle).size)
+                .sum();
             let total = std::hint::black_box(total);
             assert!(
                 total.is_finite() && total > 0.0,

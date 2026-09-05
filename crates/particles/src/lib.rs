@@ -21,7 +21,7 @@
 //! - **All allocation happens at construction.** `step`,
 //!   [`ParticleSystem::burst`], [`ParticleSystem::write_instances`] and
 //!   the [`ParticleSystem::particles`] view allocate nothing,
-//!   gate-tested from the crate's first commit; a burst past capacity
+//!   each gate-tested from its own first commit; a burst past capacity
 //!   saturates rather than growing.
 //!
 //! The GPU-facing half — the billboard pipeline, the atlas, the draw —
@@ -120,7 +120,9 @@ pub struct VelocityCone {
 pub struct Particle {
     /// Centre, in the effect's own units.
     pub position: [f32; 3],
-    /// Velocity after the last step's drag, units per second.
+    /// The velocity `step` last left it, units per second: at birth the
+    /// cone direction times the drawn speed, before any drag, and after
+    /// every step the post-drag velocity the next step integrates from.
     pub velocity: [f32; 3],
     /// Size at this moment of its life — the packed record's fourth
     /// value.
@@ -138,6 +140,7 @@ pub struct Particle {
 /// [`ParticleSystem::write_instances`] packs. Borrows the pool,
 /// allocates nothing, and knows its length exactly, so a caller can
 /// size a sprite batch before pushing.
+#[derive(Clone, Debug)]
 pub struct Particles<'a> {
     pool: &'a ParticleSystem,
     index: usize,
@@ -159,6 +162,10 @@ impl Iterator for Particles<'_> {
 }
 
 impl ExactSizeIterator for Particles<'_> {}
+
+/// Past the end it keeps answering `None`: the index never moves once
+/// the pool has nothing at it.
+impl core::iter::FusedIterator for Particles<'_> {}
 
 /// A fixed-capacity particle pool and the generator that feeds it.
 ///
@@ -957,8 +964,13 @@ mod tests {
         })]
 
         /// The view walks pack order: over random burst schedules, the
-        /// i-th particle of the view is the i-th packed record, however
-        /// many bursts and expiries have compacted the pool.
+        /// i-th particle of the view is the i-th packed record in every
+        /// slot the record carries from the particle — position, size
+        /// and colour — however many bursts and expiries have compacted
+        /// the pool. Each burst spawns at its own x, so newborns of one
+        /// burst are distinguishable from another's; a schedule that
+        /// leaves the pool empty is assumed away rather than passing on
+        /// two empty lists.
         #[test]
         fn the_view_walks_pack_order(
             bursts in proptest::collection::vec((0u32..200, 0u32..40), 1..12),
@@ -968,22 +980,32 @@ mod tests {
                 Seed::from_u64(41),
                 StreamId::from_name("order"),
             );
-            for (count, steps) in bursts {
-                system.burst([0.0, 0.0, 0.0], count);
+            for ((count, steps), origin) in bursts.into_iter().zip(0u8..) {
+                system.burst([f32::from(origin), 0.0, 0.0], count);
                 for _ in 0..steps {
                     system.step(DT);
                 }
             }
             let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
             let packed = system.write_instances(&mut bytes) as usize;
+            proptest::prop_assume!(packed > 0);
             let viewed: Vec<Particle> = system.particles().collect();
             proptest::prop_assert_eq!(viewed.len(), packed);
             for (index, particle) in viewed.iter().enumerate() {
                 let base = index * INSTANCE_STRIDE;
-                let x = f32::from_ne_bytes(bytes[base..base + 4].try_into().unwrap());
-                let size = f32::from_ne_bytes(bytes[base + 12..base + 16].try_into().unwrap());
-                proptest::prop_assert_eq!(particle.position[0].to_bits(), x.to_bits());
-                proptest::prop_assert_eq!(particle.size.to_bits(), size.to_bits());
+                let slot = |k: usize| {
+                    f32::from_ne_bytes(bytes[base + k * 4..base + k * 4 + 4].try_into().unwrap())
+                        .to_bits()
+                };
+                proptest::prop_assert_eq!(
+                    particle.position.map(f32::to_bits),
+                    [slot(0), slot(1), slot(2)]
+                );
+                proptest::prop_assert_eq!(particle.size.to_bits(), slot(3));
+                proptest::prop_assert_eq!(
+                    particle.color.map(f32::to_bits),
+                    [slot(4), slot(5), slot(6), slot(7)]
+                );
             }
         }
 
