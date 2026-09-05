@@ -33,10 +33,13 @@ pub enum Tile {
 /// screen units; y down from the top-left).
 ///
 /// `#[non_exhaustive]` without a constructor — a deliberate deviation
-/// from the descriptor pattern: this is a read-side record produced only
-/// by this module, by [`scene`] and by [`Presentation::fill`], never
-/// built by callers, so a constructor would have no caller outside this
-/// file.
+/// from the descriptor pattern: this is a read-side record produced by
+/// the game itself and never by a consumer of it. [`scene`] and
+/// [`Presentation::fill`] build the world's own sprites here, and
+/// [`crate::effects::Effects::fill`] builds the crash sparks in the
+/// sibling module — which is why the fields are `pub` rather than
+/// private to this file. Nothing outside the crate builds one, so a
+/// constructor would still have no caller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct SceneSprite {
@@ -73,8 +76,8 @@ pub struct SceneSprite {
 /// The tint a sprite carries when it has none: premultiplied white,
 /// which multiplies through unchanged.
 ///
-/// Named rather than written out at four call sites, so "no tint" is one
-/// decision and reads as one.
+/// Named rather than written out at each of its three call sites, so
+/// "no tint" is one decision and reads as one.
 const UNTINTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// The most sprites a frame of this game can hold.

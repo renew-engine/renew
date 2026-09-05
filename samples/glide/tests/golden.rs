@@ -1131,6 +1131,10 @@ fn a_crash_at_tick_114_throws_sparks_as_light() {
 /// the crash frame stacks additive light.
 #[test]
 fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
+    // Written as a literal rather than derived from the constant: see
+    // the note at the bound checks below.
+    const AT_THE_BOUND: usize = 440;
+
     let base = vec![128u8; (VIEW_WIDTH as usize) * (VIEW_HEIGHT as usize) * 4];
 
     // The disagreement this tolerance exists for: seven pixels, one code.
@@ -1160,13 +1164,33 @@ fn the_crash_tolerance_admits_a_rounding_difference_and_nothing_larger() {
         "every other checkpoint is compared byte for byte"
     );
 
-    // One pixel past the bound is refused.
+    // **The bound is pinned from both sides, with literals.**
+    //
+    // Deriving the counts from `CRASH_MAX_DIFFERING_PIXELS` would make
+    // this tautological: writing `N + 1` pixels against an assertion of
+    // `> N` passes for every N, so the constant could be widened to any
+    // value and the test would stay green. Writing 440 and 441 pins the
+    // number itself — raise the constant and the refusal below fails;
+    // lower it and the admission fails.
+    let mut exactly = base.clone();
+    for pixel in 0..AT_THE_BOUND {
+        exactly[pixel * 4 + 1] = 129;
+    }
+    let at_bound = Difference::between(&exactly, &base);
+    assert_eq!(at_bound.pixels, AT_THE_BOUND);
+    assert!(
+        at_bound.within_crash_tolerance(),
+        "the bound itself must be admitted, or the stated number is not the bound"
+    );
+
     let mut too_many = base.clone();
-    for pixel in 0..=CRASH_MAX_DIFFERING_PIXELS {
+    for pixel in 0..=AT_THE_BOUND {
         too_many[pixel * 4 + 1] = 129;
     }
+    let past_bound = Difference::between(&too_many, &base);
+    assert_eq!(past_bound.pixels, AT_THE_BOUND + 1);
     assert!(
-        !Difference::between(&too_many, &base).within_crash_tolerance(),
+        !past_bound.within_crash_tolerance(),
         "one pixel past the bound must be refused"
     );
 
