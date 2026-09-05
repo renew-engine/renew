@@ -19,7 +19,8 @@
 //!   divide, min, max, and square root. No transcendental function
 //!   runs per particle anywhere in this crate. A [`Shape`]'s draw count
 //!   is fixed per variant and stated on the type; an [`Emitter`] draws
-//!   nothing.
+//!   nothing, and an effect whose angle and spin ranges are both
+//!   `(0.0, 0.0)` draws nothing for them.
 //! - **All allocation happens at construction.** `step`,
 //!   [`ParticleSystem::burst`], [`ParticleSystem::write_instances`] and
 //!   the [`ParticleSystem::particles`] view allocate nothing,
@@ -85,6 +86,28 @@ pub struct EffectDesc {
     /// minimum u, minimum v, maximum u, maximum v. One tile per effect
     /// in v0; ranges arrive with a consumer that varies them.
     pub tile: [f32; 4],
+    /// Angle at birth, in turns, drawn uniformly from this range.
+    /// `(0.0, 0.0)` — no turn — is what every effect written before this
+    /// field existed means.
+    pub angle: (f32, f32),
+    /// Angular velocity, in turns per second, drawn uniformly from this
+    /// range. `(0.0, 0.0)` is no spin.
+    ///
+    /// **An effect that does not turn draws nothing for either.** The
+    /// angle and the spin are drawn, in that order, after the lifetime
+    /// and only when one of the two ranges is not `(0.0, 0.0)`, so every
+    /// effect authored before these fields existed replays the same
+    /// bytes bit for bit and the committed hash stands.
+    pub spin: (f32, f32),
+}
+
+impl EffectDesc {
+    /// Whether a particle of this effect can have an angle at all: an
+    /// exact `(0.0, 0.0)` for both ranges is the documented "no turn",
+    /// and is the case that draws nothing.
+    fn turns(&self) -> bool {
+        self.angle != (0.0, 0.0) || self.spin != (0.0, 0.0)
+    }
 }
 
 /// A direction and a spread: where particles fly.
@@ -269,6 +292,14 @@ pub struct Particle {
     /// packer lerps size and colour by, so a caller lerping its own
     /// quantity lands where the colour did.
     pub progress: f32,
+    /// The particle's angle now, in turns: its birth angle, advanced by
+    /// `spin · dt` once per step — one multiply and one add, accumulated,
+    /// which is what the cross-platform hash pins (not
+    /// `birth + spin · age`, which rounds differently). Never wrapped:
+    /// it is bounded by the lifetime times the spin, and a consumer's
+    /// turn arithmetic reduces it itself. Exactly `0.0` for an effect
+    /// that does not turn.
+    pub rotation: f32,
 }
 
 /// The live particles in pool order — the order
@@ -314,6 +345,8 @@ pub struct ParticleSystem {
     velocity: Vec<[f32; 3]>,
     age: Vec<f32>,
     lifetime: Vec<f32>,
+    angle: Vec<f32>,
+    spin: Vec<f32>,
 }
 
 impl ParticleSystem {
@@ -327,7 +360,8 @@ impl ParticleSystem {
     /// non-negative — asserted in dev builds, because the failure a NaN
     /// buys otherwise is silent and strange: `age >= NaN` is never
     /// true, so a NaN lifetime makes particles immortal and pins the
-    /// pool at capacity forever.
+    /// pool at capacity forever; a NaN angle reaches a consumer's sprite
+    /// and draws nothing, just as silently.
     #[must_use]
     pub fn new(desc: &EffectDesc, seed: Seed, stream: StreamId) -> Self {
         debug_assert!(
@@ -344,6 +378,10 @@ impl ParticleSystem {
                 desc.gravity[1],
                 desc.gravity[2],
                 desc.drag_per_step,
+                desc.angle.0,
+                desc.angle.1,
+                desc.spin.0,
+                desc.spin.1,
             ]
             .iter()
             .all(|value| value.is_finite())
@@ -360,6 +398,8 @@ impl ParticleSystem {
             velocity: Vec::with_capacity(capacity),
             age: Vec::with_capacity(capacity),
             lifetime: Vec::with_capacity(capacity),
+            angle: Vec::with_capacity(capacity),
+            spin: Vec::with_capacity(capacity),
         }
     }
 
@@ -430,11 +470,13 @@ impl ParticleSystem {
     ///
     /// Per spawned particle the draws are, in order: the shape's (none
     /// for a point, one for a segment, three for a box), then the
-    /// cone's rejection loop, then the speed, then the lifetime — the
-    /// order the point-shaped bursts always had, with the shape's draws
-    /// in front. A point shape therefore reproduces [`Self::burst`] and
-    /// [`Self::burst_along`] bit for bit, and the committed hash guard
-    /// is the proof that the shapes' arrival moved nothing.
+    /// cone's rejection loop, then the speed, then the lifetime, then —
+    /// only for an effect that turns — the angle and the spin. That is
+    /// the order the point-shaped bursts always had, with the shape's
+    /// draws in front and the turn's behind, so a point shape on an
+    /// effect that does not turn reproduces what [`Self::burst`] and
+    /// [`Self::burst_along`] always packed, bit for bit; the committed
+    /// hash guard is the proof that neither arrival moved anything.
     pub fn burst_in(&mut self, shape: Shape, axis: [f32; 3], count: u32) {
         let room = self.desc.capacity.saturating_sub(self.live());
         for _ in 0..count.min(room) {
@@ -446,6 +488,15 @@ impl ParticleSystem {
                 self.unit(),
             );
             let life = lerp(self.desc.lifetime.0, self.desc.lifetime.1, self.unit());
+            // Only an effect that turns draws for its angle and spin, so
+            // every effect that does not replays what it always did.
+            let (angle, spin) = if self.desc.turns() {
+                let angle = lerp(self.desc.angle.0, self.desc.angle.1, self.unit());
+                let spin = lerp(self.desc.spin.0, self.desc.spin.1, self.unit());
+                (angle, spin)
+            } else {
+                (0.0, 0.0)
+            };
             self.position.push(at);
             self.velocity.push([
                 direction[0] * speed,
@@ -454,6 +505,8 @@ impl ParticleSystem {
             ]);
             self.age.push(0.0);
             self.lifetime.push(life);
+            self.angle.push(angle);
+            self.spin.push(spin);
         }
     }
 
@@ -464,7 +517,8 @@ impl ParticleSystem {
     /// The integrator's order is observable, hash-pinned behaviour, so
     /// it is stated: each step, a velocity gains gravity times `dt`, is
     /// multiplied by the drag factor, and the post-drag velocity moves
-    /// the position — semi-implicit Euler with drag inside the step.
+    /// the position — semi-implicit Euler with drag inside the step. Then,
+    /// for an effect that turns, each angle gains its spin times `dt`.
     pub fn step(&mut self, dt_seconds: f32) {
         let gravity = self.desc.gravity;
         let drag = self.desc.drag_per_step;
@@ -475,6 +529,15 @@ impl ParticleSystem {
             position[0] += velocity[0] * dt_seconds;
             position[1] += velocity[1] * dt_seconds;
             position[2] += velocity[2] * dt_seconds;
+        }
+        // An angle gains spin times `dt` — one multiply and one add,
+        // accumulated, which is the value the hash pins. Skipped whole
+        // for an effect that does not turn: its angles are all zero and
+        // would stay so, and its step costs what it always cost.
+        if self.desc.turns() {
+            for (angle, spin) in self.angle.iter_mut().zip(self.spin.iter()) {
+                *angle += *spin * dt_seconds;
+            }
         }
         for age in &mut self.age {
             *age += dt_seconds;
@@ -489,6 +552,8 @@ impl ParticleSystem {
                 self.velocity.swap_remove(index);
                 self.age.swap_remove(index);
                 self.lifetime.swap_remove(index);
+                self.angle.swap_remove(index);
+                self.spin.swap_remove(index);
             }
         }
     }
@@ -567,6 +632,7 @@ impl ParticleSystem {
             size: lerp(self.desc.size.0, self.desc.size.1, t),
             color: lerp4(self.desc.color.0, self.desc.color.1, t),
             progress: t,
+            rotation: self.angle[index],
         })
     }
 
@@ -688,6 +754,8 @@ mod tests {
             size: (0.25, 0.05),
             color: ([1.0, 0.8, 0.3, 1.0], [0.2, 0.1, 0.05, 0.0]),
             tile: [0.0, 0.0, 0.5, 0.5],
+            angle: (0.0, 0.0),
+            spin: (0.0, 0.0),
         }
     }
 
@@ -1267,6 +1335,8 @@ mod tests {
             size: (1.0, 1.0),
             color: ([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]),
             tile: [0.0, 0.0, 1.0, 1.0],
+            angle: (0.0, 0.0),
+            spin: (0.0, 0.0),
         }
     }
 
@@ -1399,6 +1469,145 @@ mod tests {
     fn an_emitter_with_a_nan_step_is_refused() {
         let mut emitter = Emitter::new(1.0);
         let _ = emitter.advance(f32::NAN);
+    }
+
+    /// The guard fixture, turning: a birth angle in `[0, 1)` turns and a
+    /// spin in `[−2, 2)` turns per second.
+    fn turning_effect() -> EffectDesc {
+        EffectDesc {
+            angle: (0.0, 1.0),
+            spin: (-2.0, 2.0),
+            ..burst_effect()
+        }
+    }
+
+    /// The packed bytes of `system` followed by every particle's
+    /// `rotation`, native byte order, in pool order — what the turning
+    /// guard hashes, because the record does not carry the angle.
+    fn packed_bytes_and_rotations(system: &ParticleSystem) -> Vec<u8> {
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        let count = system.write_instances(&mut bytes);
+        assert!(count > 0, "the scenario must leave something to hash");
+        for particle in system.particles() {
+            bytes.extend_from_slice(&particle.rotation.to_ne_bytes());
+        }
+        bytes
+    }
+
+    /// The third committed guard: the first guard's schedule on an effect
+    /// that turns, hashed over the packed bytes and every rotation, so
+    /// the angle draws, their order after the lifetime, and the
+    /// multiply-add integration are pinned on every platform the
+    /// ordinary suite runs on. The first guard cannot see any of it —
+    /// its effect does not turn and draws nothing for it — which is why
+    /// that guard's constant did not move when this landed.
+    #[test]
+    fn a_spinning_scenario_hashes_to_the_committed_value_on_every_platform() {
+        let mut system = ParticleSystem::new(
+            &turning_effect(),
+            Seed::from_u64(20_260_811),
+            StreamId::from_name("guard"),
+        );
+        system.burst([1.0, 2.0, 3.0], 40);
+        for _ in 0..30 {
+            system.step(DT);
+        }
+        system.burst([0.0, 0.5, 0.0], 24);
+        for _ in 0..10 {
+            system.step(DT);
+        }
+        assert_eq!(
+            fnv1a(&packed_bytes_and_rotations(&system)),
+            0x43d3_d7d4_5cfa_e13b,
+            "the turning bytes moved: either the angle draws or the integration changed \
+             (bump this constant in the same change, deliberately) or this platform computes \
+             differently (which is the finding)"
+        );
+    }
+
+    /// A newborn wears its birth angle exactly: with an angle range of
+    /// one value the lerp is `a + 0 · u`, bit-exact, and before any step
+    /// the spin has added nothing.
+    #[test]
+    fn a_newborn_particle_wears_its_birth_angle_exactly() {
+        let desc = EffectDesc {
+            angle: (0.3, 0.3),
+            spin: (1.0, 1.0),
+            ..burst_effect()
+        };
+        let mut system = ParticleSystem::new(&desc, Seed::from_u64(3), StreamId::from_name("born"));
+        system.burst([0.0, 0.0, 0.0], 8);
+        for particle in system.particles() {
+            assert_eq!(
+                particle.rotation.to_bits(),
+                0.3f32.to_bits(),
+                "a newborn's angle is its birth angle: {}",
+                particle.rotation
+            );
+        }
+    }
+
+    /// The spin integrates as one multiply and one add per step, and the
+    /// value is the accumulated one: sixty steps of a 1.5-turn spin equal
+    /// the f32 sum this test forms by the same loop, bit for bit — and
+    /// not `spin · age`, which the mutant that rounds differently would
+    /// give.
+    #[test]
+    fn spin_integrates_one_multiply_add_per_step() {
+        let desc = EffectDesc {
+            angle: (0.0, 0.0),
+            spin: (1.5, 1.5),
+            lifetime: (2.0, 2.0),
+            ..burst_effect()
+        };
+        let mut system = ParticleSystem::new(&desc, Seed::from_u64(6), StreamId::from_name("spin"));
+        system.burst([0.0, 0.0, 0.0], 4);
+        let mut expected = 0.0f32;
+        for _ in 0..60 {
+            system.step(DT);
+            expected += 1.5 * DT;
+        }
+        assert_eq!(system.live(), 4, "a two-second life outlasts sixty steps");
+        for particle in system.particles() {
+            assert_eq!(
+                particle.rotation.to_bits(),
+                expected.to_bits(),
+                "the rotation {} is not the accumulated {expected}",
+                particle.rotation
+            );
+        }
+    }
+
+    /// A turning effect draws its angle and spin after the lifetime, in
+    /// the particle's own draw sequence: the first particle of a turning
+    /// burst is the first particle of the non-turning burst bit for bit
+    /// (its own draws come first and are the same), and the second
+    /// differs (its draws are two further along).
+    #[test]
+    fn a_turning_effect_keeps_the_generator_in_step() {
+        let born = |desc: &EffectDesc| {
+            let mut system =
+                ParticleSystem::new(desc, Seed::from_u64(9), StreamId::from_name("seq"));
+            system.burst([0.0, 0.0, 0.0], 2);
+            system.particles().collect::<Vec<Particle>>()
+        };
+        let plain = born(&burst_effect());
+        let turning = born(&turning_effect());
+        assert_eq!(
+            turning[0].velocity.map(f32::to_bits),
+            plain[0].velocity.map(f32::to_bits),
+            "the first particle's own draws come before its angle and spin"
+        );
+        assert_ne!(
+            turning[1].velocity.map(f32::to_bits),
+            plain[1].velocity.map(f32::to_bits),
+            "the second particle's draws follow the first's angle and spin"
+        );
+        assert_eq!(
+            plain[0].rotation.to_bits(),
+            0.0f32.to_bits(),
+            "an effect that does not turn has no angle"
+        );
     }
 
     proptest::proptest! {
