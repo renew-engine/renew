@@ -9,13 +9,14 @@ use renew_math::Vec2;
 use renew_rhi::Extent;
 
 /// The `f32` lanes of one packed instance: four corners, two UVs, a
-/// tint, and the two-lane effect pair — eighteen, across eight
-/// attributes. The shader's `location(0..=7)` list, the layout slice in
-/// `gpu.rs`, and [`pack`] describe the same bytes; change one and the
-/// others in the same commit or the draw reads garbage.
-pub(crate) const INSTANCE_LANES: usize = 18;
+/// tint, the two-lane effect pair, and the two-lane smear — twenty,
+/// across nine attributes. The shader's `location(0..=8)` list, the
+/// layout slice in `gpu.rs`, and [`pack`] describe the same bytes;
+/// change one and the others in the same commit or the draw reads
+/// garbage.
+pub(crate) const INSTANCE_LANES: usize = 20;
 
-/// Bytes per packed instance: the lanes, four bytes each — 72. Derived
+/// Bytes per packed instance: the lanes, four bytes each — 80. Derived
 /// so a record with the wrong number of lanes fails to compile rather
 /// than packing short.
 pub(crate) const INSTANCE_STRIDE: usize = INSTANCE_LANES * size_of::<f32>();
@@ -248,6 +249,28 @@ pub struct Sprite {
     /// The default `0.0` is exact for the same reason `saturation`'s
     /// `1.0` is: the correction is multiplied by it.
     pub flash: f32,
+    /// How far the sprite is smeared, in canvas pixels, along the
+    /// direction it moved.
+    ///
+    /// The sprite is drawn as the average of itself over that
+    /// displacement — the time-average of a moving object across an
+    /// exposure, which is what a camera records and what reads as motion
+    /// blur. The vector is in canvas units and is projected onto the
+    /// sprite's own drawn axes, so turning a sprite and its smear
+    /// together smears along the same edge of the art.
+    ///
+    /// **It is an average, not eight copies at an eighth opacity.**
+    /// Eight over-composited layers at `a/8` reach about `0.66·a`, not
+    /// `a`; averaging premultiplied samples keeps the object's own
+    /// opacity where it is opaque and fades it where the motion only
+    /// passed through.
+    ///
+    /// The footprint grows to hold the smear, and taps that fall outside
+    /// the sprite's own source rectangle count as transparent rather
+    /// than clamping — so a smear never drags in a neighbour's art.
+    /// `[0.0, 0.0]`, the default, takes the single-sample path and draws
+    /// exactly what it drew before this field existed.
+    pub smear: [f32; 2],
 }
 
 impl Sprite {
@@ -277,6 +300,7 @@ impl Sprite {
             // the pixel it was before the lanes existed.
             saturation: 1.0,
             flash: 0.0,
+            smear: [0.0, 0.0],
         }
     }
 
@@ -369,6 +393,17 @@ impl Sprite {
     #[must_use]
     pub fn flash(mut self, flash: f32) -> Self {
         self.flash = flash;
+        self
+    }
+
+    /// How far to smear the sprite, in canvas pixels, along the
+    /// direction it moved — usually the velocity times the exposure the
+    /// caller wants to imply.
+    ///
+    /// `[0.0, 0.0]` is no smear and takes the single-sample path.
+    #[must_use]
+    pub fn smear(mut self, x: f32, y: f32) -> Self {
+        self.smear = [x, y];
         self
     }
 
@@ -602,24 +637,110 @@ pub(crate) fn corners(sprite: &Sprite) -> [Vec2; 4] {
     })
 }
 
-/// One instance record, packed exactly as the layout slice declares:
-/// the four corners in NDC — local top-left, top-right, bottom-left,
-/// bottom-right, each two `f32`s — then the UV at the first corner and
-/// at the last, then the four-`f32` tint, native-endian, in
-/// declaration order, then the two effect lanes — saturation and
-/// flash. The two UV lanes are the source's min and max
-/// unless a flip swapped them.
-pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
-    let [a, b, c, d] = corners(sprite).map(|corner| to_ndc(corner, canvas));
+/// Everything the packer writes about where a sprite lands and what it
+/// samples, before the byte copy.
+///
+/// One value rather than four returns because the smear couples them:
+/// extending the canvas footprint and extending the UV rectangle are the
+/// same decision, and computing them apart is how they drift.
+pub(crate) struct Footprint {
+    /// The four canvas-space corners, already turned, scaled and grown
+    /// by any smear.
+    pub corners: [Vec2; 4],
+    /// UV at corner A, and at corner D — grown outward by the smear the
+    /// same proportion the corners grew.
+    pub uv0: Vec2,
+    pub uv1: Vec2,
+    /// The smear as a UV offset, which the fragment stage walks along.
+    /// Exactly `(+0.0, +0.0)` when there is no smear.
+    pub smear_uv: Vec2,
+}
 
+/// Where a sprite lands and what it samples.
+///
+/// **A sprite with no smear takes an early-out that leaves every value
+/// bit-identical to what it was before smearing existed.** That is not
+/// an optimisation: it is what lets every committed picture carry over,
+/// and it is why the `smear` comparison is against the exact `[0.0,
+/// 0.0]` rather than a magnitude test.
+///
+/// **The smear is projected onto the sprite's own drawn axes**, so
+/// turning a sprite and its smear vector together gives the same result
+/// in the sprite's frame — a diving object smears along its motion
+/// whatever its orientation. The footprint grows by half the projected
+/// smear on each side of each local axis, and the UV rectangle grows by
+/// the same proportion of its own span, so the map from canvas to texel
+/// is unchanged and the extra band samples what the motion would have
+/// swept over.
+pub(crate) fn footprint(sprite: &Sprite, atlas: Extent) -> Footprint {
     let texel_min = Vec2::new(sprite.source.x, sprite.source.y);
     let texel_max = texel_min + Vec2::new(sprite.source.width, sprite.source.height);
-    let (uv0, uv1) = mirrored(
+    let (mut uv0, mut uv1) = mirrored(
         to_uv(texel_min, atlas),
         to_uv(texel_max, atlas),
         sprite.flip_x,
         sprite.flip_y,
     );
+    let mut corners = corners(sprite);
+    let mut smear_uv = Vec2::new(0.0, 0.0);
+
+    if sprite.smear != [0.0, 0.0] {
+        let drawn_w = sprite.width * sprite.scale[0].abs();
+        let drawn_h = sprite.height * sprite.scale[1].abs();
+        // A sprite with no drawn area is degenerate before any smear;
+        // dividing by it would only turn visible nonsense into NaN.
+        if drawn_w > 0.0 && drawn_h > 0.0 {
+            let (s, c) = if sprite.rotation == 0.0 {
+                (0.0, 1.0)
+            } else {
+                turn_sin_cos(sprite.rotation)
+            };
+            // The drawn local axes, unit length. A negative scale
+            // reverses one, which is the geometric mirror.
+            let ux = Vec2::new(c, s) * sprite.scale[0].signum();
+            let uy = Vec2::new(-s, c) * sprite.scale[1].signum();
+            let v = Vec2::new(sprite.smear[0], sprite.smear[1]);
+            let local = Vec2::new(v.dot(ux), v.dot(uy));
+            let ex = local.x.abs() * 0.5;
+            let ey = local.y.abs() * 0.5;
+            let dx = ux * ex;
+            let dy = uy * ey;
+            corners[0] = corners[0] - dx - dy;
+            corners[1] = corners[1] + dx - dy;
+            corners[2] = corners[2] - dx + dy;
+            corners[3] = corners[3] + dx + dy;
+            // Signed: a flipped axis has a negative span, so the
+            // extension moves uv0 away from uv1 on the texture's own
+            // axis — the same direction the corners moved — and the
+            // smear offset flips with it.
+            let span = uv1 - uv0;
+            let fx = ex / drawn_w;
+            let fy = ey / drawn_h;
+            uv0 = uv0 - Vec2::new(span.x * fx, span.y * fy);
+            uv1 = uv1 + Vec2::new(span.x * fx, span.y * fy);
+            smear_uv = Vec2::new(span.x * local.x / drawn_w, span.y * local.y / drawn_h);
+        }
+    }
+
+    Footprint {
+        corners,
+        uv0,
+        uv1,
+        smear_uv,
+    }
+}
+
+/// One instance record, packed exactly as the layout slice declares:
+/// the four corners in NDC — local top-left, top-right, bottom-left,
+/// bottom-right, each two `f32`s — then the UV at the first corner and
+/// at the last, then the four-`f32` tint, native-endian, in
+/// declaration order, then the two effect lanes — saturation and
+/// flash — and last the two smear lanes. The two UV lanes are the
+/// source's min and max unless a flip swapped them or a smear grew
+/// them.
+pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
+    let placed = footprint(sprite, atlas);
+    let [a, b, c, d] = placed.corners.map(|corner| to_ndc(corner, canvas));
 
     let values: [f32; INSTANCE_LANES] = [
         a.x,
@@ -630,16 +751,18 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
         c.y,
         d.x,
         d.y,
-        uv0.x,
-        uv0.y,
-        uv1.x,
-        uv1.y,
+        placed.uv0.x,
+        placed.uv0.y,
+        placed.uv1.x,
+        placed.uv1.y,
         sprite.tint[0],
         sprite.tint[1],
         sprite.tint[2],
         sprite.tint[3],
         sprite.saturation,
         sprite.flash,
+        placed.smear_uv.x,
+        placed.smear_uv.y,
     ];
     let mut bytes = [0u8; INSTANCE_STRIDE];
     for (slot, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
@@ -807,9 +930,9 @@ mod tests {
         );
     }
 
-    /// The eighteen `f32` lanes of a packed record, for tests that name
+    /// The twenty `f32` lanes of a packed record, for tests that name
     /// a lane rather than a byte: 0..8 the four corners, 8..12 the two
-    /// UVs, 12..16 the tint, 16..18 the effect pair.
+    /// UVs, 12..16 the tint, 16..18 the effect pair, 18..20 the smear.
     fn lanes(record: &[u8; INSTANCE_STRIDE]) -> [u32; INSTANCE_LANES] {
         let mut out = [0u32; INSTANCE_LANES];
         for (lane, chunk) in out.iter_mut().zip(record.as_chunks::<4>().0) {
@@ -1419,6 +1542,122 @@ mod tests {
             prop_assert!((twice.y - once.y).abs() <= bound_y);
             prop_assert_eq!(tint_bits(twice.tint), tint_bits(swatch().tint));
         }
+
+        /// A smear only ever grows the footprint: whatever the turn, the
+        /// scale's signs or the flips, all four unsmeared corners lie
+        /// inside the smeared quad.
+        ///
+        /// This is the property that says the extension cannot lose art.
+        /// It is checked by inverting the smeared quad's own basis —
+        /// corner A plus fractions along the two edges leaving it — so
+        /// the test never reproduces the extension arithmetic it is
+        /// judging; it only asks where the old corners ended up in the
+        /// new frame, and both fractions must be within `[0, 1]`.
+        ///
+        /// The tolerance is a canvas-pixel slack keyed on the magnitudes
+        /// involved, divided by each edge's own length to reach the
+        /// fractions' units — the offset property's rule, carried into a
+        /// normalised coordinate.
+        ///
+        /// Probed by flipping one sign in the corner extension
+        /// (`corners[1] + dx` to `- dx`): red, because the quad then
+        /// folds instead of growing and corner B leaves it.
+        #[test]
+        fn the_smeared_footprint_contains_the_unsmeared_one(
+            rotation in -1.0f32..1.0,
+            sx in 0.5f32..3.0,
+            sy in 0.5f32..3.0,
+            negate_x in prop::bool::ANY,
+            negate_y in prop::bool::ANY,
+            flip_x in prop::bool::ANY,
+            flip_y in prop::bool::ANY,
+            x in -500.0f32..500.0,
+            y in -500.0f32..500.0,
+            w in 4.0f32..300.0,
+            h in 4.0f32..300.0,
+            mx in -200.0f32..200.0,
+            my in -200.0f32..200.0,
+        ) {
+            let atlas = Extent { width: 64, height: 64 };
+            let plain = Sprite::new(SQUARE, x, y)
+                .size(w, h)
+                .rotation(rotation)
+                .scale(if negate_x { -sx } else { sx }, if negate_y { -sy } else { sy })
+                .flip_x(flip_x)
+                .flip_y(flip_y);
+            let before = corners(&plain);
+            let after = footprint(&plain.smear(mx, my), atlas).corners;
+
+            // The smeared quad's own frame: A, and the two edges out of
+            // it. A parallelogram, so one inversion serves every point.
+            let e1 = after[1] - after[0];
+            let e2 = after[2] - after[0];
+            let det = e1.x * e2.y - e1.y * e2.x;
+            prop_assume!(det.abs() > 1e-3);
+            let slack = (x.abs() + y.abs() + w * sx + h * sy + mx.abs() + my.abs())
+                .max(1.0)
+                * f32::EPSILON
+                * 16.0;
+            let tol_u = slack / e1.length().max(1e-6);
+            let tol_v = slack / e2.length().max(1e-6);
+            for (index, corner) in before.iter().enumerate() {
+                let d = *corner - after[0];
+                let u = (d.x * e2.y - d.y * e2.x) / det;
+                let v = (e1.x * d.y - e1.y * d.x) / det;
+                prop_assert!(
+                    u >= -tol_u && u <= 1.0 + tol_u && v >= -tol_v && v <= 1.0 + tol_v,
+                    "unsmeared corner {index} sits at ({u}, {v}) of the smeared quad"
+                );
+            }
+        }
+
+        /// Turning the sprite and its smear together is the identity on
+        /// what the fragment stage walks along.
+        ///
+        /// A smear is a direction in the world, and the art it blurs is
+        /// in the sprite's own frame; projecting one onto the other is
+        /// what makes a diving object smear along its fall whatever its
+        /// orientation. So rotating both by the same angle must leave
+        /// `smear_uv` where it was — and because `smear_uv` is the
+        /// projection scaled by spans that no rotation touches, this
+        /// pins the projection itself.
+        ///
+        /// Probed by dropping the projection and using the raw vector
+        /// (`local = v`): red, because then the UV offset turns with the
+        /// world instead of staying in the art's frame.
+        #[test]
+        fn a_smear_is_rotation_covariant(
+            base in -1.0f32..1.0,
+            turn in -1.0f32..1.0,
+            w in 4.0f32..300.0,
+            h in 4.0f32..300.0,
+            mx in -200.0f32..200.0,
+            my in -200.0f32..200.0,
+        ) {
+            let atlas = Extent { width: 64, height: 64 };
+            let sprite = Sprite::new(SQUARE, 30.0, 40.0).size(w, h);
+            let still = footprint(&sprite.rotation(base).smear(mx, my), atlas).smear_uv;
+
+            // The same smear vector turned by the same angle the sprite
+            // is turned by, in the sense `corners` uses: the local x
+            // axis of a turn is (cos, sin).
+            let (s, c) = turn_sin_cos(turn);
+            let turned = footprint(
+                &sprite.rotation(base + turn).smear(mx * c - my * s, mx * s + my * c),
+                atlas,
+            )
+            .smear_uv;
+
+            // Keyed on the smear's magnitude in UV: the projection is a
+            // dot product of two rounded axes, so the error scales with
+            // what is being projected, not with what comes out.
+            let reach = (mx.abs() + my.abs()) / w.min(h);
+            let bound = reach.max(1.0) * f32::EPSILON * 32.0;
+            prop_assert!(
+                (still.x - turned.x).abs() <= bound && (still.y - turned.y).abs() <= bound,
+                "the smear read {still:?} still and {turned:?} turned, bound {bound}"
+            );
+        }
     }
 
     #[test]
@@ -1566,11 +1805,12 @@ mod tests {
             0.5, 0.5, // uv at the last corner: 4/8
             0.5, 0.25, 0.125, 0.5, // tint, verbatim
             1.0, 0.0, // effect: the identities a plain sprite carries
+            0.0, 0.0, // smear: none, the identity a plain sprite carries
         ];
         let packed = pack(&sprite, c, atlas);
         assert_eq!(
-            INSTANCE_STRIDE, 72,
-            "the record is eighteen lanes of four bytes; the hand computation below \n             enumerates all eighteen and would be short if this moved"
+            INSTANCE_STRIDE, 80,
+            "the record is twenty lanes of four bytes; the hand computation below \n             enumerates all twenty and would be short if this moved"
         );
         for (index, value) in expected.iter().enumerate() {
             let mut raw = [0u8; 4];
@@ -1611,6 +1851,144 @@ mod tests {
         };
         assert_eq!(lane(16), 0.25f32.to_bits(), "saturation is lane 16");
         assert_eq!(lane(17), 0.5f32.to_bits(), "flash is lane 17");
+    }
+
+    /// A sprite that asks for no smear packs two lanes of **positive**
+    /// zero, and nothing else about its record moves.
+    ///
+    /// The sign is the whole test, and it is why the fixture is flipped.
+    /// Running the extension block with a zero vector would compute
+    /// `span.x * 0.0`, and under a flip `span.x` is negative, so the
+    /// lane would carry `-0.0` — a different bit pattern in a record
+    /// every committed picture attests, from arithmetic that means to
+    /// change nothing. The early-out is what makes the lane exactly
+    /// `+0.0`, and the bit compare is what holds the early-out in place.
+    ///
+    /// The rest of the record is pinned where it already was: every
+    /// exact-bit packing test in this module packs an unsmeared sprite,
+    /// so an extension that leaked into the placement or the UVs reddens
+    /// there rather than needing a copy of those expectations here.
+    ///
+    /// Probed by deleting the `if sprite.smear != [0.0, 0.0]` guard:
+    /// red here on lane 18's sign, green everywhere else in the crate.
+    #[test]
+    fn a_zero_smear_packs_two_positively_signed_zero_lanes() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprite = swatch().flip_x(true).flip_y(true);
+        let packed = pack(&sprite, c, atlas);
+        let lane = |index: usize| {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packed[index * 4..index * 4 + 4]);
+            f32::from_ne_bytes(raw).to_bits()
+        };
+        assert_eq!(lane(18), 0.0f32.to_bits(), "the smear's x lane is +0.0");
+        assert_eq!(lane(19), 0.0f32.to_bits(), "the smear's y lane is +0.0");
+        assert_ne!(
+            lane(18),
+            (-0.0f32).to_bits(),
+            "a negative zero here would be the extension block having run"
+        );
+    }
+
+    /// The extension, hand-computed end to end: where the corners land,
+    /// how far the UV rectangle grows, and what the fragment stage is
+    /// told to walk along.
+    ///
+    /// The same 4×4 region drawn from (16, 8) to (48, 24) as the record
+    /// above, now with a four-pixel horizontal smear. Every expected
+    /// value is a dyadic rational written out from the extension's own
+    /// definitions, so the comparison is on bits and owes nothing to the
+    /// code under test:
+    ///
+    /// - `ex = |4| / 2 = 2` canvas pixels on each side, so the corners
+    ///   move to x = 14 and x = 50 — NDC ∓0.5625 — and the rows do not
+    ///   move at all, because the smear has no vertical component.
+    /// - the UV rectangle grows by the same *proportion*: 2 of the
+    ///   sprite's 32 drawn pixels is a sixteenth, and a sixteenth of the
+    ///   half-atlas span is 0.03125, so `uv0.x` goes to −0.03125 and
+    ///   `uv1.x` to 0.53125. Growing UV and canvas by the same fraction
+    ///   is what keeps the map from canvas to texel unchanged, so the
+    ///   art inside the sprite does not shift when a smear is added.
+    /// - `smear_uv.x = 0.5 · 4 / 32 = 0.0625`: the whole four-pixel
+    ///   displacement expressed in UV, which is the vector the eight
+    ///   taps divide between them.
+    ///
+    /// Probed by extending one end only (`uv1` grown, `uv0` left):
+    /// red on lane 8. Probed again by dropping the `0.5` from `ex`:
+    /// red on four lanes at once.
+    #[test]
+    fn a_smeared_sprite_packs_a_hand_computed_extension() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprite = Sprite::new(
+            Region {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            16.0,
+            8.0,
+        )
+        .size(32.0, 16.0)
+        .tint([0.5, 0.25, 0.125, 0.5])
+        .smear(4.0, 0.0);
+
+        let expected: [f32; INSTANCE_LANES] = [
+            -0.5625, -0.5, // top-left: 2*14/64-1, unmoved
+            0.5625, -0.5, // top-right: 2*50/64-1, unmoved
+            -0.5625, 0.5, // bottom-left
+            0.5625, 0.5, // bottom-right
+            -0.03125, 0.0, // uv at the first corner: 0 - 0.5*(2/32)
+            0.53125, 0.5, // uv at the last corner: 0.5 + 0.03125
+            0.5, 0.25, 0.125, 0.5, // tint, verbatim
+            1.0, 0.0, // effect: untouched by any of this
+            0.0625, 0.0, // smear in uv: 0.5*4/32
+        ];
+        let packed = pack(&sprite, c, atlas);
+        for (index, value) in expected.iter().enumerate() {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packed[index * 4..index * 4 + 4]);
+            assert_eq!(
+                f32::from_ne_bytes(raw).to_bits(),
+                value.to_bits(),
+                "f32 slot {index} disagrees with the hand computation"
+            );
+        }
+    }
+
+    /// A sprite with no drawn area keeps its degenerate placement rather
+    /// than acquiring a NaN one.
+    ///
+    /// A zero scale is already visible nonsense — the same posture
+    /// `SubRegion` takes for its own degenerate values — and the
+    /// extension divides by the drawn size, so without the guard a
+    /// smear would turn a sprite that draws nothing into one that draws
+    /// nothing *and* poisons four corners with NaN.
+    ///
+    /// Probed by removing the `drawn_w > 0.0 && drawn_h > 0.0` guard:
+    /// red, because every corner lane becomes NaN.
+    #[test]
+    fn a_smear_on_a_zero_sized_sprite_is_ignored_rather_than_dividing_by_it() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let flat = swatch().scale(0.0, 1.0);
+        let plain = pack(&flat, c, atlas);
+        let smeared = pack(&flat.smear(9.0, 3.0), c, atlas);
+        assert_eq!(
+            plain, smeared,
+            "a smear that cannot be measured against a drawn size leaves the whole \n             record — placement, UVs, tint and the smear lanes — where it was"
+        );
     }
 
     /// Bits, so a comparison of source rectangles is exact and carries
@@ -1910,6 +2288,9 @@ mod tests {
                 1.0, 1.0, 1.0, 1.0,
                 // The effect identities a plain `Sprite::new` carries.
                 1.0, 0.0,
+                // And the smear identity: none, so the fragment stage
+                // takes its single-sample path.
+                0.0, 0.0,
             ];
             let mut expected = [0u8; INSTANCE_STRIDE];
             for (slot, value) in expected.as_chunks_mut::<4>().0.iter_mut().zip(values) {

@@ -9,6 +9,8 @@ feature, playable in a window with the score in the title. Behind
 
 ![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, green pipes, blue sky](soar-600.png)
 
+![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, with a short vertical ghost trailing it along its fall](dive-361.png)
+
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
 angle and by its negative looks the same. The corpse keeps the tilt
@@ -23,10 +25,15 @@ and the tick. Converting that to a PNG shows the frame that is
 *verified*, rather than one drawn by a second path that nothing checks.
 
 `cargo run -p renew-sample-glide --example make_picture` regenerates it
-from the goldens whenever they are refreshed. The other committed frame,
-`sink-240.png`, is the same trace at the tick where the bird has hit the
-floor, where the corpse lies nose-down at a full eighth turn — the tilt
-its terminal fall left it with.
+from the goldens whenever they are refreshed. The other two committed
+frames are the same trace at two other ticks. In `dive-361.png` the bird
+is falling as fast as the rules allow, and while it dives a short
+vertical ghost trails it along its fall — the sprite drawn as the
+average of itself over the last eight ticks of its motion, which is what
+a camera records of anything moving during an exposure. In
+`sink-240.png` the bird has hit the floor, and the corpse lies nose-down
+at a full eighth turn — the tilt its terminal fall left it with — with
+no ghost at all, because a corpse is not going anywhere.
 
 ## Running it
 

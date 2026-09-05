@@ -12,7 +12,8 @@
 //! here as `sprite_build_2048`; the packer `push` runs afterwards is
 //! reachable without a device through `Sprite::instance` and is timed
 //! as `sprite_pack_2048` for the untransformed sprite and as
-//! `sprite_pack_transformed_2048` with every sprite turned and scaled.
+//! `sprite_pack_transformed_2048` with every sprite turned, scaled
+//! and smeared.
 //! All three exist so that a change to `Sprite`'s layout, to its
 //! constructor or to the packer's arithmetic has a before.
 //!
@@ -104,8 +105,9 @@ fn sprite_pack(c: &mut Criterion) {
         });
     });
     c.bench_function("sprite_pack_transformed_2048", |b| {
-        // The same sprites, every one turned and scaled: the pivot
-        // arithmetic and the crate's own sine and cosine, per sprite.
+        // The same sprites, every one turned, scaled and smeared: the
+        // pivot arithmetic, the crate's own sine and cosine, and the
+        // smear extension, per sprite — the everything-on cost.
         let Some(canvas) = Canvas::new(320, 240) else {
             unreachable!("320 by 240 is nonzero");
         };
@@ -122,6 +124,7 @@ fn sprite_pack(c: &mut Criterion) {
                     .saturation(0.5)
                     .flash(0.1)
                     .scale(1.5, 0.75)
+                    .smear(2.0, 1.0)
             })
             .collect();
         b.iter(|| {

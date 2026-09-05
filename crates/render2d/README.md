@@ -73,6 +73,25 @@ else, which the build matrix proves by building and testing without it.
   `[l, l, l, 1.0]` scales every channel toward black and keeps the
   sprite fully occluding. Reaching for the tint to grey something gives
   a dark sprite, which is why the field exists.
+- **A smear never reads a neighbour.** `smear` draws a sprite as the
+  average of itself over a displacement — the time-average of a moving
+  object across an exposure, which is what motion blur is. The footprint
+  grows to hold it, and the eight taps that fall outside the sprite's
+  own source rectangle count as **transparent rather than clamping**, so
+  the band fades out instead of dragging in whatever the atlas holds
+  next door. It is an average, not eight copies at an eighth opacity:
+  eight over-composited layers at `a/8` reach about `0.66·a`, while the
+  mean of eight premultiplied samples keeps the sprite's own opacity
+  where the motion covered it. A pixel whose eight taps all land in one
+  solid region is byte-exact on every adapter, because the taps are
+  summed as a tree and eight identical samples average back to
+  themselves without rounding. **Zero smear is exact**: it takes a
+  single-sample path and packs two lanes of positive zero, so a picture
+  with no smeared sprite in it is unchanged by this crate having smear
+  at all. Its ceiling is nearest sampling: a smear spanning `k` texels
+  yields at most `k + 1` distinct samples, so at 1:1 art the band steps
+  rather than gradates, and over a solid region it is a silhouette
+  ghost.
 
 ## What is here
 
@@ -95,7 +114,10 @@ else, which the build matrix proves by building and testing without it.
   as opaque" means, and scaling only the fourth would brighten the sprite
   as it faded. It can also be greyed toward its own luminance (`saturation`)
   and flashed toward a silhouette of its own alpha (`flash`), each an
-  identity by default and each one lane of the record.
+  identity by default and each one lane of the record, and smeared along
+  a direction in canvas pixels (`smear` — projected onto the sprite's own
+  drawn axes, so turning a sprite and its smear together smears along the
+  same edge of the art), two lanes and an identity of `[0.0, 0.0]`.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
@@ -147,7 +169,7 @@ should look like, and is pinned by `a_flash_fades_with_the_sprite`.
 
 ## The instance record
 
-Every sprite becomes one 72-byte record: eight attributes, eighteen
+Every sprite becomes one 80-byte record: nine attributes, twenty
 `f32`s, native-endian, in the order the vertex stage declares them.
 
 | location | attribute | content |
@@ -160,6 +182,7 @@ Every sprite becomes one 72-byte record: eight attributes, eighteen
 | 5 | `Vec2` | UV at corner d |
 | 6 | `Vec4` | premultiplied tint |
 | 7 | `Vec2` | effect — how much colour survives, then how far toward a silhouette |
+| 8 | `Vec2` | smear — the displacement to average over, in UV units |
 
 The vertex stage selects a corner by a nested mix with weights of zero
 and one — along the top edge, along the bottom edge, then between the

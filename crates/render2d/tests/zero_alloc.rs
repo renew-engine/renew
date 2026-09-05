@@ -219,14 +219,16 @@ fn steady_state_fill_and_render_allocates_nothing() {
         // A turned sprite, so the sine-and-cosine path is inside the
         // measured window too; it sits clear of every pixel the
         // liveness checks read except its own centre.
-        // Turned and coloured: the effect lanes are packed for every
-        // sprite, so the gate covers the widest record the crate emits.
+        // Turned, coloured and smeared: every lane of the record is
+        // packed and the fragment stage takes its eight-tap path, so
+        // the gate covers the widest work the crate does per frame.
         renderer.push(
             &Sprite::new(RED, 40.0, 8.0)
                 .size(8.0, 8.0)
                 .rotation(0.11)
                 .saturation(0.5)
-                .flash(0.25),
+                .flash(0.25)
+                .smear(3.0, 1.0),
         );
         assert!(
             renderer.sprites() > 0,
