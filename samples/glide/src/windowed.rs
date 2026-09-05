@@ -56,7 +56,7 @@ const PIPE_TEXEL: [u8; 4] = [0, 160, 40, 255];
 /// The spark texel: opaque white, so what a spark shows is its tint.
 const SPARK_TEXEL: [u8; 4] = [255, 255, 255, 255];
 const ATLAS_EXTENT: Extent = Extent {
-    width: 12,
+    width: 16,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
@@ -331,10 +331,10 @@ impl GlideApp {
     /// rotated edge resolves to a texel inside its own region only up to
     /// rounding — and the beak is what makes a tilt's sign visible,
     /// since a solid square looks the same tilted either way.
-    fn atlas_bytes() -> [u8; 96] {
-        let mut bytes = [0u8; 96];
+    fn atlas_bytes() -> [u8; 128] {
+        let mut bytes = [0u8; 128];
         for (index, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let texel = match index % 12 {
+            let texel = match index % 16 {
                 1 => BIRD_TEXEL,
                 2 => BEAK_TEXEL,
                 5 | 6 => PIPE_TEXEL,

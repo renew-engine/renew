@@ -59,15 +59,27 @@ const DEATH_TICK: u64 = 108;
 /// every spark is still in the air and none has expired.
 const CRASH_TICK: u64 = DEATH_TICK + 6;
 
-/// The 12×2 test card: an opaque bird region whose right column is the
+/// The 16×2 test card: an opaque bird region whose right column is the
 /// beak, an opaque pipe region, a white spark region the tint colours,
 /// and a transparent texel on every side of each — the gutter a turned
 /// sprite needs, because a rotated edge resolves to a texel inside its
 /// own region only up to rounding, and without it a corner would sample
 /// its neighbour's art. Every sprite this game draws now turns: the
 /// bird tilts, and a spark spins.
+///
+/// **Sixteen wide, not twelve, and that is arithmetic rather than
+/// roundness.** A region's UV is its texel index over the atlas width,
+/// and the fragment stage interpolates between two of them across the
+/// quad. At a power-of-two width every such UV is a dyadic rational and
+/// exactly representable; at twelve, `1/12` is not, and the boundary
+/// between the bird's two texel columns lands a hair either side of
+/// itself. On the corpse — the most turned sprite this game draws —
+/// that moved three pixels of its diagonal body/beak edge from one
+/// colour to the other, which is a committed picture changing for no
+/// reason anybody asked for. Sixteen costs four unused columns and
+/// keeps every picture still.
 const ATLAS_EXTENT: Extent = Extent {
-    width: 12,
+    width: 16,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
@@ -92,9 +104,9 @@ const SPARK_REGION: Region = Region {
 };
 
 fn atlas_bytes() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(12 * 2 * 4);
+    let mut bytes = Vec::with_capacity(16 * 2 * 4);
     for _y in 0..2u32 {
-        for x in 0..12u32 {
+        for x in 0..16u32 {
             let texel = match x {
                 1 => BIRD_BYTES,
                 2 => BEAK_BYTES,
