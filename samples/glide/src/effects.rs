@@ -238,11 +238,13 @@ mod tests {
             "nothing may burst before the bird dies"
         );
         for pair in counts[first_peak..].windows(2) {
+            // Bound rather than passed as message arguments: an argument
+            // that only evaluates when the assertion fires is a line the
+            // coverage gate never sees run.
+            let (earlier, later) = (pair[0], pair[1]);
             assert!(
-                pair[1] <= pair[0],
-                "the count rose from {} to {} after the burst — it fired twice",
-                pair[0],
-                pair[1]
+                later <= earlier,
+                "the count rose from {earlier} to {later} after the burst — it fired twice"
             );
         }
         assert_eq!(
@@ -317,13 +319,13 @@ mod tests {
         let mut effects = Effects::new(&world);
         for _ in 0..120 {
             world.step(false);
+            let tick = world.tick();
             let before = world.digest();
             effects.observe(&world);
             assert_eq!(
                 world.digest(),
                 before,
-                "observing the world moved it at tick {}",
-                world.tick()
+                "observing the world moved it at tick {tick}"
             );
         }
         assert!(effects.live() > 0, "the check must span a real burst");
