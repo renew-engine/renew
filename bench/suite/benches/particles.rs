@@ -78,6 +78,20 @@ fn particles(c: &mut Criterion) {
                 black_box(&mut instances);
             });
         });
+
+        c.bench_function(&format!("particle_view_{count}"), |b| {
+            // The view reads the same arrays the packer reads and
+            // writes nothing: a walk that folds every size into a sum,
+            // fenced so the walk cannot be folded away with it.
+            let pool = full_pool(count);
+            b.iter(|| {
+                let total: f32 = black_box(&pool)
+                    .particles()
+                    .map(|particle| particle.size)
+                    .sum();
+                black_box(total)
+            });
+        });
     }
 }
 

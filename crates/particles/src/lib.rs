@@ -19,16 +19,20 @@
 //!   divide, min, max, and square root. No transcendental function
 //!   runs per particle anywhere in this crate.
 //! - **All allocation happens at construction.** `step`,
-//!   [`ParticleSystem::burst`] and [`ParticleSystem::write_instances`]
-//!   allocate nothing, gate-tested from the crate's first commit; a
-//!   burst past capacity saturates rather than growing.
+//!   [`ParticleSystem::burst`], [`ParticleSystem::write_instances`] and
+//!   the [`ParticleSystem::particles`] view allocate nothing,
+//!   gate-tested from the crate's first commit; a burst past capacity
+//!   saturates rather than growing.
 //!
 //! The GPU-facing half — the billboard pipeline, the atlas, the draw —
-//! arrives as its own module with its own dependency when the renderer
-//! lands; this half never touches a device, which is what makes every
-//! claim above testable on any machine. Which blend mode an effect
-//! draws with belongs to that half too: it is a property of a pipeline,
-//! not of arithmetic.
+//! lives behind the `render` feature as its own module with its own
+//! dependency; this half never touches a device, which is what makes
+//! every claim above testable on any machine. Which blend mode an
+//! effect draws with belongs to that half too: it is a property of a
+//! pipeline, not of arithmetic. A consumer with its own atlas and its
+//! own draw order — a 2D sprite batch — reads the pool through
+//! [`ParticleSystem::particles`] instead and draws each particle as one
+//! of its own sprites.
 
 // Diagnostics go through sinks; the standard output macros are banned in
 // this crate by construction, not convention.
@@ -100,6 +104,61 @@ pub struct VelocityCone {
     /// Speed at the slow and fast ends, drawn uniformly.
     pub speed: (f32, f32),
 }
+
+/// One live particle as the pool sees it this step — what a consumer
+/// with its own atlas and its own draw order turns into a sprite.
+///
+/// A read-side record: `#[non_exhaustive]` and no constructor, because
+/// only the pool makes one. Every value is what the packed record
+/// carries or what it was computed from — `size` and `color` are the
+/// same lerp at the same `progress` — so a caller drawing through this
+/// view and one drawing the packed bytes see the same particle. The
+/// billboard's atlas rectangle is deliberately absent: a caller with its
+/// own atlas names its own source.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Particle {
+    /// Centre, in the effect's own units.
+    pub position: [f32; 3],
+    /// Velocity after the last step's drag, units per second.
+    pub velocity: [f32; 3],
+    /// Size at this moment of its life — the packed record's fourth
+    /// value.
+    pub size: f32,
+    /// Premultiplied colour at this moment — the packed record's fifth
+    /// to eighth values.
+    pub color: [f32; 4],
+    /// Age over lifetime, clamped to `0.0..=1.0` — the progress the
+    /// packer lerps size and colour by, so a caller lerping its own
+    /// quantity lands where the colour did.
+    pub progress: f32,
+}
+
+/// The live particles in pool order — the order
+/// [`ParticleSystem::write_instances`] packs. Borrows the pool,
+/// allocates nothing, and knows its length exactly, so a caller can
+/// size a sprite batch before pushing.
+pub struct Particles<'a> {
+    pool: &'a ParticleSystem,
+    index: usize,
+}
+
+impl Iterator for Particles<'_> {
+    type Item = Particle;
+
+    fn next(&mut self) -> Option<Particle> {
+        let particle = self.pool.particle(self.index)?;
+        self.index += 1;
+        Some(particle)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.pool.position.len().saturating_sub(self.index);
+        (left, Some(left))
+    }
+}
+
+impl ExactSizeIterator for Particles<'_> {}
 
 /// A fixed-capacity particle pool and the generator that feeds it.
 ///
@@ -319,6 +378,34 @@ impl ParticleSystem {
             }
         }
         self.live()
+    }
+
+    /// Every live particle, in pack order, without a device and without
+    /// an allocation — for a consumer that draws particles through its
+    /// own atlas and its own draw order rather than the billboard
+    /// pipeline. Reads the same arrays [`Self::write_instances`] reads by
+    /// the same progress and the same lerps, which a test holds slot by
+    /// slot; the two cannot disagree.
+    #[must_use]
+    pub fn particles(&self) -> Particles<'_> {
+        Particles {
+            pool: self,
+            index: 0,
+        }
+    }
+
+    /// The particle at `index`, or `None` past the live count — the
+    /// second reader of the arrays the packer reads.
+    fn particle(&self, index: usize) -> Option<Particle> {
+        let position = *self.position.get(index)?;
+        let t = progress(self.age[index], self.lifetime[index]);
+        Some(Particle {
+            position,
+            velocity: self.velocity[index],
+            size: lerp(self.desc.size.0, self.desc.size.1, t),
+            color: lerp4(self.desc.color.0, self.desc.color.1, t),
+            progress: t,
+        })
     }
 
     /// A direction inside a cone: `axis` plus a point in a jitter ball,
@@ -769,7 +856,137 @@ mod tests {
         assert!(shown.contains(".."), "{shown}");
     }
 
+    /// The view and the packer read the same particle: over the hash
+    /// fixture's schedule, every `position`, `size` and `color` in the
+    /// view equals the packed record's slots bit for bit, `progress` is
+    /// the packer's own, and `velocity` is the array's.
+    ///
+    /// Probed by lerping the view's size backwards (`end` to `start`):
+    /// red here and nowhere else — the packer is untouched, so the
+    /// committed hash still holds.
+    #[test]
+    fn the_view_and_the_packer_read_the_same_particle() {
+        let mut system = ParticleSystem::new(
+            &burst_effect(),
+            Seed::from_u64(20_260_811),
+            StreamId::from_name("guard"),
+        );
+        system.burst([1.0, 2.0, 3.0], 40);
+        for _ in 0..30 {
+            system.step(DT);
+        }
+        system.burst([0.0, 0.5, 0.0], 24);
+        for _ in 0..10 {
+            system.step(DT);
+        }
+        let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+        let packed = system.write_instances(&mut bytes) as usize;
+        assert!(packed > 0, "the fixture must leave something to compare");
+        assert_eq!(system.particles().len(), packed, "the view's length");
+        for (index, particle) in system.particles().enumerate() {
+            let base = index * INSTANCE_STRIDE;
+            let slot = |k: usize| {
+                f32::from_ne_bytes(bytes[base + k * 4..base + k * 4 + 4].try_into().unwrap())
+                    .to_bits()
+            };
+            assert_eq!(
+                particle.position.map(f32::to_bits),
+                [slot(0), slot(1), slot(2)],
+                "position of particle {index}"
+            );
+            assert_eq!(particle.size.to_bits(), slot(3), "size of particle {index}");
+            assert_eq!(
+                particle.color.map(f32::to_bits),
+                [slot(4), slot(5), slot(6), slot(7)],
+                "colour of particle {index}"
+            );
+            assert_eq!(
+                particle.progress.to_bits(),
+                progress(system.age[index], system.lifetime[index]).to_bits(),
+                "progress of particle {index}"
+            );
+            assert_eq!(
+                particle.velocity.map(f32::to_bits),
+                system.velocity[index].map(f32::to_bits),
+                "velocity of particle {index}"
+            );
+        }
+    }
+
+    /// The view is empty when the pool is, its length is the live count
+    /// otherwise — before and after expiry — and the length tracks the
+    /// walk, which is what lets a caller size a batch from it.
+    #[test]
+    fn the_view_is_empty_when_the_pool_is_and_exact_size_otherwise() {
+        let mut system = ParticleSystem::new(
+            &burst_effect(),
+            Seed::from_u64(3),
+            StreamId::from_name("expiry"),
+        );
+        assert_eq!(system.particles().len(), 0);
+        assert!(
+            system.particles().next().is_none(),
+            "an empty pool views nothing"
+        );
+        system.burst([0.0, 0.0, 0.0], 16);
+        assert_eq!(system.particles().len(), 16);
+        assert_eq!(
+            system.particles().count(),
+            16,
+            "the walk visits every live particle"
+        );
+        let mut view = system.particles();
+        assert!(view.next().is_some());
+        assert_eq!(view.len(), 15, "the length tracks the walk");
+        // The longest possible lifetime is 1.5 seconds; step past it.
+        for _ in 0..120 {
+            system.step(DT);
+        }
+        assert_eq!(system.live(), 0, "every particle should have died");
+        assert_eq!(system.particles().len(), 0);
+        assert!(system.particles().next().is_none());
+    }
+
     proptest::proptest! {
+        // Fixed RNG seed: the suite explores the same inputs on every
+        // run and every machine, so a property failure anywhere
+        // reproduces everywhere.
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x2D5A_F010),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// The view walks pack order: over random burst schedules, the
+        /// i-th particle of the view is the i-th packed record, however
+        /// many bursts and expiries have compacted the pool.
+        #[test]
+        fn the_view_walks_pack_order(
+            bursts in proptest::collection::vec((0u32..200, 0u32..40), 1..12),
+        ) {
+            let mut system = ParticleSystem::new(
+                &burst_effect(),
+                Seed::from_u64(41),
+                StreamId::from_name("order"),
+            );
+            for (count, steps) in bursts {
+                system.burst([0.0, 0.0, 0.0], count);
+                for _ in 0..steps {
+                    system.step(DT);
+                }
+            }
+            let mut bytes = vec![0u8; system.live() as usize * INSTANCE_STRIDE];
+            let packed = system.write_instances(&mut bytes) as usize;
+            let viewed: Vec<Particle> = system.particles().collect();
+            proptest::prop_assert_eq!(viewed.len(), packed);
+            for (index, particle) in viewed.iter().enumerate() {
+                let base = index * INSTANCE_STRIDE;
+                let x = f32::from_ne_bytes(bytes[base..base + 4].try_into().unwrap());
+                let size = f32::from_ne_bytes(bytes[base + 12..base + 16].try_into().unwrap());
+                proptest::prop_assert_eq!(particle.position[0].to_bits(), x.to_bits());
+                proptest::prop_assert_eq!(particle.size.to_bits(), size.to_bits());
+            }
+        }
+
         /// The pool never exceeds its capacity, however the bursts land.
         #[test]
         fn the_pool_never_exceeds_capacity(

@@ -66,6 +66,16 @@ fn the_steady_state_allocates_nothing() {
                 live > 0,
                 "the measured window went vacuous at round {round}"
             );
+            // The view inside the window too: a walk that folds every
+            // size into a sum, fenced so nothing folds the walk away,
+            // and asserted positive so the walk provably visited a
+            // live particle.
+            let total: f32 = system.particles().map(|particle| particle.size).sum();
+            let total = std::hint::black_box(total);
+            assert!(
+                total.is_finite() && total > 0.0,
+                "the view walked nothing at round {round}"
+            );
         }
     });
     if let Err(activity) = verdict {

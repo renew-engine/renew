@@ -17,6 +17,11 @@ maturity, dependencies and core status.
   and is authored once; only the caller knows *which* surface, and for
   anything knocked off a face that changes with every burst. `burst` is
   `burst_along` on the effect's axis, held to that by test.
+- `particles()` — the live pool, particle by particle, in the order
+  `write_instances` packs: a `Particle` (centre, velocity, size, colour,
+  progress) per entry, exact-size so a caller can size a batch before
+  pushing, allocating nothing. The same arrays read by the same progress
+  and the same lerps as the packer, held slot by slot by test.
 
 ## Contract
 
@@ -54,11 +59,30 @@ is the rendering crate's contract for per-frame bytes. The feature
 exists so a consumer that only steps pools never compiles a graphics
 API — the pure half stays device-free.
 
+## Drawing through a 2D sprite batch
+
+A consumer with its own atlas and its own draw order — a sprite batch
+rather than the billboard pipeline — reads the pool through
+`particles()` and pushes one of its own sprites per entry. `position`
+is the particle's centre, so a square sprite of side `size` sits at
+`(x - size / 2, y - size / 2)` with `.size(size, size)`; `color` is
+premultiplied and goes straight into a premultiplied tint — `.tint(c)`
+for media that occlude, `.tint([r, g, b, 0.0])` for light that adds and
+never occludes; the source rectangle is the caller's, chosen from its
+own atlas (by `progress`, if a flip-book by age is wanted), because
+`EffectDesc::tile` is the billboard atlas's and is not carried here;
+the painter's order is the caller's. Everything is premultiplied end to
+end — a caller that lerps a straight colour of its own and then
+multiplies alpha in gets fringes. `velocity` is exposed so a sprite can
+be aligned or stretched along its motion; the view costs a walk over
+the same arrays the packer walks and writes nothing.
+
 ## What this deliberately is not, yet
 
 No continuous-rate emission, no per-particle rotation, no tile ranges:
 each lands with the first consumer that needs it, because surface built
 ahead of use is the pattern this repository's own register warns about.
-No sorting: additive blending is order-independent by arithmetic, and
-the alpha mode documents its unsorted artifact where the choice is
-made.
+Through the view, a spin, a flip or a 2D placement is the caller's to
+apply to its own sprite until the pool carries one. No sorting: additive
+blending is order-independent by arithmetic, and the alpha mode
+documents its unsorted artifact where the choice is made.
