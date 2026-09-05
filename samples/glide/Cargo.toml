@@ -36,6 +36,12 @@ renew-audio = { path = "../../crates/audio", optional = true }
 renew-replay = { path = "../../crates/replay" }
 renew-rhi = { path = "../../crates/rhi", default-features = false, optional = true }
 renew-sample-glide-world = { path = "world" }
+# The crash sparks. Its pure half needs no GPU — only the seeded
+# generator the world already carries — so this is a normal dependency
+# and the headless game still builds without a rendering crate in
+# sight, which the build matrix proves.
+renew-particles = { path = "../../crates/particles" }
+renew-rng = { path = "../../crates/rng" }
 # The pointer seam: the one documented quantization the drivers and
 # the replay harness apply before events reach the tree.
 renew-math = { path = "../../crates/core/math" }

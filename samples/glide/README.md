@@ -11,6 +11,8 @@ feature, playable in a window with the score in the title. Behind
 
 ![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, with a short vertical ghost trailing it along its fall](dive-361.png)
 
+![The moment after a crash: the corpse lying on the floor with a spray of yellow-white sparks flying up from it, each one turning, brightening the sky and the pipe behind them without hiding either](crash-114.png)
+
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
 angle and by its negative looks the same. The corpse keeps the tilt
@@ -35,6 +37,18 @@ a camera records of anything moving during an exposure. In
 `sink-240.png` the bird has hit the floor, and the corpse lies nose-down
 at a full eighth turn — the tilt its terminal fall left it with — with
 no ghost at all, because a corpse is not going anywhere.
+
+`crash-114.png` is that same fall six ticks after it ended, drawn from
+the `sink` trace at tick 114. Two dozen sparks are thrown up out of the
+corpse and fall back under a gravity of their own, each turning at its
+own rate. **They are light, not paint:** every spark carries a
+premultiplied colour with an alpha of zero, which the sprite renderer
+adds to what is already there rather than compositing over it — so a
+spark brightens the sky and the pipe behind it and hides neither, out of
+the same single pipeline every other sprite in the frame goes through.
+The burst is seeded from the tick it fires on, so replaying the trace
+draws the same sparks in the same places; the picture is a function of
+the run, not of when it was rendered.
 
 ## Running it
 
@@ -192,6 +206,17 @@ synthetic clock, and owns every file that is read or written.
 
 Traces index events by tick from zero, exactly as the loader returns
 them; there is no frame-numbering shift anywhere in this sample.
+
+The crash sparks are **presentation state**, like the snapshots the
+blended picture interpolates: a particle pool seeded from the tick and
+advanced once per executed step, watching the world for the one moment
+liveness falls. It reads the world and never writes it, so the digest is
+the same whether or not anything is drawing — which the driver's tests
+assert either side of a burst rather than leave to inspection. Seeding
+from the tick is what makes the sparks a function of the replay, so the
+same trace draws the same burst on any machine. The pool's arithmetic
+needs no GPU, so it lives in the game's ordinary dependencies and the
+headless build carries it without a rendering crate in sight.
 
 The picture is drawn on a 320x240 canvas, and the window presents that
 canvas stretched to whatever size the window is. A turn is isotropic on

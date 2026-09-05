@@ -226,7 +226,7 @@ reason = "The scenario binary's two refusal arms: the argument guard (a drifted 
 
 [[exempt]]
 file = "samples/glide/src/windowed.rs"
-lines = [429, 430, 431, 432, 433, 434, 435]
+lines = [449, 450, 451, 452, 453, 454, 455]
 reason = "The menu-open half of the draw: the presenter's snapshots advanced and emitted, and a label placed per button. The lane's windowed run is keyboardless under a virtual display, so nothing there ever opens the menu, and no test reaches draw at all - drawing needs the bring-up's live target. Everything the block decides is covered without it: the advance/emit pair by the presentation crate's own tests, the placement arithmetic by a unit test on label_origin (the block's only computation), and the routing, pausing, restarting and rescaling behind it by constructed-event tests on the seam. Deliberately narrow: the is_open check the frame evaluates every draw is measured and not exempt."
 
 [[exempt]]

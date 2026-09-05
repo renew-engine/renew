@@ -26,7 +26,7 @@ use renew_rhi::{
     AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
     Validation,
 };
-use renew_sample_glide::{SceneSprite, Tile, scene, world_at};
+use renew_sample_glide::{Effects, SPRITE_BUDGET, SceneSprite, Tile, scene, world_at};
 use renew_sample_glide_world::{VIEW_HEIGHT, VIEW_WIDTH, World};
 
 /// 51/255, 102/255, 153/255: unambiguous UNORM conversions — the sky.
@@ -48,14 +48,26 @@ const BIRD_BYTES: [u8; 4] = [255, 208, 0, 255];
 /// as the tilt goes positive.
 const BEAK_BYTES: [u8; 4] = [255, 96, 0, 255];
 const PIPE_BYTES: [u8; 4] = [0, 160, 40, 255];
+/// The spark texel: opaque white, so what a spark shows is its tint.
+const SPARK_BYTES: [u8; 4] = [255, 255, 255, 255];
 
-/// The 8×2 test card: an opaque bird region whose right column is the
-/// beak, an opaque pipe region, and a transparent texel on every side of
-/// both — the gutter a turned sprite needs, because a rotated edge
-/// resolves to a texel inside its own region only up to rounding, and
-/// without it a corner would sample its neighbour's art.
+/// The tick the `sink` bird hits the floor — observed by re-flying the
+/// trace, and asserted as a premise by the crash checkpoint rather than
+/// trusted here.
+const DEATH_TICK: u64 = 108;
+/// Six ticks after the crash: the burst is a tenth of a second old, so
+/// every spark is still in the air and none has expired.
+const CRASH_TICK: u64 = DEATH_TICK + 6;
+
+/// The 12×2 test card: an opaque bird region whose right column is the
+/// beak, an opaque pipe region, a white spark region the tint colours,
+/// and a transparent texel on every side of each — the gutter a turned
+/// sprite needs, because a rotated edge resolves to a texel inside its
+/// own region only up to rounding, and without it a corner would sample
+/// its neighbour's art. Every sprite this game draws now turns: the
+/// bird tilts, and a spark spins.
 const ATLAS_EXTENT: Extent = Extent {
-    width: 8,
+    width: 12,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
@@ -70,15 +82,24 @@ const PIPE_REGION: Region = Region {
     width: 2,
     height: 2,
 };
+/// White, so a spark's colour is entirely its tint's — the region
+/// carries coverage and nothing else.
+const SPARK_REGION: Region = Region {
+    x: 9,
+    y: 0,
+    width: 2,
+    height: 2,
+};
 
 fn atlas_bytes() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(8 * 2 * 4);
+    let mut bytes = Vec::with_capacity(12 * 2 * 4);
     for _y in 0..2u32 {
-        for x in 0..8u32 {
+        for x in 0..12u32 {
             let texel = match x {
                 1 => BIRD_BYTES,
                 2 => BEAK_BYTES,
                 5 | 6 => PIPE_BYTES,
+                9 | 10 => SPARK_BYTES,
                 _ => [0, 0, 0, 0],
             };
             bytes.extend_from_slice(&texel);
@@ -150,11 +171,15 @@ fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Re
     std::fs::write(path, ppm)
 }
 
-/// Render `world`'s scene once and read it back.
-fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
+/// Render `world`'s scene once and read it back, with `effects`' live
+/// sparks drawn over it.
+///
+/// The sparks are appended after the scene, which is what puts them on
+/// top: this crate's fill order is draw order.
+fn capture(device: &Device, world: &World, effects: &Effects) -> Result<Vec<u8>, String> {
     let atlas = atlas_bytes();
     let canvas = Canvas::new(VIEW_WIDTH, VIEW_HEIGHT).ok_or("zero view")?;
-    let capacity = core::num::NonZeroU32::new(32).ok_or("zero capacity")?;
+    let capacity = core::num::NonZeroU32::new(SPRITE_BUDGET).ok_or("zero capacity")?;
     let mut renderer = SpriteRenderer::new(
         device,
         &AtlasDesc::new(ATLAS_EXTENT, &atlas),
@@ -172,18 +197,21 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
 
     let mut sprites: Vec<SceneSprite> = Vec::new();
     scene(world, &mut sprites);
+    effects.fill(&mut sprites);
     renderer.begin();
     for sprite in &sprites {
         let region = match sprite.tile {
             Tile::Bird => BIRD_REGION,
             Tile::Pipe => PIPE_REGION,
+            Tile::Spark => SPARK_REGION,
         };
         renderer.push(
             &Sprite::new(region, sprite.x, sprite.y)
                 .size(sprite.width, sprite.height)
                 .rotation(sprite.rotation)
                 .saturation(sprite.saturation)
-                .smear(sprite.smear[0], sprite.smear[1]),
+                .smear(sprite.smear[0], sprite.smear[1])
+                .tint(sprite.tint),
         );
     }
     let color = [renew_rhi::color_attachment(SKY)];
@@ -204,6 +232,34 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
     Ok(pixels)
 }
 
+/// Re-fly the `sink` trace — a bird that never flaps — to `ticks`,
+/// observing the effects after every executed step.
+///
+/// **Re-flown rather than replayed** because the effects are a function
+/// of the world's *history*, not of any one state: the burst fires on
+/// the step where liveness falls, and a world handed to
+/// `Effects::new` after that step has already happened has no edge left
+/// to fire on. Every caller checks the re-flown digest against the
+/// committed trace's, so the two roads are held together.
+fn reflown_sink(ticks: u64) -> (World, Effects) {
+    let mut world = World::new(7);
+    let mut effects = Effects::new(&world);
+    for _ in 0..ticks {
+        world.step(false);
+        effects.observe(&world);
+    }
+    (world, effects)
+}
+
+/// Effects for a checkpoint whose bird is still alive.
+///
+/// Nothing can have burst: the burst is the falling edge of liveness,
+/// and a world that is alive now has not crossed it. Building the pool
+/// from the world rather than re-flying is therefore exact and cheap —
+/// and the tests assert `live() == 0` rather than trusting this note.
+fn no_effects_yet(world: &World) -> Effects {
+    Effects::new(world)
+}
 fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let base = ((y * VIEW_WIDTH + x) * 4) as usize;
     [
@@ -510,8 +566,14 @@ fn soar_at_tick_600_matches_the_committed_image() {
         "the replayed trace and the re-flown pilot diverged — the loop drifted"
     );
 
+    let effects = no_effects_yet(&world);
+    assert_eq!(
+        effects.live(),
+        0,
+        "a living bird has crossed no death edge, so nothing may have burst"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -552,8 +614,26 @@ fn sink_at_tick_240_matches_the_committed_image() {
     assert_eq!(world.tick(), 240);
     assert!(world.pipes() > 0, "the frozen pipes must be on screen");
 
+    // **Re-flown, not replayed, and the two roads must meet.** This
+    // checkpoint is far enough past the crash that every spark has
+    // expired, and proving that needs a pool that actually burst — so
+    // the effects come from re-flying the trace and observing each step,
+    // and the re-flown digest is checked against the committed trace's,
+    // which is the anchor the soaring checkpoint already carries.
+    let (reflown, effects) = reflown_sink(240);
+    assert_eq!(
+        world.digest(),
+        reflown.digest(),
+        "the replayed trace and the re-flown fall diverged — the loop drifted"
+    );
+    assert_eq!(
+        effects.live(),
+        0,
+        "the sparks burst at the crash and must be long dead by this tick, \
+         or this frame is not the still life it is recorded as"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -650,8 +730,14 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
         "the full complement of pipes is on screen"
     );
 
+    let effects = no_effects_yet(&world);
+    assert_eq!(
+        effects.live(),
+        0,
+        "a living bird has crossed no death edge, so nothing may have burst"
+    );
     let digest_before_rendering = world.digest();
-    let pixels = capture(&device, &world).expect("capture");
+    let pixels = capture(&device, &world, &effects).expect("capture");
     assert_eq!(
         world.digest(),
         digest_before_rendering,
@@ -729,4 +815,117 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
     }
 
     compare_against_golden(&device, "dive-361", &pixels).expect("the golden ritual");
+}
+
+/// The crash: sparks thrown up from the corpse, added as light.
+///
+/// **Why tick 114.** The `sink` trace never flaps, so the bird falls
+/// from the start and hits the floor at tick 108 — observed, not
+/// assumed, and asserted below. Six ticks later the burst is a tenth of
+/// a second old: every spark is still in the air, the fastest have
+/// cleared the corpse, and none has expired. That is the frame worth
+/// recording.
+///
+/// **What the structure claims, and why it is adapter-independent.**
+/// The sparks are drawn with a tint whose alpha is zero, which the
+/// sprite renderer's Contract makes additive out of its one pipeline:
+/// `src + dst·(1 − α_src)` at `α_src = 0` is addition, leaving the
+/// destination's alpha alone. So a spark can only ever *brighten* what
+/// it crosses, and the test asserts exactly that — somewhere above the
+/// corpse there is a pixel brighter than the sky in all three channels,
+/// and the sky's own alpha is untouched everywhere. Both hold on any
+/// adapter, because neither depends on where the transfer function
+/// rounds.
+#[test]
+fn a_crash_at_tick_114_throws_sparks_as_light() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+
+    // The death tick is a premise, not a guess: re-fly one tick short of
+    // it and the bird must still be alive, re-fly to it and it must not.
+    let (before, _) = reflown_sink(DEATH_TICK - 1);
+    assert!(
+        before.alive(),
+        "the bird must still be flying one tick before the recorded death"
+    );
+    let (world, effects) = reflown_sink(CRASH_TICK);
+    assert!(!world.alive(), "the bird must be dead at the crash frame");
+    assert_eq!(world.tick(), CRASH_TICK);
+    assert!(world.pipes() > 0, "pipes must be on screen");
+    assert!(
+        effects.live() > 0,
+        "the burst must be in the air, or this picture proves nothing"
+    );
+
+    // The two roads meet here too: the committed trace replayed to this
+    // tick is the world we re-flew.
+    let replayed = world_at("sink", CRASH_TICK).expect("the committed trace replays");
+    assert_eq!(
+        replayed.digest(),
+        world.digest(),
+        "the replayed trace and the re-flown fall diverged — the loop drifted"
+    );
+
+    let digest_before_rendering = world.digest();
+    let pixels = capture(&device, &world, &effects).expect("capture");
+    assert_eq!(
+        world.digest(),
+        digest_before_rendering,
+        "rendering must be a read: the scene, the sparks and the capture may not move the state"
+    );
+    assert_no_validation_errors(&device);
+
+    for (x, y) in [
+        (0, 0),
+        (VIEW_WIDTH - 1, 0),
+        (0, VIEW_HEIGHT - 1),
+        (VIEW_WIDTH - 1, VIEW_HEIGHT - 1),
+    ] {
+        assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
+    }
+
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the corpse's centre is on-screen and non-negative at this checkpoint"
+    )]
+    let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
+
+    // Light, and only light: somewhere in the band above the corpse a
+    // pixel is brighter than the sky in every channel. A spark that
+    // occluded instead of adding would darken the blue channel, which
+    // this catches; a spark that never drew would leave the band sky.
+    let mut brighter = 0u32;
+    let top = bird_y.saturating_sub(40);
+    for y in top..bird_y {
+        for x in bird_x.saturating_sub(24)..(bird_x + 24).min(VIEW_WIDTH - 1) {
+            let p = pixel_at(&pixels, x, y);
+            if p[0] > SKY_BYTES[0] && p[1] > SKY_BYTES[1] && p[2] > SKY_BYTES[2] {
+                brighter += 1;
+            }
+        }
+    }
+    assert!(
+        brighter > 0,
+        "no pixel above the corpse is brighter than the sky in all three channels, \
+         so the sparks either did not draw or did not add"
+    );
+
+    // Additive light never touches the destination's alpha, anywhere.
+    for y in 0..VIEW_HEIGHT {
+        for x in 0..VIEW_WIDTH {
+            assert_eq!(
+                pixel_at(&pixels, x, y)[3],
+                255,
+                "light must leave the target opaque, at ({x},{y})"
+            );
+        }
+    }
+
+    compare_against_golden(&device, "crash-114", &pixels).expect("the golden ritual");
 }

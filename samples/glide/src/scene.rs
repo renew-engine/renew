@@ -24,6 +24,9 @@ pub enum Tile {
     Bird,
     /// One pipe bar (either half; the gap is the absence between them).
     Pipe,
+    /// One spark of the crash burst — a white texel the tint colours,
+    /// drawn as light rather than ink.
+    Spark,
 }
 
 /// One rectangle of the picture, in canvas units (the world's own
@@ -59,7 +62,28 @@ pub struct SceneSprite {
     /// which reads as motion blur. `[0.0, 0.0]` for everything that does
     /// not move — every pipe, and a dead bird.
     pub smear: [f32; 2],
+    /// Premultiplied tint, multiplied into the sprite after everything
+    /// else. `[1.0; 4]` — no tint — for every sprite the world itself
+    /// produces; a spark carries its colour here, with **alpha zero**,
+    /// which is what makes it add light instead of covering what is
+    /// under it.
+    pub tint: [f32; 4],
 }
+
+/// The tint a sprite carries when it has none: premultiplied white,
+/// which multiplies through unchanged.
+///
+/// Named rather than written out at four call sites, so "no tint" is one
+/// decision and reads as one.
+const UNTINTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// The most sprites a frame of this game can hold.
+///
+/// Five pipes as two bars each, the bird, and a full spark pool. Named
+/// once so the windowed driver and the offscreen oracle size the same
+/// batch — two hardcoded numbers used to say 32, which was headroom
+/// before the sparks existed and would be a refusal now.
+pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + 32;
 
 /// The steepest the bird tilts, in turns — an eighth, so a terminal
 /// dive is forty-five degrees nose-down and a fresh flap is thirty-three
@@ -167,6 +191,7 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         // A pipe neither dies nor moves under its own power.
         saturation: 1.0,
         smear: [0.0, 0.0],
+        tint: UNTINTED,
     });
     out.push(SceneSprite {
         tile: Tile::Pipe,
@@ -178,6 +203,7 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         // A pipe neither dies nor moves under its own power.
         saturation: 1.0,
         smear: [0.0, 0.0],
+        tint: UNTINTED,
     });
 }
 
@@ -212,6 +238,7 @@ fn push_bird(
         rotation,
         saturation,
         smear,
+        tint: UNTINTED,
     });
 }
 
@@ -453,6 +480,11 @@ mod tests {
         );
         assert_eq!(b(bird.saturation), b(1.0), "a living bird keeps its colour");
         assert_eq!(
+            bird.tint.map(f32::to_bits),
+            [1.0f32.to_bits(); 4],
+            "the bird carries no tint either — only a spark does"
+        );
+        assert_eq!(
             (b(bird.smear[0]), b(bird.smear[1])),
             (
                 b(0.0),
@@ -466,6 +498,11 @@ mod tests {
                 (b(pipe.smear[0]), b(pipe.smear[1])),
                 (b(0.0), b(0.0)),
                 "a pipe never smears"
+            );
+            assert_eq!(
+                pipe.tint.map(f32::to_bits),
+                [1.0f32.to_bits(); 4],
+                "a sprite the world produced carries no tint"
             );
         }
     }
