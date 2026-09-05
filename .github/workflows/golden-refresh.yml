@@ -4,7 +4,8 @@ name: Golden refresh
 # the golden tests on the pinned software Vulkan stack; the test's
 # bootstrap path writes fresh candidates and FAILS BY DESIGN — a golden
 # can never enter the tree through a passing run. The candidates land in
-# an artifact for a human to inspect and commit alongside their
+# an artifact for an inspector — a person, or a session that records on
+# the pull request what it inspected — to commit alongside their
 # provenance sidecars.
 
 on:
@@ -44,7 +45,17 @@ jobs:
         continue-on-error: true
         env:
           RENEW_GOLDEN: "1"
-        run: cargo test --package renew-rhi --package renew-render2d --package renew-sample-glide --test golden
+        # `--no-fail-fast` is load-bearing here. Every one of these
+        # packages fails by design, because the step above deleted the
+        # goldens they compare against; without the flag cargo stops at
+        # the first failing package and the rest are deleted with nothing
+        # to put back. That is the shape of the incident the deletion
+        # list above already guards against, one layer further in: the
+        # ritual would delete five goldens, regenerate one, and the
+        # verification below would be the only thing that noticed.
+        run: >-
+          cargo test --no-fail-fast --package renew-rhi
+          --package renew-render2d --package renew-sample-glide --test golden
       - name: Verify the ritual behaved (test failed, every candidate exists)
         run: |
           test "${{ steps.render.outcome }}" = "failure"

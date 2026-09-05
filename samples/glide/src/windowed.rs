@@ -47,19 +47,23 @@ const SKY: Color = Color {
     a: 1.0,
 };
 const BIRD_TEXEL: [u8; 4] = [255, 208, 0, 255];
+/// The bird's leading texel column, orange rather than yellow, so a
+/// tilt has a visible sign: a solid square turned by an angle and by
+/// its negative paints the same shape.
+const BEAK_TEXEL: [u8; 4] = [255, 96, 0, 255];
 const PIPE_TEXEL: [u8; 4] = [0, 160, 40, 255];
 const ATLAS_EXTENT: Extent = Extent {
-    width: 4,
+    width: 8,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
-    x: 0,
+    x: 1,
     y: 0,
     width: 2,
     height: 2,
 };
 const PIPE_REGION: Region = Region {
-    x: 2,
+    x: 5,
     y: 0,
     width: 2,
     height: 2,
@@ -305,13 +309,20 @@ impl GlideApp {
         }
     }
 
-    fn atlas_bytes() -> [u8; 32] {
-        let mut bytes = [0u8; 32];
+    /// The 8×2 sheet, one row of texels repeated: a transparent gutter,
+    /// the bird's body, its beak, more gutter, then the pipe between
+    /// gutters of its own. The gutter is what a turned sprite needs — a
+    /// rotated edge resolves to a texel inside its own region only up to
+    /// rounding — and the beak is what makes a tilt's sign visible,
+    /// since a solid square looks the same tilted either way.
+    fn atlas_bytes() -> [u8; 64] {
+        let mut bytes = [0u8; 64];
         for (index, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let texel = if index % 4 < 2 {
-                BIRD_TEXEL
-            } else {
-                PIPE_TEXEL
+            let texel = match index % 8 {
+                1 => BIRD_TEXEL,
+                2 => BEAK_TEXEL,
+                5 | 6 => PIPE_TEXEL,
+                _ => [0, 0, 0, 0],
             };
             chunk.copy_from_slice(&texel);
         }
@@ -395,8 +406,11 @@ impl GlideApp {
                 Tile::Bird => BIRD_REGION,
                 Tile::Pipe => PIPE_REGION,
             };
-            renderer
-                .push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
+            renderer.push(
+                &Sprite::new(region, sprite.x, sprite.y)
+                    .size(sprite.width, sprite.height)
+                    .rotation(sprite.rotation),
+            );
         }
         // The UI over the world: the score always, the menu when
         // open — panels from the presenter's snapshots, labels

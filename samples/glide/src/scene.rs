@@ -9,8 +9,8 @@
 
 use renew_math::Alpha;
 use renew_sample_glide_world::{
-    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, UNITS_PER_PIXEL,
-    VIEW_HEIGHT, World,
+    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, TERMINAL_VELOCITY,
+    UNITS_PER_PIXEL, VIEW_HEIGHT, World,
 };
 use renew_snapshot::{Blend, Key, Snapshots};
 
@@ -47,8 +47,32 @@ pub struct SceneSprite {
     pub width: f32,
     /// Height, canvas units.
     pub height: f32,
+    /// Turn about the rectangle's centre, in turns, clockwise on
+    /// screen. `0.0` for everything that does not tilt — every pipe.
+    pub rotation: f32,
 }
 
+/// The steepest the bird tilts, in turns — an eighth, so a terminal
+/// dive is forty-five degrees nose-down and a fresh flap is thirty-three
+/// and three quarters degrees nose-up.
+const MAX_TILT: f32 = 0.125;
+
+/// The tilt a vertical velocity earns, in turns, clockwise on screen.
+///
+/// Linear in the velocity and clamped at the ends of the range the
+/// world can actually produce, so the steepest dive and the freshest
+/// flap are the extremes and nothing outside them is representable. The
+/// velocity arrives in **world units per tick** rather than canvas
+/// units: the tick-exact scene reads it straight from the world and the
+/// blended one interpolates two such readings, and both must reach the
+/// same function or the two pictures would tilt by different rules.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+pub(crate) fn tilt(velocity: f32) -> f32 {
+    (velocity / TERMINAL_VELOCITY as f32).clamp(-1.0, 1.0) * MAX_TILT
+}
 /// Fill `out` with the world's picture, in draw order: every pipe as
 /// two bars (top bar from the ceiling to the gap, bottom bar from the
 /// gap to the floor), then the bird over them. Pipe order is the
@@ -64,7 +88,11 @@ pub struct SceneSprite {
 pub fn scene(world: &World, out: &mut Vec<SceneSprite>) {
     out.clear();
     world.for_each_pipe_units(|x, gap_y| push_pipe(out, x as f32, gap_y as f32));
-    push_bird(out, world.bird_y_units() as f32);
+    push_bird(
+        out,
+        world.bird_y_units() as f32,
+        tilt(velocity(world.bird_velocity())),
+    );
 }
 
 /// One pipe's two bars, from the pipe's left edge and gap centre: the
@@ -88,6 +116,8 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         y: 0.0,
         width: PIPE_WIDTH_UNITS as f32,
         height: gap_top,
+        // A pipe never tilts: it is the fixed frame the bird moves in.
+        rotation: 0.0,
     });
     out.push(SceneSprite {
         tile: Tile::Pipe,
@@ -95,15 +125,16 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         y: gap_bottom,
         width: PIPE_WIDTH_UNITS as f32,
         height: VIEW_HEIGHT as f32 - gap_bottom,
+        rotation: 0.0,
     });
 }
 
-/// The bird's square body, from its centre's y.
+/// The bird's square body, from its centre's y and its tilt.
 #[allow(
     clippy::cast_precision_loss,
     reason = "canvas units are bounded by the view constants, far below f32's exact range"
 )]
-fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32) {
+fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32) {
     let half = BIRD_HALF_UNITS as f32;
     out.push(SceneSprite {
         tile: Tile::Bird,
@@ -111,6 +142,7 @@ fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32) {
         y: centre_y - half,
         width: 2.0 * half,
         height: 2.0 * half,
+        rotation,
     });
 }
 
@@ -131,6 +163,19 @@ const PIPE_SLOTS: u32 = 16;
 )]
 fn units(world_units: i64) -> f32 {
     world_units as f32 / UNITS_PER_PIXEL as f32
+}
+
+/// A world velocity as a float, in world units per tick.
+///
+/// Not divided by [`UNITS_PER_PIXEL`] like [`units`] above: [`tilt`]
+/// maps from the world's own range, so converting here would mean
+/// converting back there.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+fn velocity(world_units: i64) -> f32 {
+    world_units as f32
 }
 
 /// One pipe's blendable locals.
@@ -172,6 +217,12 @@ pub struct Presentation {
     /// singleton needs. A key is wanted exactly when a slot can be
     /// recycled, and this one cannot be.
     bird_y: f32,
+    /// The bird's velocity in **world** units per tick, not canvas
+    /// units: `tilt` maps from the world's own range, and blending
+    /// before tilting is what keeps this picture and the tick-exact one
+    /// on the same function.
+    bird_velocity: f32,
+    previous_bird_velocity: Option<f32>,
     previous_bird_y: Option<f32>,
 }
 
@@ -187,6 +238,8 @@ impl Presentation {
         Self {
             pipes: Snapshots::new(PIPE_SLOTS),
             bird_y: units(world.bird_y()),
+            bird_velocity: velocity(world.bird_velocity()),
+            previous_bird_velocity: None,
             previous_bird_y: None,
         }
     }
@@ -207,7 +260,9 @@ impl Presentation {
             );
         });
         self.previous_bird_y = Some(self.bird_y);
+        self.previous_bird_velocity = Some(self.bird_velocity);
         self.bird_y = units(world.bird_y());
+        self.bird_velocity = velocity(world.bird_velocity());
     }
 
     /// Fill `out` with the picture standing `alpha` of the way from the
@@ -236,7 +291,11 @@ impl Presentation {
             Some(previous) => f32::blend(previous, self.bird_y, alpha),
             None => self.bird_y,
         };
-        push_bird(out, y);
+        let velocity = match self.previous_bird_velocity {
+            Some(previous) => f32::blend(previous, self.bird_velocity, alpha),
+            None => self.bird_velocity,
+        };
+        push_bird(out, y, tilt(velocity));
     }
 }
 
@@ -247,6 +306,7 @@ impl Presentation {
 )]
 mod tests {
     use super::*;
+    use renew_sample_glide_world::FLAP_VELOCITY;
 
     /// Exact float claims compare bits, the math crate's own pattern:
     /// every expected value is an integer-valued f32.
@@ -304,6 +364,84 @@ mod tests {
                 b(12.0),
                 b(12.0)
             )
+        );
+        assert_eq!(
+            b(bird.rotation),
+            b(tilt(world.bird_velocity() as f32)),
+            "the bird's tilt is its velocity's, bit for bit"
+        );
+        for pipe in &out[..out.len() - 1] {
+            assert_eq!(b(pipe.rotation), b(0.0), "a pipe never tilts");
+        }
+    }
+
+    /// The tilt's two ends and its clamp: a flap points the nose up, a
+    /// terminal dive points it down by the full eighth turn, and nothing
+    /// faster tilts further.
+    #[test]
+    fn a_flap_tilts_the_bird_up_and_a_dive_tilts_it_down_within_the_clamp() {
+        assert!(
+            tilt(FLAP_VELOCITY as f32) < 0.0,
+            "a flap must tilt the nose up"
+        );
+        assert_eq!(
+            b(tilt(TERMINAL_VELOCITY as f32)),
+            b(0.125),
+            "a terminal dive is the full eighth turn"
+        );
+        assert_eq!(
+            b(tilt(5_000.0)),
+            b(tilt(TERMINAL_VELOCITY as f32)),
+            "nothing faster than terminal tilts further"
+        );
+        assert_eq!(
+            b(tilt(-5_000.0)),
+            b(-0.125),
+            "and the clamp is symmetric, though the world never gets there"
+        );
+        assert_eq!(b(tilt(0.0)), b(0.0), "a still bird is level");
+    }
+
+    /// A corpse keeps the tilt death left it with, because a dead world
+    /// stops integrating: stepping it further moves neither the velocity
+    /// nor the tilt drawn from it.
+    ///
+    /// Observed, the crate's committed-fixture method: falling from the
+    /// start without a flap, seed 7 hits the floor on tick 108 at the
+    /// terminal velocity, so the corpse lies at the full eighth turn.
+    /// That is the picture `sink-240` shows, and the number its
+    /// structural check reads.
+    #[test]
+    fn a_corpse_keeps_the_tilt_death_left_it_with() {
+        let mut world = World::new(7);
+        let mut ticks = 0;
+        while world.alive() {
+            world.step(false);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 108, "observed: the fall reaches the floor here");
+        assert_eq!(
+            world.bird_velocity(),
+            TERMINAL_VELOCITY,
+            "observed: the fall is at terminal by the time it lands"
+        );
+        let mut out = Vec::new();
+        scene(&world, &mut out);
+        let at_death = out[out.len() - 1].rotation;
+        assert_eq!(b(at_death), b(0.125), "the corpse lies nose-down, fully");
+        for _ in 0..30 {
+            world.step(false);
+        }
+        assert_eq!(
+            world.bird_velocity(),
+            TERMINAL_VELOCITY,
+            "a dead world stopped integrating"
+        );
+        scene(&world, &mut out);
+        assert_eq!(
+            b(out[out.len() - 1].rotation),
+            b(at_death),
+            "the corpse's tilt moved after death"
         );
     }
 

@@ -1,11 +1,12 @@
 soar-600.rgba — RGBA8, tightly packed, row-major, 320x240
-fnv1a-64 of the pixel bytes: 0xfd03498f04846065
+fnv1a-64 of the pixel bytes: 0xf4b0b692c953b52d
 rendered by: llvmpipe (LLVM 18.1.3, 256 bits) (kind SoftwareRasterizer, vendor 0x10005, device 0x0000, driver 109056003)
 shaders: crates/render2d/shaders (see its compile record)
 scene: the committed trace named in the file name, replayed to the
 tick in the file name through the driver's own loop
 ritual: the test never writes the canonical file above — it writes
-*.candidate.rgba and fails; a human inspects the candidate (a .ppm
-is written beside it), renames it to the canonical name, and commits
-it with this sidecar. To refresh: delete the canonical file, rerun
-on the pinned software rasterizer, repeat the ritual.
+*.candidate.rgba and fails; an inspector — a person, or a session
+that records on the pull request what it inspected — renames the
+candidate to the canonical name (a .ppm is written beside it) and
+commits it with this sidecar. To refresh: delete the canonical
+file, rerun on the pinned software rasterizer, repeat the ritual.
