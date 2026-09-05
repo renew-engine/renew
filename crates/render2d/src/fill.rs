@@ -673,7 +673,7 @@ mod tests {
         let after = placed(&before, (7.0, -3.0), 1.0);
         assert_eq!((after.x, after.y), (17.0, 17.0));
         assert_eq!((after.width, after.height), (before.width, before.height));
-        assert_eq!(after.source, before.source);
+        assert_eq!(sub_bits(after.source), sub_bits(before.source));
         assert_eq!(
             tint_bits(after.tint),
             tint_bits(before.tint),

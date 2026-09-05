@@ -19,9 +19,9 @@
 //! **`emit` is deliberately not benched.** It pushes into a
 //! `SpriteRenderer`, which uploads an atlas and builds a pipeline, so
 //! timing it means a GPU device and a dependency this suite does not
-//! have (section 11 presumes a new dependency rejected). `frame` is
-//! the whole of the CPU work `emit` does before the push, so the
-//! number that moves when presentation grows is the one here.
+//! have. `frame` is the whole of the CPU work `emit` does before the
+//! push, so the number that moves when presentation grows is the one
+//! here.
 //!
 //! The allocation gates for these paths do not live here: the tree
 //! commits to zero steady-state allocation in its own crate's
@@ -300,11 +300,12 @@ fn ui_clipped_benches(c: &mut Criterion) {
     // The same blend, with the cut path taken.
     //
     // Every leaf is forty pixels tall inside a twenty-pixel row, so
-    // the row's own box cuts it top and bottom: 992 of the 1,024
-    // nodes take the proportional path while the 32 rows and the root
-    // take the early-out. Subtracting `ui_frame_1024` and dividing by
-    // 992 gives the added cost of a cut, which is the number the
-    // clipping work is answerable for.
+    // the row's own box cuts it top and bottom: the 992 leaves take
+    // the proportional path and the 31 rows take the early-out, while
+    // the root draws nothing at all, so the frame is 1,023 quads.
+    // Subtracting `ui_frame_1024` and dividing by 992 gives the added
+    // cost of a cut, which is the number the clipping work is
+    // answerable for.
     c.bench_function("ui_frame_clipped_1024", |b| {
         let mut ui = build_tree_with(OverflowS::LeavesOverflowTheirRow);
         solve(&mut ui);

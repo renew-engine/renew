@@ -12,12 +12,16 @@
 //! puts the dying underneath the living, so what CAN change abruptly
 //! is stacking, never existence.)
 //!
-//! **Clipping is CPU rectangle intersection.** Every node clips to the
-//! intersection of its ancestors' boxes, computed at capture and
-//! blended with the rest. The one atlas region v0 samples is a uniform
-//! white texel, so clipping the rectangle *is* clipping the image —
-//! the proportional-UV half of the job arrives with the first
-//! non-uniform region, where texel granularity has to be answered.
+//! **Clipping is CPU rectangle intersection, and the source is cut with
+//! it.** Every node clips to the intersection of its ancestors' boxes,
+//! computed at capture and blended with the rest, and the quad's source
+//! rectangle is cut by the same linear map that cut the rectangle — so
+//! the map is unchanged and every surviving pixel samples the texel it
+//! would have sampled uncut. The one atlas region v0 samples is still a
+//! uniform white texel, so no committed picture moves yet; the
+//! arithmetic is in place for the first non-uniform region, where texel
+//! granularity is answered by the proportion rather than by a rule of
+//! its own.
 //!
 //! **Emission is sprites.** One generated atlas (a white fill tile and
 //! a chrome tile beside it, reserved for borders), one premultiplied
@@ -328,22 +332,6 @@ fn clipped(rect: [f32; 4], clip: [f32; 4], source: SubRegion, tint: [f32; 4]) ->
     if right <= left || bottom <= top {
         return None;
     }
-
-    // Nothing was cut: four compares, no division, and the source
-    // passes through untouched - which is what carries every existing
-    // golden byte for byte.
-
-    // Nothing was cut: four compares, no division, and the source
-    // passes through untouched - which is what carries every existing
-    // golden byte for byte.
-
-    // Nothing was cut: four compares, no division, and the source
-    // passes through untouched - which is what carries every existing
-    // golden byte for byte.
-
-    // Nothing was cut: four compares, no division, and the source
-    // passes through untouched - which is what carries every existing
-    // golden byte for byte.
 
     // Nothing was cut: four compares, no division, and the source
     // passes through untouched - which is what carries every existing
@@ -897,15 +885,21 @@ mod tests {
             y in -500.0f32..500.0,
             w in 1.0f32..1000.0,
             h in 1.0f32..1000.0,
-            cut_l in 0.0f32..1.0,
-            cut_r in 0.0f32..1.0,
+            cut_l in 0.1f32..1.0,
+            cut_r in 0.1f32..1.0,
             sx in 0.0f32..2000.0,
             sy in 0.0f32..2000.0,
             sw in 0.5f32..512.0,
             sh in 0.5f32..512.0,
         ) {
             // A clip that bites into the rectangle from both sides by a
-            // random fraction, so the cut path is the one exercised.
+            // random fraction, so the cut path is the one exercised. The
+            // fractions start at a tenth rather than at zero because a
+            // vanishing bite is the early-out, not a cut: proptest shrinks
+            // toward zero, and every assertion below is trivially true of
+            // an uncut quad, so a property drawn from zero would stay green
+            // against a `clipped` that never cut anything at all. The
+            // assertion after the call holds the range to that promise.
             let lo = cut_l.min(cut_r);
             let hi = cut_l.max(cut_r);
             let clip = [
@@ -916,6 +910,14 @@ mod tests {
             ];
             let source = SubRegion { x: sx, y: sy, width: sw, height: sh };
             if let Some(q) = clipped([x, y, w, h], clip, source, [1.0, 1.0, 1.0, 1.0]) {
+                // The cut really happened: without this the property is
+                // satisfied by the quad it was handed back unchanged.
+                proptest::prop_assert!(
+                    q.width < w && q.height < h,
+                    "the clip took the early-out: {} x {} of {} x {}",
+                    q.width, q.height, w, h
+                );
+
                 let slack = 1e-4 * (1.0 + sw.max(sh));
 
                 // Contained.

@@ -117,7 +117,7 @@ Every sprite becomes one 64-byte record: seven attributes, sixteen
 | 1 | `Vec2` | corner b — the local top-right |
 | 2 | `Vec2` | corner c — the local bottom-left |
 | 3 | `Vec2` | corner d — the local bottom-right |
-| 4 | `Vec2` | UV at corner a — the region's min, or its max on a flipped axis |
+| 4 | `Vec2` | UV at corner a — the source's min, or its max on a flipped axis |
 | 5 | `Vec2` | UV at corner d |
 | 6 | `Vec4` | premultiplied tint |
 
