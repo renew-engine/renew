@@ -22,9 +22,10 @@ use crate::scene::{SceneSprite, Tile};
 
 /// How many sparks one crash throws.
 ///
-/// Two dozen fills the corpse's body without saturating the pool, which
-/// holds thirty-two: a second burst cannot happen — a bird dies once —
-/// so the headroom is for nothing but arithmetic comfort.
+/// Two dozen fills the corpse's body without saturating the pool, whose
+/// capacity is [`crate::scene::SPARK_CAPACITY`]: a second burst cannot
+/// happen — a bird dies once — so the headroom is for nothing but
+/// arithmetic comfort.
 const BURST: u32 = 24;
 
 /// The crash effect: a short upward spray of light, falling back under
@@ -44,7 +45,7 @@ const BURST: u32 = 24;
 #[must_use]
 fn effect() -> EffectDesc {
     EffectDesc {
-        capacity: 32,
+        capacity: crate::scene::SPARK_CAPACITY,
         // Long enough to clear the corpse and fall back into it, short
         // enough that the frame six ticks after the crash still has
         // every spark in the air.
@@ -343,8 +344,12 @@ mod tests {
     /// property that decides whether sparks add or occlude — a spark
     /// that acquired an alpha would punch a hole in the pipe behind it.
     ///
-    /// Probed by copying the particle's own alpha into the tint: red,
-    /// because a fading spark's alpha is not zero.
+    /// Probed by adding a half to the tint's alpha: red on the first
+    /// spark. Note what does NOT work as a probe — copying
+    /// `particle.color[3]` in — because this effect's colour is
+    /// alpha-zero at **both** ends of its ramp, so that copy writes the
+    /// zero that is already there and changes nothing. A probe has to
+    /// move the value, not restate it.
     #[test]
     fn every_spark_is_light_and_never_ink() {
         let (_, effects) = fall(120);

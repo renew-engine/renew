@@ -569,6 +569,15 @@ impl GlideApp {
                     // the old one's last position and drag every pipe
                     // across the screen for one interval.
                     self.presentation = Presentation::new(&self.world);
+                    // The sparks belong to that world too, and for a
+                    // sharper reason: they are the *record of a death*
+                    // that no longer happened. Kept across a restart,
+                    // two dozen of them would go on falling over a bird
+                    // that is alive again, for the rest of their
+                    // lifetime — and the pool's liveness edge would
+                    // already be armed, so the next death would not
+                    // burst.
+                    self.effects = Effects::new(&self.world);
                     self.alpha = Alpha::ZERO;
                     self.pending_flaps = 0;
                 }
@@ -1392,6 +1401,50 @@ mod tests {
             "the restarted bird stands at {}, not near a new world's {} — the captures              still reach into the world that was replaced",
             restarted_bird.y,
             fresh_bird.y
+        );
+    }
+
+    /// A restart replaces the sparks with the world too.
+    ///
+    /// Sharper than the captures above: the sparks are the record of a
+    /// *death that no longer happened*. Left in the pool across a
+    /// restart they would go on falling over a bird that is alive again
+    /// for the rest of their lifetime — and worse, the pool's liveness
+    /// edge would already be armed, so the next death would not burst at
+    /// all.
+    ///
+    /// Probed by deleting the `self.effects = ...` line from the restart
+    /// block: red here, and green everywhere else in the crate.
+    #[test]
+    fn a_restart_replaces_the_sparks_with_the_world() {
+        let mut app = app();
+        let mut control = LoopControl::default();
+        // Far enough for the bird to hit the floor and burst: the
+        // windowed driver's bird never flaps unless a key is pressed.
+        for tick in 1..=140u64 {
+            app.update_at(Timestamp::from_nanos(tick * STEP), &mut control);
+        }
+        assert!(!app.world.alive(), "premise: the bird must have died");
+        let burst = app.effects.live();
+        assert!(burst > 0, "premise: the crash must have thrown sparks");
+
+        escape(&mut app);
+        app.size = Extent {
+            width: VIEW_WIDTH,
+            height: VIEW_HEIGHT,
+        };
+        let (x, y) = centre_of(&app, 1);
+        click_physical(&mut app, x, y);
+        app.update_at(Timestamp::from_nanos(141 * STEP), &mut control);
+        assert!(
+            app.world.alive(),
+            "premise: the restarted world must be alive again"
+        );
+
+        assert_eq!(
+            app.effects.live(),
+            0,
+            "the dead bird's sparks outlived it and are falling over a living one"
         );
     }
 

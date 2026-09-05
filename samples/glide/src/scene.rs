@@ -79,11 +79,28 @@ const UNTINTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// The most sprites a frame of this game can hold.
 ///
-/// Five pipes as two bars each, the bird, and a full spark pool. Named
-/// once so the windowed driver and the offscreen oracle size the same
-/// batch — two hardcoded numbers used to say 32, which was headroom
+/// Every pipe **slot** as two bars, the bird, and a full spark pool:
+/// `2 × 16 + 1 + 32 = 65`. Sized from [`PIPE_SLOTS`] rather than from
+/// the five pipes the rules actually keep on screen, because the slot
+/// count is what `Capture::put` refuses against — a budget derived from
+/// the smaller number would be a refusal waiting for the day the rules
+/// change.
+///
+/// Named once so the windowed driver and the offscreen oracle size the
+/// same batch. Two hardcoded numbers used to say 32, which was headroom
 /// before the sparks existed and would be a refusal now.
-pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + 32;
+///
+/// The spark term is [`SPARK_CAPACITY`], the same constant the effect
+/// is built with, so the two cannot drift.
+pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + SPARK_CAPACITY;
+
+/// How many sparks the crash pool holds.
+///
+/// Here rather than beside the effect that uses it because two modules
+/// need to agree on it: the pool is created with this capacity, and the
+/// sprite budget above must leave room for a full one. A number written
+/// twice is a number that drifts.
+pub const SPARK_CAPACITY: u32 = 32;
 
 /// The steepest the bird tilts, in turns — an eighth, so a terminal
 /// dive is forty-five degrees nose-down and a fresh flap is thirty-three

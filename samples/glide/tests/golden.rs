@@ -944,11 +944,19 @@ fn a_dive_at_tick_361_smears_along_the_fall() {
 /// sprite renderer's Contract makes additive out of its one pipeline:
 /// `src + dst·(1 − α_src)` at `α_src = 0` is addition, leaving the
 /// destination's alpha alone. So a spark can only ever *brighten* what
-/// it crosses, and the test asserts exactly that — somewhere above the
-/// corpse there is a pixel brighter than the sky in all three channels,
-/// and the sky's own alpha is untouched everywhere. Both hold on any
-/// adapter, because neither depends on where the transfer function
-/// rounds.
+/// it crosses, and it brightens it **warm** — the spark colour is
+/// red-most and blue-least at every point of its life, over a sky that
+/// is blue-most.
+///
+/// The test asserts that, and asks for the warmth on purpose: a pixel
+/// merely "brighter than the sky in all three channels" is something
+/// **the corpse alone produces**, because it is drawn desaturated to a
+/// grey that beats the sky in every channel. A predicate every frame
+/// satisfies with no sparks in it would have proved nothing. `r > g > b`
+/// is unreachable for a neutral grey and for the sky, so only a spark
+/// can satisfy it here. Alpha stays 255 everywhere, which is the other
+/// half of "added rather than covered". Both hold on any adapter,
+/// because neither depends on where the transfer function rounds.
 #[test]
 fn a_crash_at_tick_114_throws_sparks_as_light() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
@@ -1009,24 +1017,42 @@ fn a_crash_at_tick_114_throws_sparks_as_light() {
     )]
     let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
 
-    // Light, and only light: somewhere in the band above the corpse a
-    // pixel is brighter than the sky in every channel. A spark that
-    // occluded instead of adding would darken the blue channel, which
-    // this catches; a spark that never drew would leave the band sky.
-    let mut brighter = 0u32;
+    // Light, and only light — and the predicate has to be one **no other
+    // sprite in this frame can satisfy**, or the assertion proves nothing.
+    //
+    // "Brighter than the sky in all three channels" is NOT such a
+    // predicate, and believing it was is the trap here: the corpse is
+    // drawn desaturated to grey 213, and 213 beats the sky's 51, 102 and
+    // 153 in every channel. Measured on this frame, 41 of the qualifying
+    // pixels in the band below are corpse, not spark — so a capture that
+    // never drew a single spark would still satisfy it.
+    //
+    // What only a spark can do is add **warm** light to a cold sky. The
+    // sparks run from `(1.0, 0.9, 0.4)` to `(0.3, 0.1, 0.0)`, red-most
+    // and blue-least at every point of their life; the sky is
+    // blue-most; the corpse and its beak are neutral greys, where red
+    // equals green equals blue and `r > g` is false by construction.
+    // So `r > g > b` is reachable in this frame only where a spark
+    // landed. Observed: 66 such pixels.
+    let mut warm = 0u32;
     let top = bird_y.saturating_sub(40);
     for y in top..bird_y {
         for x in bird_x.saturating_sub(24)..(bird_x + 24).min(VIEW_WIDTH - 1) {
             let p = pixel_at(&pixels, x, y);
-            if p[0] > SKY_BYTES[0] && p[1] > SKY_BYTES[1] && p[2] > SKY_BYTES[2] {
-                brighter += 1;
+            let brighter_than_sky =
+                p[0] > SKY_BYTES[0] && p[1] > SKY_BYTES[1] && p[2] > SKY_BYTES[2];
+            // Strictly ordered, so no neutral grey can pass.
+            let warm_light = p[0] > p[1] && p[1] > p[2];
+            if brighter_than_sky && warm_light {
+                warm += 1;
             }
         }
     }
     assert!(
-        brighter > 0,
-        "no pixel above the corpse is brighter than the sky in all three channels, \
-         so the sparks either did not draw or did not add"
+        warm > 0,
+        "no pixel above the corpse is both brighter than the sky in all three channels \
+         and warm (r > g > b), so no spark added light there — the corpse's own grey \
+         cannot satisfy this, which is the point of asking for it"
     );
 
     // Additive light never touches the destination's alpha, anywhere.
