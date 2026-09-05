@@ -47,6 +47,10 @@ pub struct SceneSprite {
     pub width: f32,
     /// Height, canvas units.
     pub height: f32,
+    /// How much of the sprite's own colour survives: `1.0` for all of
+    /// it, `0.0` for grey at the same luminance. A dead bird is drawn
+    /// grey; everything else keeps its colour.
+    pub saturation: f32,
     /// Turn about the rectangle's centre, in turns, clockwise on
     /// screen. `0.0` for everything that does not tilt — every pipe.
     pub rotation: f32,
@@ -92,6 +96,7 @@ pub fn scene(world: &World, out: &mut Vec<SceneSprite>) {
         out,
         world.bird_y_units() as f32,
         tilt(velocity(world.bird_velocity())),
+        saturation(world.alive()),
     );
 }
 
@@ -118,6 +123,8 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         height: gap_top,
         // A pipe never tilts: it is the fixed frame the bird moves in.
         rotation: 0.0,
+        // A pipe is never dead, so it never greys.
+        saturation: 1.0,
     });
     out.push(SceneSprite {
         tile: Tile::Pipe,
@@ -126,7 +133,18 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         width: PIPE_WIDTH_UNITS as f32,
         height: VIEW_HEIGHT as f32 - gap_bottom,
         rotation: 0.0,
+        // A pipe is never dead, so it never greys.
+        saturation: 1.0,
     });
+}
+
+/// How much colour a bird keeps: all of it alive, none of it dead.
+///
+/// A bool rather than a float on the presentation side, and blended
+/// nowhere: death is a step, not a slide, and interpolating it would
+/// draw a half-grey bird for one frame at every death.
+fn saturation(alive: bool) -> f32 {
+    if alive { 1.0 } else { 0.0 }
 }
 
 /// The bird's square body, from its centre's y and its tilt.
@@ -134,7 +152,7 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
     clippy::cast_precision_loss,
     reason = "canvas units are bounded by the view constants, far below f32's exact range"
 )]
-fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32) {
+fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32, saturation: f32) {
     let half = BIRD_HALF_UNITS as f32;
     out.push(SceneSprite {
         tile: Tile::Bird,
@@ -143,6 +161,7 @@ fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32) {
         width: 2.0 * half,
         height: 2.0 * half,
         rotation,
+        saturation,
     });
 }
 
@@ -223,6 +242,10 @@ pub struct Presentation {
     /// on the same function.
     bird_velocity: f32,
     previous_bird_velocity: Option<f32>,
+    /// Whether the bird was alive at the newest capture. A bool, and
+    /// deliberately not blended: death is a step, and interpolating it
+    /// would grey the bird halfway for one frame.
+    bird_alive: bool,
     previous_bird_y: Option<f32>,
 }
 
@@ -240,6 +263,7 @@ impl Presentation {
             bird_y: units(world.bird_y()),
             bird_velocity: velocity(world.bird_velocity()),
             previous_bird_velocity: None,
+            bird_alive: world.alive(),
             previous_bird_y: None,
         }
     }
@@ -263,6 +287,7 @@ impl Presentation {
         self.previous_bird_velocity = Some(self.bird_velocity);
         self.bird_y = units(world.bird_y());
         self.bird_velocity = velocity(world.bird_velocity());
+        self.bird_alive = world.alive();
     }
 
     /// Fill `out` with the picture standing `alpha` of the way from the
@@ -295,7 +320,7 @@ impl Presentation {
             Some(previous) => f32::blend(previous, self.bird_velocity, alpha),
             None => self.bird_velocity,
         };
-        push_bird(out, y, tilt(velocity));
+        push_bird(out, y, tilt(velocity), saturation(self.bird_alive));
     }
 }
 
@@ -370,6 +395,7 @@ mod tests {
             b(tilt(world.bird_velocity() as f32)),
             "the bird's tilt is its velocity's, bit for bit"
         );
+        assert_eq!(b(bird.saturation), b(1.0), "a living bird keeps its colour");
         for pipe in &out[..out.len() - 1] {
             assert_eq!(b(pipe.rotation), b(0.0), "a pipe never tilts");
         }
@@ -481,6 +507,14 @@ mod tests {
             b(228.0),
             "observed: frozen at death"
         );
+        assert_eq!(
+            b(out[out.len() - 1].saturation),
+            b(0.0),
+            "a dead bird is drawn grey"
+        );
+        for pipe in &out[..out.len() - 1] {
+            assert_eq!(b(pipe.saturation), b(1.0), "a pipe keeps its colour");
+        }
     }
 
     /// Half a step past the boundary — exact in binary, so expectations

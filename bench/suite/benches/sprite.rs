@@ -119,6 +119,8 @@ fn sprite_pack(c: &mut Criterion) {
                 Sprite::new(WHITE, rect[0], rect[1])
                     .size(rect[2], rect[3])
                     .rotation(0.05)
+                    .saturation(0.5)
+                    .flash(0.1)
                     .scale(1.5, 0.75)
             })
             .collect();

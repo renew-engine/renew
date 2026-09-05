@@ -12,7 +12,9 @@ feature, playable in a window with the score in the title. Behind
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
 angle and by its negative looks the same. The corpse keeps the tilt
-death left it with.
+death left it with, and is drawn in grey — the same sprite desaturated
+to its own luminance, so it keeps its shape and its brightness and loses
+only its colour.
 
 **This is not a fresh render.** It is the committed golden image -- the
 exact frame CI compares, drawn on the pinned software rasterizer, with a

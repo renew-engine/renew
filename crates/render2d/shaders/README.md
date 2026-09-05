@@ -22,10 +22,10 @@ Target: SPIR-V 1.0
 > glslc -O sprite.frag -o sprite.frag.spv
 ```
 
-`sprite.vert.spv` (1592 bytes) is the four-corner vertex stage compiled
-that day; `sprite.frag.spv` (740 bytes) was recompiled from its
-unchanged source by the same compiler and compared byte for byte
-against the committed blob, which it reproduced.
+`sprite.vert.spv` (1704 bytes) and `sprite.frag.spv` (1340 bytes) were
+both compiled that day from the sources beside them. Both grew: the
+vertex stage gained the eighth instance attribute and the flat varying
+that carries it, and the fragment stage gained the two effect lines.
 
 To recompile: install the same SDK version, run the same commands, and
 update this record with the observed `--version` output in the same

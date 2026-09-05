@@ -9,13 +9,13 @@ use renew_math::Vec2;
 use renew_rhi::Extent;
 
 /// The `f32` lanes of one packed instance: four corners, two UVs, a
-/// tint — sixteen, across seven attributes. The shader's
-/// `location(0..=6)` list, the layout slice in `gpu.rs`, and [`pack`]
-/// describe the same bytes; change one and the others in the same
-/// commit or the draw reads garbage.
-pub(crate) const INSTANCE_LANES: usize = 16;
+/// tint, and the two-lane effect pair — eighteen, across eight
+/// attributes. The shader's `location(0..=7)` list, the layout slice in
+/// `gpu.rs`, and [`pack`] describe the same bytes; change one and the
+/// others in the same commit or the draw reads garbage.
+pub(crate) const INSTANCE_LANES: usize = 18;
 
-/// Bytes per packed instance: the lanes, four bytes each — 64. Derived
+/// Bytes per packed instance: the lanes, four bytes each — 72. Derived
 /// so a record with the wrong number of lanes fails to compile rather
 /// than packing short.
 pub(crate) const INSTANCE_STRIDE: usize = INSTANCE_LANES * size_of::<f32>();
@@ -149,7 +149,8 @@ impl From<Region> for SubRegion {
 
 /// One sprite: a source rectangle, a place on the canvas, a size, a
 /// tint, and — each an identity by default — a mirror on either axis, a
-/// turn about a pivot and a scale about the same pivot.
+/// turn about a pivot, a scale about the same pivot, a desaturation
+/// toward its own luminance and a flash toward its own alpha.
 ///
 /// `#[non_exhaustive]` with a constructor and builders, the descriptor
 /// pattern this tree uses everywhere: the fields a later version adds
@@ -221,6 +222,32 @@ pub struct Sprite {
     /// faces are drawn, so a card can turn over by scaling its width
     /// through zero.
     pub scale: [f32; 2],
+    /// How much of the sprite's own colour survives, `1.0` for all of
+    /// it and `0.0` for grey.
+    ///
+    /// Grey is the sprite's luminance, `0.2126 R + 0.7152 G + 0.0722 B`
+    /// in linear light, so a desaturated sprite keeps the brightness it
+    /// had. **This is not what a uniform tint does:** `tint([l, l, l,
+    /// 1.0])` scales every channel toward black and keeps the sprite
+    /// fully occluding, which darkens rather than greys.
+    ///
+    /// The default `1.0` is exact: the shader's form multiplies the
+    /// correction by `1.0 - saturation`, which is an exact zero there,
+    /// so an untouched sprite packs and draws the same pixel it did
+    /// before this field existed.
+    pub saturation: f32,
+    /// How far the sprite is pushed toward a solid silhouette of its
+    /// own alpha, `0.0` for none and `1.0` for a white flash.
+    ///
+    /// A hit flash, in one lane. At `1.0` an opaque texel is white and a
+    /// transparent one stays transparent, because the target is the
+    /// alpha itself rather than a fixed colour — so the flash fades out
+    /// with the sprite instead of squaring off its edges. Composes with
+    /// the tint, which still multiplies afterwards.
+    ///
+    /// The default `0.0` is exact for the same reason `saturation`'s
+    /// `1.0` is: the correction is multiplied by it.
+    pub flash: f32,
 }
 
 impl Sprite {
@@ -245,6 +272,11 @@ impl Sprite {
             rotation: 0.0,
             pivot: [0.5, 0.5],
             scale: [1.0, 1.0],
+            // The identities: the shader multiplies each correction by
+            // an exact zero at these values, so an untouched sprite is
+            // the pixel it was before the lanes existed.
+            saturation: 1.0,
+            flash: 0.0,
         }
     }
 
@@ -316,6 +348,27 @@ impl Sprite {
     #[must_use]
     pub fn scale(mut self, x: f32, y: f32) -> Self {
         self.scale = [x, y];
+        self
+    }
+
+    /// How much of the sprite's own colour survives: `1.0` all of it,
+    /// `0.0` grey at the same luminance.
+    ///
+    /// The value is not clamped — the field's doc says what the two ends
+    /// mean, and a caller that wants to oversaturate by passing more
+    /// than one gets the linear extrapolation the form implies rather
+    /// than a silent clamp.
+    #[must_use]
+    pub fn saturation(mut self, saturation: f32) -> Self {
+        self.saturation = saturation;
+        self
+    }
+
+    /// How far the sprite is pushed toward a silhouette of its own
+    /// alpha: `0.0` none, `1.0` a white flash.
+    #[must_use]
+    pub fn flash(mut self, flash: f32) -> Self {
+        self.flash = flash;
         self
     }
 
@@ -553,7 +606,8 @@ pub(crate) fn corners(sprite: &Sprite) -> [Vec2; 4] {
 /// the four corners in NDC — local top-left, top-right, bottom-left,
 /// bottom-right, each two `f32`s — then the UV at the first corner and
 /// at the last, then the four-`f32` tint, native-endian, in
-/// declaration order. The two UV lanes are the source's min and max
+/// declaration order, then the two effect lanes — saturation and
+/// flash. The two UV lanes are the source's min and max
 /// unless a flip swapped them.
 pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTANCE_STRIDE] {
     let [a, b, c, d] = corners(sprite).map(|corner| to_ndc(corner, canvas));
@@ -584,6 +638,8 @@ pub(crate) fn pack(sprite: &Sprite, canvas: Canvas, atlas: Extent) -> [u8; INSTA
         sprite.tint[1],
         sprite.tint[2],
         sprite.tint[3],
+        sprite.saturation,
+        sprite.flash,
     ];
     let mut bytes = [0u8; INSTANCE_STRIDE];
     for (slot, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
@@ -751,9 +807,9 @@ mod tests {
         );
     }
 
-    /// The sixteen `f32` lanes of a packed record, for tests that name
+    /// The eighteen `f32` lanes of a packed record, for tests that name
     /// a lane rather than a byte: 0..8 the four corners, 8..12 the two
-    /// UVs, 12..16 the tint.
+    /// UVs, 12..16 the tint, 16..18 the effect pair.
     fn lanes(record: &[u8; INSTANCE_STRIDE]) -> [u32; INSTANCE_LANES] {
         let mut out = [0u32; INSTANCE_LANES];
         for (lane, chunk) in out.iter_mut().zip(record.as_chunks::<4>().0) {
@@ -1501,7 +1557,7 @@ mod tests {
         .size(32.0, 16.0)
         .tint([0.5, 0.25, 0.125, 0.5]);
 
-        let expected: [f32; 16] = [
+        let expected: [f32; INSTANCE_LANES] = [
             -0.5, -0.5, // top-left: 2*16/64-1, 2*8/32-1
             0.5, -0.5, // top-right: 2*48/64-1, 2*8/32-1
             -0.5, 0.5, // bottom-left: 2*16/64-1, 2*24/32-1
@@ -1509,8 +1565,13 @@ mod tests {
             0.0, 0.0, // uv at the first corner
             0.5, 0.5, // uv at the last corner: 4/8
             0.5, 0.25, 0.125, 0.5, // tint, verbatim
+            1.0, 0.0, // effect: the identities a plain sprite carries
         ];
         let packed = pack(&sprite, c, atlas);
+        assert_eq!(
+            INSTANCE_STRIDE, 72,
+            "the record is eighteen lanes of four bytes; the hand computation below \n             enumerates all eighteen and would be short if this moved"
+        );
         for (index, value) in expected.iter().enumerate() {
             let mut raw = [0u8; 4];
             raw.copy_from_slice(&packed[index * 4..index * 4 + 4]);
@@ -1520,6 +1581,36 @@ mod tests {
                 "f32 slot {index} disagrees with the hand computation"
             );
         }
+    }
+
+    /// The effect lanes carry what the builders were given, in the
+    /// order the layout declares: saturation at lane 16, flash at 17.
+    ///
+    /// A separate fixture from the record above because that one exists
+    /// to pin the identities — the values every sprite has — and a pair
+    /// of identities cannot tell the two lanes apart if they were
+    /// swapped. These two are distinct, chosen so that reading them in
+    /// the wrong order is a failure rather than a coincidence.
+    ///
+    /// Probed by swapping the two lanes in `pack`: red here, green in
+    /// every other test in this crate, which is the point of pinning
+    /// them by hand at all.
+    #[test]
+    fn the_effect_lanes_carry_the_builders_values_in_order() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprite = swatch().saturation(0.25).flash(0.5);
+        let packed = pack(&sprite, c, atlas);
+        let lane = |index: usize| {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packed[index * 4..index * 4 + 4]);
+            f32::from_ne_bytes(raw).to_bits()
+        };
+        assert_eq!(lane(16), 0.25f32.to_bits(), "saturation is lane 16");
+        assert_eq!(lane(17), 0.5f32.to_bits(), "flash is lane 17");
     }
 
     /// Bits, so a comparison of source rectangles is exact and carries
@@ -1817,6 +1908,8 @@ mod tests {
                 ndc_c.x, ndc_c.y, ndc_d.x, ndc_d.y,
                 uv_min.x, uv_min.y, uv_max.x, uv_max.y,
                 1.0, 1.0, 1.0, 1.0,
+                // The effect identities a plain `Sprite::new` carries.
+                1.0, 0.0,
             ];
             let mut expected = [0u8; INSTANCE_STRIDE];
             for (slot, value) in expected.as_chunks_mut::<4>().0.iter_mut().zip(values) {
