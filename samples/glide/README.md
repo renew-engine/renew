@@ -7,7 +7,12 @@ feature, playable in a window with the score in the title. Behind
 
 ## What it looks like
 
-![A frame of the game: the bird as a yellow square, green pipes, blue sky](soar-600.png)
+![A frame of the game: the bird as a yellow square with an orange beak, tilted nose-down as it falls, green pipes, blue sky](soar-600.png)
+
+The bird tilts with its velocity — nose-down as it falls, up on a flap
+— and its orange beak shows which way, because a square turned by an
+angle and by its negative looks the same. The corpse keeps the tilt
+death left it with.
 
 **This is not a fresh render.** It is the committed golden image -- the
 exact frame CI compares, drawn on the pinned software rasterizer, with a
@@ -18,7 +23,7 @@ and the tick. Converting that to a PNG shows the frame that is
 `cargo run -p renew-sample-glide --example make_picture` regenerates it
 from the goldens whenever they are refreshed. The other committed frame,
 `sink-240.png`, is the same trace at the tick where the bird has hit the
-floor.
+floor, where the corpse lies at the tilt its last fall left it with.
 
 ## Running it
 
@@ -176,6 +181,14 @@ synthetic clock, and owns every file that is read or written.
 
 Traces index events by tick from zero, exactly as the loader returns
 them; there is no frame-numbering shift anywhere in this sample.
+
+The picture is drawn on a 320x240 canvas, and the window presents that
+canvas stretched to whatever size the window is. A turn is isotropic on
+the canvas — the rendering crate maps corners to the screen after the
+turn, not before — so the tilted bird stays square there whatever the
+canvas shape; on screen it stays square only while the window keeps the
+canvas's four-to-three. The canvas, not the surface, is where that
+guarantee lives.
 
 ## Manifest
 

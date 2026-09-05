@@ -36,32 +36,49 @@ const SKY: Color = Color {
 };
 const SKY_BYTES: [u8; 4] = [51, 102, 153, 255];
 const BIRD_BYTES: [u8; 4] = [255, 208, 0, 255];
+/// The bird's leading texel column, orange rather than yellow.
+///
+/// A tilt's sign is invisible on a solid square: a turn and its negative
+/// are mirror images of the same shape, and at the corpse's eighth-turn
+/// they paint the same diamond. The beak is what makes the sign
+/// something a picture can show, and something a test can read: it is
+/// the local `+x` half of the body, which the corner map sends downward
+/// as the tilt goes positive.
+const BEAK_BYTES: [u8; 4] = [255, 96, 0, 255];
 const PIPE_BYTES: [u8; 4] = [0, 160, 40, 255];
 
-/// The 4×2 test card: an opaque bird region and an opaque pipe region,
-/// premultiplied trivially by their alpha of one.
+/// The 8×2 test card: an opaque bird region whose right column is the
+/// beak, an opaque pipe region, and a transparent texel on every side of
+/// both — the gutter a turned sprite needs, because a rotated edge
+/// resolves to a texel inside its own region only up to rounding, and
+/// without it a corner would sample its neighbour's art.
 const ATLAS_EXTENT: Extent = Extent {
-    width: 4,
+    width: 8,
     height: 2,
 };
 const BIRD_REGION: Region = Region {
-    x: 0,
+    x: 1,
     y: 0,
     width: 2,
     height: 2,
 };
 const PIPE_REGION: Region = Region {
-    x: 2,
+    x: 5,
     y: 0,
     width: 2,
     height: 2,
 };
 
 fn atlas_bytes() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(4 * 2 * 4);
+    let mut bytes = Vec::with_capacity(8 * 2 * 4);
     for _y in 0..2u32 {
-        for x in 0..4u32 {
-            let texel = if x < 2 { BIRD_BYTES } else { PIPE_BYTES };
+        for x in 0..8u32 {
+            let texel = match x {
+                1 => BIRD_BYTES,
+                2 => BEAK_BYTES,
+                5 | 6 => PIPE_BYTES,
+                _ => [0, 0, 0, 0],
+            };
             bytes.extend_from_slice(&texel);
         }
     }
@@ -159,7 +176,11 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
             Tile::Bird => BIRD_REGION,
             Tile::Pipe => PIPE_REGION,
         };
-        renderer.push(&Sprite::new(region, sprite.x, sprite.y).size(sprite.width, sprite.height));
+        renderer.push(
+            &Sprite::new(region, sprite.x, sprite.y)
+                .size(sprite.width, sprite.height)
+                .rotation(sprite.rotation),
+        );
     }
     let color = [renew_rhi::color_attachment(SKY)];
     let items = [renderer.item()];
@@ -187,6 +208,108 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
         pixels[base + 2],
         pixels[base + 3],
     ]
+}
+
+/// The three structural claims about the tilted bird, checked on every
+/// adapter rather than only on the pinned lane: the body is where the
+/// rules put it, nothing of the pipe's art reaches it, and the beak
+/// points the way the velocity says.
+///
+/// **Why not the centre pixel any more.** The centre used to be asserted
+/// as the bird's body colour. The bird's right texel column is the beak
+/// now, so the centre pixel is orange at zero tilt and either colour
+/// once turned. The sample moves three pixels left instead: its centre
+/// `(37.5, bird_y + 0.5)` is `(-2.5, +0.5)` from the geometric centre,
+/// so under a tilt of `θ` its local x is `-2.5·cos θ + 0.5·sin θ`, which
+/// over the whole tilt range stays between `-2.12` and `-1.41` — always
+/// in the left, body half, never within a pixel and a half of the
+/// body/beak boundary.
+///
+/// **The pipe-in-the-box check is a guard, not a probe.** No mutant
+/// reddens it today, and the reason is worth stating: the sheet gained a
+/// transparent gutter around each region so a turned edge could not
+/// sample its neighbour, and moving the pipe's texels flush against the
+/// beak leaves both goldens green. With nearest sampling and a UV
+/// interpolated between the source rectangle's own corners, a rotated
+/// quad cannot resolve outside that rectangle at all — the gutter is
+/// defence for a filter this engine does not yet use, and for the day
+/// someone widens a region or draws a pipe across the bird. It stays
+/// because it costs one comparison per pixel of a small box and fails
+/// loudly if either of those happens.
+/// **The sign check is what the beak exists for.** A solid square cannot
+/// show a tilt's sign: a turn and its negative are mirror images of the
+/// same shape, and at an eighth turn they paint the same diamond. Over
+/// the box, the mean vertical offset of the beak's pixels is positive
+/// when the bird is falling and negative when it is rising, with margin:
+/// at the terminal tilt the mean is about `+2.24` px, at the flap tilt
+/// about `-1.68`, and even at a fiftieth of a turn about `+0.33`.
+fn assert_bird_structure(pixels: &[u8], world: &World, label: &str) {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's centre is on-screen and non-negative at both pinned checkpoints"
+    )]
+    let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
+
+    assert_eq!(
+        pixel_at(pixels, bird_x - 3, bird_y),
+        BIRD_BYTES,
+        "{label}: the bird's body, three pixels left of centre"
+    );
+
+    // The box a twelve-pixel body fits in at any angle, clipped to the
+    // view: half the diagonal is 8.49, so nine pixels each way.
+    let half_box = 9u32;
+    let top = bird_y.saturating_sub(half_box);
+    let bottom = (bird_y + half_box).min(VIEW_HEIGHT - 1);
+    let left = bird_x.saturating_sub(half_box);
+    let right = (bird_x + half_box).min(VIEW_WIDTH - 1);
+
+    let mut beak_offsets = 0.0f64;
+    let mut beak_pixels = 0u32;
+    for y in top..=bottom {
+        for x in left..=right {
+            let pixel = pixel_at(pixels, x, y);
+            assert_ne!(
+                pixel, PIPE_BYTES,
+                "{label}: pipe art at ({x},{y}), inside the bird's box — the atlas gutter \
+                 is what should stop a turned edge sampling its neighbour"
+            );
+            if pixel == BEAK_BYTES {
+                beak_offsets += f64::from(y) + 0.5 - f64::from(bird_y);
+                beak_pixels += 1;
+            }
+        }
+    }
+
+    assert!(
+        beak_pixels > 0,
+        "{label}: no beak pixel in the bird's box, so the tilt's sign is unobservable"
+    );
+    let mean = beak_offsets / f64::from(beak_pixels);
+    let velocity = world.bird_velocity();
+    assert!(
+        velocity != 0,
+        "{label}: a zero velocity leaves the sign check with nothing to say; \
+         the checkpoint is chosen so this does not happen"
+    );
+    if velocity > 0 {
+        assert!(
+            mean > 0.0,
+            "{label}: falling at {velocity} units per tick, but the beak's mean offset is \
+             {mean} — the nose should be below the centre"
+        );
+    } else {
+        assert!(
+            mean < 0.0,
+            "{label}: rising at {velocity} units per tick, but the beak's mean offset is \
+             {mean} — the nose should be above the centre"
+        );
+    }
 }
 
 /// The full ritual for one checkpoint: structural checks everywhere,
@@ -362,21 +485,7 @@ fn soar_at_tick_600_matches_the_committed_image() {
     ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "the bird's centre is on-screen and non-negative at this pinned checkpoint"
-    )]
-    let bird_y = world.bird_y_units() as u32;
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "the bird's fixed column is positive by the rules"
-    )]
-    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
-    assert_eq!(
-        pixel_at(&pixels, bird_x, bird_y),
-        BIRD_BYTES,
-        "the bird's centre pixel"
-    );
+    assert_bird_structure(&pixels, &world, "soar-600");
 
     compare_against_golden(&device, "soar-600", &pixels).expect("the golden ritual");
 }
@@ -414,21 +523,7 @@ fn sink_at_tick_240_matches_the_committed_image() {
     ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "the corpse froze on-screen; the world test pins the value"
-    )]
-    let bird_y = world.bird_y_units() as u32;
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "the bird's fixed column is positive by the rules"
-    )]
-    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
-    assert_eq!(
-        pixel_at(&pixels, bird_x, bird_y),
-        BIRD_BYTES,
-        "the corpse's centre pixel, frozen where death left it"
-    );
+    assert_bird_structure(&pixels, &world, "sink-240");
 
     compare_against_golden(&device, "sink-240", &pixels).expect("the golden ritual");
 }
