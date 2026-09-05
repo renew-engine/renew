@@ -6,8 +6,10 @@ picture bit for bit. The manifest in `Cargo.toml` is authoritative for
 maturity, dependencies and core status.
 
 - `EffectDesc` / `VelocityCone` — what an effect is, as pure data a
-  generic pool interprets. Authored in code in v0; a file format is a
-  deliberate later step carrying its own validation obligations.
+  generic pool interprets, including — for an effect that turns — a
+  birth angle and a spin, in turns. Authored in code in v0; a file
+  format is a deliberate later step carrying its own validation
+  obligations.
 - `ParticleSystem` — the pool: `burst` spawns (saturating at capacity),
   `step` advances at the fixed cadence, `write_instances` packs live
   particles into 48-byte records with the count and the bytes derived
@@ -30,9 +32,10 @@ maturity, dependencies and core status.
   hash.
 - `particles()` — the live pool, particle by particle, in the order
   `write_instances` packs: a `Particle` (centre, velocity, size, colour,
-  progress) per entry, exact-size so a caller can size a batch before
-  pushing, allocating nothing. The same arrays read by the same progress
-  and the same lerps as the packer, held slot by slot by test.
+  progress, rotation) per entry, exact-size so a caller can size a
+  batch before pushing, allocating nothing. The same arrays read by the
+  same progress and the same lerps as the packer, held slot by slot by
+  test.
 
 ## Contract
 
@@ -51,8 +54,10 @@ maturity, dependencies and core status.
   does not touch this: the jitter is drawn before the axis is used, so
   which axis arrives cannot change how many values the generator gives
   out; a shape adds a fixed count per variant, stated on the type, in
-  front of the cone's draws, and an emitter draws nothing.
-  out.
+  front of the cone's draws, and an emitter draws nothing. An effect
+  whose angle and spin ranges are both `(0.0, 0.0)` draws nothing for
+  them, so every effect authored before those fields existed replays
+  the same bytes.
 - **All allocation happens at construction** — `burst`, `step`,
   `write_instances` and the `particles()` walk, each gate-tested from
   its own first commit; a burst past capacity saturates.
@@ -89,19 +94,23 @@ add light without occluding is the sprite renderer's contract to state,
 not this crate's. The source rectangle is the caller's, chosen from its
 own atlas (by `progress`, if a flip-book by age is wanted), because
 `EffectDesc::tile` is the billboard atlas's and is not carried here;
-the painter's order is the caller's. Everything is premultiplied end to
-end — a caller that lerps a straight colour of its own and then
-multiplies alpha in gets fringes. `velocity` is exposed so a sprite can
+multiplies alpha in gets fringes. `rotation` is the particle's angle in
+turns, the unit the sprite renderer's own turn takes, so it goes
+straight into a sprite's rotation. `velocity` is exposed so a sprite
+can be aligned or stretched along its motion; the view costs a walk
+over the same arrays the packer walks and writes nothing.
 be aligned or stretched along its motion; the view costs a walk over
 the same arrays the packer walks and writes nothing.
 
 ## What this deliberately is not, yet
 
-No per-particle rotation, no tile ranges:
+No tile ranges:
 each lands with the first consumer that needs it, because surface built
 ahead of use is the pattern this repository's own register warns about.
-Through the view a spin is the caller's to apply to its own sprite
-until the pool carries one; a flip and the 2D placement stay the
-caller's. No sorting: additive blending is order-independent by
+Through the view a particle's `rotation` is the pool's, in turns; a flip
+and the 2D placement stay the caller's. The billboard record carries no
+rotation — a spinning billboard lands with a 3D consumer that needs
+one.
+No sorting: additive blending is order-independent by
 arithmetic, and the alpha mode documents its unsorted artifact where
 the choice is made.

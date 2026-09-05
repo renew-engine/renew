@@ -1,5 +1,6 @@
 //! Mechanical enforcement of the crate's allocation contract: after
-//! construction, the steady state — burst, shaped burst, emitter, step,
+//! construction, the steady state — burst, shaped burst, emitter, step
+//! with a spin,
 //! pack, view — performs no
 //! heap allocation through the global allocator.
 //!
@@ -37,6 +38,10 @@ fn the_steady_state_allocates_nothing() {
         size: (0.3, 0.02),
         color: ([1.0, 0.9, 0.5, 1.0], [0.1, 0.05, 0.02, 0.0]),
         tile: [0.0, 0.0, 1.0, 1.0],
+        // A turning effect, so the angle draws and the spin integration
+        // are inside the window too.
+        angle: (0.0, 0.25),
+        spin: (-1.0, 1.0),
     };
     // Everything that may allocate happens out here: the pool and the
     // packing buffer, once.
@@ -93,6 +98,16 @@ fn the_steady_state_allocates_nothing() {
                 .map(|particle| std::hint::black_box(particle).size)
                 .sum();
             let total = std::hint::black_box(total);
+            // And every rotation, the same way: the spin integrates in the
+            // window and the view reads it back without allocating.
+            let turned: f32 = system
+                .particles()
+                .map(|particle| std::hint::black_box(particle).rotation)
+                .sum();
+            assert!(
+                std::hint::black_box(turned).is_finite(),
+                "the rotations went non-finite at round {round}"
+            );
             assert!(
                 total.is_finite() && total > 0.0,
                 "the view walked nothing at round {round}"

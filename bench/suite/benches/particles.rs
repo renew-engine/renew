@@ -1,4 +1,5 @@
-//! Particle pool timings: the cost of one simulation step, one
+//! Particle pool timings: the cost of one simulation step (on an effect
+//! that turns and one that does not), one
 //! instance pack and one walk of the view, at the two pool sizes that
 //! bracket what a scene asks for. A thousand particles is a busy scene
 //! for the current samples — the block-break burst tops out in the
@@ -34,8 +35,8 @@ const DT: f32 = 1.0 / 60.0;
 /// pool.
 const IMMORTAL: f32 = 1.0e9;
 
-/// A pool filled to exactly `count` live particles.
-fn full_pool(count: u32) -> ParticleSystem {
+/// A pool filled to exactly `count` live particles, turning or not.
+fn pool(count: u32, angle: (f32, f32), spin: (f32, f32)) -> ParticleSystem {
     let desc = EffectDesc {
         capacity: count,
         lifetime: (IMMORTAL, IMMORTAL),
@@ -49,6 +50,8 @@ fn full_pool(count: u32) -> ParticleSystem {
         size: (0.1, 0.05),
         color: ([1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]),
         tile: [0.0, 0.0, 1.0, 1.0],
+        angle,
+        spin,
     };
     let mut pool = ParticleSystem::new(&desc, SEED, StreamId::from_name("bench"));
     pool.burst([0.0, 0.0, 0.0], count);
@@ -60,10 +63,30 @@ fn full_pool(count: u32) -> ParticleSystem {
     pool
 }
 
+/// A full pool of an effect that does not turn — what every line
+/// before the turning one measures.
+fn full_pool(count: u32) -> ParticleSystem {
+    pool(count, (0.0, 0.0), (0.0, 0.0))
+}
+
+/// A full pool of an effect that turns: a birth angle in `[0, 1)` turns
+/// and a spin in `[−2, 2)` turns per second.
+fn turning_pool(count: u32) -> ParticleSystem {
+    pool(count, (0.0, 1.0), (-2.0, 2.0))
+}
+
 fn particles(c: &mut Criterion) {
     for count in [1024_u32, 4096] {
         c.bench_function(&format!("particle_update_{count}"), |b| {
             let mut pool = full_pool(count);
+            b.iter(|| pool.step(black_box(DT)));
+        });
+
+        c.bench_function(&format!("particle_update_turning_{count}"), |b| {
+            // The same step on an effect that turns: the spin array read
+            // and the angle array written on top, which is the whole cost
+            // of a spin. An effect that does not turn skips that pass.
+            let mut pool = turning_pool(count);
             b.iter(|| pool.step(black_box(DT)));
         });
 
