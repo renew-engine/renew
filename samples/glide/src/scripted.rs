@@ -86,9 +86,28 @@ pub fn replay_recorded(recorded: &renew_trace::Trace) -> Result<Report, SampleEr
 /// [`SampleError::Failed`] if a committed file does not parse or its
 /// header refuses this driver's clock, budget, or missing seed.
 pub fn world_at(name: &str, tick: u64) -> Result<World, SampleError> {
+    drawn_at(name, tick).map(|(world, _)| world)
+}
+
+/// The same replay, returning the presentation effects beside the
+/// world.
+///
+/// **What [`world_at`] cannot give an image oracle.** The effects are a
+/// function of the flight, not of the world it ended at: the trail is
+/// whatever the last half-second of flying shed, and the burst is an
+/// edge that has already passed. A pool rebuilt from a finished world
+/// is empty, so a checkpoint drawn that way shows no trail at all and
+/// its committed picture proves nothing about one. This returns the
+/// pools the run actually accumulated, out of the same loop, for the
+/// same reason `world_at` was promoted rather than copied.
+///
+/// # Errors
+///
+/// As [`world_at`].
+pub fn drawn_at(name: &str, tick: u64) -> Result<(World, crate::effects::Effects), SampleError> {
     let recorded = renew_trace::parse(crate::trace::text_by_name(name)?)
         .map_err(|error| SampleError::Failed(format!("built-in trace: {error}")))?;
-    replay_to(&recorded, Some(tick)).map(|report| report.world)
+    replay_to(&recorded, Some(tick)).map(|report| (report.world, report.effects))
 }
 
 /// The recorded-replay loop with an optional frame override: the header
@@ -148,6 +167,7 @@ fn drive(
     mut recorder: Option<&mut Recorder>,
 ) -> Report {
     let mut world = World::new(seed);
+    let mut effects = crate::effects::Effects::new(&world);
     let mut menu = crate::menu::Menu::new();
     let mut input = input_map();
     let mut frame = FrameLoop::new(
@@ -183,6 +203,11 @@ fn drive(
         for action in menu.drain() {
             if action == crate::menu::MenuAction::Restart {
                 world = World::new(seed);
+                // The sparks belong to that world too — the same rule
+                // the windowed driver follows, and for the same reason:
+                // a trail and a burst kept across a restart are the
+                // record of a flight that no longer happened.
+                effects = crate::effects::Effects::new(&world);
             }
         }
         let now = Timestamp::from_nanos(FRAME_INTERVAL_NS.saturating_mul(index));
@@ -201,6 +226,12 @@ fn drive(
             // the world does not, and the pause bit is digested.
             if !menu.is_open() {
                 world.step(flap);
+                // Once per **executed** step, after the step — the rule
+                // `Effects::observe` states and the windowed driver
+                // already follows. A paused frame steps nothing and so
+                // observes nothing: the trail freezes with the world
+                // rather than shedding into a still picture.
+                effects.observe(&world);
             }
         }
         input.advance();
@@ -214,6 +245,7 @@ fn drive(
         stats,
         world,
         session_hash,
+        effects,
     }
 }
 

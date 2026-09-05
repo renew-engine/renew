@@ -38,7 +38,7 @@ pub use cli::{Options, Report};
 pub use effects::Effects;
 pub use error::SampleError;
 pub use scene::{SPRITE_BUDGET, SceneSprite, Tile, scene};
-pub use scripted::world_at;
+pub use scripted::{drawn_at, world_at};
 pub use sound::{TickSounds, tick_sounds};
 pub use trace::{by_name, names};
 

@@ -7,11 +7,11 @@ feature, playable in a window with the score in the title. Behind
 
 ## What it looks like
 
-![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, green pipes, blue sky](soar-600.png)
+![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, with a scatter of small pale sparks trailing behind it; green pipes, blue sky](soar-600.png)
 
-![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, with a short vertical ghost trailing it along its fall](dive-361.png)
+![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, smeared into a vertical orange streak along its fall, with its spark trail left above and behind it](dive-361.png)
 
-![The moment after a crash: the corpse lying on the floor at the left of the frame with a spray of yellow-white sparks flying up out of it, each one turning, brightening the blue sky they cross without hiding any of it; two green pipes stand well away to the right](crash-114.png)
+![The moment after a crash: the grey corpse on the floor at the left of the frame with a spray of cream-white sparks flying up out of it, each one turning, brightening the blue sky they cross without hiding any of it; a few paler sparks of the trail linger to its left; two green pipes stand well away to the right](crash-114.png)
 
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
@@ -38,6 +38,21 @@ a camera records of anything moving during an exposure. In
 at a full eighth turn — the tilt its terminal fall left it with — with
 no ghost at all, because a corpse is not going anywhere.
 
+**The trail is visible in both of the living frames, and it is paler
+than you might expect.** A spark adds its colour to whatever is behind
+it, and the sky is blue-most: adding the trail's warm light to a sky
+that already has most of its brightness in the blue channel lands on a
+cool near-white rather than on an ember. The crash's sparks are brighter
+at the same point of their life and saturate to cream instead. Both are
+the same mechanism and the same pipeline — the difference is only how
+much light each carries. In `soar-600.png` the trail scatters behind
+the climbing bird; in `dive-361.png` it sits *above* it, because the
+bird is falling as fast as the rules allow and has dropped past the
+sparks it shed a few ticks earlier. **`sink-240.png` has none**: the
+trail stops on the tick the bird dies, and by that checkpoint every
+spark of it has long expired — which is why that one picture is
+byte-identical to the one committed before the trail existed.
+
 `crash-114.png` is that same fall six ticks after it ended, drawn from
 the `sink` trace at tick 114. Two dozen sparks are thrown up out of the
 corpse and fall back under a gravity of their own, each turning at its
@@ -51,6 +66,18 @@ the left and the nearest pipe is a hundred and seventy pixels away. The
 burst is seeded from the tick the run stood at when its pool was made,
 so replaying the trace draws the same sparks in the same places; the
 picture is a function of the run, not of when it was rendered.
+
+**A spark trail follows the living bird**, shed backwards off its
+trailing edge for as long as it is flying and stopping on the tick it
+dies. It is the same kind of light as the crash — added to the sky,
+hiding nothing — out of the same one pipeline, but it is its own effect
+rather than the crash's aimed sideways: an explosion throws hard and
+wide and falls fast, a trail is dropped gently and lags behind, and one
+set of numbers cannot be both. It is also its own pool. Sharing the
+crash's would have let a trail that happened to be full on the tick the
+bird died silently shorten the burst, because a pool that is out of room
+drops what it cannot fit without saying so — and the crash is the one
+moment in this game that has to look right.
 
 ## Running it
 
@@ -66,11 +93,13 @@ Every run prints one digest line last; two runs with the same seed,
 trace and length print bit-identical lines, cross-process, and the
 test suite holds that.
 
-The library also exposes `world_at(trace, tick)` — the same replay
-loop the runs use, promoted so image oracles need not copy it — and a
-pure `scene` module that turns a world into draw-order rectangles with
-no GPU crate in the normal graph. The frame-capture test consumes
-both: committed traces replayed to a checkpoint, drawn through the
+The library also exposes `world_at(trace, tick)` and its sibling
+`drawn_at(trace, tick)`, which returns the presentation effects beside
+the world — the same replay loop the runs use, promoted so image
+oracles need not copy it — and a pure `scene` module that turns a
+world into draw-order rectangles with no GPU crate in the normal
+graph. The frame-capture test consumes both: committed traces
+replayed to a checkpoint, drawn through the
 sprite renderer offscreen, compared against committed images. The GPU
 crates enter the normal graph only behind the `window` feature (and
 the dev graph for the oracle); the default build carries none of
@@ -209,16 +238,26 @@ synthetic clock, and owns every file that is read or written.
 Traces index events by tick from zero, exactly as the loader returns
 them; there is no frame-numbering shift anywhere in this sample.
 
-The crash sparks are **presentation state**, like the snapshots the
-blended picture interpolates: a particle pool seeded from the tick and
-advanced once per executed step, watching the world for the one moment
-liveness falls. It reads the world and never writes it, so the digest is
-the same whether or not anything is drawing — which the driver's tests
-assert either side of a burst rather than leave to inspection. Seeding
-from the tick is what makes the sparks a function of the replay, so the
-same trace draws the same burst on any machine. The pool's arithmetic
-needs no GPU, so it lives in the game's ordinary dependencies and the
-headless build carries it without a rendering crate in sight.
+The sparks are **presentation state**, like the snapshots the blended
+picture interpolates: two particle pools seeded from the tick and
+advanced once per executed step, one watching the world for the moment
+liveness falls and one shedding for as long as it has not. They read the
+world and never write it, so the digest is the same whether or not
+anything is drawing — which the driver's tests assert either side of a
+burst rather than leave to inspection. Seeding from the tick is what
+makes the sparks a function of the replay, so the same trace draws the
+same sparks on any machine; the two pools draw from separate streams, so
+how long the bird flew before it died cannot change what the crash looks
+like. The pools' arithmetic needs no GPU, so they live in the game's
+ordinary dependencies and the headless build carries them without a
+rendering crate in sight.
+
+Because the trail is accumulated over a whole flight rather than implied
+by the world's final state, an image oracle cannot rebuild it from a
+finished world — so `drawn_at(trace, tick)` returns the pools the run
+actually accumulated beside the world, out of the same replay loop the
+runs use. That is the same reason `world_at` was promoted rather than
+copied: one loop, however many consumers.
 
 The picture is drawn on a 320x240 canvas, and the window presents that
 canvas stretched to whatever size the window is. A turn is isotropic on

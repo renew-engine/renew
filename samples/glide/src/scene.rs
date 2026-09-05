@@ -82,20 +82,24 @@ const UNTINTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// The most sprites a frame of this game can hold.
 ///
-/// Every pipe **slot** as two bars, the bird, and a full spark pool:
-/// `2 × 16 + 1 + 32 = 65`. Sized from [`PIPE_SLOTS`] rather than from
-/// the five pipes the rules actually keep on screen, because the slot
-/// count is what `Capture::put` refuses against — a budget derived from
-/// the smaller number would be a refusal waiting for the day the rules
-/// change.
+/// Every pipe **slot** as two bars, the bird, and both spark pools full
+/// at once: `2 × 16 + 1 + 32 + 32 = 97`. Sized from [`PIPE_SLOTS`]
+/// rather than from the five pipes the rules actually keep on screen,
+/// because the slot count is what `Capture::put` refuses against — a
+/// budget derived from the smaller number would be a refusal waiting
+/// for the day the rules change.
 ///
 /// Named once so the windowed driver and the offscreen oracle size the
 /// same batch. Two hardcoded numbers used to say 32, which was headroom
 /// before the sparks existed and would be a refusal now.
 ///
-/// The spark term is [`SPARK_CAPACITY`], the same constant the effect
-/// is built with, so the two cannot drift.
-pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + SPARK_CAPACITY;
+/// **Both pools are counted, and neither is discounted for being
+/// unlikely.** A full crash burst and a full trail cannot in fact be in
+/// the air on the same frame — the trail stops emitting on the tick the
+/// burst fires — but a budget is a refusal threshold, not a prediction,
+/// and sizing it on that argument would make the batch refuse the first
+/// time the argument stopped holding.
+pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + SPARK_CAPACITY + TRAIL_CAPACITY;
 
 /// How many sparks the crash pool holds.
 ///
@@ -104,6 +108,22 @@ pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + SPARK_CAPACITY;
 /// sprite budget above must leave room for a full one. A number written
 /// twice is a number that drifts.
 pub const SPARK_CAPACITY: u32 = 32;
+
+/// How many sparks the trail pool holds.
+///
+/// **A second capacity rather than a bigger first one**, because the
+/// trail and the burst are separate pools. Sharing one would couple them
+/// in the direction that matters least and hurts most: `burst_in`
+/// saturates at capacity, so a trail that happened to be full on the
+/// tick the bird died would silently shorten the crash — the one moment
+/// the game has to look right. Two pools cost one extra `ParticleSystem`
+/// and make that impossible.
+///
+/// Sized well above the trail's own steady state. At its emission rate
+/// and the longest life its effect allows, the trail cannot hold more
+/// than about two dozen at once; the rest is the same arithmetic comfort
+/// the crash pool carries.
+pub const TRAIL_CAPACITY: u32 = 32;
 
 /// The steepest the bird tilts, in turns — an eighth, so a terminal
 /// dive is forty-five degrees nose-down and a fresh flap is thirty-three
