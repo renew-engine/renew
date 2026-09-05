@@ -449,16 +449,16 @@ mod tests {
         assert_eq!(instance.bytes().len(), INSTANCE_STRIDE);
     }
 
-    /// `push` packs the placed sprite, not the bare one: with a batch
-    /// offset set the renderer's bytes are the moved sprite's record,
-    /// and a caller that wants exactly what the renderer wrote applies
-    /// the batch state first. Device-free through `placed` and `pack`,
-    /// which is all `push` does between its assertion and its copy.
+    /// A moved sprite packs a moved record: `instance` reads the
+    /// placement it is given, so a caller that wants exactly what the
+    /// renderer wrote under a batch offset applies `placed` first. That
+    /// `push` does so in that order is a device-side fact, pinned by the
+    /// batch-offset oracle in the golden suite, not here.
     ///
     /// Probed by having `placed` ignore its offset: the two records
-    /// agree and the first assertion reds.
+    /// agree and this reds.
     #[test]
-    fn push_packs_the_placed_sprite_not_the_bare_one() {
+    fn a_moved_sprite_packs_a_moved_record() {
         let c = canvas(64, 32);
         let atlas = Extent {
             width: 8,
@@ -470,10 +470,6 @@ mod tests {
             moved.instance(c, atlas),
             bare.instance(c, atlas),
             "an offset must move the record"
-        );
-        assert_eq!(
-            moved.instance(c, atlas).bytes(),
-            &pack(&moved, c, atlas)[..]
         );
     }
 
@@ -534,39 +530,41 @@ mod tests {
         );
     }
 
-    proptest! {
-        /// A flip set and then unset packs the unflipped bytes, whatever
-        /// was asked in between — the last call wins, and the geometry
-        /// never learned about any of it.
-        #[test]
-        fn a_flip_set_back_to_false_packs_the_unflipped_bytes(
-            x in prop::bool::ANY,
-            y in prop::bool::ANY,
-        ) {
-            let c = canvas(64, 32);
-            let atlas = Extent { width: 8, height: 8 };
-            let plain = pack(&swatch(), c, atlas);
-            let unset = pack(&swatch().flip_x(x).flip_y(y).flip_x(false).flip_y(false), c, atlas);
-            prop_assert_eq!(unset, plain);
-        }
-
-        /// A flip never touches placement or tint: over every
-        /// combination of flips the NDC lanes and the tint lanes are the
-        /// unflipped record's, bit for bit.
-        #[test]
-        fn a_flip_never_touches_placement_or_tint(
-            x in prop::bool::ANY,
-            y in prop::bool::ANY,
-        ) {
-            let c = canvas(64, 32);
-            let atlas = Extent { width: 8, height: 8 };
-            let plain = lanes(&pack(&swatch(), c, atlas));
+    /// Over all four combinations of flips: a flip set and then unset
+    /// packs the unflipped bytes (the last call wins), and the placement
+    /// and tint lanes are the unflipped record's, bit for bit. Four
+    /// cases, so a loop rather than a generator — exhaustive and
+    /// deterministic where a random draw over four values is neither.
+    #[test]
+    fn every_flip_combination_leaves_placement_and_tint_alone_and_unsets_cleanly() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let plain = pack(&swatch(), c, atlas);
+        let plain_lanes = lanes(&plain);
+        for (x, y) in [(false, false), (true, false), (false, true), (true, true)] {
             let flipped = lanes(&pack(&swatch().flip_x(x).flip_y(y), c, atlas));
             for lane in (0..4).chain(8..12) {
-                prop_assert_eq!(flipped[lane], plain[lane], "lane {} moved", lane);
+                assert_eq!(
+                    flipped[lane], plain_lanes[lane],
+                    "flip ({x}, {y}) moved lane {lane}"
+                );
             }
+            let unset = pack(
+                &swatch().flip_x(x).flip_y(y).flip_x(false).flip_y(false),
+                c,
+                atlas,
+            );
+            assert_eq!(
+                unset, plain,
+                "flip ({x}, {y}) then unset is not the plain record"
+            );
         }
+    }
 
+    proptest! {
         /// Fading twice is fading once by the product, and a fade never
         /// makes a sprite more opaque than it was.
         ///
