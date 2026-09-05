@@ -7,7 +7,7 @@ feature, playable in a window with the score in the title. Behind
 
 ## What it looks like
 
-![A frame of the game: the bird as a yellow square with an orange beak, tilted nose-down as it falls, green pipes, blue sky](soar-600.png)
+![A frame of the game: the bird as a yellow square with an orange beak, tilted slightly nose-up as it climbs out of a flap, green pipes, blue sky](soar-600.png)
 
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
@@ -23,7 +23,8 @@ and the tick. Converting that to a PNG shows the frame that is
 `cargo run -p renew-sample-glide --example make_picture` regenerates it
 from the goldens whenever they are refreshed. The other committed frame,
 `sink-240.png`, is the same trace at the tick where the bird has hit the
-floor, where the corpse lies at the tilt its last fall left it with.
+floor, where the corpse lies nose-down at a full eighth turn — the tilt
+its terminal fall left it with.
 
 ## Running it
 
