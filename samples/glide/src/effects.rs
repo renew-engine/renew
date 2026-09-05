@@ -233,7 +233,12 @@ mod tests {
         }
 
         let peak = counts.iter().copied().max().unwrap_or(0);
-        assert_eq!(peak, BURST, "the one burst must throw its whole count");
+        // A literal, not `BURST`. Comparing the constant against itself
+        // would move with any change to it and pin nothing; two dozen is
+        // a decision about how a crash looks, and changing it should
+        // have to argue with a red test first.
+        assert_eq!(peak, 24, "the one burst must throw its whole count");
+        assert_eq!(peak, BURST, "and that count is the one the effect asks for");
         let first_peak = counts
             .iter()
             .position(|&n| n == peak)

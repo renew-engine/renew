@@ -28,8 +28,8 @@ and the tick. Converting that to a PNG shows the frame that is
 
 `cargo run -p renew-sample-glide --example make_picture` regenerates it
 from the goldens whenever they are refreshed. `dive-361.png` is the same
-trace as the frame above, at an earlier tick; `sink-240.png` is a
-different trace, one that never flaps. In `dive-361.png` the bird
+trace as `soar-600.png`, at an earlier tick; `sink-240.png` and
+`crash-114.png` come from a second trace, one that never flaps. In `dive-361.png` the bird
 is falling as fast as the rules allow, and while it dives a short
 vertical ghost trails it along its fall — the sprite drawn as the
 average of itself over the last eight ticks of its motion, which is what
