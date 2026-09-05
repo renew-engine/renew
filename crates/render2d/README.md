@@ -18,10 +18,13 @@ else, which the build matrix proves by building and testing without it.
 - **Fill order is draw order.** Sprites composite in exactly the order
   pushed — painter's algorithm. **No sort keys, no batch splitting**; a
   caller that wants order sorts before pushing.
-- **Everything is premultiplied.** Atlas texels and tints alike carry
-  their alpha multiplied into their color channels, and the pipeline
-  composites `src + dst * (1 - src.a)`. Bytes that break the convention
-  composite wrong — visibly, not unsafely.
+- **Everything composites premultiplied.** Atlas bytes are authored,
+  straight alpha: the hardware decodes them on sample and the fragment
+  stage multiplies each texel's colour by its alpha. Tints are
+  premultiplied by the caller. The pipeline composites
+  `src + dst * (1 - src.a)`. Bytes that break either convention —
+  already-premultiplied atlas bytes, a straight-alpha tint — composite
+  wrong, visibly, not unsafely.
 - **All allocations happen at creation.** `begin`, `push`, and `item`
   allocate nothing; a gate measures it over frames it first proves are
   alive and drawing — including the caller-side frame composition,
@@ -50,11 +53,9 @@ else, which the build matrix proves by building and testing without it.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
-  bytes double-multiplies them. (This line said "premultiplied" until
-  2026-09-03, contradicting the type's own doc.) This crate
-  parses nothing: where the bytes come from (an asset pack, a test
-  fixture) is the caller's business, and the untrusted-input surface
-  here is zero.
+  bytes double-multiplies them. This crate parses nothing: where the
+  bytes come from (an asset pack, a test fixture) is the caller's
+  business, and the untrusted-input surface here is zero.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
   (premultiplied blending, nearest/clamped sampling) and the per-frame
   buffer; `begin`/`push` fill; `set_offset` and `set_alpha` move and
@@ -84,8 +85,8 @@ Every sprite becomes one 48-byte record: five attributes, twelve
 |---|---|---|
 | 0 | `Vec2` | NDC min corner |
 | 1 | `Vec2` | NDC max corner |
-| 2 | `Vec2` | UV min |
-| 3 | `Vec2` | UV max |
+| 2 | `Vec2` | UV at the first corner — the region's min, or its max on a flipped axis |
+| 3 | `Vec2` | UV at the last corner |
 | 4 | `Vec4` | premultiplied tint |
 
 `Sprite::instance(canvas, atlas)` packs one without a device, as an

@@ -6,10 +6,12 @@
 //! - **Fill order is draw order.** Sprites composite in exactly the
 //!   order pushed — painter's algorithm, no sort keys, no batches. A
 //!   caller that wants order sorts before pushing.
-//! - **Everything is premultiplied.** Atlas texels and tints alike
-//!   carry their alpha multiplied into their color channels; the
-//!   pipeline composites `src + dst * (1 - src.a)`. Bytes that break
-//!   the convention composite wrong, visibly, not unsafely.
+//! - **Everything composites premultiplied.** Atlas bytes are authored,
+//!   straight alpha: the hardware decodes them on sample and the
+//!   fragment stage multiplies each texel's colour by its alpha. Tints
+//!   are premultiplied by the caller. The pipeline composites
+//!   `src + dst * (1 - src.a)`. Bytes that break either convention
+//!   composite wrong, visibly, not unsafely.
 //! - **All allocations happen at creation.** `begin`/`push`/`item`
 //!   allocate nothing; the crate's gate measures it.
 //! - **Target-agnostic.** [`SpriteRenderer::item`] returns the

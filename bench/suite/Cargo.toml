@@ -46,13 +46,15 @@ renew-particles = { path = "../../crates/particles" }
 # times the solve, the re-solve, and the snapshot copy.
 renew-ui = { path = "../../crates/ui" }
 renew-ui-render = { path = "../../crates/ui-render" }
-# Bench-target-only: the sprite construction chain the presenter runs
-# per quad is device-free, so it is timed here even though the packer
-# behind it is only reachable through a GPU device.
+# Bench-target-only: the sprite construction chain a presenter runs per
+# quad and, through `Sprite::instance`, the packer beneath it — both
+# device-free.
 renew-render2d = { path = "../../crates/render2d" }
 # Bench-target-only, and only for the atlas extent type the packer's
-# device-free entry point takes; no feature, so no windowing or GPU
-# crate enters this graph (the 2D renderer takes it the same way).
+# device-free entry point takes; no feature, so no windowing crate
+# enters this graph. The Vulkan bindings ride along as the rendering
+# crate's runtime-loaded dependency, as they already did through the
+# presenter above.
 renew-rhi = { path = "../../crates/rhi", default-features = false }
 
 [lints]

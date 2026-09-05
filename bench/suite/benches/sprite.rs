@@ -1,4 +1,5 @@
-//! The sprite construction chain, at the rate a presenter runs it.
+//! The sprite construction chain and the packer beneath it, at the rate
+//! a presenter runs them.
 //!
 //! `UiPresenter::emit` builds one sprite per quad per frame from a
 //! compile-time-constant atlas region:
@@ -7,22 +8,19 @@
 //! sprites.push(&Sprite::new(atlas::white(), q.x, q.y).size(..).tint(..));
 //! ```
 //!
-//! Everything in that line except `push` is device-free, so it can be
-//! timed here while the packer itself — `pub(crate)`, reachable only
-//! through a `SpriteRenderer` that needs a GPU device — cannot.
+//! Everything in that line except `push` is device-free and is timed
+//! here as `sprite_build_2048`; the packer `push` runs afterwards is
+//! reachable without a device through `Sprite::instance` and is timed
+//! as `sprite_pack_2048`. Both exist so that a change to `Sprite`'s
+//! layout, to its constructor or to the packer's arithmetic has a
+//! before.
 //!
-//! **What this exists to catch.** A whole `Region` reaches the packer
-//! through an integer-to-float widening. When the region is a constant,
-//! that widening is loop-invariant over the entire frame and should cost
-//! nothing — but it can only be hoisted if the constructor is visible to
-//! the caller's optimiser, and nothing here is generic, the workspace
-//! sets no LTO, so visibility means `#[inline]` and only `#[inline]`.
-//! Without it the engine re-converts the same four constants once per
-//! quad per frame, and once per *character* of every label.
-//!
-//! The region is deliberately **not** wrapped in `black_box`: its
-//! constancy is the property under test, and hiding it would measure a
-//! different program. Only the results are fenced.
+//! The region is deliberately **not** wrapped in `black_box`: a
+//! presenter's region is a constant at the call site, and hiding it
+//! would measure a different program. Whether that constant's widening
+//! hoists out of the loop was measured with and without `#[inline]` on
+//! the constructor and builders; the ranges overlapped, so no attribute
+//! is carried. Only the results are fenced.
 
 use std::hint::black_box;
 
@@ -62,9 +60,9 @@ fn sprite_chain(c: &mut Criterion) {
         let rects = destinations();
         b.iter(|| {
             // Each sprite is fenced by reference, not folded into a
-            // scalar. `push` takes `&Sprite` from another crate, so all
-            // 48 bytes must genuinely exist; a fold would let the
-            // optimiser delete the struct and time a different program.
+            // scalar. `push` takes `&Sprite` from another crate, so the
+            // whole struct must genuinely exist; a fold would let the
+            // optimiser delete it and time a different program.
             for rect in &rects {
                 let sprite = Sprite::new(WHITE, rect[0], rect[1])
                     .size(rect[2], rect[3])
@@ -80,8 +78,8 @@ criterion_group!(benches, sprite_chain);
 /// The packer itself: every sprite the chain above builds, turned into
 /// its instance record without a device. `Sprite::instance` is what
 /// `SpriteRenderer::push` runs after applying the batch state, so this
-/// is the per-sprite cost of the fill minus one copy into the frame's
-/// scratch.
+/// is the per-sprite cost of the fill minus the batch placement, the
+/// capacity assertion and the copy into the frame's scratch.
 fn sprite_pack(c: &mut Criterion) {
     c.bench_function("sprite_pack_2048", |b| {
         let Some(canvas) = Canvas::new(320, 240) else {
