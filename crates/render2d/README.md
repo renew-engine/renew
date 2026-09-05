@@ -80,9 +80,10 @@ else, which the build matrix proves by building and testing without it.
   own source rectangle count as **transparent rather than clamping**, so
   the band fades out instead of dragging in whatever the atlas holds
   next door. It is an average, not eight copies at an eighth opacity:
-  eight over-composited layers at `a/8` reach about `0.66·a`, while the
-  mean of eight premultiplied samples keeps the sprite's own opacity
-  where the motion covered it. A pixel whose eight taps all land in one
+  stacking eight layers at `a/8` never gets back to `a` — an opaque
+  sprite composited that way lands on about 0.66 — while the mean of
+  eight premultiplied samples keeps the sprite's own opacity where the
+  motion covered it. A pixel whose eight taps all land in one
   solid region is byte-exact on every adapter, because the taps are
   summed as a tree and eight identical samples average back to
   themselves without rounding. **Zero smear is exact**: it takes a
@@ -178,8 +179,8 @@ Every sprite becomes one 80-byte record: nine attributes, twenty
 | 1 | `Vec2` | corner b — the local top-right |
 | 2 | `Vec2` | corner c — the local bottom-left |
 | 3 | `Vec2` | corner d — the local bottom-right |
-| 4 | `Vec2` | UV at corner a — the source's min, or its max on a flipped axis |
-| 5 | `Vec2` | UV at corner d |
+| 4 | `Vec2` | UV at corner a — the source's min, or its max on a flipped axis, grown outward by half the smear |
+| 5 | `Vec2` | UV at corner d — the other end of the same rectangle, grown the same way |
 | 6 | `Vec4` | premultiplied tint |
 | 7 | `Vec2` | effect — how much colour survives, then how far toward a silhouette |
 | 8 | `Vec2` | smear — the displacement to average over, in UV units |

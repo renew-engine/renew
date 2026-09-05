@@ -66,6 +66,15 @@ void main() {
     // side, so half the smear back in is where the art actually ends.
     // The fragment stage refuses taps outside these, which is what
     // stops a smear reading a neighbour's texels.
+    //
+    // **Equal to the packer's own edge up to a rounding, not exactly.**
+    // The packer scales the UV span by half the projected smear over the
+    // drawn size; this undoes it by halving the smear already expressed
+    // in UV. Same value, different order of operations, so the two can
+    // land an ulp apart. It costs nothing here: the bound is a mask, the
+    // sampler is nearest, and a texel spans many ulps of UV — a tap
+    // would have to fall within an ulp of the source's edge for the
+    // difference to change which side of the mask it lands on.
     vec2 half_smear = abs(instance_smear) * 0.5;
     vertex_uv_lo = min(instance_uv0, instance_uv1) + half_smear;
     vertex_uv_hi = max(instance_uv0, instance_uv1) - half_smear;

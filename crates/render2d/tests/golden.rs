@@ -1129,9 +1129,12 @@ fn the_smear_band_falls_off_and_reads_no_neighbour() {
         );
     }
 
-    // Past the footprint — which reaches x = 12 to x = 36 — nothing was
-    // drawn at all.
-    for x in (0..11).chain(38..SIZE) {
+    // Past the footprint, nothing was drawn at all. The quad spans
+    // x = 12 to x = 36, so it covers the pixels whose centres fall
+    // inside that — columns 12 through 35 — and the assertion runs right
+    // up to both edges rather than leaving a margin: a footprint one
+    // pixel wider than the extension calls for reddens here.
+    for x in (0..12).chain(36..SIZE) {
         assert_eq!(
             pixel_at(&pixels, x, ROW),
             clear,

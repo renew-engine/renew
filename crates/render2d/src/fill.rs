@@ -151,7 +151,8 @@ impl From<Region> for SubRegion {
 /// One sprite: a source rectangle, a place on the canvas, a size, a
 /// tint, and — each an identity by default — a mirror on either axis, a
 /// turn about a pivot, a scale about the same pivot, a desaturation
-/// toward its own luminance and a flash toward its own alpha.
+/// toward its own luminance, a flash toward its own alpha, and a smear
+/// along a direction it moved.
 ///
 /// `#[non_exhaustive]` with a constructor and builders, the descriptor
 /// pattern this tree uses everywhere: the fields a later version adds
@@ -260,10 +261,12 @@ pub struct Sprite {
     /// together smears along the same edge of the art.
     ///
     /// **It is an average, not eight copies at an eighth opacity.**
-    /// Eight over-composited layers at `a/8` reach about `0.66·a`, not
-    /// `a`; averaging premultiplied samples keeps the object's own
-    /// opacity where it is opaque and fades it where the motion only
-    /// passed through.
+    /// Stacking eight layers at `a/8` never gets back to `a` — an opaque
+    /// object composited that way lands on `1 − (1 − 1/8)^8 ≈ 0.66`, and
+    /// the shortfall shrinks but does not vanish as `a` falls (0.81 of a
+    /// half-opaque object, 0.90 of a quarter-opaque one). Averaging
+    /// premultiplied samples keeps the object's own opacity where it is
+    /// opaque and fades it where the motion only passed through.
     ///
     /// The footprint grows to hold the smear, and taps that fall outside
     /// the sprite's own source rectangle count as transparent rather

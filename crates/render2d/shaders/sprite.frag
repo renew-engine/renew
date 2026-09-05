@@ -61,8 +61,9 @@ void main() {
         // rather than a trail hanging off one end.
         //
         // **The average is not eight copies at an eighth opacity.**
-        // Eight over-composited layers at `a/8` reach about `0.66*a`;
-        // the mean of eight premultiplied samples keeps the sprite's own
+        // Stacking eight layers at `a/8` never gets back to `a`: an
+        // opaque sprite composited that way lands on about 0.66. The
+        // mean of eight premultiplied samples keeps the sprite's own
         // opacity where every tap is opaque and fades it in proportion
         // where the motion only passed through. A tap outside the source
         // contributes zero, which is what an average over a footprint

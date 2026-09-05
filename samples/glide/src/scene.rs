@@ -86,11 +86,12 @@ pub(crate) fn tilt(velocity: f32) -> f32 {
 /// How many ticks of motion the bird is drawn averaged over.
 ///
 /// An exaggerated exposure, chosen so the ghost is visible at this
-/// resolution rather than because a real camera works this way. The
-/// bird falls between six tenths and one and two tenths of a canvas unit
-/// per tick, so four ticks would be a two-to-five-unit ramp on a
-/// twelve-unit body — a one-to-two-pixel edge nobody would call a ghost.
-/// Eight puts the ramp at five to ten units, which reads.
+/// resolution rather than because a real camera works this way. A fall
+/// accelerates from nothing and tops out at [`TERMINAL_VELOCITY`],
+/// which is one and two tenths of a canvas unit per tick, so the widest
+/// smear this can ever ask for is `8 × 1.2 = 9.6` units on a twelve-unit
+/// body. Four ticks would top out at 4.8 — a ramp of two pixels at the
+/// scale the pictures are drawn, which nobody would call a ghost.
 const SMEAR_TICKS: f32 = 8.0;
 
 /// How far a bird is smeared, in canvas units, from its velocity.

@@ -45,7 +45,7 @@ const CLEAR: Color = Color {
 const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
 /// Red's own luminance in linear light, the value a full desaturation
-/// moves it to: `0.2126 R + 0.7152 G + 0.0722 B` with red'''s premultiplied
+/// moves it to: `0.2126 R + 0.7152 G + 0.0722 B` with red's premultiplied
 /// channels, which is the red weight alone.
 const LUMA_OF_RED: f32 = 0.2126;
 
@@ -216,12 +216,13 @@ fn steady_state_fill_and_render_allocates_nothing() {
                 .flip_x(true)
                 .flip_y(true),
         );
-        // A turned sprite, so the sine-and-cosine path is inside the
-        // measured window too; it sits clear of every pixel the
-        // liveness checks read except its own centre.
         // Turned, coloured and smeared: every lane of the record is
-        // packed and the fragment stage takes its eight-tap path, so
-        // the gate covers the widest work the crate does per frame.
+        // packed, the sine-and-cosine path runs, and the fragment stage
+        // takes its eight-tap branch, so the gate covers the widest work
+        // the crate does per frame. Its taps reach 1.5 units either way
+        // and it still sits clear of every pixel the liveness checks
+        // read except its own centre, which stays inside the solid
+        // region the expectation is derived from.
         renderer.push(
             &Sprite::new(RED, 40.0, 8.0)
                 .size(8.0, 8.0)
