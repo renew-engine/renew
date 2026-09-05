@@ -1608,6 +1608,8 @@ dependencies = [
  "renew-memory",
  "renew-particles",
  "renew-platform",
+ "renew-render2d",
+ "renew-rhi",
  "renew-rng",
  "renew-ui",
  "renew-ui-render",

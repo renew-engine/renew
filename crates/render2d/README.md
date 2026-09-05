@@ -42,7 +42,11 @@ else, which the build matrix proves by building and testing without it.
 - `Canvas`, `Region`, `Sprite` — the pure vocabulary: a logical pixel
   space (y down from the top-left), a rectangle of atlas texels, and
   one placed, sized, tinted sprite.
-- `AtlasDesc` — dimensions plus premultiplied RGBA8 bytes. This crate
+- `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
+  bytes: the hardware decodes them on sample and the fragment stage
+  premultiplies afterwards, so handing this API already-premultiplied
+  bytes double-multiplies them. (This line said "premultiplied" until
+  2026-09-03, contradicting the type's own doc.) This crate
   parses nothing: where the bytes come from (an asset pack, a test
   fixture) is the caller's business, and the untrusted-input surface
   here is zero.
@@ -65,6 +69,27 @@ else, which the build matrix proves by building and testing without it.
 The ortho and UV maps run on the CPU at push time — each instance
 carries its own NDC rectangle, so no uniform, matrix, or push constant
 exists anywhere in the crate.
+
+## The instance record
+
+Every sprite becomes one 48-byte record: five attributes, twelve
+`f32`s, native-endian, in the order the vertex stage declares them.
+
+| location | attribute | content |
+|---|---|---|
+| 0 | `Vec2` | NDC min corner |
+| 1 | `Vec2` | NDC max corner |
+| 2 | `Vec2` | UV min |
+| 3 | `Vec2` | UV max |
+| 4 | `Vec4` | premultiplied tint |
+
+`Sprite::instance(canvas, atlas)` packs one without a device, as an
+opaque `Instance` whose `bytes()` are what `push` writes when no batch
+offset or fade is set — `push` applies the batch state first, then
+packs. Public so the packer can be timed and pinned; opaque so the
+layout stays the pipeline's: the shader's locations, the layout slice
+in the device half and the packer describe the same bytes and change
+together.
 
 ## Testing
 

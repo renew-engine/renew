@@ -18,10 +18,10 @@
 //!   and hands it to whichever target it holds. This crate never
 //!   renders, never presents, and never touches a window.
 //!
-//! The pure half ([`Canvas`], [`Region`], [`Sprite`], the ortho and UV
-//! maps) lives apart from the device half ([`SpriteRenderer`]) so the
-//! math is testable without a GPU and the rendering-crate seam stays
-//! one module wide.
+//! The pure half ([`Canvas`], [`Region`], [`Sprite`], [`Instance`], the
+//! ortho and UV maps) lives apart from the device half
+//! ([`SpriteRenderer`]) so the math is testable without a GPU and the
+//! rendering-crate seam stays one module wide.
 
 // Diagnostics go through sinks; the standard output macros are banned in
 // this crate by construction, not convention.
@@ -30,5 +30,5 @@
 mod fill;
 mod gpu;
 
-pub use fill::{Canvas, Region, Sprite};
+pub use fill::{Canvas, Instance, Region, Sprite};
 pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer};

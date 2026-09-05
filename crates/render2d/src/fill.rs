@@ -130,6 +130,34 @@ impl Sprite {
         self.tint = tint;
         self
     }
+
+    /// The bytes [`crate::SpriteRenderer::push`] writes for this sprite
+    /// on `canvas` over an atlas of `atlas` texels when no batch offset
+    /// or fade is set — `push` applies the batch state to the sprite
+    /// first and then packs exactly this. The packer, reachable without
+    /// a device, so it can be timed and pinned.
+    #[must_use]
+    pub fn instance(&self, canvas: Canvas, atlas: Extent) -> Instance {
+        Instance(pack(self, canvas, atlas))
+    }
+}
+
+/// One packed instance record, exactly as the pipeline reads it.
+///
+/// Opaque on purpose: the stride and the lane order belong to the
+/// pipeline, and a caller holding one of these can hand its bytes to a
+/// benchmark, a hash or a buffer without the layout becoming a promise
+/// this crate has to keep. [`Sprite::instance`] makes one without a
+/// device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Instance([u8; INSTANCE_STRIDE]);
+
+impl Instance {
+    /// The record's bytes, in the order the pipeline declares them.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 /// Canvas pixels to NDC: `2c/extent - 1` per axis, no flip — canvas y
@@ -349,6 +377,51 @@ mod tests {
         assert_eq!(
             tint_bits(placed(&swatch(), (0.0, 0.0), 0.0).tint),
             tint_bits([0.0; 4])
+        );
+    }
+
+    /// `Sprite::instance` is the packer's bytes, no more and no less —
+    /// the doc's claim that a caller holding no device holds the same
+    /// record the renderer would write.
+    ///
+    /// Probed by having `instance` pack a zeroed record: red.
+    #[test]
+    fn the_instance_is_the_packers_bytes() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let instance = swatch().instance(c, atlas);
+        assert_eq!(instance.bytes(), &pack(&swatch(), c, atlas)[..]);
+        assert_eq!(instance.bytes().len(), INSTANCE_STRIDE);
+    }
+
+    /// `push` packs the placed sprite, not the bare one: with a batch
+    /// offset set the renderer's bytes are the moved sprite's record,
+    /// and a caller that wants exactly what the renderer wrote applies
+    /// the batch state first. Device-free through `placed` and `pack`,
+    /// which is all `push` does between its assertion and its copy.
+    ///
+    /// Probed by having `placed` ignore its offset: the two records
+    /// agree and the first assertion reds.
+    #[test]
+    fn push_packs_the_placed_sprite_not_the_bare_one() {
+        let c = canvas(64, 32);
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let bare = swatch();
+        let moved = placed(&bare, (7.0, -3.0), 1.0);
+        assert_ne!(
+            moved.instance(c, atlas),
+            bare.instance(c, atlas),
+            "an offset must move the record"
+        );
+        assert_eq!(
+            moved.instance(c, atlas).bytes(),
+            &pack(&moved, c, atlas)[..]
         );
     }
 
