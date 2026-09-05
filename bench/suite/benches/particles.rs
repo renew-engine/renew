@@ -1,9 +1,9 @@
-//! Particle pool timings: the cost of one simulation step and one
-//! instance pack, at the two pool sizes that bracket what a scene asks
-//! for. A thousand particles is a busy scene for the current samples —
-//! the block-break burst tops out in the dozens — and four thousand is
-//! the stress ceiling the pool should absorb before anyone reaches for
-//! a second pool or a coarser effect.
+//! Particle pool timings: the cost of one simulation step, one
+//! instance pack and one walk of the view, at the two pool sizes that
+//! bracket what a scene asks for. A thousand particles is a busy scene
+//! for the current samples — the block-break burst tops out in the
+//! dozens — and four thousand is the stress ceiling the pool should
+//! absorb before anyone reaches for a second pool or a coarser effect.
 //!
 //! Every particle is given an effectively infinite lifetime, so a step
 //! updates exactly the full pool on every iteration: a real effect's
@@ -14,8 +14,8 @@
 //! The allocation gate for these kernels does not live here: the pool
 //! commits to zero steady-state allocation in its own crate, where
 //! `tests/zero_alloc.rs` asserts exact counts over `burst`, `step`,
-//! and `write_instances` on every push. This file only times what that
-//! test already gates.
+//! `write_instances` and the `particles()` walk on every push. This
+//! file only times what that test already gates.
 
 use std::hint::black_box;
 
@@ -76,6 +76,22 @@ fn particles(c: &mut Criterion) {
                 // writes being timed.
                 black_box(pool.write_instances(black_box(&mut instances)));
                 black_box(&mut instances);
+            });
+        });
+
+        c.bench_function(&format!("particle_view_{count}"), |b| {
+            // The view reads the same arrays the packer reads and
+            // writes nothing: every record is fenced whole, so the
+            // position, velocity, colour and progress it computes are
+            // kept live, and its size is folded into a sum,
+            // fenced so the walk cannot be folded away with it.
+            let pool = full_pool(count);
+            b.iter(|| {
+                let total: f32 = black_box(&pool)
+                    .particles()
+                    .map(|particle| black_box(particle).size)
+                    .sum();
+                black_box(total)
             });
         });
     }
