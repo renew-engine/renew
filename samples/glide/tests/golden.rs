@@ -1055,13 +1055,53 @@ fn a_crash_at_tick_114_throws_sparks_as_light() {
          cannot satisfy this, which is the point of asking for it"
     );
 
-    // Additive light never touches the destination's alpha, anywhere.
+    // Nothing in the band gives up any of the sky's blue.
+    //
+    // **This is the falsifiable half of "added rather than covered",
+    // and the blue channel is what makes it so.** Adding can only move a
+    // channel up, so over a sky whose blue is 153 every pixel here must
+    // stay at or above 153. A spark composited *over* the sky instead
+    // would replace that blue with its own, and a spark is warm — its
+    // blue is the channel it has least of, near zero at the ember end.
+    // So drawing the sparks as ink instead of light reddens this, which
+    // is the mutation the assertion exists to catch.
+    //
+    // **Scoped above the corpse, and the bound is derived.** The corpse
+    // is opaque: it replaces the sky rather than adding to it, and its
+    // beak's grey is 148 — below the sky's blue, legitimately. So the
+    // claim is made only where the corpse cannot reach. A twelve-unit
+    // square turned an eighth of a turn has a half-diagonal of 8.49
+    // units, so nothing of it reaches nine units above its centre.
+    // Sixty spark-coloured pixels live in that region, so the claim is
+    // made over real sparks and not over empty sky.
+    let above_corpse = bird_y - 9;
+    for y in top..above_corpse {
+        for x in bird_x.saturating_sub(24)..(bird_x + 24).min(VIEW_WIDTH - 1) {
+            let p = pixel_at(&pixels, x, y);
+            assert!(
+                p[2] >= SKY_BYTES[2],
+                "pixel ({x},{y}) has blue {} below the sky's {}, so something covered \
+                 the sky rather than adding to it",
+                p[2],
+                SKY_BYTES[2]
+            );
+        }
+    }
+
+    // **A guard, not a probe, and it says so rather than posing as one.**
+    // Alpha 255 everywhere cannot fail in this frame: the blend is
+    // `src.a + dst.a·(1 − src.a)` over an opaque clear, which is 1 for
+    // any source alpha whatever — so this would hold even if every spark
+    // were drawn as solid ink. It is kept because it is the assertion
+    // that would fire the day the sample clears to something
+    // transparent or the pipeline's blend state changes, and it costs
+    // one comparison per pixel.
     for y in 0..VIEW_HEIGHT {
         for x in 0..VIEW_WIDTH {
             assert_eq!(
                 pixel_at(&pixels, x, y)[3],
                 255,
-                "light must leave the target opaque, at ({x},{y})"
+                "the target stopped being opaque at ({x},{y})"
             );
         }
     }

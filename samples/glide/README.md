@@ -11,7 +11,7 @@ feature, playable in a window with the score in the title. Behind
 
 ![The same game a few hundred ticks earlier: the bird diving nose-down at full speed between five green pipes, with a short vertical ghost trailing it along its fall](dive-361.png)
 
-![The moment after a crash: the corpse lying on the floor with a spray of yellow-white sparks flying up from it, each one turning, brightening the sky and the pipe behind them without hiding either](crash-114.png)
+![The moment after a crash: the corpse lying on the floor at the left of the frame with a spray of yellow-white sparks flying up out of it, each one turning, brightening the blue sky they cross without hiding any of it; two green pipes stand well away to the right](crash-114.png)
 
 The bird tilts with its velocity — nose-down as it falls, up on a flap
 — and its orange beak shows which way, because a square turned by an
@@ -44,11 +44,13 @@ corpse and fall back under a gravity of their own, each turning at its
 own rate. **They are light, not paint:** every spark carries a
 premultiplied colour with an alpha of zero, which the sprite renderer
 adds to what is already there rather than compositing over it — so a
-spark brightens the sky and the pipe behind it and hides neither, out of
-the same single pipeline every other sprite in the frame goes through.
-The burst is seeded from the tick it fires on, so replaying the trace
-draws the same sparks in the same places; the picture is a function of
-the run, not of when it was rendered.
+spark brightens whatever it crosses and hides none of it, out of the
+same single pipeline every other sprite in the frame goes through. In
+this particular frame what they cross is only sky: the corpse lies at
+the left and the nearest pipe is a hundred and seventy pixels away. The
+burst is seeded from the tick the run stood at when its pool was made,
+so replaying the trace draws the same sparks in the same places; the
+picture is a function of the run, not of when it was rendered.
 
 ## Running it
 

@@ -88,11 +88,15 @@ pub struct Effects {
 impl Effects {
     /// A fresh set of effects, seeded from the world as it stands.
     ///
-    /// **Seeded from the tick**, which is a digested observable, so two
-    /// runs of the same replay seed the same pool and draw the same
-    /// sparks. A wall-clock or an unseeded source would make the
-    /// picture unreproducible while leaving the digest green, which is
-    /// the failure this seeding exists to prevent.
+    /// **Seeded from the tick the world stands at now** — a digested
+    /// observable, so two runs of the same replay build the pool at the
+    /// same tick and draw the same sparks. Note it is the tick at
+    /// CONSTRUCTION, not the tick the burst later fires on: a pool
+    /// built at tick 0 and one built at tick 10 draw different sparks
+    /// from the same crash, which is what pins the seed to the tick
+    /// rather than to a constant. A wall-clock or an unseeded source
+    /// would make the picture unreproducible while leaving the digest
+    /// green, which is the failure this seeding exists to prevent.
     #[must_use]
     pub fn new(world: &World) -> Self {
         Self {
@@ -296,6 +300,69 @@ mod tests {
                 "spark {index} differs between two runs of the same fall"
             );
         }
+    }
+
+    /// The seed really is the tick: effects built at different ticks
+    /// draw different sparks from the same crash.
+    ///
+    /// **Without this, the reproducibility test above proves less than
+    /// its name says.** Both of its runs build from a fresh world, whose
+    /// tick is zero, so it compares two pools seeded identically — which
+    /// would stay green if the seed were a hardcoded constant. It pins
+    /// determinism, not the source of the seed. This pins the source.
+    ///
+    /// The two runs die on the same tick and burst with the same shape;
+    /// the only difference is when the pool was created, and therefore
+    /// what it was seeded with. A generator draws nothing while the pool
+    /// is empty, so the burst is the first draw in both and the seed is
+    /// the whole of the difference.
+    ///
+    /// Probed by seeding from a constant instead of `world.tick()`: red
+    /// here, and green in every other test in this crate — which is the
+    /// gap this test exists to close.
+    #[test]
+    fn the_seed_is_the_tick_the_effects_were_built_at() {
+        // Built at tick 0, the fresh world's own tick.
+        let (_, from_zero) = fall(120);
+
+        // Built at tick 10 instead: fly ten ticks first, and only then
+        // create the pool. The bird is alive at both points, so neither
+        // has crossed the death edge when it is built.
+        let mut world = World::new(7);
+        for _ in 0..10 {
+            world.step(false);
+        }
+        assert!(world.alive(), "premise: the pool is built before the death");
+        assert_eq!(world.tick(), 10, "premise: built at a different tick");
+        let mut from_ten = Effects::new(&world);
+        for _ in 10..120 {
+            world.step(false);
+            from_ten.observe(&world);
+        }
+
+        assert!(
+            from_zero.live() > 0 && from_ten.live() > 0,
+            "premise: both runs must have burst"
+        );
+        assert_eq!(
+            from_zero.live(),
+            from_ten.live(),
+            "premise: the same burst size, so only the seed differs"
+        );
+
+        let mut a = Vec::new();
+        from_zero.fill(&mut a);
+        let mut b = Vec::new();
+        from_ten.fill(&mut b);
+        let same = a
+            .iter()
+            .zip(&b)
+            .all(|(l, r)| l.x.to_bits() == r.x.to_bits() && l.y.to_bits() == r.y.to_bits());
+        assert!(
+            !same,
+            "two pools built at different ticks drew identical sparks, so the seed \
+             is not coming from the tick"
+        );
     }
 
     /// The effects never reach the digest.
