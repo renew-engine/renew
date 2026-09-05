@@ -158,6 +158,44 @@ pub(crate) fn to_uv(texel: Vec2, atlas: Extent) -> Vec2 {
     Vec2::new(texel.x / atlas.width as f32, texel.y / atlas.height as f32)
 }
 
+/// `alpha` as an opacity: clamped to `0.0..=1.0`.
+///
+/// # Panics
+///
+/// On NaN. `f32::clamp` passes NaN straight through, so an unguarded
+/// clamp would multiply it into all four channels of every later
+/// sprite and draw nothing, frame after frame, with no error anywhere
+/// — a silent wrong picture rather than a named refusal. Infinities
+/// need no such guard: they clamp.
+///
+/// Split from the renderer so the refusal can be exercised without a
+/// device, which is the only way it gets exercised at all.
+pub(crate) fn fade(alpha: f32) -> f32 {
+    assert!(!alpha.is_nan(), "a NaN fade has no opacity to mean");
+    alpha.clamp(0.0, 1.0)
+}
+
+/// `sprite` moved by `offset` and faded to `alpha` of its opacity.
+///
+/// The whole of what a renderer's batch offset and fade do to one
+/// sprite, in one place, so it can be checked without a device.
+///
+/// **The tint is premultiplied, so the fade scales all four channels
+/// and not just the fourth.** In premultiplied RGBA the colour already
+/// carries its own alpha; halving only the alpha leaves the colour
+/// arriving at full strength while occluding less, so the sprite
+/// BRIGHTENS as it fades. Scaling the whole tuple is what "half as
+/// opaque" means under this convention.
+pub(crate) fn placed(sprite: &Sprite, offset: (f32, f32), alpha: f32) -> Sprite {
+    let mut moved = *sprite;
+    moved.x += offset.0;
+    moved.y += offset.1;
+    for channel in &mut moved.tint {
+        *channel *= alpha;
+    }
+    moved
+}
+
 /// One instance record, packed exactly as the layout slice declares:
 /// NDC min, NDC max, UV min, UV max — each two `f32`s — then the
 /// four-`f32` tint, native-endian, in declaration order.
@@ -214,6 +252,176 @@ mod tests {
     /// these maps promise identities, not approximations.
     fn bits(v: Vec2) -> (u32, u32) {
         (v.x.to_bits(), v.y.to_bits())
+    }
+
+    /// Exact tint claims compare bits, beside `bits` above and for the
+    /// same reason: these are identities, not approximations. A fade of
+    /// one half is an exponent decrement, so it is bit-exact.
+    fn tint_bits(tint: [f32; 4]) -> [u32; 4] {
+        tint.map(f32::to_bits)
+    }
+
+    fn swatch() -> Sprite {
+        Sprite::new(
+            Region {
+                x: 4,
+                y: 8,
+                width: 16,
+                height: 16,
+            },
+            10.0,
+            20.0,
+        )
+        .size(32.0, 48.0)
+        .tint([0.8, 0.4, 0.2, 0.5])
+    }
+
+    /// A fade is clamped, and a NaN fade is refused by name.
+    ///
+    /// Infinities clamp; NaN does not, which is the whole reason the
+    /// guard exists. The asymmetry is asserted rather than left to be
+    /// rediscovered.
+    #[test]
+    fn a_fade_clamps_its_range() {
+        assert_eq!(fade(2.0).to_bits(), 1.0f32.to_bits());
+        assert_eq!(fade(-1.0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(fade(f32::INFINITY).to_bits(), 1.0f32.to_bits());
+        assert_eq!(fade(f32::NEG_INFINITY).to_bits(), 0.0f32.to_bits());
+        assert_eq!(fade(0.25).to_bits(), 0.25f32.to_bits());
+        // The fact the guard rests on: clamp does NOT filter NaN.
+        assert!(
+            f32::NAN.clamp(0.0, 1.0).is_nan(),
+            "clamp began filtering NaN"
+        );
+    }
+
+    /// Probed by dropping the assert from `fade`: this stops panicking
+    /// and goes red.
+    #[test]
+    #[should_panic(expected = "NaN fade")]
+    fn a_nan_fade_is_refused() {
+        let _ = fade(f32::NAN);
+    }
+
+    /// An offset moves a sprite and changes nothing else about it.
+    ///
+    /// The batch offset exists so a caller can slide a whole group
+    /// without the code that builds each sprite knowing the group is
+    /// moving. If it touched the size, the region or the tint it would
+    /// stop being a slide.
+    #[test]
+    fn an_offset_moves_a_sprite_and_leaves_the_rest_alone() {
+        let before = swatch();
+        let after = placed(&before, (7.0, -3.0), 1.0);
+        assert_eq!((after.x, after.y), (17.0, 17.0));
+        assert_eq!((after.width, after.height), (before.width, before.height));
+        assert_eq!(after.region, before.region);
+        assert_eq!(
+            tint_bits(after.tint),
+            tint_bits(before.tint),
+            "an offset recoloured the sprite"
+        );
+        // Identity really is identity.
+        assert_eq!(placed(&before, (0.0, 0.0), 1.0), before);
+    }
+
+    /// **A fade scales all four channels, because the tint is
+    /// premultiplied.**
+    ///
+    /// Halving only the fourth would leave the colour arriving at full
+    /// strength while occluding less, so the sprite brightens as it
+    /// fades - the opposite of the intent, and the classic way to get
+    /// premultiplied alpha wrong.
+    ///
+    /// Probed by fading only `tint[3]`: red on the first channel, which
+    /// is exactly the bug.
+    #[test]
+    fn a_fade_scales_every_channel_because_the_tint_is_premultiplied() {
+        let after = placed(&swatch(), (0.0, 0.0), 0.5);
+        assert_eq!(
+            tint_bits(after.tint),
+            tint_bits([0.4, 0.2, 0.1, 0.25]),
+            "the fade did not scale the premultiplied colour with its alpha"
+        );
+        // Fully faded is fully gone, in every channel - a sprite that
+        // still carries colour at zero alpha is a sprite that adds
+        // light to whatever it is drawn over.
+        assert_eq!(
+            tint_bits(placed(&swatch(), (0.0, 0.0), 0.0).tint),
+            tint_bits([0.0; 4])
+        );
+    }
+
+    proptest! {
+        /// Fading twice is fading once by the product, and a fade never
+        /// makes a sprite more opaque than it was.
+        ///
+        /// The composition law is what lets a caller nest a fading
+        /// group inside a fading group without the two multiplying
+        /// wrongly, and it is the property a channel-by-channel
+        /// implementation can break silently.
+        #[test]
+        fn fades_compose_and_never_brighten(
+            a in 0.0f32..=1.0,
+            b in 0.0f32..=1.0,
+        ) {
+            let once = placed(&placed(&swatch(), (0.0, 0.0), a), (0.0, 0.0), b);
+            let twice = placed(&swatch(), (0.0, 0.0), a * b);
+            for (x, y) in once.tint.iter().zip(twice.tint) {
+                prop_assert!(
+                    (x - y).abs() <= 1e-6,
+                    "fading by {a} then {b} is not fading by their product"
+                );
+            }
+            for (faded, full) in once.tint.iter().zip(swatch().tint) {
+                prop_assert!(*faded <= full + 1e-6, "a fade brightened a channel");
+            }
+            // **Every channel by the SAME factor**, which is the
+            // premultiplied rule stated as a property. Without this the
+            // property passes an alpha-only fade: the colour channels
+            // stay put, so they still compose and still never brighten
+            // - they are simply wrong. Found by probing, when the exact
+            // test went red here and this one did not.
+            let single = placed(&swatch(), (0.0, 0.0), a);
+            for (faded, full) in single.tint.iter().zip(swatch().tint) {
+                prop_assert!(
+                    (faded - full * a).abs() <= 1e-6,
+                    "a fade of {a} scaled a channel to {faded} from {full}"
+                );
+            }
+        }
+
+        /// Offsets add, and they never touch the tint.
+        #[test]
+        fn offsets_add(
+            ax in -4000.0f32..4000.0,
+            ay in -4000.0f32..4000.0,
+            bx in -4000.0f32..4000.0,
+            by in -4000.0f32..4000.0,
+        ) {
+            let twice = placed(&placed(&swatch(), (ax, ay), 1.0), (bx, by), 1.0);
+            let once = placed(&swatch(), (ax + bx, ay + by), 1.0);
+            // **Bounded by the INTERMEDIATES, not the result.** Float
+            // addition is not associative, and the error in summing
+            // three terms scales with the sum of their magnitudes -
+            // not with the answer. Two offsets that nearly cancel
+            // (2046.2 and -1952.1, which proptest found at four
+            // thousand cases) leave a result near a hundred carrying
+            // the rounding of an intermediate near two thousand, so a
+            // tolerance keyed on the result is off by a factor of
+            // twenty. A fixed 1e-3 was worse: it sat exactly on the
+            // f32 ulp at this range, so the test would have passed or
+            // failed on where the generator happened to land.
+            let bound = (swatch().x.abs() + ax.abs() + bx.abs()).max(1.0) * f32::EPSILON * 4.0;
+            prop_assert!(
+                (twice.x - once.x).abs() <= bound,
+                "x differed by {} against a bound of {bound}",
+                (twice.x - once.x).abs()
+            );
+            let bound_y = (swatch().y.abs() + ay.abs() + by.abs()).max(1.0) * f32::EPSILON * 4.0;
+            prop_assert!((twice.y - once.y).abs() <= bound_y);
+            prop_assert_eq!(tint_bits(twice.tint), tint_bits(swatch().tint));
+        }
     }
 
     #[test]

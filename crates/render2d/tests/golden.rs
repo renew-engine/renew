@@ -240,10 +240,27 @@ fn opaque_sprites_match_the_computed_image_exactly() {
 
     // Three sprites, texel-aligned, the third overlapping the first —
     // push order is draw order, so blue wins the overlap.
+    //
+    // The blue sprite is authored eight pixels LEFT of where the
+    // expected image paints it and reaches its place through the
+    // renderer's batch offset, so the offset is proved by the same
+    // exact oracle as everything else: drop the `set_offset` call and
+    // blue lands at (8, 16), which the computed image refuses. A fade
+    // past one clamps to exactly one, which keeps every sprite opaque
+    // and the oracle exact — the clamp is asserted through the
+    // renderer rather than only through the pure function beneath it.
     renderer.begin();
+    renderer.set_alpha(2.0);
+    assert_eq!(
+        renderer.alpha().to_bits(),
+        1.0f32.to_bits(),
+        "a fade past one must clamp to one"
+    );
     renderer.push(&Sprite::new(RED, 8.0, 8.0).size(16.0, 16.0));
     renderer.push(&Sprite::new(GREEN, 32.0, 8.0).size(16.0, 16.0));
-    renderer.push(&Sprite::new(BLUE, 16.0, 16.0).size(16.0, 16.0));
+    renderer.set_offset(8.0, 0.0);
+    assert_eq!(renderer.offset(), (8.0, 0.0), "the offset must read back");
+    renderer.push(&Sprite::new(BLUE, 8.0, 16.0).size(16.0, 16.0));
     let color = [renew_rhi::color_attachment(CLEAR)];
     let items = [renderer.item()];
     let passes = [Pass::new(&color, &items)];
@@ -263,12 +280,23 @@ fn opaque_sprites_match_the_computed_image_exactly() {
     let mut second = vec![0u8; target.byte_len()];
     target.read_back_into(&mut second);
     assert_eq!(pixels, second, "same frame rendered twice diverged");
+    // A new fill forgets the offset and the fade along with the
+    // sprites: state that outlives the fill that set it is the kind a
+    // caller clears exactly once and then cannot find.
+    renderer.begin();
+    assert_eq!(renderer.offset(), (0.0, 0.0), "begin must reset the offset");
+    assert_eq!(
+        renderer.alpha().to_bits(),
+        1.0f32.to_bits(),
+        "begin must reset the fade"
+    );
     drop(target);
     drop(renderer);
     assert_no_validation_errors(&device);
 
     // The expected image, computed by the same painter's algorithm the
-    // fill promises: clear, then each sprite's rectangle in push order.
+    // fill promises: clear, then each sprite's rectangle in push order
+    // — blue where the offset put it, not where it was authored.
     let mut expected = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for _ in 0..SIZE * SIZE {
         expected.extend_from_slice(&clear_bytes());
