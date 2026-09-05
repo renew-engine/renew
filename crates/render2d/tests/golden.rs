@@ -994,6 +994,154 @@ fn a_flash_fades_with_the_sprite() {
         }
     }
 }
+
+/// A smear leaves the middle of the sprite exactly where it was.
+///
+/// The eight taps are averaged, and eight identical opaque samples
+/// average back to themselves **exactly** — every step of the tree is a
+/// power-of-two scale, `t + t = 2t` through `8t · 0.125 = t`, so no
+/// rounding enters and no adapter can disagree. That is the claim this
+/// test makes, and it is what says a smear blurs the edges of a moving
+/// sprite without touching the art in the middle of it.
+///
+/// **The geometry is chosen so the claim is provable, not approximate.**
+/// A two-pixel smear puts the eight taps within a pixel either side of
+/// the fragment, so every pixel two or more pixels inside the sprite has
+/// all eight taps in the source region. The margin is 1.5 canvas pixels
+/// where the taps sit `2/7` of a pixel apart, and the source's texels
+/// are eight canvas pixels wide — so no tap lands anywhere near a texel
+/// boundary and the nearest lookup returns the same opaque red eight
+/// times over.
+///
+/// Probed by dropping one tap from the sum and keeping the eighth-scale:
+/// the interior falls to seven eighths of the sprite's own opacity, the
+/// clear shows through, and this test reds.
+#[test]
+fn interior_pixels_of_a_smeared_sprite_are_exact() {
+    let Some((_device, pixels)) = rendered(CLEAR, |renderer| {
+        renderer.push(
+            &Sprite::new(RED, 16.0, 16.0)
+                .size(16.0, 16.0)
+                .smear(2.0, 0.0),
+        );
+    }) else {
+        return;
+    };
+
+    for y in 18..30 {
+        for x in 18..30 {
+            assert_eq!(
+                pixel_at(&pixels, x, y),
+                [255, 0, 0, 255],
+                "the smeared interior at ({x},{y}) must be the texel it always was"
+            );
+        }
+    }
+}
+
+/// The smear's band fades outward, punches no hole, and never reads a
+/// neighbour's art.
+///
+/// Eight pixels of smear on a sixteen-pixel sprite: the footprint grows
+/// four pixels each side, and across that band fewer and fewer of the
+/// eight taps land in the source, so the average fades. Three claims,
+/// each pinned along the sprite's middle row:
+///
+/// - **It fades, monotonically.** The tap window slides out of the
+///   source a tap at a time, so the red channel never rises as you walk
+///   away from the sprite's centre in either direction — through the
+///   band and out past the footprint into the clear.
+/// - **It punches no hole.** Alpha stays 255 across the whole row. The
+///   premultiplied blend leaves `α_dst` where the source contributes
+///   none, so a partly-covered band cannot make an opaque target
+///   transparent.
+/// - **It reads no neighbour.** The green channel never rises above the
+///   clear's own green anywhere on the row. Green can only *fall* here,
+///   as the red sprite covers the background — so a green byte above
+///   the clear's could only have come out of the atlas, where the green
+///   texels sit directly beside the red ones with no gutter between
+///   them. That is the bounds mask's whole job: a tap that leaves the
+///   source counts as transparent instead of clamping onto whatever is
+///   next door.
+///
+/// Structural rather than byte-exact, because the ramp's values are not
+/// fixed points of the transfer function. The band's bytes are pinned by
+/// the sample's committed picture of a diving bird instead.
+///
+/// Probed by clamping outside taps to the source's edge instead of
+/// counting them as zero: the right-hand band reads the green texels and
+/// the green claim reds.
+#[test]
+fn the_smear_band_falls_off_and_reads_no_neighbour() {
+    // The sprite's middle row: 16 to 32 vertically, so y = 24 is solidly
+    // inside and the only thing varying along it is the horizontal
+    // smear.
+    const ROW: u32 = 24;
+    // The plateau: with a four-pixel reach each way, every tap is inside
+    // the source between x = 20 and x = 27, so the walk outward starts
+    // in the middle of it.
+    const CENTRE: u32 = 24;
+
+    let Some((_device, pixels)) = rendered(CLEAR, |renderer| {
+        renderer.push(
+            &Sprite::new(RED, 16.0, 16.0)
+                .size(16.0, 16.0)
+                .smear(8.0, 0.0),
+        );
+    }) else {
+        return;
+    };
+
+    let clear = clear_bytes();
+    let red = |x: u32| pixel_at(&pixels, x, ROW)[0];
+
+    for x in 0..SIZE {
+        let pixel = pixel_at(&pixels, x, ROW);
+        assert_eq!(
+            pixel[3], 255,
+            "a partly covered band must not make an opaque target transparent, at x={x}"
+        );
+        assert!(
+            pixel[1] <= clear[1],
+            "green rose to {} above the clear's {} at x={x}, which could only have \
+             come from the atlas",
+            pixel[1],
+            clear[1]
+        );
+    }
+
+    for x in CENTRE..(SIZE - 1) {
+        assert!(
+            red(x) >= red(x + 1),
+            "red rose from {} at x={x} to {} at x={} walking right",
+            red(x),
+            red(x + 1),
+            x + 1
+        );
+    }
+    for x in (1..=CENTRE).rev() {
+        assert!(
+            red(x) >= red(x - 1),
+            "red rose from {} at x={x} to {} at x={} walking left",
+            red(x),
+            red(x - 1),
+            x - 1
+        );
+    }
+
+    // Past the footprint, nothing was drawn at all. The quad spans
+    // x = 12 to x = 36, so it covers the pixels whose centres fall
+    // inside that — columns 12 through 35 — and the assertion runs right
+    // up to both edges rather than leaving a margin: a footprint one
+    // pixel wider than the extension calls for reddens here.
+    for x in (0..12).chain(36..SIZE) {
+        assert_eq!(
+            pixel_at(&pixels, x, ROW),
+            clear,
+            "the smear must not reach x={x}"
+        );
+    }
+}
 /// Semi-transparent overlaps against the committed golden: the
 /// premultiplied compositing convention, in bytes, on the pinned lane —
 /// structure everywhere else.

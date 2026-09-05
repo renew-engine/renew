@@ -410,7 +410,8 @@ impl GlideApp {
                 &Sprite::new(region, sprite.x, sprite.y)
                     .size(sprite.width, sprite.height)
                     .rotation(sprite.rotation)
-                    .saturation(sprite.saturation),
+                    .saturation(sprite.saturation)
+                    .smear(sprite.smear[0], sprite.smear[1]),
             );
         }
         // The UI over the world: the score always, the menu when

@@ -54,6 +54,11 @@ pub struct SceneSprite {
     /// Turn about the rectangle's centre, in turns, clockwise on
     /// screen. `0.0` for everything that does not tilt — every pipe.
     pub rotation: f32,
+    /// How far the sprite is smeared, in canvas units, along the
+    /// direction it moved: the displacement to average the sprite over,
+    /// which reads as motion blur. `[0.0, 0.0]` for everything that does
+    /// not move — every pipe, and a dead bird.
+    pub smear: [f32; 2],
 }
 
 /// The steepest the bird tilts, in turns — an eighth, so a terminal
@@ -77,6 +82,40 @@ const MAX_TILT: f32 = 0.125;
 pub(crate) fn tilt(velocity: f32) -> f32 {
     (velocity / TERMINAL_VELOCITY as f32).clamp(-1.0, 1.0) * MAX_TILT
 }
+
+/// How many ticks of motion the bird is drawn averaged over.
+///
+/// An exaggerated exposure, chosen so the ghost is visible at this
+/// resolution rather than because a real camera works this way. A fall
+/// accelerates from nothing and tops out at [`TERMINAL_VELOCITY`],
+/// which is one and two tenths of a canvas unit per tick, so the widest
+/// smear this can ever ask for is `8 × 1.2 = 9.6` units on a twelve-unit
+/// body. Four ticks would top out at 4.8 — a ramp of two pixels at the
+/// scale the pictures are drawn, which nobody would call a ghost.
+const SMEAR_TICKS: f32 = 8.0;
+
+/// How far a bird is smeared, in canvas units, from its velocity.
+///
+/// Vertical only, because the bird's horizontal position never changes —
+/// the world scrolls past it. A dead bird does not smear: it is a corpse
+/// falling out of the frame, and a step at the moment of death is what
+/// the greying already says.
+///
+/// The velocity arrives in **world units per tick**, the same units
+/// [`tilt`] takes and for the same reason; this one converts to canvas
+/// units because a smear is a distance on screen rather than a fraction
+/// of a range.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+fn smear(velocity: f32, alive: bool) -> [f32; 2] {
+    if alive {
+        [0.0, velocity / UNITS_PER_PIXEL as f32 * SMEAR_TICKS]
+    } else {
+        [0.0, 0.0]
+    }
+}
 /// Fill `out` with the world's picture, in draw order: every pipe as
 /// two bars (top bar from the ceiling to the gap, bottom bar from the
 /// gap to the floor), then the bird over them. Pipe order is the
@@ -92,11 +131,13 @@ pub(crate) fn tilt(velocity: f32) -> f32 {
 pub fn scene(world: &World, out: &mut Vec<SceneSprite>) {
     out.clear();
     world.for_each_pipe_units(|x, gap_y| push_pipe(out, x as f32, gap_y as f32));
+    let v = velocity(world.bird_velocity());
     push_bird(
         out,
         world.bird_y_units() as f32,
-        tilt(velocity(world.bird_velocity())),
+        tilt(v),
         saturation(world.alive()),
+        smear(v, world.alive()),
     );
 }
 
@@ -123,8 +164,9 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         height: gap_top,
         // A pipe never tilts: it is the fixed frame the bird moves in.
         rotation: 0.0,
-        // A pipe is never dead, so it never greys.
+        // A pipe neither dies nor moves under its own power.
         saturation: 1.0,
+        smear: [0.0, 0.0],
     });
     out.push(SceneSprite {
         tile: Tile::Pipe,
@@ -133,8 +175,9 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         width: PIPE_WIDTH_UNITS as f32,
         height: VIEW_HEIGHT as f32 - gap_bottom,
         rotation: 0.0,
-        // A pipe is never dead, so it never greys.
+        // A pipe neither dies nor moves under its own power.
         saturation: 1.0,
+        smear: [0.0, 0.0],
     });
 }
 
@@ -152,7 +195,13 @@ fn saturation(alive: bool) -> f32 {
     clippy::cast_precision_loss,
     reason = "canvas units are bounded by the view constants, far below f32's exact range"
 )]
-fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32, saturation: f32) {
+fn push_bird(
+    out: &mut Vec<SceneSprite>,
+    centre_y: f32,
+    rotation: f32,
+    saturation: f32,
+    smear: [f32; 2],
+) {
     let half = BIRD_HALF_UNITS as f32;
     out.push(SceneSprite {
         tile: Tile::Bird,
@@ -162,6 +211,7 @@ fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32, rotation: f32, saturatio
         height: 2.0 * half,
         rotation,
         saturation,
+        smear,
     });
 }
 
@@ -320,7 +370,13 @@ impl Presentation {
             Some(previous) => f32::blend(previous, self.bird_velocity, alpha),
             None => self.bird_velocity,
         };
-        push_bird(out, y, tilt(velocity), saturation(self.bird_alive));
+        push_bird(
+            out,
+            y,
+            tilt(velocity),
+            saturation(self.bird_alive),
+            smear(velocity, self.bird_alive),
+        );
     }
 }
 
@@ -396,8 +452,21 @@ mod tests {
             "the bird's tilt is its velocity's, bit for bit"
         );
         assert_eq!(b(bird.saturation), b(1.0), "a living bird keeps its colour");
+        assert_eq!(
+            (b(bird.smear[0]), b(bird.smear[1])),
+            (
+                b(0.0),
+                b(world.bird_velocity() as f32 / UNITS_PER_PIXEL as f32 * SMEAR_TICKS)
+            ),
+            "the bird smears along its fall by eight ticks of it, and never sideways"
+        );
         for pipe in &out[..out.len() - 1] {
             assert_eq!(b(pipe.rotation), b(0.0), "a pipe never tilts");
+            assert_eq!(
+                (b(pipe.smear[0]), b(pipe.smear[1])),
+                (b(0.0), b(0.0)),
+                "a pipe never smears"
+            );
         }
     }
 
@@ -511,6 +580,14 @@ mod tests {
             b(out[out.len() - 1].saturation),
             b(0.0),
             "a dead bird is drawn grey"
+        );
+        assert_eq!(
+            (
+                b(out[out.len() - 1].smear[0]),
+                b(out[out.len() - 1].smear[1])
+            ),
+            (b(0.0), b(0.0)),
+            "a corpse does not smear, whatever velocity it froze at"
         );
         for pipe in &out[..out.len() - 1] {
             assert_eq!(b(pipe.saturation), b(1.0), "a pipe keeps its colour");

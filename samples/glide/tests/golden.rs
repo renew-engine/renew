@@ -6,8 +6,10 @@
 //! proves the state *looks* right — placement, occlusion, the corpse
 //! where the rules froze it — which is the half no hash can see.
 //!
-//! Two checkpoints, one per committed trace: `soar` alive among pipes,
-//! `sink` a still life (death freezes pipe advance). Exact comparison
+//! Three checkpoints over two committed traces: `soar` alive among
+//! pipes, the same trace earlier at its fastest dive — where the bird
+//! is smeared along its fall — and `sink` a still life (death freezes
+//! pipe advance, and a corpse does not smear). Exact comparison
 //! on the pinned software-rasterizer lane via the candidate ritual;
 //! structural assertions everywhere else. Golden-based rather than
 //! computed on purpose: the coming linear-space change kills computed
@@ -180,7 +182,8 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
             &Sprite::new(region, sprite.x, sprite.y)
                 .size(sprite.width, sprite.height)
                 .rotation(sprite.rotation)
-                .saturation(sprite.saturation),
+                .saturation(sprite.saturation)
+                .smear(sprite.smear[0], sprite.smear[1]),
         );
     }
     let color = [renew_rhi::color_attachment(SKY)];
@@ -589,4 +592,141 @@ fn sink_at_tick_240_matches_the_committed_image() {
     );
 
     compare_against_golden(&device, "sink-240", &pixels).expect("the golden ritual");
+}
+
+/// The diving bird, smeared along its fall.
+///
+/// **Why tick 361.** The bird reaches terminal velocity — the fastest
+/// the rules allow, so no tick of any trace smears further — and does it
+/// with the full complement of five pipes on screen and the bird still
+/// alive, which the premises below assert rather than trust. A hundred
+/// and one ticks of this trace sit at terminal velocity, so "the fastest
+/// tick" alone does not name one; the tie is broken by taking the first
+/// with five pipes in the frame, which is also the tick the scene tests
+/// already pin.
+///
+/// **What the structure claims, and why not the usual bird check.** The
+/// smear is projected onto the sprite's own drawn axes, and at a
+/// forty-five degree dive that projection has a component along both of
+/// them — so the average crosses the body/beak boundary and the pixel
+/// three left of centre is no longer either atlas colour. The tilt's
+/// sign is pinned by the soaring frame; what this frame is for is the
+/// ghost, and the ghost is what it asserts:
+///
+/// - **It reaches past the body.** A twelve-unit square turned an eighth
+///   of a turn has a half-diagonal of 8.49 units, so its own art cannot
+///   put anything eleven units above or below the centre. The smear can:
+///   nine and a half units of it, half each way, and both those pixels
+///   come back coloured.
+/// - **It ends.** Sixteen units out is sky again on both sides, so the
+///   footprint grew by the smear rather than unboundedly.
+/// - **It fades, monotonically, both ways.** Walking out from the
+///   centre along the bird's own column, the red channel never rises.
+///   That is the box filter's signature: one tap at a time leaves the
+///   art, so coverage falls a step at a time and never recovers. A
+///   smear that clamped its outside taps instead of dropping them would
+///   hold the colour flat and then cut off.
+///
+/// Structural on every adapter; the band's exact bytes are the committed
+/// picture's business.
+#[test]
+fn a_dive_at_tick_361_smears_along_the_fall() {
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let world = world_at("soar", 361).expect("the committed trace replays");
+
+    // Premises: a still bird has no ghost to photograph.
+    assert!(world.alive(), "the diver must still be flying");
+    assert_eq!(world.tick(), 361);
+    assert_eq!(
+        world.bird_velocity(),
+        renew_sample_glide_world::TERMINAL_VELOCITY,
+        "the checkpoint is the fastest the rules allow, so no frame smears further"
+    );
+    assert_eq!(
+        world.pipes(),
+        5,
+        "the full complement of pipes is on screen"
+    );
+
+    let digest_before_rendering = world.digest();
+    let pixels = capture(&device, &world).expect("capture");
+    assert_eq!(
+        world.digest(),
+        digest_before_rendering,
+        "rendering must be a read: the scene and the capture may not move the state"
+    );
+    assert_no_validation_errors(&device);
+
+    // Five pipes fill this frame — every corner is pipe art, not sky,
+    // which is the same "the picture is the world's" check the other
+    // checkpoints make against their emptier skies.
+    for (x, y) in [
+        (0, 0),
+        (VIEW_WIDTH - 1, 0),
+        (0, VIEW_HEIGHT - 1),
+        (VIEW_WIDTH - 1, VIEW_HEIGHT - 1),
+    ] {
+        assert_eq!(pixel_at(&pixels, x, y), PIPE_BYTES, "corner ({x},{y})");
+    }
+
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's centre is on-screen and non-negative at this checkpoint"
+    )]
+    let bird_y = world.bird_y_units() as u32;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the bird's fixed column is positive by the rules"
+    )]
+    let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
+    // Saturating rather than wrapping: every offset below keeps the row
+    // on screen at this checkpoint, and a bug that moved the bird to the
+    // top edge should read row zero rather than wrap to the bottom.
+    let column = |dy: i32| pixel_at(&pixels, bird_x, bird_y.saturating_add_signed(dy));
+
+    // The ghost reaches where the turned square cannot.
+    for dy in [-11, 11] {
+        assert_ne!(
+            column(dy),
+            SKY_BYTES,
+            "{dy} units from the centre is past the turned body's 8.49-unit reach, so \
+             only the smear can have coloured it"
+        );
+    }
+    // And no further than it should.
+    for dy in [-16, 16] {
+        assert_eq!(
+            column(dy),
+            SKY_BYTES,
+            "the footprint grew by the smear, so {dy} units out must still be sky"
+        );
+    }
+    // And it fades a step at a time, in both directions.
+    for dy in 0..16 {
+        assert!(
+            column(-dy)[0] >= column(-dy - 1)[0],
+            "the ghost brightened walking up, at {dy} units above the centre"
+        );
+        assert!(
+            column(dy)[0] >= column(dy + 1)[0],
+            "the ghost brightened walking down, at {dy} units below the centre"
+        );
+    }
+
+    // The same guard the other frames carry: nothing of the pipe's art
+    // reaches the bird, now over a box grown to hold the smear.
+    let half_box = 14u32;
+    for y in bird_y.saturating_sub(half_box)..=(bird_y + half_box).min(VIEW_HEIGHT - 1) {
+        for x in bird_x.saturating_sub(half_box)..=(bird_x + half_box).min(VIEW_WIDTH - 1) {
+            assert_ne!(
+                pixel_at(&pixels, x, y),
+                PIPE_BYTES,
+                "pipe art at ({x},{y}), inside the smeared bird's box"
+            );
+        }
+    }
+
+    compare_against_golden(&device, "dive-361", &pixels).expect("the golden ritual");
 }

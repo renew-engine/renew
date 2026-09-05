@@ -22,10 +22,19 @@ Target: SPIR-V 1.0
 > glslc -O sprite.frag -o sprite.frag.spv
 ```
 
-`sprite.vert.spv` (1704 bytes) and `sprite.frag.spv` (1340 bytes) were
+`sprite.vert.spv` (2092 bytes) and `sprite.frag.spv` (6404 bytes) were
 both compiled that day from the sources beside them. Both grew: the
-vertex stage gained the eighth instance attribute and the flat varying
-that carries it, and the fragment stage gained the two effect lines.
+vertex stage gained the ninth instance attribute and the three flat
+varyings that carry the smear and the source's own bounds, and the
+fragment stage gained the eight-tap branch, which is most of the
+fragment blob's new size — the tap is inlined eight times, each copy
+carrying its own bounds test.
+
+The eight taps are averaged by a **tree**, and the blob is where that is
+checked: `spirv-dis sprite.frag.spv` shows seven `OpFAdd %v4float` whose
+operands nest as `((t0+t1)+(t2+t3)) + ((t4+t5)+(t6+t7))`, never a
+running sum. The optimiser is not permitted to reassociate float adds,
+and on this compiler it does not.
 
 To recompile: install the same SDK version, run the same commands, and
 update this record with the observed `--version` output in the same

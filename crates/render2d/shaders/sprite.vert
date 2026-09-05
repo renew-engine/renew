@@ -10,8 +10,8 @@
 // bottom-right, already turned, scaled and placed on the CPU --
 // location 4/5 = vec2 UV at the first and the last corner, location 6
 // = vec4 premultiplied tint, location 7 = vec2 effect (saturation,
-// flash). Change one and the other in the same commit or the draw reads
-// garbage.
+// flash), location 8 = vec2 smear in UV units. Change one and the other
+// in the same commit or the draw reads garbage.
 
 layout(location = 0) in vec2 instance_corner_a;
 layout(location = 1) in vec2 instance_corner_b;
@@ -21,12 +21,19 @@ layout(location = 4) in vec2 instance_uv0;
 layout(location = 5) in vec2 instance_uv1;
 layout(location = 6) in vec4 instance_tint;
 layout(location = 7) in vec2 instance_effect;
+layout(location = 8) in vec2 instance_smear;
 
 layout(location = 0) out vec2 vertex_uv;
 layout(location = 1) out vec4 vertex_tint;
 // Flat: the pair is per instance, and interpolating two constants would
 // be the same value computed the long way.
 layout(location = 2) flat out vec2 vertex_effect;
+// The smear, and the source's own bounds. Flat for the same reason the
+// effect pair is: all three are per instance, and nothing attests them
+// yet, so there is no interpolated value to preserve.
+layout(location = 3) flat out vec2 vertex_smear;
+layout(location = 4) flat out vec2 vertex_uv_lo;
+layout(location = 5) flat out vec2 vertex_uv_hi;
 
 void main() {
     // Two triangles, four unique corners, six indices; per-corner
@@ -53,4 +60,22 @@ void main() {
     vertex_uv = mix(instance_uv0, instance_uv1, corner);
     vertex_tint = instance_tint;
     vertex_effect = instance_effect;
+    vertex_smear = instance_smear;
+    // The source's own bounds, recovered by undoing the extension the
+    // packer applied: it grew the rectangle by half the smear on each
+    // side, so half the smear back in is where the art actually ends.
+    // The fragment stage refuses taps outside these, which is what
+    // stops a smear reading a neighbour's texels.
+    //
+    // **Equal to the packer's own edge up to a rounding, not exactly.**
+    // The packer scales the UV span by half the projected smear over the
+    // drawn size; this undoes it by halving the smear already expressed
+    // in UV. Same value, different order of operations, so the two can
+    // land an ulp apart. It costs nothing here: the bound is a mask, the
+    // sampler is nearest, and a texel spans many ulps of UV — a tap
+    // would have to fall within an ulp of the source's edge for the
+    // difference to change which side of the mask it lands on.
+    vec2 half_smear = abs(instance_smear) * 0.5;
+    vertex_uv_lo = min(instance_uv0, instance_uv1) + half_smear;
+    vertex_uv_hi = max(instance_uv0, instance_uv1) - half_smear;
 }

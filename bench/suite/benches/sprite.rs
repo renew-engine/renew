@@ -11,10 +11,13 @@
 //! Everything in that line except `push` is device-free and is timed
 //! here as `sprite_build_2048`; the packer `push` runs afterwards is
 //! reachable without a device through `Sprite::instance` and is timed
-//! as `sprite_pack_2048` for the untransformed sprite and as
-//! `sprite_pack_transformed_2048` with every sprite turned and scaled.
-//! All three exist so that a change to `Sprite`'s layout, to its
-//! constructor or to the packer's arithmetic has a before.
+//! as `sprite_pack_2048` for the untransformed sprite, as
+//! `sprite_pack_transformed_2048` with every sprite turned and scaled,
+//! and as `sprite_pack_smeared_2048` with a smear on top of that.
+//! All four exist so that a change to `Sprite`'s layout, to its
+//! constructor or to the packer's arithmetic has a before — and the
+//! last two are a pair, so the smear's own cost is a subtraction rather
+//! than an edit-and-rebuild.
 //!
 //! The region is deliberately **not** wrapped in `black_box`: a
 //! presenter's region is a constant at the call site, and hiding it
@@ -122,6 +125,39 @@ fn sprite_pack(c: &mut Criterion) {
                     .saturation(0.5)
                     .flash(0.1)
                     .scale(1.5, 0.75)
+            })
+            .collect();
+        b.iter(|| {
+            for sprite in &sprites {
+                black_box(sprite.instance(canvas, atlas));
+            }
+        });
+    });
+    c.bench_function("sprite_pack_smeared_2048", |b| {
+        // The line above plus a smear — the everything-on cost, and a
+        // pair with it rather than a replacement for it. Kept separate
+        // because the difference between the two IS the smear's price:
+        // fold the smear into the transformed line and no committed
+        // line measures turned-and-scaled alone any more, so the next
+        // reader has to edit the file to learn what the extension
+        // costs.
+        let Some(canvas) = Canvas::new(320, 240) else {
+            unreachable!("320 by 240 is nonzero");
+        };
+        let atlas = Extent {
+            width: 8,
+            height: 8,
+        };
+        let sprites: Vec<Sprite> = destinations()
+            .iter()
+            .map(|rect| {
+                Sprite::new(WHITE, rect[0], rect[1])
+                    .size(rect[2], rect[3])
+                    .rotation(0.05)
+                    .saturation(0.5)
+                    .flash(0.1)
+                    .scale(1.5, 0.75)
+                    .smear(2.0, 1.0)
             })
             .collect();
         b.iter(|| {

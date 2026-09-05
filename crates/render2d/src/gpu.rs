@@ -17,8 +17,8 @@ static SPRITE_VS_SPV: &[u8] = include_bytes!("../shaders/sprite.vert.spv");
 /// Fragment stage SPIR-V sampling the atlas at set 0, binding 0.
 static SPRITE_FS_SPV: &[u8] = include_bytes!("../shaders/sprite.frag.spv");
 
-/// The sprite quad's per-instance layout. The shader's `location(0..=7)`
-/// list, [`fill::pack`], and this slice describe the same 72 bytes;
+/// The sprite quad's per-instance layout. The shader's `location(0..=8)`
+/// list, [`fill::pack`], and this slice describe the same 80 bytes;
 /// change one and the others in the same commit or the draw reads
 /// garbage.
 const SPRITE_LAYOUT: &[VertexAttribute] = &[
@@ -30,6 +30,7 @@ const SPRITE_LAYOUT: &[VertexAttribute] = &[
     VertexAttribute::Vec2, // UV at corner d
     VertexAttribute::Vec4, // premultiplied tint
     VertexAttribute::Vec2, // effect: saturation, flash
+    VertexAttribute::Vec2, // smear, in UV units
 ];
 
 /// Six expanded vertices per instance, as the vertex stage's corner

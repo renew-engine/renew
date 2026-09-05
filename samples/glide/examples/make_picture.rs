@@ -25,7 +25,7 @@ fn main() {
     let goldens = root.join("tests").join("goldens");
 
     let mut written = 0;
-    for name in ["soar-600", "sink-240"] {
+    for name in ["soar-600", "dive-361", "sink-240"] {
         let source = goldens.join(format!("{name}.rgba"));
         let Ok(pixels) = std::fs::read(&source) else {
             eprintln!("{}: not there; nothing to convert", source.display());

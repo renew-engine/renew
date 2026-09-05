@@ -21,12 +21,70 @@ layout(set = 0, binding = 0) uniform sampler2D atlas;
 layout(location = 0) in vec2 vertex_uv;
 layout(location = 1) in vec4 vertex_tint;
 layout(location = 2) flat in vec2 vertex_effect;
+layout(location = 3) flat in vec2 vertex_smear;
+layout(location = 4) flat in vec2 vertex_uv_lo;
+layout(location = 5) flat in vec2 vertex_uv_hi;
 
 layout(location = 0) out vec4 fragment_color;
 
+// One premultiplied sample -- or nothing, when the tap left the sprite's
+// own source rectangle.
+//
+// Refusing the outside tap rather than clamping it is what keeps a smear
+// from dragging in whatever the atlas happens to hold next door. The
+// half-open bounds match nearest sampling: a coordinate in the last
+// texel's span is inside, and the coordinate exactly on the far edge is
+// the first texel beyond.
+vec4 tap(vec2 uv) {
+    if (all(greaterThanEqual(uv, vertex_uv_lo)) && all(lessThan(uv, vertex_uv_hi))) {
+        vec4 authored = textureLod(atlas, uv, 0.0);
+        return vec4(authored.rgb * authored.a, authored.a);
+    }
+    return vec4(0.0);
+}
+
 void main() {
-    vec4 authored = texture(atlas, vertex_uv);
-    vec4 premultiplied = vec4(authored.rgb * authored.a, authored.a);
+    vec4 premultiplied;
+    if (vertex_smear == vec2(0.0)) {
+        // The single-sample path: the same texel and the same two
+        // multiplies as before smearing existed. `textureLod` at level
+        // zero rather than `texture` because the atlas has one mip level
+        // and a nearest mipmap mode, so both select the same texel --
+        // and an explicit level is legal inside control flow, where an
+        // implicit derivative is not.
+        vec4 authored = textureLod(atlas, vertex_uv, 0.0);
+        premultiplied = vec4(authored.rgb * authored.a, authored.a);
+    } else {
+        // Eight samples spread across the smear, centred on the pixel:
+        // the offsets run from -1/2 to +1/2 of the vector, so the
+        // average is the sprite's time-average over the displacement
+        // rather than a trail hanging off one end.
+        //
+        // **The average is not eight copies at an eighth opacity.**
+        // Stacking eight layers at `a/8` never gets back to `a`: an
+        // opaque sprite composited that way lands on about 0.66. The
+        // mean of eight premultiplied samples keeps the sprite's own
+        // opacity where every tap is opaque and fades it in proportion
+        // where the motion only passed through. A tap outside the source
+        // contributes zero, which is what an average over a footprint
+        // that reaches past the art means.
+        vec4 t0 = tap(vertex_uv + vertex_smear * (0.0 / 7.0 - 0.5));
+        vec4 t1 = tap(vertex_uv + vertex_smear * (1.0 / 7.0 - 0.5));
+        vec4 t2 = tap(vertex_uv + vertex_smear * (2.0 / 7.0 - 0.5));
+        vec4 t3 = tap(vertex_uv + vertex_smear * (3.0 / 7.0 - 0.5));
+        vec4 t4 = tap(vertex_uv + vertex_smear * (4.0 / 7.0 - 0.5));
+        vec4 t5 = tap(vertex_uv + vertex_smear * (5.0 / 7.0 - 0.5));
+        vec4 t6 = tap(vertex_uv + vertex_smear * (6.0 / 7.0 - 0.5));
+        vec4 t7 = tap(vertex_uv + vertex_smear * (7.0 / 7.0 - 0.5));
+        // A TREE, not a running sum, and that is arithmetic rather than
+        // taste: for eight identical taps every step here is a
+        // power-of-two scale -- `t + t` is `2t`, `2t + 2t` is `4t`, and
+        // `8t * 0.125` is `t` again -- so a pixel whose taps all land in
+        // one solid region is the texel it would have been without any
+        // smear, exactly, on every adapter. A running sum passes through
+        // `3t`, `5t`, `6t` and `7t`, which round.
+        premultiplied = (((t0 + t1) + (t2 + t3)) + ((t4 + t5) + (t6 + t7))) * 0.125;
+    }
     // Toward grey, then toward a silhouette of the sprite's own alpha.
     //
     // Written as `x + (target - x) * k` rather than as `mix`, and that
