@@ -933,6 +933,40 @@ mod tests {
         }
     }
 
+    /// The scale is applied along the sprite's own axes before the
+    /// turn, so a stretched sprite turns as a stretched rectangle and
+    /// never shears into a parallelogram: 16×8 at (8, 8) stretched to
+    /// twice its width and turned a quarter turn about (16, 12) has its
+    /// corners at (20, -4), (20, 28), (12, -4), (12, 28) — the doubled
+    /// width now runs down the screen. Exact: every product is by zero,
+    /// one or two on small integers.
+    ///
+    /// Probed by turning first and scaling second: the top-left lands at
+    /// (24, 4) instead.
+    #[test]
+    fn a_scale_is_applied_along_the_sprites_own_axes_before_the_turn() {
+        let wide = Region {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 8,
+        };
+        let got = corners(&Sprite::new(wide, 8.0, 8.0).scale(2.0, 1.0).rotation(0.25));
+        let want = [
+            Vec2::new(20.0, -4.0),
+            Vec2::new(20.0, 28.0),
+            Vec2::new(12.0, -4.0),
+            Vec2::new(12.0, 28.0),
+        ];
+        for (i, (got, want)) in got.into_iter().zip(want).enumerate() {
+            assert_eq!(
+                bits(got),
+                bits(want),
+                "corner {i}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
     /// A negative scale mirrors through the pivot exactly: on an
     /// integer fixture `scale(-1, 1)` swaps the left and right corners
     /// bit for bit, which is the geometric mirror beside the sampled
