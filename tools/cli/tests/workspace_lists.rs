@@ -916,10 +916,11 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[test]
 fn every_golden_matches_the_hash_its_provenance_records() {
-    // The ritual is: render a candidate, have a human look at it, rename
-    // it, and commit it beside a sidecar recording what was approved and
-    // what rendered it. The sidecar is the only record that a human ever
-    // saw those bytes.
+    // The ritual is: render a candidate, have an inspector look at it,
+    // rename it, and commit it beside a sidecar recording what was approved
+    // and what rendered it. The sidecar is the only record that an inspector
+    // ever saw those bytes. An inspector is a person, or a session that
+    // records on the pull request what it inspected.
     //
     // This has already failed once. A golden was refreshed with "the
     // bytes the comparison produces" and its sidecar was left behind, so

@@ -4,7 +4,8 @@ name: Golden refresh
 # the golden tests on the pinned software Vulkan stack; the test's
 # bootstrap path writes fresh candidates and FAILS BY DESIGN — a golden
 # can never enter the tree through a passing run. The candidates land in
-# an artifact for a human to inspect and commit alongside their
+# an artifact for an inspector — a person, or a session that records on
+# the pull request what it inspected — to commit alongside their
 # provenance sidecars.
 
 on:

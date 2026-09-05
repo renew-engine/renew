@@ -234,10 +234,11 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
          scene: the committed trace named in the file name, replayed to the\n\
          tick in the file name through the driver's own loop\n\
          ritual: the test never writes the canonical file above — it writes\n\
-         *.candidate.rgba and fails; a human inspects the candidate (a .ppm\n\
-         is written beside it), renames it to the canonical name, and commits\n\
-         it with this sidecar. To refresh: delete the canonical file, rerun\n\
-         on the pinned software rasterizer, repeat the ritual.\n",
+         *.candidate.rgba and fails; an inspector — a person, or a session\n\
+         that records on the pull request what it inspected — renames the\n\
+         candidate to the canonical name (a .ppm is written beside it) and\n\
+         commits it with this sidecar. To refresh: delete the canonical\n\
+         file, rerun on the pinned software rasterizer, repeat the ritual.\n",
         adapter.name, adapter.kind, adapter.vendor_id, adapter.device_id, adapter.driver_version
     );
 
@@ -258,7 +259,9 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
         return Err(format!(
             "golden is missing; candidate written to {} (fnv1a {rendered_hash:#018x}) — \
              inspect the .ppm, rename the candidate to the canonical name, and commit \
-             it with its sidecar. This test never passes until a human does that.",
+             it with its sidecar. This test never passes until an inspector does \
+             that — a person, or a session that records on the pull request what \
+             it inspected.",
             candidate.display()
         ));
     }
