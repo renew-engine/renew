@@ -55,6 +55,24 @@ else, which the build matrix proves by building and testing without it.
   rounding; so the texels bordering such a region are kept transparent
   for one texel on every side. Axis-aligned sprites at texel-aligned
   sizes never reach a neighbour and need none.
+- **Additive light needs no second pipeline.** A tint whose alpha is
+  zero adds `A·(R·r, G·g, B·b)` to what is underneath and occludes
+  nothing — the premultiplied blend is `src + dst·(1 − α_src)`, and at
+  `α_src = 0` that is addition with the destination's own alpha kept.
+  It is the same arithmetic an additive blend state performs, out of the
+  one pipeline this crate builds, and it is pinned by
+  `additive_light_is_a_tint_with_no_alpha` on fixed points of the
+  transfer function, so the oracle is exact on every adapter rather than
+  within a tolerance. A tint with an alpha between adds and occludes in
+  proportion. Order-independent by arithmetic, and exact only up to the
+  target's eight-bit storage between fragments: stacked arbitrary light
+  can differ by one code with draw order.
+- **Greying is not darkening, and the two are different fields.**
+  `saturation` moves a sprite toward grey *at its own luminance*, so a
+  desaturated sprite keeps the brightness it had; a uniform tint
+  `[l, l, l, 1.0]` scales every channel toward black and keeps the
+  sprite fully occluding. Reaching for the tint to grey something gives
+  a dark sprite, which is why the field exists.
 
 ## What is here
 
@@ -74,8 +92,10 @@ else, which the build matrix proves by building and testing without it.
   claim: `Region { x: 16_777_217, .. }` widens to `16_777_216.0`.) A
   uniform tint `[a, a, a, a]` is a fade to `a` of the sprite's opacity:
   the tint is premultiplied, so scaling all four channels is what "`a`
-  as opaque" means, and scaling only the fourth would brighten the
-  sprite as it faded.
+  as opaque" means, and scaling only the fourth would brighten the sprite
+  as it faded. It can also be greyed toward its own luminance (`saturation`)
+  and flashed toward a silhouette of its own alpha (`flash`), each an
+  identity by default and each one lane of the record.
 - `AtlasDesc` — dimensions plus **authored, straight-alpha** RGBA8
   bytes: the hardware decodes them on sample and the fragment stage
   premultiplies afterwards, so handing this API already-premultiplied
@@ -106,9 +126,28 @@ anywhere in the crate. A consumer that stretches its canvas onto a
 surface of another aspect ratio stretches a turned sprite with
 everything else, and owns that choice.
 
+## Recipes
+
+Five things consumers ask for, each one field and each stated as its
+arithmetic rather than as a preset:
+
+| effect | how | what it does |
+|---|---|---|
+| hit flash | `.flash(f)` | toward a silhouette of the sprite's own alpha, so a full flash is white on an opaque texel and stays transparent where the sprite is |
+| grey it | `.saturation(0.0)` | toward the sprite's own luminance, keeping its brightness |
+| fade it | `.tint([d; 4])` | scales all four premultiplied channels, which is what `d` of its opacity means |
+| light | `.tint([r, g, b, 0.0])` | adds and never occludes |
+| dim the world | one canvas-sized sprite of a solid region, `.tint([0.0, 0.0, 0.0, a])` | darkens everything under a panel in one draw |
+
+The fade multiplies all four channels together because the tint is
+premultiplied: scaling only the fourth would brighten the sprite as it
+faded. The flash happens before the tint, so a flashing sprite that is
+also fading flashes less as it goes — which is what a dying thing
+should look like, and is pinned by `a_flash_fades_with_the_sprite`.
+
 ## The instance record
 
-Every sprite becomes one 64-byte record: seven attributes, sixteen
+Every sprite becomes one 72-byte record: eight attributes, eighteen
 `f32`s, native-endian, in the order the vertex stage declares them.
 
 | location | attribute | content |
@@ -120,6 +159,7 @@ Every sprite becomes one 64-byte record: seven attributes, sixteen
 | 4 | `Vec2` | UV at corner a — the source's min, or its max on a flipped axis |
 | 5 | `Vec2` | UV at corner d |
 | 6 | `Vec4` | premultiplied tint |
+| 7 | `Vec2` | effect — how much colour survives, then how far toward a silhouette |
 
 The vertex stage selects a corner by a nested mix with weights of zero
 and one — along the top edge, along the bottom edge, then between the
@@ -158,7 +198,16 @@ and hashed to one constant asserted on every platform. A computed
 image oracle proves placement, region selection, fill-order overwrite,
 the batch offset, both mirrors, a quarter and a half turn, the
 negative-scale mirror, and a diagonal turn's exact 264-pixel diamond
-byte-exactly on every adapter; a committed golden proves the
+byte-exactly on every adapter. Six more device oracles pin the effect
+lanes: additive light exactly (its fixture is built from fixed points of
+the transfer function, so no rounding can move a byte), light stacking
+without touching alpha, a full desaturation landing on the texel's own
+luminance, a full flash on an opaque texel landing exactly on white,
+a faded flash letting the background through in proportion, and a full
+flash on a half-transparent texel staying half transparent — the last
+pinning that the flash targets the sprite's own alpha rather than white,
+which every other oracle is blind to because they all flash opaque
+texels. A committed golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed

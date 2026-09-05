@@ -179,7 +179,8 @@ fn capture(device: &Device, world: &World) -> Result<Vec<u8>, String> {
         renderer.push(
             &Sprite::new(region, sprite.x, sprite.y)
                 .size(sprite.width, sprite.height)
-                .rotation(sprite.rotation),
+                .rotation(sprite.rotation)
+                .saturation(sprite.saturation),
         );
     }
     let color = [renew_rhi::color_attachment(SKY)];
@@ -210,6 +211,40 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     ]
 }
 
+/// What an opaque atlas texel becomes when the sprite is fully
+/// desaturated: its own luminance, in a byte.
+///
+/// Derived rather than written down, because the two greys this file
+/// needs — the body's and the beak's — are close enough that a wrong
+/// constant would look plausible. Decode each channel to linear light,
+/// take the luminance the fragment stage takes, encode once through the
+/// same target format the attachment uses. The result is compared within
+/// one code, since a luminance is not a fixed point of the transfer
+/// function.
+#[allow(
+    clippy::expect_used,
+    reason = "a colour target that stores no colour is the defect, and this file already \
+              takes that position where it derives the clear's bytes"
+)]
+fn grey_of(texel: [u8; 4]) -> u8 {
+    let linear = |byte: u8| renew_rhi::srgb::decode(byte);
+    let luma = 0.2126f32.mul_add(
+        linear(texel[0]),
+        0.7152f32.mul_add(linear(texel[1]), 0.0722 * linear(texel[2])),
+    );
+    TargetFormat::Rgba8Srgb
+        .stores(luma)
+        .expect("a color target stores color")
+}
+
+/// Is this pixel that colour, within one code per channel?
+///
+/// One code because a grey derived through the transfer function lands
+/// on one of two neighbouring bytes depending on how the hardware
+/// rounds; the coloured cases pass a zero tolerance and are exact.
+fn matches(pixel: [u8; 4], want: [u8; 4], tolerance: u8) -> bool {
+    (0..4).all(|channel| pixel[channel].abs_diff(want[channel]) <= tolerance)
+}
 /// The three structural claims about the tilted bird, checked on every
 /// adapter rather than only on the pinned lane: the body is where the
 /// rules put it, nothing of the pipe's art reaches it, and the beak
@@ -243,7 +278,14 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
 /// when the bird is falling and negative when it is rising, with margin:
 /// at the terminal tilt the mean is about `+2.24` px, at the flap tilt
 /// about `-1.68`, and even at a fiftieth of a turn about `+0.33`.
-fn assert_bird_structure(pixels: &[u8], world: &World, label: &str) {
+fn assert_bird_structure(
+    pixels: &[u8],
+    world: &World,
+    label: &str,
+    body: [u8; 4],
+    beak: [u8; 4],
+    tolerance: u8,
+) {
     #[allow(
         clippy::cast_sign_loss,
         reason = "the bird's centre is on-screen and non-negative at both pinned checkpoints"
@@ -255,10 +297,10 @@ fn assert_bird_structure(pixels: &[u8], world: &World, label: &str) {
     )]
     let bird_x = renew_sample_glide_world::BIRD_X_UNITS as u32;
 
-    assert_eq!(
-        pixel_at(pixels, bird_x - 3, bird_y),
-        BIRD_BYTES,
-        "{label}: the bird's body, three pixels left of centre"
+    let sample = pixel_at(pixels, bird_x - 3, bird_y);
+    assert!(
+        matches(sample, body, tolerance),
+        "{label}: the body three pixels left of centre should be {body:?} within {tolerance}, read {sample:?}"
     );
 
     // The box a twelve-pixel body fits in at any angle, clipped to the
@@ -279,7 +321,7 @@ fn assert_bird_structure(pixels: &[u8], world: &World, label: &str) {
                 "{label}: pipe art at ({x},{y}), inside the bird's box — the atlas gutter \
                  is what should stop a turned edge sampling its neighbour"
             );
-            if pixel == BEAK_BYTES {
+            if matches(pixel, beak, tolerance) {
                 beak_offsets += f64::from(y) + 0.5 - f64::from(bird_y);
                 beak_pixels += 1;
             }
@@ -474,9 +516,8 @@ fn soar_at_tick_600_matches_the_committed_image() {
     );
     assert_no_validation_errors(&device);
 
-    // Structure, adapter-independent: sky at all four corners, the
-    // bird's opaque color at its centre (replacement — alpha one end
-    // to end).
+    // Structure, adapter-independent: sky at all four corners, then the
+    // bird itself, which `assert_bird_structure` reads.
     for (x, y) in [
         (0, 0),
         (VIEW_WIDTH - 1, 0),
@@ -485,7 +526,9 @@ fn soar_at_tick_600_matches_the_committed_image() {
     ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
-    assert_bird_structure(&pixels, &world, "soar-600");
+    // Alive: the atlas colours, exactly — no tolerance, because these
+    // are the authored bytes with no transfer function in between.
+    assert_bird_structure(&pixels, &world, "soar-600", BIRD_BYTES, BEAK_BYTES, 0);
 
     compare_against_golden(&device, "soar-600", &pixels).expect("the golden ritual");
 }
@@ -523,7 +566,27 @@ fn sink_at_tick_240_matches_the_committed_image() {
     ] {
         assert_eq!(pixel_at(&pixels, x, y), SKY_BYTES, "corner ({x},{y})");
     }
-    assert_bird_structure(&pixels, &world, "sink-240");
+    // Dead: the same two texels desaturated, so the body and the beak
+    // are two different greys — orange and yellow do not share a
+    // luminance, which is what keeps the sign check readable on a corpse.
+    let body = grey_of(BIRD_BYTES);
+    let beak = grey_of(BEAK_BYTES);
+    // Three codes apart, not merely unequal: the matcher accepts a
+    // one-code window on each side, so two greys two apart would still
+    // let a body pixel classify as beak and quietly blunt the sign check.
+    assert!(
+        body.abs_diff(beak) >= 3,
+        "the corpse's greys are {body} and {beak} -- too close to tell apart \
+         within the tolerance the matcher uses"
+    );
+    assert_bird_structure(
+        &pixels,
+        &world,
+        "sink-240",
+        [body, body, body, 255],
+        [beak, beak, beak, 255],
+        1,
+    );
 
     compare_against_golden(&device, "sink-240", &pixels).expect("the golden ritual");
 }

@@ -9,8 +9,9 @@
 // the four corners in NDC -- local top-left, top-right, bottom-left,
 // bottom-right, already turned, scaled and placed on the CPU --
 // location 4/5 = vec2 UV at the first and the last corner, location 6
-// = vec4 premultiplied tint. Change one and the other in the same
-// commit or the draw reads garbage.
+// = vec4 premultiplied tint, location 7 = vec2 effect (saturation,
+// flash). Change one and the other in the same commit or the draw reads
+// garbage.
 
 layout(location = 0) in vec2 instance_corner_a;
 layout(location = 1) in vec2 instance_corner_b;
@@ -19,9 +20,13 @@ layout(location = 3) in vec2 instance_corner_d;
 layout(location = 4) in vec2 instance_uv0;
 layout(location = 5) in vec2 instance_uv1;
 layout(location = 6) in vec4 instance_tint;
+layout(location = 7) in vec2 instance_effect;
 
 layout(location = 0) out vec2 vertex_uv;
 layout(location = 1) out vec4 vertex_tint;
+// Flat: the pair is per instance, and interpolating two constants would
+// be the same value computed the long way.
+layout(location = 2) flat out vec2 vertex_effect;
 
 void main() {
     // Two triangles, four unique corners, six indices; per-corner
@@ -47,4 +52,5 @@ void main() {
     gl_Position = vec4(mix(top, bottom, corner.y), 0.0, 1.0);
     vertex_uv = mix(instance_uv0, instance_uv1, corner);
     vertex_tint = instance_tint;
+    vertex_effect = instance_effect;
 }
