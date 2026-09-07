@@ -637,6 +637,27 @@ pub(crate) mod tests {
             matches!(draw(&empty), Err(RenderError::Empty)),
             "and the same holds for the view with no camera"
         );
+
+        // **And through the entry point that takes a device**, which is a
+        // separate check and not the same one: the refusal above happens
+        // in the entry point that *makes* a device, before it makes one,
+        // so nothing above reaches this one. A direct caller must get the
+        // same named refusal rather than whatever the renderer says about
+        // an empty upload. Skipped where there is no adapter — the answer
+        // is about the scene, but asking for it still needs a device.
+        match Device::new(&DeviceDesc {
+            app_name: "cube",
+            validation: Validation::IfAvailable,
+        }) {
+            Ok(device) => assert!(
+                matches!(
+                    draw_clip_space_with(&device, &build(&empty), ClipSurface::Textured),
+                    Err(RenderError::Empty)
+                ),
+                "the device-taking entry point must refuse an empty scene by name too"
+            ),
+            Err(why) => eprintln!("SKIP: no device for the device-taking path: {why}"),
+        }
     }
 
     /// Every refusal says what happened in words a reader can act on.
