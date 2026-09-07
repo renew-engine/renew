@@ -664,17 +664,20 @@ fn mesh_fixture(
         for value in [0.2f32, 0.8, 0.4, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        // The texture coordinate the layout declares. This draw goes
-        // through the untextured mesh shaders, which do not consume it,
-        // but the record must be what the pipeline says it is.
-        for value in [0.0f32, 0.0] {
-            vertices.extend_from_slice(&value.to_ne_bytes());
+        // Everything the layout declares after the colour, zeroed.
+        // This draw goes through the untextured mesh shaders, which do
+        // not consume it, but the record must be what the pipeline says
+        // it is -- and the count is derived so an added attribute cannot
+        // leave this record short without anyone noticing.
+        let filled = (3 + 4) * 4;
+        for _ in 0..(builtin::MESH_STRIDE as usize - filled) / 4 {
+            vertices.extend_from_slice(&0.0f32.to_ne_bytes());
         }
     }
     let mesh = device
         .create_mesh(&renew_rhi::MeshDesc::new(
             &vertices,
-            12 + 16 + 8,
+            builtin::MESH_STRIDE,
             &[0, 1, 2, 0, 2, 3],
         ))
         .map_err(|error| format!("mesh failed: {error}"))?;

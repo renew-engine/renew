@@ -1028,7 +1028,9 @@ fn left_half_quad(depth: f32) -> Vec<u8> {
         for value in [x, y, depth] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        for _ in 0..6 {
+        // Padded to the record the layout describes, derived not counted.
+        let filled = 3 * 4;
+        for _ in 0..(builtin::MESH_STRIDE as usize - filled) / 4 {
             vertices.extend_from_slice(&0.0f32.to_ne_bytes());
         }
     }
@@ -1042,6 +1044,10 @@ fn left_half_quad(depth: f32) -> Vec<u8> {
 /// is the depth buffer itself: the quad's clip-space z where it
 /// covered, the reversed-Z far clear where it did not — a CPU oracle
 /// over the whole rendered-depth path.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one narrative: a depth-only pass writes, a sampling pass reads it back, and the oracle checks the whole path -- splitting it would hide which half a failure came from. It crossed the bound when deriving the mesh stride from the layout made the constructor wrap."
+)]
 #[test]
 fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     const SIZE: u32 = 8;
@@ -1101,7 +1107,11 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
         .expect("reader pipeline");
     let vertices = left_half_quad(QUAD_DEPTH);
     let mesh = device
-        .create_mesh(&MeshDesc::new(&vertices, 36, &[0, 1, 2, 3, 4, 5]))
+        .create_mesh(&MeshDesc::new(
+            &vertices,
+            builtin::MESH_STRIDE,
+            &[0, 1, 2, 3, 4, 5],
+        ))
         .expect("caster quad");
     let mut target = device
         .create_offscreen_target(Extent {
@@ -1558,7 +1568,7 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
 }
 
 /// The bytes one mesh vertex occupies, as `MESH_LAYOUT` declares them.
-const MESH_VERTEX_STRIDE: u32 = 12 + 16 + 8;
+const MESH_VERTEX_STRIDE: u32 = builtin::MESH_STRIDE;
 
 /// One mesh vertex, packed exactly as `MESH_LAYOUT` declares:
 /// clip-space position vec3, colour vec4, texture coordinate vec2. The
@@ -1577,8 +1587,11 @@ fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
     for value in colour {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
-    for value in [0.0f32, 0.0] {
-        bytes.extend_from_slice(&value.to_ne_bytes());
+    // The coordinate and anything after it, zeroed and sized from the
+    // layout so an added attribute does not silently shorten this.
+    let filled = (3 + 4) * 4;
+    for _ in 0..(builtin::MESH_STRIDE as usize - filled) / 4 {
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
     }
     bytes
 }

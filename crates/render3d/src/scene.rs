@@ -42,7 +42,7 @@
 /// nothing compiles it. It is stated as the reason for a decision, not
 /// relied on: what the code relies on is the assertion in `gpu.rs` that
 /// this constant equals the packed width of the layout actually declared.
-pub(crate) const VERTEX_STRIDE: u32 = 36;
+pub(crate) const VERTEX_STRIDE: u32 = 48;
 
 /// The mapping [`Scene::quad`] and [`Scene::quad_shaded`] supply when the
 /// caller says nothing: the four corners onto the four corners of the
@@ -55,6 +55,49 @@ pub(crate) const VERTEX_STRIDE: u32 = 36;
 /// most likely wanted, and it is visibly wrong rather than plausibly
 /// wrong if they did not.
 const WHOLE_TILE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+
+/// The unit normal of the plane through three corners, in the winding
+/// they are given.
+///
+/// **Computed rather than asked for, and that is a decision with a cost
+/// worth naming.** Nothing in this crate has ever carried a normal, so
+/// no caller has one to give; computing it means every existing quad
+/// gains a correct normal with no caller change, and the alternative —
+/// a zero placeholder — would put a value in the buffer that means
+/// "no direction" and reads as a direction.
+///
+/// **A degenerate triangle has no plane, and this says so by returning
+/// zero rather than by dividing by it.** Three collinear or coincident
+/// corners give a zero cross product; normalising that is a NaN, which
+/// would travel into a vertex buffer and out again as a lighting term
+/// nobody can trace. Zero is not a direction either, but it is a value
+/// a reader can test for, and a degenerate triangle covers no pixels
+/// so nothing samples it.
+fn face_normal(first: [f32; 3], second: [f32; 3], third: [f32; 3]) -> [f32; 3] {
+    let edge = [
+        second[0] - first[0],
+        second[1] - first[1],
+        second[2] - first[2],
+    ];
+    let other = [
+        third[0] - first[0],
+        third[1] - first[1],
+        third[2] - first[2],
+    ];
+    let cross = [
+        edge[1].mul_add(other[2], -(edge[2] * other[1])),
+        edge[2].mul_add(other[0], -(edge[0] * other[2])),
+        edge[0].mul_add(other[1], -(edge[1] * other[0])),
+    ];
+    let length = cross[0]
+        .mul_add(cross[0], cross[1].mul_add(cross[1], cross[2] * cross[2]))
+        .sqrt();
+    if length > 0.0 && length.is_finite() {
+        [cross[0] / length, cross[1] / length, cross[2] / length]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
 
 /// The place a packed vertex record names.
 ///
@@ -187,16 +230,59 @@ impl Scene {
         // Recorded before the push, so the triangles below index the
         // corners this call adds rather than whatever came before.
         let base = self.vertex_count();
+        // One normal for the whole quad: its four corners are coplanar
+        // by construction here, and a caller that wants them not to be
+        // is drawing two triangles rather than a quad.
+        let normal = face_normal(corners[0], corners[1], corners[2]);
         for ((corner, colour), uv) in corners.into_iter().zip(colours).zip(uvs) {
-            self.push_vertex(corner, colour, uv);
+            self.push_vertex(corner, colour, uv, normal);
         }
         for offset in [0, 1, 2, 0, 2, 3] {
             self.indices.push(base + offset);
         }
     }
 
+    /// Append one triangle, with a colour and a texture coordinate for
+    /// each of its three corners.
+    ///
+    /// **Every mesh format in the world emits triangles, and until this
+    /// existed there was no way to give one to a scene.** The quad
+    /// family above is what a voxel world wants and what this crate was
+    /// built for; a face imported from a file is a triangle, and
+    /// decomposing it into a degenerate quad would put a fourth vertex
+    /// and two extra indices into the buffer to describe geometry that
+    /// has three of each.
+    ///
+    /// Corners, colours and coordinates are in the same order: index `i`
+    /// of each belongs to corner `i`. The winding is the order given,
+    /// unchanged — the pipeline culls nothing, so a triangle wound
+    /// either way draws, and a caller importing a file keeps whatever
+    /// its source said.
+    ///
+    /// The normal is computed from the three corners rather than taken
+    /// from the caller. A file that carries its own per-vertex normals
+    /// is not yet expressible; when it is, this gains a sibling rather
+    /// than a parameter, because a caller that has real normals wants
+    /// all three and a caller that has none wants zero.
+    pub fn triangle(&mut self, corners: [[f32; 3]; 3], colours: [[f32; 4]; 3], uvs: [[f32; 2]; 3]) {
+        let base = self.vertex_count();
+        let normal = face_normal(corners[0], corners[1], corners[2]);
+        for ((corner, colour), uv) in corners.into_iter().zip(colours).zip(uvs) {
+            self.push_vertex(corner, colour, uv, normal);
+        }
+        for offset in [0, 1, 2] {
+            self.indices.push(base + offset);
+        }
+    }
+
     /// One vertex record, packed exactly as [`VERTEX_STRIDE`] describes.
-    fn push_vertex(&mut self, position: [f32; 3], colour: [f32; 4], uv: [f32; 2]) {
+    fn push_vertex(
+        &mut self,
+        position: [f32; 3],
+        colour: [f32; 4],
+        uv: [f32; 2],
+        normal: [f32; 3],
+    ) {
         for value in position {
             self.vertices.extend_from_slice(&value.to_ne_bytes());
         }
@@ -204,6 +290,9 @@ impl Scene {
             self.vertices.extend_from_slice(&value.to_ne_bytes());
         }
         for value in uv {
+            self.vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in normal {
             self.vertices.extend_from_slice(&value.to_ne_bytes());
         }
     }
@@ -423,8 +512,8 @@ mod tests {
         );
         assert_eq!(
             VERTEX_STRIDE,
-            12 + 16 + 8,
-            "a vec3 position, a vec4 colour and a vec2 texture coordinate"
+            12 + 16 + 8 + 12,
+            "a vec3 position, a vec4 colour, a vec2 coordinate and a vec3 normal"
         );
     }
 
@@ -432,7 +521,7 @@ mod tests {
     /// nothing between them — the property a shader reading this layout
     /// depends on.
     #[test]
-    fn a_record_is_its_position_then_its_colour_then_its_coordinate() {
+    fn a_record_is_its_position_then_colour_then_coordinate_then_normal() {
         let mut scene = Scene::new();
         scene.quad(CORNERS, [0.25, 0.5, 0.75, 1.0]);
         let first = &scene.vertices()[..VERTEX_STRIDE as usize];
@@ -442,11 +531,15 @@ mod tests {
             .iter()
             .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
-        // The last two are the default mapping's first corner, which is
-        // the origin of the tile.
+        // The two after the colour are the default mapping's first
+        // corner, the origin of the tile; the last three are the face
+        // normal, which these corners put on +Z: they wind counter-
+        // clockwise seen from +Z, and (2,0,0) x (2,2,0) is (0,0,4).
         assert_eq!(
             floats,
-            vec![-1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 0.0, 0.0]
+            vec![
+                -1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0
+            ]
         );
     }
 
@@ -740,6 +833,136 @@ mod tests {
             };
             proptest::prop_assert_eq!(scene.vertices(), fresh.vertices());
             proptest::prop_assert_eq!(scene.indices(), fresh.indices());
+        }
+    }
+
+    /// **A triangle is three vertices and three indices**, not a quad
+    /// with a corner folded onto another. Pinned because the cheap
+    /// wrong implementation — forwarding to `quad_uv` with a repeated
+    /// corner — produces a picture that looks identical and puts a
+    /// fourth vertex and three extra indices in the buffer for every
+    /// face a file imports.
+    ///
+    /// Probed by forwarding to `quad_uv` with `corners[2]` twice: the
+    /// counts go to four and six and this says which.
+    #[test]
+    fn a_triangle_is_three_vertices_and_three_indices() {
+        let mut scene = Scene::new();
+        scene.triangle(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [WHITE; 3],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        );
+        assert_eq!(scene.vertex_count(), 3, "three corners, three records");
+        assert_eq!(scene.index_count(), 3, "one triangle, three indices");
+    }
+
+    /// **The winding a caller gives is the winding that is kept**, and
+    /// the normal follows it. A file importer preserves whatever its
+    /// source said, so reversing a triangle must reverse its normal
+    /// rather than being silently corrected to face one way.
+    ///
+    /// Probed by sorting the corners before the cross product: both
+    /// windings then report the same normal and the second assertion
+    /// fails.
+    #[expect(
+        clippy::float_cmp,
+        reason = "an axis-aligned normal is exact: the cross product of integral edges is integral, and its length divides it back to one component of exactly 1 or -1"
+    )]
+    #[test]
+    fn reversing_a_triangle_reverses_its_normal() {
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let reversed = [corners[0], corners[2], corners[1]];
+        let normal_of = |corners: [[f32; 3]; 3]| {
+            let mut scene = Scene::new();
+            scene.triangle(corners, [WHITE; 3], [[0.0, 0.0]; 3]);
+            let bytes = scene.vertices();
+            let at = 36;
+            let read = |offset: usize| {
+                let start = at + offset;
+                f32::from_ne_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ])
+            };
+            [read(0), read(4), read(8)]
+        };
+        assert_eq!(normal_of(corners), [0.0, 0.0, 1.0]);
+        assert_eq!(normal_of(reversed), [0.0, 0.0, -1.0]);
+    }
+
+    /// **A degenerate triangle has no plane, and gets zero rather than
+    /// a NaN.** Three collinear corners give a zero cross product;
+    /// normalising that divides by zero, and the NaN would travel into
+    /// a vertex buffer and out again as a lighting term nobody can
+    /// trace back here.
+    ///
+    /// Probed by removing the length guard: every component comes back
+    /// NaN and the assertion names it.
+    #[test]
+    fn a_degenerate_triangle_gets_a_zero_normal_and_not_a_nan() {
+        for corners in [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
+        ] {
+            let mut scene = Scene::new();
+            scene.triangle(corners, [WHITE; 3], [[0.0, 0.0]; 3]);
+            let bytes = scene.vertices();
+            for offset in [36, 40, 44] {
+                let value = f32::from_ne_bytes([
+                    bytes[offset],
+                    bytes[offset + 1],
+                    bytes[offset + 2],
+                    bytes[offset + 3],
+                ]);
+                assert!(
+                    value == 0.0,
+                    "a degenerate triangle produced {value}, which is not a direction"
+                );
+            }
+        }
+    }
+
+    /// **Every quad already carried a plane; now it carries the normal
+    /// of it.** The voxel world's faces are axis-aligned, so this is
+    /// exact rather than approximate, and a caller that never asked for
+    /// a normal gets a correct one without changing a line.
+    #[expect(
+        clippy::float_cmp,
+        reason = "an axis-aligned normal is exact: the cross product of integral edges is integral, and its length divides it back to one component of exactly 1 or -1"
+    )]
+    #[test]
+    fn a_quads_normal_is_the_plane_its_corners_lie_in() {
+        let mut scene = Scene::new();
+        // A face on the +X plane, wound so its normal points along +X.
+        scene.quad(
+            [
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0],
+            ],
+            WHITE,
+        );
+        let bytes = scene.vertices();
+        for corner in 0..4 {
+            let at = corner * VERTEX_STRIDE as usize + 36;
+            let read = |offset: usize| {
+                let start = at + offset;
+                f32::from_ne_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ])
+            };
+            assert_eq!(
+                [read(0), read(4), read(8)],
+                [1.0, 0.0, 0.0],
+                "corner {corner} of an +X face"
+            );
         }
     }
 }
