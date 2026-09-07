@@ -182,23 +182,120 @@ fn assert_structure(pixels: &[u8], name: &str) {
     );
 }
 
+/// How two images differ, in the terms the tolerance is stated in.
+///
+/// The same shape the mesh renderer's own golden uses, and deliberately
+/// so: one summary that carries both the count and the size of the
+/// largest step, because a bound on either alone is a hole.
+struct Difference {
+    /// Pixels with any differing channel.
+    pixels: usize,
+    /// The largest per-channel difference seen anywhere.
+    largest_channel: u8,
+    /// The first differing byte, for the message.
+    first_byte: usize,
+}
+
+impl Difference {
+    fn between(rendered: &[u8], golden: &[u8]) -> Self {
+        let mut pixels = 0;
+        let mut largest_channel = 0u8;
+        let mut first_byte = usize::MAX;
+        for (index, (a, b)) in rendered.iter().zip(golden.iter()).enumerate() {
+            if a != b && first_byte == usize::MAX {
+                first_byte = index;
+            }
+        }
+        for (a, b) in rendered
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(golden.as_chunks::<4>().0.iter())
+        {
+            let mut moved = false;
+            for (x, y) in a.iter().zip(b.iter()) {
+                let delta = x.abs_diff(*y);
+                if delta > 0 {
+                    moved = true;
+                    largest_channel = largest_channel.max(delta);
+                }
+            }
+            if moved {
+                pixels += 1;
+            }
+        }
+        Self {
+            pixels,
+            largest_channel,
+            first_byte,
+        }
+    }
+
+    fn within_tolerance(&self) -> bool {
+        self.pixels <= MAX_DIFFERING_PIXELS && self.largest_channel <= MAX_CHANNEL_DELTA
+    }
+}
+
+/// How many pixels may differ between two renders of the same frame.
+///
+/// **This bound is empirical, and unlike the triangle golden's it is not
+/// derived from geometry — which is stated rather than glossed, because
+/// the difference matters.** The triangle's bound is its own perimeter:
+/// at most 512 pixels of a 256-square image can lie on an interpolation
+/// boundary at all, so nothing can hide underneath it. This frame is a
+/// textured world where almost every pixel sits on some interpolated
+/// gradient, so no perimeter argument is available and a geometric bound
+/// would be the whole image, which is the same as no bound.
+///
+/// Observed across the runner pool on 2026-09-07: **776 of 262,144 for
+/// `arena-1` and 843 for `built-400`**, both against a golden recorded
+/// on a runner that agreed with itself three times. Four thousand is
+/// roughly five times the worst of those and 1.6% of the frame.
+const MAX_DIFFERING_PIXELS: usize = 4096;
+
+/// The largest per-channel difference tolerated in those pixels.
+///
+/// **One, and this is the half of the tolerance that does the work.** A
+/// quantisation boundary can move a byte by one step and no more;
+/// anything larger is a different colour rather than a different
+/// rounding. A real rendering change to this frame — a block moved, a
+/// face lost, an atlas tile swapped, the shading flattened — moves
+/// pixels between values that are tens or hundreds apart, because the
+/// block colours and the per-face shades are nowhere near each other.
+/// **So the pixel count being generous costs little: nothing can drift
+/// under this bound while still being a picture of something else.**
+///
+/// It is also a claim that can be refused. If the pool ever produces a
+/// difference of two, this fails and says so, rather than widening
+/// quietly — and the message prints the observed value so the next
+/// reader gets the measurement rather than the assumption.
+const MAX_CHANNEL_DELTA: u8 = 1;
+
 /// The full ritual for one checkpoint: exact bytes against the committed
 /// golden on the pinned lane only, candidate plus provenance plus a
 /// refusing `Err` when the golden does not exist yet.
 ///
-/// **Byte-exact, decided before the first picture was recorded rather
-/// than after one flaked.** The tolerance this tranche's sibling needed
-/// was for stacked additive light, whose result depends on the order
-/// fragments arrive. This frame has no blending at all: opaque
-/// textured geometry resolved by a depth test, no multisampling, and
-/// **no shadow pass** — the shadowed camera path is a different entry
-/// point that these checkpoints do not go through, which the pictures
-/// themselves show and which is a gap worth naming rather than a
-/// detail. Nothing in this frame is order-dependent.
+/// **A scoped tolerance, and the reasoning that first chose byte-exact
+/// was wrong on the axis that mattered.** That reasoning was: this frame
+/// has no blending, no multisampling and no shadow pass, so nothing in
+/// it depends on the order fragments arrive, so bytes should be
+/// reproducible. Every clause of that is true and the conclusion did not
+/// follow. **The variation on this lane is not fragment order — it is
+/// the JIT's target CPU and feature set, which the software rasterizer
+/// takes from whichever host it lands on**, and which no property of the
+/// frame can rule out. The workflow that pins this lane already said so
+/// in a comment; that comment was not read before the decision was made.
 ///
-/// If the pinned lane disagrees with itself anyway,
-/// that is a finding about the lane and it gets a measured bound like
-/// the one before it, not a shrug.
+/// Three refresh runs agreed byte for byte, and that was mistaken for
+/// evidence of stability. Three samples from a pool of unlike machines
+/// are three samples, not a measurement of the pool. **The picture then
+/// differed by 776 and 843 pixels of 262,144 on the first runner that
+/// happened to be different** — which is what the bound below is derived
+/// from, and why it is stated as empirical rather than geometric.
+///
+/// The shadowed camera path remains a different entry point that these
+/// checkpoints do not go through, which the pictures themselves show and
+/// which is a gap worth naming rather than a detail.
 fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<(), String> {
     let adapter = device.adapter();
     if adapter.kind != AdapterKind::SoftwareRasterizer {
@@ -235,12 +332,16 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
          scene: the script named in the file name, run headless for the tick\n\
          count in the file name, then drawn through the textured mesh\n\
          pipeline onto an offscreen target\n\
-         comparison: exact. This frame has no blending, no multisampling\n\
-         and no shadow pass — opaque geometry resolved by a depth test —\n\
-         so nothing in it depends on the order fragments arrive, which\n\
-         is what forced a tolerance on the sprite game's crash frame.\n\
-         The shadowed camera path is a different entry point and no\n\
-         committed picture covers it yet.\n\
+         comparison: within a scoped tolerance -- at most\n\
+         {MAX_DIFFERING_PIXELS} of {SIZE}x{SIZE} pixels may differ and none by\n\
+         more than {MAX_CHANNEL_DELTA} per channel. Byte equality was tried and does\n\
+         not hold: this rasterizer takes its target CPU and feature set\n\
+         from the host, and the runner pool is not uniform. The frame has\n\
+         no blending, no multisampling and no shadow pass, so nothing in\n\
+         it depends on fragment order -- that was the reasoning for exact\n\
+         bytes and it addressed the wrong variable. The shadowed camera\n\
+         path is a different entry point and no committed picture covers\n\
+         it yet.\n\
          ritual: the test never writes the canonical file above — it writes\n\
          *.candidate.rgba and fails; an inspector — a person, or a session\n\
          that records on the pull request what it inspected — renames the\n\
@@ -269,36 +370,30 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
 
     let expected =
         std::fs::read(&golden).map_err(|error| format!("read committed golden: {error}"))?;
-    if pixels != expected.as_slice() {
+    let difference = Difference::between(pixels, &expected);
+    if !difference.within_tolerance() {
         let actual = dir.join(format!("{name}.actual.rgba"));
         std::fs::write(&actual, pixels).map_err(|error| format!("write actual: {error}"))?;
         write_ppm(&dir.join(format!("{name}.actual.ppm")), pixels)
             .map_err(|error| format!("write actual ppm: {error}"))?;
-        let first_diff = pixels
-            .iter()
-            .zip(expected.iter())
-            .position(|(a, b)| a != b)
-            .unwrap_or(usize::MAX);
-        let differing = pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(expected.as_chunks::<4>().0.iter())
-            .filter(|(a, b)| a != b)
-            .count();
         // The renderer belongs in this message. A divergence here is
         // either the change under test or the machine under it, and
         // those need opposite responses — so the first thing a reader
         // needs is something to compare against the committed sidecar.
         return Err(format!(
-            "{name}: the picture changed. {differing} of {} pixels differ, first at byte \
-             {first_diff}; rendered {} bytes (fnv1a {rendered_hash:#018x}) against a committed \
-             {} bytes (fnv1a {:#018x}). Rendered by {} (kind {:?}, driver {}) — compare that \
-             against {name}.provenance.txt before assuming the change under test is at fault. \
+            "{name}: the picture moved beyond the stated tolerance. {} of {} pixels differ (at \
+             most {MAX_DIFFERING_PIXELS} allowed), largest channel difference {} (at most \
+             {MAX_CHANNEL_DELTA} allowed), first at byte {}; rendered fnv1a \
+             {rendered_hash:#018x} against a committed {:#018x}. Rendered by {} (kind {:?}, \
+             driver {}) — compare that against {name}.provenance.txt before assuming the change \
+             under test is at fault. A largest-channel difference above one is the interesting \
+             case: this pool varies by a rounding step, so anything larger is a different colour \
+             rather than a different rounding, and the bound should not be widened to admit it. \
              The actual bytes and a .ppm of them are beside the golden.",
+            difference.pixels,
             (SIZE as usize) * (SIZE as usize),
-            pixels.len(),
-            expected.len(),
+            difference.largest_channel,
+            difference.first_byte,
             fnv1a(&expected),
             adapter.name,
             adapter.kind,
@@ -385,4 +480,63 @@ fn the_building_script_changes_what_is_drawn() {
         "both checkpoints drew the same picture, so one of them is not a checkpoint"
     );
     assert_no_validation_errors(&device);
+}
+
+/// **The tolerance admits a rounding difference and nothing larger.**
+///
+/// A tolerance is a hole unless something checks its edges, and both of
+/// its edges are checked here: the count and the per-channel step. The
+/// mesh renderer's own golden carries the twin of this test for the same
+/// reason, and this one exists because a bound nobody probes is a bound
+/// that can be widened later without anybody noticing what it stopped
+/// catching.
+///
+/// The numbers are the real ones. The pool was observed differing by 776
+/// and 843 pixels on 2026-09-07, so the admitted case uses the larger of
+/// those; the refused cases step just past each edge.
+///
+/// Probed by raising `MAX_CHANNEL_DELTA` to two: the second assertion
+/// goes green when it must not, which is the whole point of asserting a
+/// refusal rather than only an admission.
+#[test]
+fn the_tolerance_admits_a_rounding_difference_and_nothing_larger() {
+    let pixel_count = (SIZE as usize) * (SIZE as usize);
+    let base = vec![128u8; pixel_count * 4];
+
+    // The observed shape: many pixels, each off by a single step.
+    let mut rounding = base.clone();
+    for pixel in 0..843 {
+        rounding[pixel * 4 + 1] = 129;
+    }
+    let admitted = Difference::between(&rounding, &base);
+    assert_eq!(admitted.pixels, 843);
+    assert_eq!(admitted.largest_channel, 1);
+    assert!(
+        admitted.within_tolerance(),
+        "the difference the runner pool actually produces must be admitted"
+    );
+
+    // Two steps is a different colour, not a different rounding — and it
+    // is refused however few pixels carry it.
+    let mut larger = base.clone();
+    larger[4 + 1] = 130;
+    let refused = Difference::between(&larger, &base);
+    assert_eq!(refused.largest_channel, 2);
+    assert!(
+        !refused.within_tolerance(),
+        "a two-step difference in a single pixel must be refused"
+    );
+
+    // And one step is refused once it stops being an edge case and
+    // becomes the picture.
+    let mut many = base.clone();
+    for pixel in 0..=MAX_DIFFERING_PIXELS {
+        many[pixel * 4 + 1] = 129;
+    }
+    let flooded = Difference::between(&many, &base);
+    assert_eq!(flooded.largest_channel, 1);
+    assert!(
+        !flooded.within_tolerance(),
+        "one step past the pixel bound must be refused, or the bound is decoration"
+    );
 }

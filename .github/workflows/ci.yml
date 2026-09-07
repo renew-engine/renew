@@ -1371,6 +1371,14 @@ jobs:
   determinism-ios:
     name: Determinism (ios simulator)
     runs-on: macos-latest
+    # **It downloads two of `determinism-emit`'s artifacts, so it has to
+    # wait for them.** Without this the job starts as soon as a runner is
+    # free, races the matrix leg that uploads them, and fails with
+    # `Artifact not found for name: determinism-macos-latest` -- a red
+    # lane that says nothing about the change under test. Observed three
+    # times on 2026-09-07, twice on `main`. The comparison job below
+    # already declares the same dependency; this one was the asymmetry.
+    needs: [determinism-emit]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
