@@ -132,15 +132,36 @@ pub enum ClipSurface {
 ///
 /// As [`draw`].
 pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
-
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
         validation: Validation::IfAvailable,
     })
     .map_err(|error| RenderError::NoDevice(error.to_string()))?;
+    draw_clip_space_with(&device, scene, surface)
+}
+
+/// The same draw, onto a device the caller already holds.
+///
+/// **Split out for the same reason [`draw`] was split from [`to_png`]:
+/// so a test can look at the result without also owning the step
+/// before it.** A picture compared byte for byte is only evidence if
+/// the comparison knows which adapter drew it — a software rasterizer
+/// and a real GPU disagree legitimately — and a caller that cannot see
+/// the device cannot ask. Everything above creates a device and throws
+/// the handle away, which is right for a command-line render and wrong
+/// for an oracle.
+///
+/// # Errors
+///
+/// As [`draw`], less the device creation the caller has already done.
+pub fn draw_clip_space_with(
+    device: &Device,
+    scene: &Scene,
+    surface: ClipSurface,
+) -> Result<Vec<u8>, RenderError> {
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
 
     let extent = Extent {
         width: SIZE,
@@ -156,16 +177,16 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
     let mesh;
     let items = match surface {
         ClipSurface::Flat => {
-            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
+            flat = MeshRenderer::new(device, TargetFormat::Rgba8Srgb)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = flat
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [flat.item(&mesh)]
         }
         ClipSurface::Textured => {
             textured = TexturedMeshRenderer::new(
-                &device,
+                device,
                 TargetFormat::Rgba8Srgb,
                 Extent {
                     width: crate::atlas::WIDTH,
@@ -175,7 +196,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
             )
             .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = textured
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [textured.item(&mesh)]
         }
