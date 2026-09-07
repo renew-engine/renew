@@ -67,6 +67,13 @@ This is the bar every change already in the tree was held to:
 - **No new dependencies without discussing it first.** Every third-party
   crate is a long-term commitment, and the runtime accepts only
   permissively licensed ones. Open an issue.
+- **A reader of untrusted data is judged by its refusals.** Anything that
+  parses bytes the engine did not write — an asset, a recorded input file,
+  a datagram — arrives with one named refusal per way the input can be
+  wrong, a test that provokes each one, and a recorded corpus replayed on
+  every merge. [REFUSALS.md](REFUSALS.md) is the list to implement
+  against. It is a list rather than advice because a parser tested only on
+  the files it can already read passes its own suite the whole time.
 - **Simulation code reads no clock and no unseeded randomness.** Anything
   that must produce the same result from the same inputs takes its time
   and its seed as arguments. Some crates enforce this with lints; the rule

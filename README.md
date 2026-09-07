@@ -214,6 +214,10 @@ Performance claims arrive with numbers and the configuration that produced them,
 made. The steady-state frame loop is held to zero heap allocations through the engine's allocators,
 counted in development builds.
 
+Anything that reads bytes the engine did not write is held to [REFUSALS.md](REFUSALS.md): every way
+input can be wrong gets its own named refusal carrying the numbers, a test that provokes it, and a
+recorded corpus replayed on every merge.
+
 ## Contributing
 
 Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the workflow and the
