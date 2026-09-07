@@ -10,7 +10,7 @@
 //! malformed one lands on a refusal, several of them on one no other
 //! seed reaches, so a mutation of it starts from somewhere the random
 //! walk rarely reaches. Between them the
-//! twenty-one seeds reach twelve different answers, counted rather than
+//! twenty-two seeds reach twelve different answers, counted rather than
 //! guessed: an earlier version of this comment said ten and the corpus it
 //! described reached nine. The replay test beside the crate holds a floor
 //! under that count AND names four refusals that must stay reachable,
@@ -231,7 +231,17 @@ fn main() {
         out
     };
 
-    let seeds: [(&str, Vec<u8>); 21] = [
+    // The one seed this program does not synthesise, and the reason it is
+    // still first-party: a file written by a design tool, already in the
+    // tree and already a decoder fixture. Everything above is fixed
+    // Huffman with filter zero, because that is all this crate's encoder
+    // writes — so without this the dynamic-Huffman header decoder, the
+    // largest parser in the crate, and filters one to four are reached by
+    // no committed input at all. The icon rather than the banner: same
+    // coverage, a sixth of the bytes, and a fuzzer's budget is per byte.
+    let brand = include_bytes!("../../../assets/brand/renew-icon-512.png").to_vec();
+
+    let seeds: [(&str, Vec<u8>); 22] = [
         ("valid-1x1.png", one),
         ("valid-4x4.png", small),
         ("valid-16x9.png", wide),
@@ -261,6 +271,7 @@ fn main() {
         ("colour-indexed-no-palette.png", header_only(4, 4, 8, 3, 0)),
         ("colour-bad-type.png", header_only(4, 4, 8, 7, 0)),
         ("depth-sixteen.png", header_only(4, 4, 16, 6, 0)),
+        ("dynamic-huffman-filtered.png", brand),
     ];
 
     let mut written = 0usize;

@@ -103,12 +103,21 @@ header and the missing terminator. Each of those has exactly one seed, so
 losing it means a real defence stops being exercised while the total
 barely moves.
 
-**What it does not cover, said plainly.** Every valid seed comes from
-this crate's own encoder, which writes one shape of file: fixed Huffman,
-filter zero, colour type 6, depth 8, no palette. So the dynamic-Huffman
-path, the palette parsing and filter types one to four are reached by no
-committed input. The fuzzer can find its own way there; the seeds do not
-put it there.
+**The corpus reaches past what this crate can write.** An encoder-only
+corpus would be a monoculture: everything this crate emits is fixed
+Huffman, filter zero, colour type 6, depth 8, no palette, so a decoder
+seeded only from it is never asked about the dynamic-Huffman header —
+the largest parser here — or about filters one to four. One seed is
+therefore a file written by a design tool rather than by this program:
+the project icon, already in the tree and already a decoder fixture,
+which carries dynamic Huffman and all four filter types. First-party, so
+the no-borrowed-fixtures rule is untouched.
+
+**What is still unseeded, said plainly.** Palette parsing and the `tRNS`
+chunk have no valid seed — the header-only indexed seed refuses before
+reaching them — and several refusals in the error enum have no seed at
+all. The fuzzer can find its own way there; the corpus does not put it
+there.
 
 ## Errors
 
