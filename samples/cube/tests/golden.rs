@@ -5,8 +5,8 @@
 //! colour appear. Those catch a projection that stopped projecting and
 //! nothing finer. **No committed 3D image in this tree was compared byte
 //! for byte before this file**, so a change that moved every block three
-//! pixels to the left, or lost the shadow, or swapped two atlas tiles,
-//! would have passed every lane.
+//! pixels to the left, or swapped two atlas tiles, or flattened the
+//! per-face shading, would have passed every lane.
 //!
 //! Two checkpoints over the two scripts that change the world: the arena
 //! as it is built, and the same arena four hundred ticks into the
@@ -189,10 +189,14 @@ fn assert_structure(pixels: &[u8], name: &str) {
 /// **Byte-exact, decided before the first picture was recorded rather
 /// than after one flaked.** The tolerance this tranche's sibling needed
 /// was for stacked additive light, whose result depends on the order
-/// fragments arrive; this frame has no blending at all — opaque textured
-/// geometry resolved by a depth test, one unfiltered shadow tap, no
-/// multisampling — so there is no stage here whose output is
-/// order-dependent. If the pinned lane disagrees with itself anyway,
+/// fragments arrive. This frame has no blending at all: opaque
+/// textured geometry resolved by a depth test, no multisampling, and
+/// **no shadow pass** — the shadowed camera path is a different entry
+/// point that these checkpoints do not go through, which the pictures
+/// themselves show and which is a gap worth naming rather than a
+/// detail. Nothing in this frame is order-dependent.
+///
+/// If the pinned lane disagrees with itself anyway,
 /// that is a finding about the lane and it gets a measured bound like
 /// the one before it, not a shrug.
 fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<(), String> {
@@ -231,10 +235,12 @@ fn compare_against_golden(device: &Device, name: &str, pixels: &[u8]) -> Result<
          scene: the script named in the file name, run headless for the tick\n\
          count in the file name, then drawn through the textured mesh\n\
          pipeline onto an offscreen target\n\
-         comparison: exact. This frame has no blending — opaque geometry,\n\
-         a depth test, one unfiltered shadow tap — so nothing in it depends\n\
-         on the order fragments arrive, which is what forced a tolerance on\n\
-         the sprite game's crash frame.\n\
+         comparison: exact. This frame has no blending, no multisampling\n\
+         and no shadow pass — opaque geometry resolved by a depth test —\n\
+         so nothing in it depends on the order fragments arrive, which\n\
+         is what forced a tolerance on the sprite game's crash frame.\n\
+         The shadowed camera path is a different entry point and no\n\
+         committed picture covers it yet.\n\
          ritual: the test never writes the canonical file above — it writes\n\
          *.candidate.rgba and fails; an inspector — a person, or a session\n\
          that records on the pull request what it inspected — renames the\n\
