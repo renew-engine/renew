@@ -325,12 +325,30 @@ fn the_world_looks_the_way_it_looked() {
         return;
     };
 
+    // **Every checkpoint is compared before any of them reports.** The
+    // obvious loop panics on the first mismatch, and that is wrong here
+    // for a reason the refresh ritual made concrete: on a bootstrap run
+    // the first checkpoint writes its candidate and fails, so the second
+    // never renders and never writes one. Adopting two pictures would
+    // then take two full ritual runs, and a refresh that regenerates
+    // fewer files than it deleted is precisely the incident the
+    // deletion list upstream was written to prevent. Collect, then
+    // report.
+    let mut refusals = Vec::new();
     for checkpoint in &CHECKPOINTS {
         let pixels = capture(&device, checkpoint).expect("the world draws");
         assert_structure(&pixels, checkpoint.name);
-        compare_against_golden(&device, checkpoint.name, &pixels)
-            .unwrap_or_else(|error| panic!("{error}"));
+        if let Err(refusal) = compare_against_golden(&device, checkpoint.name, &pixels) {
+            refusals.push(refusal);
+        }
     }
+    assert!(
+        refusals.is_empty(),
+        "{} of {} checkpoints did not match:\n\n{}",
+        refusals.len(),
+        CHECKPOINTS.len(),
+        refusals.join("\n\n")
+    );
 
     assert_no_validation_errors(&device);
 }
