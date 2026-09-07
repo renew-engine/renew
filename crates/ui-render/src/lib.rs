@@ -286,93 +286,27 @@ pub struct Quad {
 /// visible quad, or `None` when nothing remains or the tint draws
 /// nothing at all.
 ///
-/// **The source is cut by the same linear map that cut the destination,
-/// so the map is unchanged and every surviving pixel samples the texel
-/// it would have sampled uncut.** Uncut, the shader interpolates between
-/// the source edges, so a pixel centre `p` maps to
-/// `u(p) = sx + sw*(p - x)/w`. Clipped to `[L, R]` the source runs from
-/// `su0 = sx + sw*(L - x)/w` to `su1 = sx + sw*(R - x)/w`, so
-/// `su1 - su0 = sw*(R - L)/w` and
+/// **The geometry is [`renew_render2d::cut_to`]'s, not a second
+/// copy of it.** This crate carried the whole derivation - the proof
+/// that cutting the source by the map that cut the destination leaves
+/// the sampling function identical - and then the sprite renderer
+/// needed the same cut for scrolling views. Two implementations of one
+/// exacting piece of arithmetic is one too many: the proof lives with
+/// the arithmetic, in the crate that owns sprites, and this asks for it.
 ///
-/// ```text
-/// u'(p) = su0 + (p - L)/(R - L) * (su1 - su0)
-///       = sx + sw*(L - x)/w + sw*(p - L)/w
-///       = sx + sw*(p - x)/w
-///       = u(p)
-/// ```
-///
-/// Identically the same function. It holds by construction, and only
-/// because both fractions come from the same reciprocal - recomputing
-/// per edge is where an implementation loses it.
-///
-/// Two cases are exact rather than merely close. At 1:1 - every glyph,
-/// every nine-slice corner - `source.width / w` is a value divided by
-/// itself, exactly `1.0`, so the cut edge is `sx + (L - x)`: a
-/// difference and a sum of integers, bit-exact. At a power-of-two scale
-/// the reciprocal is exact too. Elsewhere the residue is a few ULPs,
-/// orders below the half texel that could move a `floor`.
-///
-/// Nearest-and-clamped sampling cannot bleed: `0 <= fx0 < fx1 <= 1`, so
-/// a cut only shrinks the sampled rectangle strictly inside the
-/// original, and the computed edges are additionally clamped into it so
-/// a rounding hair cannot reach a neighbouring asset.
-#[expect(
-    clippy::float_cmp,
-    reason = "the early-out fires exactly when no edge moved; a tolerance would take the cut path for a quad that was not cut, which is the one case this must not do"
-)]
+/// What stays here is what belongs to a UI node rather than to a quad:
+/// a tint that draws nothing is dropped before any geometry is done.
 fn clipped(rect: [f32; 4], clip: [f32; 4], source: SubRegion, tint: [f32; 4]) -> Option<Quad> {
     if tint == [0.0, 0.0, 0.0, 0.0] {
         return None;
     }
-    let [x, y, width, height] = rect;
-    let left = x.max(clip[0]);
-    let top = y.max(clip[1]);
-    let right = (x + width).min(clip[2]);
-    let bottom = (y + height).min(clip[3]);
-    if right <= left || bottom <= top {
-        return None;
-    }
-
-    // Nothing was cut: four compares, no division, and the source
-    // passes through untouched - which is what carries every existing
-    // golden byte for byte.
-    if left == x && top == y && right == x + width && bottom == y + height {
-        return Some(Quad {
-            x,
-            y,
-            width,
-            height,
-            source,
-            tint,
-        });
-    }
-
-    let inv_w = 1.0 / width;
-    let inv_h = 1.0 / height;
-    let fx0 = (left - x) * inv_w;
-    let fx1 = (right - x) * inv_w;
-    let fy0 = (top - y) * inv_h;
-    let fy1 = (bottom - y) * inv_h;
-    let (sx, sy) = (source.x, source.y);
-    let (sw, sh) = (source.width, source.height);
-    // Clamped into the original source: the arithmetic above cannot
-    // leave it by more than a rounding step, and this makes "cannot" a
-    // fact rather than an argument.
-    let cut_left = sw.mul_add(fx0, sx).max(sx);
-    let cut_top = sh.mul_add(fy0, sy).max(sy);
-    let cut_right = sw.mul_add(fx1, sx).min(sx + sw);
-    let cut_bottom = sh.mul_add(fy1, sy).min(sy + sh);
+    let (cut, source) = renew_render2d::cut_to(rect, source, clip)?;
     Some(Quad {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-        source: SubRegion {
-            x: cut_left,
-            y: cut_top,
-            width: cut_right - cut_left,
-            height: cut_bottom - cut_top,
-        },
+        x: cut[0],
+        y: cut[1],
+        width: cut[2],
+        height: cut[3],
+        source,
         tint,
     })
 }

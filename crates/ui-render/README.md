@@ -36,6 +36,12 @@ chain, computed at capture and blended with the rest, and the quad's
 source rectangle is cut by the same linear map, so every surviving
 pixel samples the texel it would have sampled uncut. The one sampled
 atlas region is still a uniform white texel, so no committed picture
+The cut itself is `render2d::cut_to` rather than a second copy of it:
+this crate carried the derivation for a while, and the proof belongs
+with the arithmetic in the crate that owns sprites. What stays here is
+what belongs to a node rather than to a quad — a tint that draws
+nothing is dropped before any geometry runs.
+
 moves yet.
 
 ## Text
