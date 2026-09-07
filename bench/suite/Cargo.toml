@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter — paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter, the sprite construction chain and its packer, and the 3D scene's geometry path — paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -56,6 +56,11 @@ renew-render2d = { path = "../../crates/render2d" }
 # crate's runtime-loaded dependency, as they already did through the
 # presenter above.
 renew-rhi = { path = "../../crates/rhi", default-features = false }
+# Bench-target-only, and for `Scene` alone: the device-free half of
+# the 3D renderer, which holds no device and builds on a machine with
+# no adapter. The rendering half of that crate needs one and is not
+# timed here.
+renew-render3d = { path = "../../crates/render3d" }
 
 [lints]
 workspace = true
@@ -102,4 +107,8 @@ harness = false
 
 [[bench]]
 name = "sprite"
+harness = false
+
+[[bench]]
+name = "render3d"
 harness = false

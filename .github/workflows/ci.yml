@@ -180,9 +180,10 @@ jobs:
       #
       # renew-bench appears in several exclude lists because its bench
       # targets reach the crates they time (jobs, frame, rng, ecs,
-      # particles, ui, ui-render) and, through those, what they build
-      # on (render2d, rhi, fixed); every cell that removes a crate in
-      # that closure excludes the suite alongside it.
+      # platform, particles, ui, ui-render, render2d, render3d) and,
+      # through those, what they build on (rhi, fixed); every cell
+      # that removes a crate in that closure excludes the suite
+      # alongside it.
       - name: Build and test without the job system
         run: |
           sel="--workspace --exclude renew-jobs --exclude renew-bench"
@@ -392,15 +393,17 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
-      # The 3D renderer: policy over the rendering crate, and no
-      # consumers at all yet -- no sample draws geometry, so nothing is
-      # excluded alongside it. That is what makes this cell cheap to keep
-      # honest now and worth having before it stops being cheap: the
-      # first consumer joins the exclude list rather than discovering,
-      # later, that the crate was never actually removable.
+      # The 3D renderer: policy over the rendering crate. The voxel
+      # sample and the benchmark suite are its consumers, so both are
+      # excluded alongside it. The suite is the newer of the two and
+      # joined the moment it began timing the geometry path -- which is
+      # the arrangement this cell was kept honest for while the crate
+      # had no consumer at all: the first one joins the exclude list
+      # here, rather than discovering later that the crate was never
+      # actually removable.
       - name: Build and test without the 3D renderer
         run: |
-          sel="--workspace --exclude renew-render3d --exclude renew-sample-cube"
+          sel="--workspace --exclude renew-render3d --exclude renew-sample-cube --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d $sel
           cargo build $sel
           cargo test $sel
