@@ -612,11 +612,40 @@ pub(crate) fn turn_sin_cos(turns: f32) -> (f32, f32) {
 /// arithmetic: `(q - p) + p` is not `q` in `f32` — with `x = 0.1`, a
 /// width of 1000 and the centre pivot it comes back as `0.1000061` —
 /// and every committed picture rests on the branch.
+/// The turn's sine and cosine, with the no-turn answer written out
+/// rather than computed.
+///
+/// `turn_sin_cos(0.0)` already returns exactly `(0.0, 1.0)` — a quarter
+/// turn's exactness is pinned on bits by
+/// [`turn_sin_cos_is_exact_at_quarter_turns`], and zero is one of its
+/// cases — so taking the constant instead of the polynomial changes no
+/// byte anywhere and spares the untransformed sprite the call. This
+/// exists so that one evaluation can serve both the corner transform
+/// and the smear's local axes, which each used to ask for their own.
+/// The comparison is against exactly zero on purpose: a sprite whose
+/// rotation is merely near zero must go through the polynomial, because
+/// that is what it did before this split and its bytes depend on it.
+/// (No `expect(float_cmp)` here — the lint does not fire on a bare
+/// comparison with zero, and an unfulfilled expectation is itself an
+/// error under `-D warnings`.)
+fn sin_cos_of(sprite: &Sprite) -> (f32, f32) {
+    if sprite.rotation == 0.0 {
+        (0.0, 1.0)
+    } else {
+        turn_sin_cos(sprite.rotation)
+    }
+}
+
+/// [`corners`], with the turn's sine and cosine supplied by the caller.
+///
+/// Split out so a caller that needs the same pair for something else
+/// evaluates it once. The pair is ignored entirely on the untransformed
+/// path, which returns before it is read.
 #[expect(
     clippy::float_cmp,
     reason = "exactly the untransformed values must take the arithmetic-free path; nearness would send a sprite that means 'no turn' through rounding"
 )]
-pub(crate) fn corners(sprite: &Sprite) -> [Vec2; 4] {
+pub(crate) fn corners_with(sprite: &Sprite, sin_cos: (f32, f32)) -> [Vec2; 4] {
     let canvas_min = Vec2::new(sprite.x, sprite.y);
     let canvas_max = canvas_min + Vec2::new(sprite.width, sprite.height);
     let rect = [
@@ -632,7 +661,7 @@ pub(crate) fn corners(sprite: &Sprite) -> [Vec2; 4] {
         sprite.x + sprite.pivot[0] * sprite.width,
         sprite.y + sprite.pivot[1] * sprite.height,
     );
-    let (s, c) = turn_sin_cos(sprite.rotation);
+    let (s, c) = sin_cos;
     rect.map(|q| {
         let d = q - pivot;
         let d = Vec2::new(d.x * sprite.scale[0], d.y * sprite.scale[1]);
@@ -684,7 +713,12 @@ pub(crate) fn footprint(sprite: &Sprite, atlas: Extent) -> Footprint {
         sprite.flip_x,
         sprite.flip_y,
     );
-    let mut corners = corners(sprite);
+    // Evaluated once here and handed to both readers below. The corner
+    // transform and the smear's local axes are the same turn; asking
+    // twice cost a smeared, rotated sprite a second run of the sine
+    // polynomial for an answer it already had.
+    let sin_cos = sin_cos_of(sprite);
+    let mut corners = corners_with(sprite, sin_cos);
     let mut smear_uv = Vec2::new(0.0, 0.0);
 
     if sprite.smear != [0.0, 0.0] {
@@ -693,11 +727,7 @@ pub(crate) fn footprint(sprite: &Sprite, atlas: Extent) -> Footprint {
         // A sprite with no drawn area is degenerate before any smear;
         // dividing by it would only turn visible nonsense into NaN.
         if drawn_w > 0.0 && drawn_h > 0.0 {
-            let (s, c) = if sprite.rotation == 0.0 {
-                (0.0, 1.0)
-            } else {
-                turn_sin_cos(sprite.rotation)
-            };
+            let (s, c) = sin_cos;
             // The drawn local axes, unit length. A negative scale
             // reverses one, which is the geometric mirror.
             let ux = Vec2::new(c, s) * sprite.scale[0].signum();
@@ -786,6 +816,62 @@ mod tests {
 
     fn canvas(width: u32, height: u32) -> Canvas {
         Canvas::new(width, height).expect("nonzero test canvas")
+    }
+
+    /// `sin_cos_of` is `turn_sin_cos` with the zero case written out —
+    /// on bits, at every angle.
+    ///
+    /// **This is the whole correctness argument for sharing one
+    /// evaluation.** `footprint` now evaluates the turn once and hands
+    /// it to both the corner transform and the smear's local axes. The
+    /// corner transform previously called `turn_sin_cos` itself and did
+    /// so unconditionally — including at zero rotation with a non-unit
+    /// scale, where it went through the polynomial to reach exactly
+    /// `(0, 1)`. Taking the constant there is only sound while the
+    /// constant IS what the polynomial returns. If those ever parted,
+    /// every scaled, unrotated sprite would pack different bytes and
+    /// nothing else in this file would say so.
+    ///
+    /// Compared on bits across the sweep and at both signed zeros,
+    /// because "close enough" is exactly what this substitution must
+    /// not be.
+    ///
+    /// **What this cannot check** is that the evaluation happens only
+    /// once — that is a cost, not a behaviour, and no assertion here can
+    /// see it. The bench line `sprite_pack_smeared_2048` is its guard:
+    /// a second evaluation would put roughly 28 ns back on every
+    /// smeared, rotated sprite, which that line reads directly.
+    ///
+    /// Probed by returning `(0.0, 0.9999999)` for the zero case: red at
+    /// 0.0 and at -0.0, green everywhere else.
+    #[test]
+    fn sin_cos_of_is_turn_sin_cos_with_the_zero_case_written_out() {
+        let mut angles: Vec<f32> = (-40..=40).map(|i| i as f32 * 0.05).collect();
+        angles.push(0.0);
+        angles.push(-0.0);
+        angles.push(1e7);
+        for turns in angles {
+            let sprite = Sprite::new(SQUARE, 0.0, 0.0).rotation(turns);
+            let (got_s, got_c) = sin_cos_of(&sprite);
+            let (want_s, want_c) = turn_sin_cos(turns);
+            assert_eq!(
+                (got_s.to_bits(), got_c.to_bits()),
+                (want_s.to_bits(), want_c.to_bits()),
+                "at {turns} turns: got ({got_s}, {got_c}), want ({want_s}, {want_c})"
+            );
+        }
+    }
+
+    /// The corner transform asking for its own sine and cosine.
+    ///
+    /// Production code no longer has a caller for this shape: `footprint`
+    /// evaluates the pair once and hands it to `corners_with`, because it
+    /// needs the same pair for the smear's local axes. The tests below
+    /// care about corners and not about who computed the turn, so the
+    /// convenience lives here rather than as an unused function beside
+    /// the one thing that does call it.
+    fn corners(sprite: &Sprite) -> [Vec2; 4] {
+        corners_with(sprite, sin_cos_of(sprite))
     }
 
     /// Exact float claims compare bits, the math crate's own pattern:
