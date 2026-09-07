@@ -1609,6 +1609,7 @@ dependencies = [
  "renew-particles",
  "renew-platform",
  "renew-render2d",
+ "renew-render3d",
  "renew-rhi",
  "renew-rng",
  "renew-ui",

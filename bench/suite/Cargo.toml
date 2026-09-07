@@ -56,6 +56,11 @@ renew-render2d = { path = "../../crates/render2d" }
 # crate's runtime-loaded dependency, as they already did through the
 # presenter above.
 renew-rhi = { path = "../../crates/rhi", default-features = false }
+# Bench-target-only, and for `Scene` alone: the device-free half of
+# the 3D renderer, which holds no device and builds on a machine with
+# no adapter. The rendering half of that crate needs one and is not
+# timed here.
+renew-render3d = { path = "../../crates/render3d" }
 
 [lints]
 workspace = true
@@ -102,4 +107,8 @@ harness = false
 
 [[bench]]
 name = "sprite"
+harness = false
+
+[[bench]]
+name = "scene"
 harness = false
