@@ -89,12 +89,40 @@ file was still small, still structurally a PNG, still had a valid header,
 and every test passed. Only a decoder refused it. The symbol tables are
 pinned to the published ones now, so the next mistake fails here.
 
+**Every refusal has a file that provokes it, and the list cannot rot.**
+`decode` returns one of seventeen named refusals. A test beside it builds
+one file for each and asserts that the answers those files reach number
+exactly seventeen -- so a validation check that becomes dead code is
+caught by its file falling through onto some other refusal, which no
+per-refusal test can notice. The guard under that test is a function
+matching the error enum exhaustively with no wildcard: it lives inside
+this crate, where the enum's openness does not apply, so a refusal added
+later stops the file compiling until somebody writes the bytes that
+provoke it. That is the check a test outside the crate cannot make --
+from outside the wildcard is mandatory, and a new refusal lands in it in
+silence.
+
+**Four properties run on generated inputs at every merge.**
+`tests/properties.rs` states what must hold for every file in a shape
+rather than for files somebody sat down and wrote: what the encoder
+writes the decoder returns exactly; every byte string gets an answer and
+never a panic; no proper prefix of a file decodes; and one flipped bit
+anywhere in a file is refused. The last of those is what makes the chunk
+checksums load-bearing rather than decorative -- every byte after the
+signature lies in some chunk's length, type, payload or checksum, so a
+single bit has nowhere to hide. Each property was probed by deleting the
+code it guards, and the one probe that came back green is recorded in
+that property's own documentation rather than left to be discovered: the
+round trip cannot reach filters one to four, because this crate never
+writes them.
+
 **The decoder is fuzzed, and the corpus is generated rather than
 collected.** Everything above is about the encoder — the half this crate
 writes. The half that reads a file somebody else wrote is checked by
 `png_decode`, whose seeds are built by `cargo run -p renew-png --example
-make_corpus`: every input is written by that program, so the corpus
-carries no file this repository did not author. `tests/corpus_replay.rs`
+make_corpus`: every input is first-party, so the corpus carries no
+licence question. All but one are written by that program, and the
+exception is the subject of the next paragraph. `tests/corpus_replay.rs`
 replays them on the stable toolchain at every merge, and asserts two
 things a file count cannot. The seeds must still reach at least ten
 distinct answers between them, and four specific refusals must stay
@@ -115,9 +143,9 @@ the no-borrowed-fixtures rule is untouched.
 
 **What is still unseeded, said plainly.** Palette parsing and the `tRNS`
 chunk have no valid seed — the header-only indexed seed refuses before
-reaching them — and several refusals in the error enum have no seed at
-all. The fuzzer can find its own way there; the corpus does not put it
-there.
+reaching them, and several refusals have no seed in the corpus -- though
+every one of them now has a file in the suite above. The fuzzer can find
+its own way there; the corpus does not put it there.
 
 ## Errors
 
