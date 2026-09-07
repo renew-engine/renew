@@ -714,7 +714,7 @@ mod filters {
     }
 
     /// Wrap bytes as a PNG chunk: length, type, body, checksum.
-    fn chunk(id: [u8; 4], body: &[u8]) -> Vec<u8> {
+    pub(super) fn chunk(id: [u8; 4], body: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(0).to_be_bytes());
         out.extend_from_slice(&id);
@@ -831,5 +831,228 @@ mod filters {
                 );
             }
         }
+    }
+}
+
+/// **One file per refusal, and a compile-time guard that the list is
+/// whole.**
+///
+/// The tests above provoke individual refusals and document how each one
+/// is reached; this module asks a different question — *is every named
+/// refusal still reachable at all?* A validation check that becomes dead
+/// code stops being tested by the suite that names it, and nothing else
+/// here notices: the other tests keep passing, because each one asserts
+/// about the refusal it was written for and no test owns the list.
+///
+/// The guard is [`name`], which matches `DecodeError` exhaustively and
+/// **deliberately without a wildcard**. This module is inside the crate
+/// that defines the enum, where `#[non_exhaustive]` does not apply, so a
+/// variant added later stops this file compiling until somebody decides
+/// which bytes provoke it. That is exactly the guard the replay test
+/// beside this crate cannot have: from outside, the wildcard is
+/// mandatory and a new refusal lands in it silently.
+#[cfg(test)]
+mod refusals {
+    use super::filters::chunk;
+    use super::{DecodeError, decode};
+
+    /// Every refusal this decoder can return, by name — the variant
+    /// alone, without its fields.
+    ///
+    /// No wildcard. See this module's own documentation for why that is
+    /// the point of the function rather than an accident of style.
+    fn name(error: DecodeError) -> &'static str {
+        match error {
+            DecodeError::NotAPng => "NotAPng",
+            DecodeError::ChunkOverruns { .. } => "ChunkOverruns",
+            DecodeError::BadChecksum { .. } => "BadChecksum",
+            DecodeError::BadHeader => "BadHeader",
+            DecodeError::ZeroExtent { .. } => "ZeroExtent",
+            DecodeError::BadColourType { .. } => "BadColourType",
+            DecodeError::UnsupportedDepth { .. } => "UnsupportedDepth",
+            DecodeError::Interlaced => "Interlaced",
+            DecodeError::BadMethod { .. } => "BadMethod",
+            DecodeError::BadPalette { .. } => "BadPalette",
+            DecodeError::NoImageData => "NoImageData",
+            DecodeError::MissingEnd => "MissingEnd",
+            DecodeError::BadZlibHeader { .. } => "BadZlibHeader",
+            DecodeError::Deflate { .. } => "Deflate",
+            DecodeError::BadImageLength { .. } => "BadImageLength",
+            DecodeError::BadFilter { .. } => "BadFilter",
+            DecodeError::TooLarge { .. } => "TooLarge",
+        }
+    }
+
+    /// What a file gets: the refusal's name, or `"Ok"`.
+    fn outcome(bytes: &[u8]) -> &'static str {
+        decode(bytes).map_or_else(name, |_| "Ok")
+    }
+
+    /// An `IHDR` body: the extent, then the five one-byte fields.
+    fn header(width: u32, height: u32, fields: [u8; 5]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(13);
+        out.extend_from_slice(&width.to_be_bytes());
+        out.extend_from_slice(&height.to_be_bytes());
+        out.extend_from_slice(&fields);
+        out
+    }
+
+    /// A zlib stream carrying `raw` in one **stored** block.
+    ///
+    /// Stored rather than compressed so a fixture needs no compressor of
+    /// its own: what these files test is the layer above the inflate, and
+    /// a hand-written Huffman block would put a second thing under test
+    /// in every one of them.
+    fn stored(raw: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01, 0b0000_0001];
+        let length = u16::try_from(raw.len()).unwrap_or(0);
+        out.extend_from_slice(&length.to_le_bytes());
+        out.extend_from_slice(&(!length).to_le_bytes());
+        out.extend_from_slice(raw);
+        out.extend_from_slice(&crate::adler32(raw).to_be_bytes());
+        out
+    }
+
+    /// A file from its chunks, signature included.
+    fn file(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = crate::SIGNATURE.to_vec();
+        for part in chunks {
+            out.extend_from_slice(part);
+        }
+        out
+    }
+
+    /// A one-pixel indexed file whose sole sample is `index`.
+    fn indexed(palette: &[u8], index: u8) -> Vec<u8> {
+        file(&[
+            chunk(*b"IHDR", &header(1, 1, [8, 3, 0, 0, 0])),
+            chunk(*b"PLTE", palette),
+            chunk(*b"IDAT", &stored(&[0, index])),
+            chunk(*b"IEND", &[]),
+        ])
+    }
+
+    /// **Every named refusal has a file that still provokes it.**
+    ///
+    /// Seventeen entries for seventeen variants, and the assertion is on
+    /// the *set* as well as on each entry: if a validation check is
+    /// deleted, its file falls through to whatever the next check says,
+    /// two entries collapse onto one answer, and this names which one
+    /// went missing. That is the failure a per-refusal test cannot
+    /// produce, because a per-refusal test only ever knows about the
+    /// refusal it was written for.
+    ///
+    /// Probed by deleting the interlace rejection: the `Interlaced`
+    /// entry falls through to `MissingEnd` -- measured, not guessed --
+    /// and the message names which refusal stopped being reachable.
+    #[test]
+    fn every_named_refusal_has_a_file_that_provokes_it() {
+        // A real file to damage, so the checksum and truncation entries
+        // start from something that does decode.
+        let sound = crate::encode(2, 2, &[0x40; 16]).expect("the encoder accepts a whole image");
+        let mut broken_crc = sound.clone();
+        // The interlace byte of `IHDR`, four bytes ahead of its checksum.
+        broken_crc[8 + 8 + 12] ^= 0x01;
+        // Everything but the terminator: whole chunks, no `IEND`.
+        let unterminated = sound[..sound.len() - 12].to_vec();
+
+        let cases: [(&str, Vec<u8>); 17] = [
+            ("NotAPng", b"not a png at all".to_vec()),
+            ("ChunkOverruns", {
+                let mut out = crate::SIGNATURE.to_vec();
+                out.extend_from_slice(&0xFFFF_FF00_u32.to_be_bytes());
+                out.extend_from_slice(b"IDAT");
+                out.extend_from_slice(&[0; 8]);
+                out
+            }),
+            ("BadChecksum", broken_crc),
+            ("BadHeader", file(&[chunk(*b"IEND", &[])])),
+            (
+                "ZeroExtent",
+                file(&[chunk(*b"IHDR", &header(0, 1, [8, 6, 0, 0, 0]))]),
+            ),
+            (
+                "BadColourType",
+                file(&[chunk(*b"IHDR", &header(1, 1, [8, 7, 0, 0, 0]))]),
+            ),
+            (
+                "UnsupportedDepth",
+                file(&[chunk(*b"IHDR", &header(1, 1, [1, 6, 0, 0, 0]))]),
+            ),
+            (
+                "Interlaced",
+                file(&[chunk(*b"IHDR", &header(1, 1, [8, 6, 0, 0, 1]))]),
+            ),
+            (
+                "BadMethod",
+                file(&[chunk(*b"IHDR", &header(1, 1, [8, 6, 1, 0, 0]))]),
+            ),
+            ("BadPalette", indexed(&[0, 0, 0], 5)),
+            (
+                "NoImageData",
+                file(&[
+                    chunk(*b"IHDR", &header(1, 1, [8, 6, 0, 0, 0])),
+                    chunk(*b"IEND", &[]),
+                ]),
+            ),
+            ("MissingEnd", unterminated),
+            (
+                "BadZlibHeader",
+                file(&[
+                    chunk(*b"IHDR", &header(1, 1, [8, 6, 0, 0, 0])),
+                    chunk(*b"IDAT", &[0x00, 0x00]),
+                    chunk(*b"IEND", &[]),
+                ]),
+            ),
+            (
+                "Deflate",
+                file(&[
+                    chunk(*b"IHDR", &header(1, 1, [8, 6, 0, 0, 0])),
+                    // A well-formed zlib header over a block whose kind
+                    // is 3, which the format leaves undefined.
+                    chunk(*b"IDAT", &[0x78, 0x01, 0xFF, 0xFF, 0xFF, 0xFF]),
+                    chunk(*b"IEND", &[]),
+                ]),
+            ),
+            (
+                "BadImageLength",
+                file(&[
+                    chunk(*b"IHDR", &header(2, 2, [8, 6, 0, 0, 0])),
+                    // Two rows of two pixels want (8 + 1) * 2 bytes.
+                    chunk(*b"IDAT", &stored(&[0; 10])),
+                    chunk(*b"IEND", &[]),
+                ]),
+            ),
+            (
+                "BadFilter",
+                file(&[
+                    chunk(*b"IHDR", &header(1, 1, [8, 6, 0, 0, 0])),
+                    // Five is one past the last filter the format defines.
+                    chunk(*b"IDAT", &stored(&[5, 0, 0, 0, 0])),
+                    chunk(*b"IEND", &[]),
+                ]),
+            ),
+            (
+                "TooLarge",
+                file(&[chunk(*b"IHDR", &header(0xFFFF, 0xFFFF, [8, 6, 0, 0, 0]))]),
+            ),
+        ];
+
+        let mut reached = std::collections::BTreeSet::new();
+        for (expected, bytes) in &cases {
+            let got = outcome(bytes);
+            assert_eq!(
+                got, *expected,
+                "the file written to provoke {expected} now answers {got}"
+            );
+            reached.insert(got);
+        }
+
+        assert_eq!(
+            reached.len(),
+            cases.len(),
+            "two entries provoke the same refusal, so one of them is not testing what it names: \
+             {reached:?}"
+        );
     }
 }
