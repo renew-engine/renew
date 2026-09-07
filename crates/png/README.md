@@ -89,6 +89,27 @@ file was still small, still structurally a PNG, still had a valid header,
 and every test passed. Only a decoder refused it. The symbol tables are
 pinned to the published ones now, so the next mistake fails here.
 
+**The decoder is fuzzed, and the corpus is generated rather than
+collected.** Everything above is about the encoder — the half this crate
+writes. The half that reads a file somebody else wrote is checked by
+`png_decode`, whose seeds are built by `cargo run -p renew-png --example
+make_corpus`: every input is written by that program, so the corpus
+carries no file this repository did not author. `tests/corpus_replay.rs`
+replays them on the stable toolchain at every merge, and asserts two
+things a file count cannot. The seeds must still reach at least ten
+distinct answers between them, and four specific refusals must stay
+reachable by name — the allocation ceiling, the chunk checksum, the zlib
+header and the missing terminator. Each of those has exactly one seed, so
+losing it means a real defence stops being exercised while the total
+barely moves.
+
+**What it does not cover, said plainly.** Every valid seed comes from
+this crate's own encoder, which writes one shape of file: fixed Huffman,
+filter zero, colour type 6, depth 8, no palette. So the dynamic-Huffman
+path, the palette parsing and filter types one to four are reached by no
+committed input. The fuzzer can find its own way there; the seeds do not
+put it there.
+
 ## Errors
 
 `encode` returns `Result`, and the error names which of three caller

@@ -7,10 +7,16 @@
 //! A fuzzer finds its own way past a signature eventually, but it wastes
 //! most of a budget doing it. These seeds put it on the far side of each
 //! early refusal: the valid images give it a shape to mutate, and each
-//! malformed one lands on a different named refusal, so a mutation of it
-//! starts from somewhere the random walk rarely reaches. Between them the
-//! fourteen seeds reach ten different answers, and the replay test beside
-//! the crate holds a floor under that count.
+//! malformed one lands on a refusal, several of them on one no other
+//! seed reaches, so a mutation of it starts from somewhere the random
+//! walk rarely reaches. Between them the
+//! twenty-one seeds reach twelve different answers, counted rather than
+//! guessed: an earlier version of this comment said ten and the corpus it
+//! described reached nine. The replay test beside the crate holds a floor
+//! under that count AND names four refusals that must stay reachable,
+//! because a count alone does not notice one specific guard going
+//! unseeded — removing the decoder allocation ceiling drops the total by
+//! one and clears any floor loose enough to let the fuzzer minimise.
 //!
 //! Run when the corpus needs regenerating:
 //!
@@ -113,6 +119,35 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// A copy of `png` cut off immediately after its last complete `IDAT`
+/// chunk, so every chunk present is whole and only the terminator is
+/// missing.
+///
+/// This is the shape `MissingEnd` exists for. Cutting at an arbitrary
+/// offset instead lands inside a chunk and refuses at `ChunkOverruns`,
+/// which is a different answer about a different defect.
+fn truncate_after_last_idat(png: &[u8]) -> Option<Vec<u8>> {
+    let mut at = SIGNATURE.len();
+    let mut end_of_last_idat = None;
+    // Walk the chunk list: 4 bytes length, 4 bytes type, payload, 4 bytes
+    // checksum. Stop at the first chunk that does not fit.
+    while at + 8 <= png.len() {
+        let mut length_bytes = [0u8; 4];
+        length_bytes.copy_from_slice(png.get(at..at + 4)?);
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        let kind = png.get(at + 4..at + 8)?;
+        let next = at.checked_add(12)?.checked_add(length)?;
+        if next > png.len() {
+            break;
+        }
+        if kind == b"IDAT" {
+            end_of_last_idat = Some(next);
+        }
+        at = next;
+    }
+    end_of_last_idat.map(|cut| png[..cut].to_vec())
+}
+
 /// A copy of `png` whose first compressed byte is nonsense and whose
 /// enclosing chunk checksum agrees with the edit.
 ///
@@ -156,8 +191,19 @@ fn main() {
         return;
     };
 
-    let mut truncated = wide.clone();
-    truncated.truncate(wide.len() / 2);
+    // Two truncations, because they are two different refusals and the
+    // single seed this replaced only ever reached one of them.
+    //
+    // Cut after the last complete IDAT: every chunk is whole and the
+    // terminator is gone, which is the case `MissingEnd`'s own doc calls
+    // "how a truncation is caught" — a file that "holds a complete-looking
+    // image and would otherwise decode without complaint".
+    let truncated = truncate_after_last_idat(&wide).unwrap_or_else(|| wide.clone());
+    // Cut inside a chunk, so the declared length runs past the end. This
+    // is what the old `truncated.png` actually did, and it lands on
+    // `ChunkOverruns` — a real case, but not the one the name promised.
+    let mut truncated_mid = wide.clone();
+    truncated_mid.truncate(wide.len() / 2);
 
     // One bit flipped inside a chunk's payload, so the framing is intact
     // and only the checksum disagrees.
@@ -185,11 +231,12 @@ fn main() {
         out
     };
 
-    let seeds: [(&str, Vec<u8>); 14] = [
+    let seeds: [(&str, Vec<u8>); 21] = [
         ("valid-1x1.png", one),
         ("valid-4x4.png", small),
         ("valid-16x9.png", wide),
-        ("truncated.png", truncated),
+        ("truncated-after-idat.png", truncated),
+        ("truncated-mid-chunk.png", truncated_mid),
         ("bad-checksum.png", bad_crc),
         ("bad-zlib-header.png", bad_zlib),
         ("not-a-png.bin", b"this file is not a png at all".to_vec()),
@@ -200,6 +247,20 @@ fn main() {
         ("zero-width.png", header_only(0, 4, 8, 6, 0)),
         ("interlaced.png", header_only(4, 4, 8, 6, 1)),
         ("depth-one.png", header_only(4, 4, 1, 6, 0)),
+        // The allocation ceiling. Nothing else in the corpus reaches it,
+        // and it is the guard that turns "a file of sixty bytes can ask
+        // for sixty-four gigabytes" into an answer rather than an
+        // allocation failure.
+        ("declares-too-large.png", header_only(65535, 65535, 8, 6, 0)),
+        // The colour types the encoder cannot write. The expansion
+        // branches five ways on this field and the encoder only ever
+        // emits one of them, so without these the whole palette and
+        // greyscale half of the crate is unseeded.
+        ("colour-greyscale.png", header_only(4, 4, 8, 0, 0)),
+        ("colour-truecolour.png", header_only(4, 4, 8, 2, 0)),
+        ("colour-indexed-no-palette.png", header_only(4, 4, 8, 3, 0)),
+        ("colour-bad-type.png", header_only(4, 4, 8, 7, 0)),
+        ("depth-sixteen.png", header_only(4, 4, 16, 6, 0)),
     ];
 
     let mut written = 0usize;
