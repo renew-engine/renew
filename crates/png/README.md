@@ -89,6 +89,36 @@ file was still small, still structurally a PNG, still had a valid header,
 and every test passed. Only a decoder refused it. The symbol tables are
 pinned to the published ones now, so the next mistake fails here.
 
+**The decoder is fuzzed, and the corpus is generated rather than
+collected.** Everything above is about the encoder — the half this crate
+writes. The half that reads a file somebody else wrote is checked by
+`png_decode`, whose seeds are built by `cargo run -p renew-png --example
+make_corpus`: every input is written by that program, so the corpus
+carries no file this repository did not author. `tests/corpus_replay.rs`
+replays them on the stable toolchain at every merge, and asserts two
+things a file count cannot. The seeds must still reach at least ten
+distinct answers between them, and four specific refusals must stay
+reachable by name — the allocation ceiling, the chunk checksum, the zlib
+header and the missing terminator. Each of those has exactly one seed, so
+losing it means a real defence stops being exercised while the total
+barely moves.
+
+**The corpus reaches past what this crate can write.** An encoder-only
+corpus would be a monoculture: everything this crate emits is fixed
+Huffman, filter zero, colour type 6, depth 8, no palette, so a decoder
+seeded only from it is never asked about the dynamic-Huffman header —
+the largest parser here — or about filters one to four. One seed is
+therefore a file written by a design tool rather than by this program:
+the project icon, already in the tree and already a decoder fixture,
+which carries dynamic Huffman and all four filter types. First-party, so
+the no-borrowed-fixtures rule is untouched.
+
+**What is still unseeded, said plainly.** Palette parsing and the `tRNS`
+chunk have no valid seed — the header-only indexed seed refuses before
+reaching them — and several refusals in the error enum have no seed at
+all. The fuzzer can find its own way there; the corpus does not put it
+there.
+
 ## Errors
 
 `encode` returns `Result`, and the error names which of three caller

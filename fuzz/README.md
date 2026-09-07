@@ -1,8 +1,9 @@
 # renew-fuzz
 
-Fuzz harnesses for the five parsers that read data the engine did not
+Fuzz harnesses for the seven parsers that read data the engine did not
 write: the asset pack reader, the input-trace codec, the WAV reader, the
-UI document reader, and the UI text grammar. The two UI targets go
+UI document reader, the UI text grammar, the datagram reader, and the PNG
+decoder. The two UI targets go
 further than the first three: bytes that read as a document are also
 instantiated as a tree, because validation claims instantiation never
 needs to re-check, and text that compiles is read back through the
@@ -35,9 +36,16 @@ not a first line of defence, a deeper one.
 
 ## The committed corpus
 
-`corpus/<target>/` is the fuzzers' memory: every committed input is one
+`corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
-`cargo fuzz cmin`. Runs start from it (locally and on the schedule),
+`cargo fuzz cmin`. **`png_decode`'s corpus starts differently** — its
+seeds are written by `cargo run -p renew-png --example make_corpus`,
+which builds every one, so the directory carries no file this repository
+did not author and no licence question with it. That generator is
+committed beside the seeds and they change together. Once a target's
+corpus exists the rule below is the same for all of them: the fuzzer adds
+its own finds, and nothing here deletes them. Runs start from it (locally
+and on the schedule),
 and the scheduled job uploads the grown corpus as an artifact —
 **re-commits are manual and event-driven, and every one carries the
 same two steps as the first commit**: `cargo fuzz cmin <target>

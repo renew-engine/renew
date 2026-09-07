@@ -24,6 +24,7 @@ renew-trace = { path = "../crates/trace" }
 renew-ui = { path = "../crates/ui" }
 renew-cli = { path = "../tools/cli" }
 renew-net = { path = "../crates/net" }
+renew-png = { path = "../crates/png" }
 
 # Fuzzing measures the parser, not the optimiser's mood. Debug assertions
 # stay on so a violated internal invariant is a finding rather than
@@ -71,6 +72,13 @@ bench = false
 [[bin]]
 name = "ui_text"
 path = "fuzz_targets/ui_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "png_decode"
+path = "fuzz_targets/png_decode.rs"
 test = false
 doc = false
 bench = false
