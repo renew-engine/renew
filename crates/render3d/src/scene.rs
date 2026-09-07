@@ -101,9 +101,18 @@ impl Scene {
     /// count allocates once.
     ///
     /// A hint, not a limit: pushing past it grows the buffers like any
-    /// other vector. This exists because the named consumer knows its
-    /// face count before it starts, and an allocation per quad on a
-    /// four-thousand-face world is a cost with no reason.
+    /// other vector. What it saves is that growth — a vector that starts
+    /// empty reaches four thousand faces in roughly a dozen doublings,
+    /// each one copying everything written before it — and not one
+    /// allocation per quad, which is what an earlier version of this
+    /// sentence claimed and no vector has ever done.
+    ///
+    /// **Its only caller today is the benchmark that measures what it
+    /// saves.** The voxel sample builds every scene with [`Scene::new`],
+    /// including the two on its draw path. That is recorded here rather
+    /// than left implied: a constructor whose documentation describes a
+    /// caller it does not have is a claim about the tree, and this one
+    /// was wrong for as long as it stood.
     ///
     /// # Panics
     ///

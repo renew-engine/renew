@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [package.metadata.renew]
-purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter — paired with exact allocation-count assertions."
+purpose = "Criterion benchmarks over engine kernels — math, allocator, jobs, frame, rng, ecs, clock, particles, widget tree and its presenter, the sprite construction chain and its packer, and the 3D scene's geometry path — paired with exact allocation-count assertions."
 maturity = "bootstrap"
 core = false
 extension_points = []
@@ -110,5 +110,5 @@ name = "sprite"
 harness = false
 
 [[bench]]
-name = "scene"
+name = "render3d"
 harness = false

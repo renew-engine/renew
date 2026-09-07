@@ -180,9 +180,10 @@ jobs:
       #
       # renew-bench appears in several exclude lists because its bench
       # targets reach the crates they time (jobs, frame, rng, ecs,
-      # particles, ui, ui-render) and, through those, what they build
-      # on (render2d, rhi, fixed); every cell that removes a crate in
-      # that closure excludes the suite alongside it.
+      # platform, particles, ui, ui-render, render2d, render3d) and,
+      # through those, what they build on (rhi, fixed); every cell
+      # that removes a crate in that closure excludes the suite
+      # alongside it.
       - name: Build and test without the job system
         run: |
           sel="--workspace --exclude renew-jobs --exclude renew-bench"
