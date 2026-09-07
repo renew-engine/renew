@@ -211,6 +211,37 @@ so every match of eleven bytes or more encoded as the wrong symbol. The
 file was still small, still structurally a PNG, still had a valid header,
 and every test in the crate passed. Only a decoder refused it.
 
+## The picture is compared, not just produced
+
+Everything above asks structural questions about a render: is it a PNG,
+is it the right size, did more than one colour appear. Those catch a
+projection that stopped projecting and nothing finer. A change that
+moved every block three pixels, or lost a shadow, or swapped two atlas
+tiles would have passed all of them.
+
+`tests/golden.rs` compares the frame **byte for byte** against a
+committed image, on one pinned software-rasterizer lane and nowhere
+else -- a real GPU and a software rasterizer disagree legitimately, and
+a golden that flakes is worse than no golden. Two checkpoints: the arena
+as it is built, and the same arena four hundred ticks into the building
+script, by which point blocks have been broken and placed. A separate
+test asserts those two are different pictures, because two goldens of
+the same frame look like coverage and are not.
+
+The comparison is exact rather than tolerant, and that was decided
+before the first image was recorded. This frame has no blending --
+opaque geometry resolved by a depth test, one unfiltered shadow tap, no
+multisampling -- so no stage in it depends on the order fragments
+arrive, which is the thing that forces a tolerance elsewhere in this
+repository.
+
+**A golden can never enter the tree through a passing run.** When the
+committed image is missing the test writes `*.candidate.rgba` and a
+viewable `.ppm` beside it, records what drew them in a provenance
+sidecar, and fails. Someone looks at the picture and renames it. The
+refresh ritual is the same path run deliberately: delete the committed
+image, re-render on the pinned lane, inspect, commit.
+
 ## Playing it
 
 ![From the player's eyes, mid-build: the crosshair centred on a lit floor tile about to be dug, a placed reddish-brown block in the foreground, the flagstone floor running to the arena wall](playing.png)

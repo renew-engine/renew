@@ -121,6 +121,25 @@ pub enum ClipSurface {
     Textured,
 }
 
+/// Refuse a scene with nothing in it.
+///
+/// **Named and shared so the answer cannot depend on a device.** Both
+/// entry points below ask this first — the one that creates a device
+/// asks before creating it, and the one that takes a device asks before
+/// using it — so an empty world is `Empty` on every machine rather than
+/// `Empty` where there is an adapter and `NoDevice` where there is not.
+///
+/// One function rather than the same three lines twice, because the
+/// second copy would be unreachable: the outer entry point answers
+/// first, and a refusal nothing can reach is a refusal no test can hold
+/// an opinion about. A coverage gate said exactly that about it.
+fn refuse_if_empty(scene: &Scene) -> Result<(), RenderError> {
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
+    Ok(())
+}
+
 /// Draw a scene whose positions are **already clip space**, offscreen.
 ///
 /// The guts of [`draw`], named because the world is not the only thing
@@ -132,15 +151,37 @@ pub enum ClipSurface {
 ///
 /// As [`draw`].
 pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
-
+    // Before the device, and the order is the point: see the guard's
+    // own documentation for what depends on it.
+    refuse_if_empty(scene)?;
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
         validation: Validation::IfAvailable,
     })
     .map_err(|error| RenderError::NoDevice(error.to_string()))?;
+    draw_clip_space_with(&device, scene, surface)
+}
+
+/// The same draw, onto a device the caller already holds.
+///
+/// **Split out for the same reason [`draw`] was split from [`to_png`]:
+/// so a test can look at the result without also owning the step
+/// before it.** A picture compared byte for byte is only evidence if
+/// the comparison knows which adapter drew it — a software rasterizer
+/// and a real GPU disagree legitimately — and a caller that cannot see
+/// the device cannot ask. Everything above creates a device and throws
+/// the handle away, which is right for a command-line render and wrong
+/// for an oracle.
+///
+/// # Errors
+///
+/// As [`draw`], less the device creation the caller has already done.
+pub fn draw_clip_space_with(
+    device: &Device,
+    scene: &Scene,
+    surface: ClipSurface,
+) -> Result<Vec<u8>, RenderError> {
+    refuse_if_empty(scene)?;
 
     let extent = Extent {
         width: SIZE,
@@ -156,16 +197,16 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
     let mesh;
     let items = match surface {
         ClipSurface::Flat => {
-            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
+            flat = MeshRenderer::new(device, TargetFormat::Rgba8Srgb)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = flat
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [flat.item(&mesh)]
         }
         ClipSurface::Textured => {
             textured = TexturedMeshRenderer::new(
-                &device,
+                device,
                 TargetFormat::Rgba8Srgb,
                 Extent {
                     width: crate::atlas::WIDTH,
@@ -175,7 +216,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
             )
             .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = textured
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [textured.item(&mesh)]
         }
@@ -313,9 +354,7 @@ pub(crate) fn draw_scene(
     overlay: Option<&Scene>,
     dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
+    refuse_if_empty(scene)?;
 
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
@@ -605,6 +644,29 @@ pub(crate) mod tests {
         assert!(
             matches!(draw(&empty), Err(RenderError::Empty)),
             "and the same holds for the view with no camera"
+        );
+    }
+
+    /// **The refusal both entry points share, asked without a device.**
+    ///
+    /// This is the assertion that keeps the answer independent of the
+    /// hardware. It needs no adapter, which is the point: a test that
+    /// had to build a device to ask would run on some lanes and skip on
+    /// others, and a skipped branch is a line nobody has an opinion
+    /// about.
+    ///
+    /// Probed by returning `Ok(())` for an empty scene: red here, and
+    /// red in the two draw tests above it.
+    #[test]
+    fn an_empty_scene_is_refused_before_any_device_is_asked_for() {
+        assert!(
+            matches!(refuse_if_empty(&Scene::new()), Err(RenderError::Empty)),
+            "a scene with no faces must be refused by name"
+        );
+        let arena = Grid::new(Cell::new(0, 0, 0), (2, 2, 2));
+        assert!(
+            refuse_if_empty(&build(&arena)).is_err(),
+            "an all-air world has no faces either"
         );
     }
 

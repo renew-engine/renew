@@ -32,12 +32,12 @@ jobs:
           # Full paths (extension stripped), nullglob so a crate whose
           # golden is still bootstrapping does not fail the listing.
           shopt -s nullglob
-          for f in crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba samples/glide/tests/goldens/*.rgba; do
+          for f in crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba samples/glide/tests/goldens/*.rgba samples/cube/tests/goldens/*.rgba; do
             echo "${f%.rgba}"
           done > "$RUNNER_TEMP/goldens.txt"
           test -s "$RUNNER_TEMP/goldens.txt"
           echo "refreshing:"; cat "$RUNNER_TEMP/goldens.txt"
-          rm -f crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba samples/glide/tests/goldens/*.rgba
+          rm -f crates/rhi/tests/goldens/*.rgba crates/render2d/tests/goldens/*.rgba samples/glide/tests/goldens/*.rgba samples/cube/tests/goldens/*.rgba
       # Expected to fail: the bootstrap path writes the candidate and
       # panics so the refresh is never silent.
       - name: Render fresh candidates (fails by design)
@@ -55,11 +55,13 @@ jobs:
         # verification below would be the only thing that noticed.
         run: >-
           cargo test --no-fail-fast --package renew-rhi
-          --package renew-render2d --package renew-sample-glide --test golden
+          --package renew-render2d --package renew-sample-glide
+          --package renew-sample-cube --features renew-sample-cube/render
+          --test golden
       - name: Verify the ritual behaved (test failed, every candidate exists)
         run: |
           test "${{ steps.render.outcome }}" = "failure"
-          ls -l crates/rhi/tests/goldens/ crates/render2d/tests/goldens/ samples/glide/tests/goldens/
+          ls -l crates/rhi/tests/goldens/ crates/render2d/tests/goldens/ samples/glide/tests/goldens/ samples/cube/tests/goldens/
           missing=0
           while read -r name; do
             for suffix in candidate.rgba provenance.txt; do
@@ -79,3 +81,4 @@ jobs:
             crates/rhi/tests/goldens/
             crates/render2d/tests/goldens/
             samples/glide/tests/goldens/
+            samples/cube/tests/goldens/
