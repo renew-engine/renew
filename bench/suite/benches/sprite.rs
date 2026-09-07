@@ -75,6 +75,49 @@ fn sprite_chain(c: &mut Criterion) {
             }
         });
     });
+
+    // **A ladder, not a pair**, because there are two candidate costs
+    // here and a single subtraction cannot separate them. The line above
+    // is a constructor and two builder links; these are the same
+    // constructor with one link and with none. Read as differences:
+    //
+    // - `sprite_build_2048` minus `sprite_build_2048_one_link` is
+    //   exactly one builder call, on identical data.
+    // - `sprite_build_2048_one_link` minus `sprite_new_2048` is the
+    //   other one.
+    // - `sprite_new_2048` on its own is what writing the struct costs
+    //   before any link runs.
+    //
+    // If the rungs are evenly spaced the cost is the by-value chain; if
+    // the bottom rung is most of the height it is the constructor's own
+    // field writes, and the chain is being elided as it looks like it
+    // should be.
+    c.bench_function("sprite_build_2048_one_link", |b| {
+        let rects = destinations();
+        b.iter(|| {
+            for rect in &rects {
+                let sprite = Sprite::new(WHITE, rect[0], rect[1]).size(rect[2], rect[3]);
+                black_box(&sprite);
+            }
+        });
+    });
+
+    // **The weaker rung, and it is weaker on purpose.** Without `size`
+    // this reads only two of the four components a destination carries,
+    // so the compiler sees less to keep alive. That makes it a floor on
+    // the constructor rather than a measurement of it, and the two rungs
+    // above are the controlled pair. Said here because a reader
+    // comparing all three would otherwise assume the spacing is uniform
+    // in what it holds constant.
+    c.bench_function("sprite_new_2048", |b| {
+        let rects = destinations();
+        b.iter(|| {
+            for rect in &rects {
+                let sprite = Sprite::new(WHITE, rect[0], rect[1]);
+                black_box(&sprite);
+            }
+        });
+    });
 }
 
 criterion_group!(benches, sprite_chain);
