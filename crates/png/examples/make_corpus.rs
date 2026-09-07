@@ -1,8 +1,10 @@
 //! Write the decoder's seed corpus.
 //!
-//! **Every input here is written by this program**, so the corpus carries
-//! no file this repository did not author and no licence question comes
-//! with it. That is the same rule the sample atlases follow.
+//! **Every input here is first-party**, so no licence question comes with
+//! the corpus. That is the same rule the sample atlases follow. All but
+//! one are written by this program; the exception is copied out of a file
+//! already in the tree, because the encoder here cannot write what that
+//! seed exists for -- see the seed's own comment below.
 //!
 //! A fuzzer finds its own way past a signature eventually, but it wastes
 //! most of a budget doing it. These seeds put it on the far side of each
@@ -26,6 +28,11 @@
 //!
 //! Existing files are left alone. The fuzzer adds its own finds to this
 //! directory over time, and this program must never delete them.
+//!
+//! It exits non-zero if any seed it meant to write is missing afterwards.
+//! Every bail here prints its reason, and a generator that prints a
+//! failure and then reports success is worse than one that crashes: the
+//! caller sees a zero and believes the corpus is whole.
 
 // The crate bans filesystem access because the library never touches a
 // file -- "a caller that writes an image owns the file". This program is
@@ -36,6 +43,7 @@
 #![allow(clippy::disallowed_types)]
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 /// The format's eight-byte signature, written out here rather than
 /// reached for in the crate: this program is test support, and widening a
@@ -175,11 +183,11 @@ fn corrupt_zlib_header(png: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn main() {
+fn main() -> ExitCode {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/png_decode");
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!("{}: {error}", dir.display());
-        return;
+        return ExitCode::FAILURE;
     }
 
     let (Ok(one), Ok(small), Ok(wide)) = (
@@ -188,7 +196,7 @@ fn main() {
         renew_png::encode(16, 9, &varied(16, 9)),
     ) else {
         eprintln!("the encoder refused a seed image; nothing written");
-        return;
+        return ExitCode::FAILURE;
     };
 
     // Two truncations, because they are two different refusals and the
@@ -213,7 +221,7 @@ fn main() {
 
     let Some(bad_zlib) = corrupt_zlib_header(&small) else {
         eprintln!("could not build the bad-zlib seed; nothing written");
-        return;
+        return ExitCode::FAILURE;
     };
 
     let signature_and_noise = {
@@ -276,6 +284,7 @@ fn main() {
 
     let mut written = 0usize;
     let mut kept = 0usize;
+    let mut failed = 0usize;
     for (name, bytes) in seeds {
         let path = dir.join(name);
         if path.exists() {
@@ -284,9 +293,19 @@ fn main() {
         }
         if let Err(error) = std::fs::write(&path, &bytes) {
             eprintln!("{}: {error}", path.display());
+            failed += 1;
             continue;
         }
         written += 1;
     }
-    println!("{written} written, {kept} already present");
+    println!("{written} written, {kept} already present, {failed} failed");
+    // The loop keeps going past a failed write so that one unwritable
+    // path does not cost the rest of the corpus, which is why the count
+    // has to be carried out to here: without it a run that wrote nothing
+    // at all still exits zero.
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
