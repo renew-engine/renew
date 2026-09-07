@@ -428,6 +428,18 @@ jobs:
           cargo test $sel
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png -p renew-sample-cube
           cargo build -p renew-sample-cube
+      # The JSON reader. Nothing depends on it yet, so the exclude list
+      # is one name -- and that is exactly when a cell is worth writing
+      # rather than deferring: the first crate to depend on it should
+      # discover the obligation from a red lane here, the way the
+      # fixed-point cell below has caught three dependents in turn,
+      # rather than from nobody.
+      - name: Build and test without the JSON reader
+        run: |
+          sel="--workspace --exclude renew-json"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-json $sel
+          cargo build $sel
+          cargo test $sel
       # The fixed-point arithmetic, and the crates written in it. This
       # cell was a single leaf when it landed, with a comment saying the
       # first crate to depend on it should discover the obligation from
@@ -510,7 +522,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-json renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel

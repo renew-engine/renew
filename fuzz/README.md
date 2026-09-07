@@ -1,14 +1,25 @@
 # renew-fuzz
 
-Fuzz harnesses for the seven parsers that read data the engine did not
+Fuzz harnesses for the eight parsers that read data the engine did not
 write: the asset pack reader, the input-trace codec, the WAV reader, the
-UI document reader, the UI text grammar, the datagram reader, and the PNG
-decoder. The two UI targets go
-further than the first three: bytes that read as a document are also
+UI document reader, the UI text grammar, the datagram reader, the PNG
+decoder, and the JSON reader. Three of them go
+further than the rest: bytes that read as a UI document are also
 instantiated as a tree, because validation claims instantiation never
-needs to re-check, and text that compiles is read back through the
+needs to re-check; text that compiles is read back through the
 runtime reader, because the compiler claims it only mints what that
-reader accepts — an input that breaks either claim is a finding.
+reader accepts; and a JSON document that parses is walked, with every
+typed question asked of every value in it, because validation claims an
+accepted document has nothing deferred left in it. An input that breaks
+any of those claims is a finding.
+
+`json_parse` is also the only target given its bytes unfiltered.
+`trace_parse` guards its input with `from_utf8`, because that parser
+takes text and every crash found past a lossy conversion would be
+unreachable from a real file; the JSON reader takes bytes on purpose, so
+that a caller holding one chunk of a larger file need not answer the "is
+this even text" question itself — which means the fuzzer is the thing
+that has to ask it.
 
 ## Why this is a separate workspace
 
@@ -38,11 +49,12 @@ not a first line of defence, a deeper one.
 
 `corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
-`cargo fuzz cmin`. **`png_decode`'s corpus starts differently** — its
-seeds are written by `cargo run -p renew-png --example make_corpus`,
-which builds every one, so the directory carries no file this repository
-did not author and no licence question with it. That generator is
-committed beside the seeds and they change together. Once a target's
+`cargo fuzz cmin`. **Two corpora start differently** — `png_decode`'s
+seeds are written by `cargo run -p renew-png --example make_corpus` and
+`json_parse`'s by `cargo run -p renew-json --example make_corpus`, each
+of which builds every one, so those directories carry no file this
+repository did not author and no licence question with them. Each
+generator is committed beside its seeds and they change together. Once a target's
 corpus exists the rule below is the same for all of them: the fuzzer adds
 its own finds, and nothing here deletes them. Runs start from it (locally
 and on the schedule),

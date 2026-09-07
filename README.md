@@ -175,19 +175,19 @@ clicking, and the editor, when it arrives, will be one more client of these APIs
 
 ## The engine
 
-Twenty-nine engine crates, five of them core. Everything outside the core is optional and
-removable, and CI proves it *one crate at a time*: twenty-four configurations, each excluding one
+Thirty engine crates, five of them core. Everything outside the core is optional and
+removable, and CI proves it *one crate at a time*: twenty-five configurations, each excluding one
 optional crate and everything that depends on it, every one built **and** tested.
-A twenty-fifth builds the minimal core alone and checks that no optional crate reached its graph.
+A twenty-sixth builds the minimal core alone and checks that no optional crate reached its graph.
 
 | Group | Crates |
 |---|---|
 | **Core** | `diag` logging and sinks · `event` the input vocabulary · `math` vectors, matrices, quaternions · `memory` arenas, pools, a counting allocator · `platform` the only doorway to the OS |
 | **Simulation and runtime** | `fixed` Q47.16 arithmetic · `frame` the fixed-timestep loop · `ecs` sparse-set storage · `scene` transform hierarchies · `physics2d` and `physics3d` · `volume` chunked voxels · `particles` · `ui` layout solved in fixed point · `input` state and mapping · `rng` · `jobs` |
 | **Rendering** | `rhi` the GPU doorway · `render2d` sprites · `render3d` indexed geometry · `camera` views and projections · `snapshot` interpolation between ticks · `ui-render` |
-| **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
+| **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `json` a reader for untrusted metadata · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
 
-Twenty-seven of the twenty-nine are published on [crates.io](https://crates.io/crates/renew-math)
+Twenty-seven of the thirty are published on [crates.io](https://crates.io/crates/renew-math)
 at 0.1.1. `cargo run --bin renew -- modules` prints the live list with each crate's declared
 maturity, read from its manifest, so it stays correct as this table ages. Maturity runs `bootstrap` to `internal`
 to `stable`, and nothing has reached `stable` yet.

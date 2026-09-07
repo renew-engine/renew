@@ -1,0 +1,34 @@
+[package]
+name = "renew-json"
+description = "A JSON reader with no dependencies: bytes in, a borrowed document out, and a named refusal for every way the bytes can be wrong"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["json", "parser", "no-dependencies", "gltf", "gamedev"]
+categories = ["encoding", "parser-implementations", "game-development"]
+readme = "README.md"
+homepage.workspace = true
+
+[package.metadata.renew]
+purpose = "A JSON reader for untrusted bytes: it validates a whole document up front, leaves every string and number where it lies, and names every refusal. It never touches the filesystem."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# Deliberately empty, and load-bearing. A reader of untrusted bytes that
+# dragged a dependency in would widen the surface it exists to narrow,
+# and there is nothing here the standard library does not already offer.
+[dependencies]
+
+[dev-dependencies]
+# Test-only, and only for the counting global allocator: one test asks
+# whether refusing a huge document holds any of it, and that question has
+# no answer without an allocator that can be read.
+renew-memory = { path = "../core/memory" }
+proptest = "1.11"
+
+[lints]
+workspace = true

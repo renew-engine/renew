@@ -107,11 +107,16 @@ dependencies = [
  "renew-asset",
  "renew-audio",
  "renew-cli",
+ "renew-json",
  "renew-net",
  "renew-png",
  "renew-trace",
  "renew-ui",
 ]
+
+[[package]]
+name = "renew-json"
+version = "0.1.1"
 
 [[package]]
 name = "renew-net"

@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d3a247c8d6b3d063d018feb153a39fa8edd0f1859274cafe618b39a844f4aea8 # shrinks to doc = Map([("\n", Null)])
+cc afea51b94bae22bea59f876a6dfea69eb2a23fe818682e1aef5fcb74be3361a6 # shrinks to doc = Map([("", List([Int(-1000)]))]), cut = Index(10760600709663905110)
+cc be6a4acff8b356264b7e799bcd4028dc09d46d9bb22758dd7c4952c59faae343 # shrinks to depth = 65, objects = true
+cc 15a8d948005ed844624c75beb2ad6fa9a1e61823cfae966a475edf5b38d8b607 # shrinks to doc = Map([("", List([Null, Null, Null]))]), noise = [], shaped = [], source = 2, at = Index(0), replacement = 0
