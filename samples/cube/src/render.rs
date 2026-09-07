@@ -121,6 +121,25 @@ pub enum ClipSurface {
     Textured,
 }
 
+/// Refuse a scene with nothing in it.
+///
+/// **Named and shared so the answer cannot depend on a device.** Both
+/// entry points below ask this first — the one that creates a device
+/// asks before creating it, and the one that takes a device asks before
+/// using it — so an empty world is `Empty` on every machine rather than
+/// `Empty` where there is an adapter and `NoDevice` where there is not.
+///
+/// One function rather than the same three lines twice, because the
+/// second copy would be unreachable: the outer entry point answers
+/// first, and a refusal nothing can reach is a refusal no test can hold
+/// an opinion about. A coverage gate said exactly that about it.
+fn refuse_if_empty(scene: &Scene) -> Result<(), RenderError> {
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
+    Ok(())
+}
+
 /// Draw a scene whose positions are **already clip space**, offscreen.
 ///
 /// The guts of [`draw`], named because the world is not the only thing
@@ -132,16 +151,9 @@ pub enum ClipSurface {
 ///
 /// As [`draw`].
 pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
-    // **Refused before a device is asked for, and the order is the
-    // point.** An empty scene is the caller's mistake and the answer to
-    // it must not depend on whether this machine has an adapter — a
-    // developer with a GPU would see `Empty` and a build lane without
-    // one would see `NoDevice` for the same call. The check is repeated
-    // below rather than only here because the device-taking entry point
-    // is reachable on its own.
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
+    // Before the device, and the order is the point: see the guard's
+    // own documentation for what depends on it.
+    refuse_if_empty(scene)?;
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
         validation: Validation::IfAvailable,
@@ -169,9 +181,7 @@ pub fn draw_clip_space_with(
     scene: &Scene,
     surface: ClipSurface,
 ) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
+    refuse_if_empty(scene)?;
 
     let extent = Extent {
         width: SIZE,
@@ -344,9 +354,7 @@ pub(crate) fn draw_scene(
     overlay: Option<&Scene>,
     dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
+    refuse_if_empty(scene)?;
 
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
@@ -637,27 +645,29 @@ pub(crate) mod tests {
             matches!(draw(&empty), Err(RenderError::Empty)),
             "and the same holds for the view with no camera"
         );
+    }
 
-        // **And through the entry point that takes a device**, which is a
-        // separate check and not the same one: the refusal above happens
-        // in the entry point that *makes* a device, before it makes one,
-        // so nothing above reaches this one. A direct caller must get the
-        // same named refusal rather than whatever the renderer says about
-        // an empty upload. Skipped where there is no adapter — the answer
-        // is about the scene, but asking for it still needs a device.
-        match Device::new(&DeviceDesc {
-            app_name: "cube",
-            validation: Validation::IfAvailable,
-        }) {
-            Ok(device) => assert!(
-                matches!(
-                    draw_clip_space_with(&device, &build(&empty), ClipSurface::Textured),
-                    Err(RenderError::Empty)
-                ),
-                "the device-taking entry point must refuse an empty scene by name too"
-            ),
-            Err(why) => eprintln!("SKIP: no device for the device-taking path: {why}"),
-        }
+    /// **The refusal both entry points share, asked without a device.**
+    ///
+    /// This is the assertion that keeps the answer independent of the
+    /// hardware. It needs no adapter, which is the point: a test that
+    /// had to build a device to ask would run on some lanes and skip on
+    /// others, and a skipped branch is a line nobody has an opinion
+    /// about.
+    ///
+    /// Probed by returning `Ok(())` for an empty scene: red here, and
+    /// red in the two draw tests above it.
+    #[test]
+    fn an_empty_scene_is_refused_before_any_device_is_asked_for() {
+        assert!(
+            matches!(refuse_if_empty(&Scene::new()), Err(RenderError::Empty)),
+            "a scene with no faces must be refused by name"
+        );
+        let arena = Grid::new(Cell::new(0, 0, 0), (2, 2, 2));
+        assert!(
+            refuse_if_empty(&build(&arena)).is_err(),
+            "an all-air world has no faces either"
+        );
     }
 
     /// Every refusal says what happened in words a reader can act on.
