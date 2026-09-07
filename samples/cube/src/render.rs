@@ -132,6 +132,16 @@ pub enum ClipSurface {
 ///
 /// As [`draw`].
 pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
+    // **Refused before a device is asked for, and the order is the
+    // point.** An empty scene is the caller's mistake and the answer to
+    // it must not depend on whether this machine has an adapter — a
+    // developer with a GPU would see `Empty` and a build lane without
+    // one would see `NoDevice` for the same call. The check is repeated
+    // below rather than only here because the device-taking entry point
+    // is reachable on its own.
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
         validation: Validation::IfAvailable,
