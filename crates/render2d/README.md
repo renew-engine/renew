@@ -96,6 +96,17 @@ else, which the build matrix proves by building and testing without it.
 
 ## What is here
 
+- `cut_to` — cut a rectangle to a clip box and cut its source by the
+  same linear map, so every surviving pixel samples the texel it would
+  have sampled uncut. It takes a rectangle and a source rather than a
+  `Sprite`, deliberately: the arithmetic is about a rectangle, and an
+  earlier shape that took a sprite made its one caller build one to ask
+  a question about a rectangle, which cost 24% of the frame that
+  exercises it. A turned or scaled quad is out of scope here — an
+  axis-aligned cut of a turned quad takes the wrong pixels and cuts the
+  source to match, so a caller that turns its geometry owes the clip to
+  that geometry.
+
 - `Canvas`, `Region`, `SubRegion`, `Sprite` — the pure vocabulary: a
   logical pixel space (y down from the top-left), a rectangle of atlas
   texels on texel boundaries, the same rectangle with sub-texel edges

@@ -39,5 +39,5 @@
 mod fill;
 mod gpu;
 
-pub use fill::{Canvas, Instance, Region, Sprite, SubRegion};
+pub use fill::{Canvas, Instance, Region, Sprite, SubRegion, cut_to};
 pub use gpu::{AtlasDesc, Render2dError, SpriteRenderer};
