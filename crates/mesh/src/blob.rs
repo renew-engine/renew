@@ -8,7 +8,7 @@
 //! # The shape
 //!
 //! ```text
-//! magic     8 bytes   RENEWMSH
+//! magic     8 bytes   RENEWMS and a NUL
 //! version   u32       1
 //! corners   u32       how many positions, which is three per triangle
 //! present   u32       a bit per optional array
@@ -53,10 +53,41 @@ use crate::error::MeshError;
 use crate::{Mesh, refuse_over_ceiling};
 
 /// The eight bytes a blob opens with.
-pub const MAGIC: [u8; 8] = *b"RENEWMSH";
+///
+/// **`RENEW`, a two-letter tag, and a NUL** — the shape the two formats
+/// this repository already writes use: `RENEWPK\0` in
+/// `crates/asset/src/layout.rs` and `RENEWUI\0` in
+/// `crates/ui/src/document.rs`.
+///
+/// This was `RENEWMSH`, which fits in eight bytes only by spending the
+/// one the others reserve. **The terminator is not decoration.** It is
+/// what stops a longer tag from being read as a shorter one plus body,
+/// so a future `RENEWMSHX` could not be mistaken for this format with a
+/// stray byte after the header; and it is what lets the eight bytes be
+/// printed as a C string by whatever a person reaches for when a file
+/// will not open. A convention two formats keep and a third does not is
+/// worth less than no convention, because it is the third that will be
+/// trusted wrongly.
+///
+/// Changed while it was free: no consumer outside this crate reads a
+/// blob, so the whole cost was regenerating the seed corpus, which is
+/// built by `examples/make_blob_corpus.rs` from `write` itself. Once a
+/// loader exists the same change is a migration and a version bump.
+pub const MAGIC: [u8; 8] = *b"RENEWMS\0";
 
 /// The version this build writes and the only one it reads.
-pub const VERSION: u32 = 1;
+///
+/// **Not exported, because nothing outside this module asks.** `write`
+/// stamps it and `read` refuses anything else by name, so a caller never
+/// needs the number: it learns the answer from the refusal, which also
+/// tells it which version the file claimed. `MAGIC` beside it *is*
+/// exported, and the difference is a consumer — the blob suite builds
+/// byte strings from it, and `format::detect` sniffs with it.
+///
+/// The moment something outside needs to ask — a loader reporting what
+/// it can read, a tool writing an older blob on purpose — `pub` goes
+/// back on and costs nothing.
+const VERSION: u32 = 1;
 
 /// Magic, version, corner count and the presence bits.
 const HEADER: usize = 20;
@@ -244,7 +275,7 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
     }
     if bytes.get(..MAGIC.len()) != Some(&MAGIC[..]) {
         return Err(MeshError::ExpectedKeyword {
-            expected: "RENEWMSH",
+            expected: "RENEWMS\\0",
             found: String::new(),
             line: 1,
         });

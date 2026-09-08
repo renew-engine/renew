@@ -210,6 +210,31 @@ fn something_shorter_than_a_header_is_refused() {
     assert_eq!(len, 8);
 }
 
+/// **The magic keeps the shape the rest of the tree uses.**
+///
+/// A convention two formats keep and a third does not is worth less
+/// than no convention, because it is the third that gets trusted
+/// wrongly. This was that third one.
+#[test]
+fn the_magic_keeps_the_shape_the_other_formats_in_this_tree_use() {
+    assert_eq!(MAGIC.len(), 8, "eight bytes, like the others");
+    assert!(
+        MAGIC.starts_with(b"RENEW"),
+        "the shared prefix is what makes an unknown file recognisably \
+         from here rather than merely unreadable"
+    );
+    assert_eq!(
+        MAGIC[7], 0,
+        "the terminator is the part that was missing: it stops a longer tag being read as a \
+         shorter one plus body, and it lets a person print the magic as a C string when a file \
+         will not open"
+    );
+    assert!(
+        MAGIC[5..7].iter().all(u8::is_ascii_uppercase),
+        "a two-letter tag between the prefix and the terminator: {MAGIC:?}"
+    );
+}
+
 /// **An opening that is not this format is refused by name.**
 #[test]
 fn bytes_that_do_not_open_with_the_magic_are_refused() {
@@ -218,7 +243,7 @@ fn bytes_that_do_not_open_with_the_magic_are_refused() {
     let MeshError::ExpectedKeyword { expected, .. } = refusal(&bytes) else {
         panic!("a blob opens with its magic");
     };
-    assert_eq!(expected, "RENEWMSH");
+    assert_eq!(expected, "RENEWMS\\0");
 }
 
 /// **A version this build does not read, and a flag it does not know.**
