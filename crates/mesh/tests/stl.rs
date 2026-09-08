@@ -58,7 +58,7 @@ fn a_binary_file_gives_back_the_triangles_it_holds() {
     let mesh = stl::read(&binary(b"a header", &[(UP, UNIT)])).expect("a well-formed file");
     assert_eq!(mesh.triangles(), 1);
     assert_eq!(mesh.positions, UNIT.to_vec());
-    assert_eq!(mesh.normals, vec![UP]);
+    assert_eq!(mesh.face_normals, vec![UP]);
     assert_eq!(mesh.winding_disagreements(), 0);
 }
 
@@ -89,7 +89,7 @@ fn a_binary_file_that_says_solid_is_read_as_binary() {
 fn a_text_file_is_read_as_text() {
     let mesh = stl::read(TEXT_ONE.as_bytes()).expect("a well-formed text file");
     assert_eq!(mesh.triangles(), 1);
-    assert_eq!(mesh.normals, vec![UP]);
+    assert_eq!(mesh.face_normals, vec![UP]);
     assert_eq!(mesh.positions, UNIT.to_vec());
 }
 
@@ -472,11 +472,11 @@ fn a_mesh_that_reads_holds_what_its_type_promises() {
             "file {which}: positions must divide into triangles"
         );
         assert_eq!(
-            mesh.normals.len(),
+            mesh.face_normals.len(),
             mesh.triangles(),
             "file {which}: one normal per triangle"
         );
-        for value in mesh.positions.iter().chain(&mesh.normals).flatten() {
+        for value in mesh.positions.iter().chain(&mesh.face_normals).flatten() {
             assert!(value.is_finite(), "file {which} held a non-finite value");
         }
     }

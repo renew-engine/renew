@@ -44,12 +44,12 @@ fuzz_target!(|data: &[u8]| {
     );
     assert!(!mesh.is_empty(), "a mesh that read has geometry in it");
     assert!(
-        mesh.normals.is_empty() || mesh.normals.len() == mesh.triangles(),
+        mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles(),
         "normals are one per triangle or none at all: {} normals for {} triangles",
-        mesh.normals.len(),
+        mesh.face_normals.len(),
         mesh.triangles()
     );
-    for value in mesh.positions.iter().chain(&mesh.normals).flatten() {
+    for value in mesh.positions.iter().chain(&mesh.face_normals).flatten() {
         assert!(
             value.is_finite(),
             "a coordinate nothing downstream can bound reached a caller"

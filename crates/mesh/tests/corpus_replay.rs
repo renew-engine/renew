@@ -154,8 +154,8 @@ fn every_recorded_input_answers() {
         if let Ok(mesh) = stl::read(&bytes) {
             assert_eq!(mesh.positions.len() % 3, 0);
             assert!(!mesh.is_empty());
-            assert!(mesh.normals.is_empty() || mesh.normals.len() == mesh.triangles());
-            for value in mesh.positions.iter().chain(&mesh.normals).flatten() {
+            assert!(mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles());
+            for value in mesh.positions.iter().chain(&mesh.face_normals).flatten() {
                 assert!(value.is_finite());
             }
             let _ = mesh.winding_disagreements();
@@ -311,7 +311,7 @@ fn every_recorded_ply_input_answers() {
         if let Ok(mesh) = ply::read(&bytes) {
             assert_eq!(mesh.positions.len() % 3, 0);
             assert!(!mesh.is_empty());
-            assert!(mesh.normals.is_empty());
+            assert!(mesh.face_normals.is_empty());
             for value in mesh.positions.iter().flatten() {
                 assert!(value.is_finite());
             }

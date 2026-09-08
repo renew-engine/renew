@@ -74,10 +74,11 @@ pub use error::MeshError;
 /// mesh is handed back rather than asserted here:
 ///
 /// * `positions.len()` is a multiple of three and is not zero.
-/// * `normals` is either empty or exactly `positions.len() / 3` long —
-///   one per triangle, which is what the formats that carry normals
-///   carry. Per-vertex normals are a later format's problem.
-/// * Every float in either array is finite.
+/// * `face_normals` is either empty or exactly `positions.len() / 3`
+///   long — one per triangle.
+/// * `corner_normals` and `corner_texcoords` are each either empty or
+///   exactly `positions.len()` long — one per corner.
+/// * Every float in every array is finite.
 ///
 /// A caller that builds one of these by hand owns those invariants; the
 /// fields are public because a reader that hid them would be asking
@@ -99,7 +100,36 @@ pub struct Mesh {
     /// cannot then tell what the exporter said from what this crate
     /// guessed. The renderer's own frame derivation is where that guess
     /// belongs, because it is where a caller opts into it.
-    pub normals: Vec<[f32; 3]>,
+    ///
+    /// A *face* normal is one the file stated for the whole triangle,
+    /// which is what STL stores. It is not the same fact as a normal per
+    /// corner, and the two live in separate arrays rather than one
+    /// array with a convention, because a reader that folded them would
+    /// be answering a question about smoothing that belongs to whoever
+    /// draws the mesh.
+    pub face_normals: Vec<[f32; 3]>,
+    /// One normal per corner — so `positions.len()` of them — or empty
+    /// when the format carried none.
+    ///
+    /// This is what a format with an indexed, per-vertex normal stream
+    /// carries: two triangles sharing an edge can name different normals
+    /// at the same point, which is how a hard edge and a smooth one are
+    /// told apart, and averaging them into one per face would throw that
+    /// away irrecoverably.
+    pub corner_normals: Vec<[f32; 3]>,
+    /// One texture coordinate per corner, or empty when the format
+    /// carried none.
+    ///
+    /// Per corner rather than per position for the same reason as the
+    /// normals: a seam in a UV map is exactly one position carrying two
+    /// different coordinates in two different faces.
+    ///
+    /// **Not clamped, and not flipped.** Coordinates outside the unit
+    /// square are ordinary — they are how a texture is made to repeat —
+    /// and which end of the vertical axis is zero is a convention the
+    /// file does not state, so a reader that flipped it would be
+    /// guessing on the caller's behalf.
+    pub corner_texcoords: Vec<[f32; 2]>,
 }
 
 impl Mesh {
@@ -139,7 +169,7 @@ impl Mesh {
     /// anything.
     #[must_use]
     pub fn winding_disagreements(&self) -> usize {
-        self.normals
+        self.face_normals
             .iter()
             .enumerate()
             .filter(|(triangle, stored)| {
@@ -181,7 +211,8 @@ mod tests {
     fn triangle(corners: [[f32; 3]; 3], normal: [f32; 3]) -> Mesh {
         Mesh {
             positions: corners.to_vec(),
-            normals: vec![normal],
+            face_normals: vec![normal],
+            ..Mesh::default()
         }
     }
 
@@ -231,7 +262,8 @@ mod tests {
                 [0.0, 1.0, 0.0],
                 [1.0, 0.0, 0.0],
             ],
-            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            face_normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            ..Mesh::default()
         };
         assert_eq!(
             mesh.winding_disagreements(),
@@ -283,7 +315,8 @@ mod tests {
 
         let unsigned = Mesh {
             positions: corners.to_vec(),
-            normals: Vec::new(),
+            face_normals: Vec::new(),
+            ..Mesh::default()
         };
         assert_eq!(unsigned.winding_disagreements(), 0);
     }
@@ -304,7 +337,8 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             // The first agrees with the winding; the second has no
             // corners to agree or disagree with.
-            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+            face_normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+            ..Mesh::default()
         };
         assert_eq!(one_triangle_two_normals.winding_disagreements(), 0);
     }

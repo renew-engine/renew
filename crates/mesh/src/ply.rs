@@ -625,10 +625,16 @@ fn assemble(vertices: &[[f32; 3]], faces: &[Vec<u64>]) -> Result<Mesh, MeshError
     }
     Ok(Mesh {
         positions,
-        // PLY stores normals per vertex where it stores them at all, and
-        // a triangle here carries one. Choosing which of three to keep
-        // is a decision about a model rather than about a file.
-        normals: Vec::new(),
+        // PLY stores normals per vertex where it stores them at all, so
+        // there is no face normal here to report: choosing which of a
+        // triangle's three to keep would be a decision about a model
+        // rather than about a file.
+        face_normals: Vec::new(),
+        // `corner_normals` is where a per-vertex stream belongs and this
+        // reader does not yet fill it. The schema is already parsed, so
+        // what is missing is reading `nx`/`ny`/`nz` beside the
+        // coordinates and emitting one per corner through the fan.
+        ..Mesh::default()
     })
 }
 

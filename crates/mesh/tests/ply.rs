@@ -106,7 +106,7 @@ fn every_encoding_reads_the_same_square() {
         assert_eq!(mesh.triangles(), 2, "{which}");
         assert_eq!(mesh.positions, square_triangles(), "{which}");
         assert!(
-            mesh.normals.is_empty(),
+            mesh.face_normals.is_empty(),
             "{which}: PLY stores normals per vertex and a triangle here carries one"
         );
     }
