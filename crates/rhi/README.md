@@ -73,7 +73,7 @@ display server, and the golden-image tests attest the bytes.
   is not one. Front is counter-clockwise **in clip space** — Vulkan
   applies its rule in framebuffer space where Y points down, and the
   rasteriser state undoes that once here so callers do not each meet it. `builtin` carries the embedded shader bundles — a colored
-  triangle, textured full-target quads over one and two sampled slots,
+  triangle, textured full-target quads over one, two and four sampled slots,
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in
   [shaders/](https://github.com/renew-engine/renew/blob/main/crates/rhi/shaders/README.md)).

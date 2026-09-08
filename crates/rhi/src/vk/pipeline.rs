@@ -373,19 +373,6 @@ pub(crate) fn validate_push_constant_size(size: u32) {
 /// push ceiling, which is the whole point of the channel.
 pub const MAX_UNIFORM_BLOCK_BYTES: u32 = 16_384;
 
-/// Refuse a uniform-block declaration outside what the spec guarantees,
-/// or one std140 cannot describe.
-///
-/// A pure function so the rule is unit-tested without a device, like its
-/// two siblings.
-///
-/// # Panics
-///
-/// Over [`MAX_UNIFORM_BLOCK_BYTES`], or not a multiple of sixteen. Both
-/// are caller mistakes asserted rather than returned: the ceiling was
-/// never valid anywhere, and a block whose size is not a vec4 multiple
-/// is one the shader's own layout rules disagree with — which draws a
-/// wrong picture instead of raising anything.
 /// Refuse a pipeline that would bind more descriptor sets than every
 /// conformant adapter guarantees.
 ///
@@ -404,9 +391,13 @@ pub const MAX_UNIFORM_BLOCK_BYTES: u32 = 16_384;
 /// shape it should have had.
 ///
 /// [`MAX_SAMPLED_BINDINGS`]: crate::MAX_SAMPLED_BINDINGS
-pub(crate) fn validate_bound_sets(sampled_bindings: u32, uniform_block: u32) {
+/// **The block is a yes-or-no here, not a size.** A four-byte block and
+/// the largest block the spec guarantees spend one set each, so a byte
+/// count is a number this function must not look at — and two adjacent
+/// `u32` parameters can be passed in the wrong order and still compile.
+pub(crate) fn validate_bound_sets(sampled_bindings: u32, has_uniform_block: bool) {
     let sampled_slots = sampled_bindings as usize;
-    let uniform_slots = usize::from(uniform_block > 0);
+    let uniform_slots = usize::from(has_uniform_block);
     assert!(
         sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
         "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
@@ -415,6 +406,19 @@ pub(crate) fn validate_bound_sets(sampled_bindings: u32, uniform_block: u32) {
     );
 }
 
+/// Refuse a uniform-block declaration outside what the spec guarantees,
+/// or one std140 cannot describe.
+///
+/// A pure function so the rule is unit-tested without a device, like its
+/// two siblings.
+///
+/// # Panics
+///
+/// Over [`MAX_UNIFORM_BLOCK_BYTES`], or not a multiple of sixteen. Both
+/// are caller mistakes asserted rather than returned: the ceiling was
+/// never valid anywhere, and a block whose size is not a vec4 multiple
+/// is one the shader's own layout rules disagree with — which draws a
+/// wrong picture instead of raising anything.
 pub(crate) fn validate_uniform_block(bytes: u32) {
     assert!(
         bytes <= MAX_UNIFORM_BLOCK_BYTES,
@@ -1381,7 +1385,7 @@ impl Device {
         // so the panic owns nothing.
         validate_sampled_bindings(desc.sampled_bindings);
         validate_uniform_block(desc.uniform_block);
-        validate_bound_sets(desc.sampled_bindings, desc.uniform_block);
+        validate_bound_sets(desc.sampled_bindings, desc.uniform_block > 0);
         let sampled_slots = desc.sampled_bindings as usize;
         let uniform_slots = usize::from(desc.uniform_block > 0);
         // The depth-only pairing: the format is what licenses the
@@ -1975,27 +1979,27 @@ mod tests {
         // cannot fail for a constant this small.
         let ceiling = u32::try_from(MAX_SAMPLED_BINDINGS).expect("the ceiling is a small number");
         // The ceiling, with nothing else asking for a set.
-        validate_bound_sets(ceiling, 0);
+        validate_bound_sets(ceiling, false);
         // One short of it, with a block taking the last one.
-        validate_bound_sets(ceiling - 1, 64);
+        validate_bound_sets(ceiling - 1, true);
         // A block's *size* is not what spends the set: any non-zero
         // block costs exactly one, so the smallest and the largest are
         // the same question and both must pass here.
-        validate_bound_sets(ceiling - 1, 4);
-        validate_bound_sets(ceiling - 1, MAX_UNIFORM_BLOCK_BYTES);
+        validate_bound_sets(ceiling - 1, true);
+        validate_bound_sets(ceiling - 1, true);
         // And nothing at all, which is most pipelines in this tree.
-        validate_bound_sets(0, 0);
+        validate_bound_sets(0, false);
 
         // The ceiling plus a block: the case a device with a larger
         // `maxBoundDescriptorSets` would accept, which is exactly why it
         // is refused here.
         assert!(
-            std::panic::catch_unwind(|| validate_bound_sets(ceiling, 64)).is_err(),
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling, true)).is_err(),
             "four sampled slots and a uniform block is five sets, and five is not guaranteed"
         );
         // Past the ceiling on sampled slots alone.
         assert!(
-            std::panic::catch_unwind(|| validate_bound_sets(ceiling + 1, 0)).is_err(),
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling + 1, false)).is_err(),
             "over the ceiling must refuse whether or not a block is asked for"
         );
     }

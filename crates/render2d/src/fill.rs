@@ -1996,7 +1996,7 @@ mod tests {
         let packed = pack(&sprite, c, atlas);
         assert_eq!(
             INSTANCE_STRIDE, 80,
-            "the record is twenty lanes of four bytes; the hand computation below \n             enumerates all twenty and would be short if this moved"
+            "the record is twenty lanes of four bytes; the hand computation below enumerates all twenty and would be short if this moved"
         );
         for (index, value) in expected.iter().enumerate() {
             let mut raw = [0u8; 4];
@@ -2173,7 +2173,7 @@ mod tests {
         let smeared = pack(&flat.smear(9.0, 3.0), c, atlas);
         assert_eq!(
             plain, smeared,
-            "a smear that cannot be measured against a drawn size leaves the whole \n             record — placement, UVs, tint and the smear lanes — where it was"
+            "a smear that cannot be measured against a drawn size leaves the whole record — placement, UVs, tint and the smear lanes — where it was"
         );
     }
 

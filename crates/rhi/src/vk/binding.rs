@@ -54,8 +54,9 @@ use crate::vk::texture::{Texture, TextureInner};
 /// and the frame path allocates nothing — the `MAX_VERTEX_ATTRIBUTES`
 /// reasoning. Four is exactly `maxBoundDescriptorSets`' guaranteed
 /// floor, so a declaration this accepts is one every conformant
-/// adapter accepts — and it is headroom in this tree, where every
-/// consumer binds one and the widest user is the two-slot golden.
+/// adapter accepts. Every shipping consumer in this tree binds one;
+/// the widest user is `TEXTURED_QUAD`, which exists to reach this
+/// ceiling so that it is a tested number rather than a declared one.
 pub const MAX_SAMPLED_BINDINGS: usize = 4;
 
 /// What a binding reads.

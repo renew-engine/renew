@@ -1151,9 +1151,11 @@ fn a_kept_image_survives_frames_that_never_render_it() {
 }
 
 /// A quad over the left half of clip space at `depth`, packed to the
-/// mesh layout's 36-byte records: positions pass straight through the
-/// mesh vertex stage; colour and uv ride along unread — the layout
-/// describes the record, not the use.
+/// mesh layout's records: positions pass straight through the mesh
+/// vertex stage; everything after them rides along unread — the layout
+/// describes the record, not the use. The width comes from
+/// `builtin::MESH_STRIDE` below rather than from this sentence, which
+/// said 36 for two attributes longer than that was true.
 fn left_half_quad(depth: f32) -> Vec<u8> {
     let mut vertices = Vec::new();
     for [x, y] in [

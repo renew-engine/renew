@@ -263,7 +263,13 @@ pub fn build(grid: &Grid) -> Scene {
                 paint[3],
             ]
         });
-        scene.quad_uv(
+        // **No frame on this path, said rather than derived.** These
+        // corners have already been projected, so a frame recovered from
+        // them describes the shape on the screen and not the surface in
+        // the world — a plausible-looking direction that is not one.
+        // `NOWHERE` is a value a reader can test for, and saying it is
+        // cheaper than paying a solve for an answer that means nothing.
+        scene.quad_uv_with_frame(
             [
                 view.project(corners[0]),
                 view.project(corners[1]),
@@ -272,6 +278,7 @@ pub fn build(grid: &Grid) -> Scene {
             ],
             shaded,
             crate::atlas::tile_uv(crate::atlas::tile_for(quad.face)),
+            Frame::NOWHERE,
         );
     }
     scene
@@ -634,13 +641,45 @@ pub(crate) mod tests {
     /// deliberately lopsided with a non-zero minimum, because "the top
     /// layer" is arithmetic that a cubic grid at the origin cannot
     /// distinguish from several wrong answers.
+    #[test]
+    fn the_caster_drops_the_ceiling_and_nothing_else() {
+        use renew_sample_cube_world::grid::{Cell, Grid};
+        let min = Cell::new(-3, 5, 2);
+        let mut grid = Grid::new(min, (4, 3, 5));
+        let top = min.y + 3 - 1;
+        // One solid on the ceiling, one directly below it.
+        let roof_cell = Cell::new(-2, top, 4);
+        let under_cell = Cell::new(-2, top - 1, 4);
+        grid.fill(roof_cell, roof_cell, renew_sample_cube_world::grid::STONE);
+        let roof_only = super::casting_scene(&grid);
+        assert!(
+            roof_only.is_empty(),
+            "a world whose only solid is in the ceiling must cast nothing"
+        );
+        grid.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
+        let with_block = super::casting_scene(&grid);
+        assert!(
+            !with_block.is_empty(),
+            "a block below the ceiling must cast"
+        );
+        // And it casts as much as it would with no roof above it at
+        // all: the ceiling contributes nothing either way.
+        let mut roofless = Grid::new(min, (4, 3, 5));
+        roofless.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
+        assert_eq!(
+            with_block.vertex_count(),
+            super::casting_scene(&roofless).vertex_count(),
+            "the ceiling changed what the block below it casts"
+        );
+    }
+
     /// **The frame the mesher hands over is the frame the crate would
     /// have derived, for every one of the six faces.**
     ///
     /// This is the assertion that makes the fast path safe to have. Its
-    /// value comes from an argument written by hand $M that the atlas
+    /// value comes from an argument written by hand — that the atlas
     /// addresses a row top-down while the face winds bottom-up, so the
-    /// handedness is negative $M and a hand-written sign in a lighting
+    /// handedness is negative — and a hand-written sign in a lighting
     /// term is exactly the kind of thing that is wrong for a year before
     /// anybody notices, because a normal map lit with the bitangent
     /// inverted looks like a normal map, just a worse one.
@@ -707,38 +746,6 @@ pub(crate) mod tests {
                  which means the bitangent a shader rebuilds points the wrong way"
             );
         }
-    }
-
-    #[test]
-    fn the_caster_drops_the_ceiling_and_nothing_else() {
-        use renew_sample_cube_world::grid::{Cell, Grid};
-        let min = Cell::new(-3, 5, 2);
-        let mut grid = Grid::new(min, (4, 3, 5));
-        let top = min.y + 3 - 1;
-        // One solid on the ceiling, one directly below it.
-        let roof_cell = Cell::new(-2, top, 4);
-        let under_cell = Cell::new(-2, top - 1, 4);
-        grid.fill(roof_cell, roof_cell, renew_sample_cube_world::grid::STONE);
-        let roof_only = super::casting_scene(&grid);
-        assert!(
-            roof_only.is_empty(),
-            "a world whose only solid is in the ceiling must cast nothing"
-        );
-        grid.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
-        let with_block = super::casting_scene(&grid);
-        assert!(
-            !with_block.is_empty(),
-            "a block below the ceiling must cast"
-        );
-        // And it casts as much as it would with no roof above it at
-        // all: the ceiling contributes nothing either way.
-        let mut roofless = Grid::new(min, (4, 3, 5));
-        roofless.fill(under_cell, under_cell, renew_sample_cube_world::grid::STONE);
-        assert_eq!(
-            with_block.vertex_count(),
-            super::casting_scene(&roofless).vertex_count(),
-            "the ceiling changed what the block below it casts"
-        );
     }
 
     use super::*;

@@ -34,6 +34,35 @@ use crate::scene::{Scene, VERTEX_STRIDE};
 /// constant is what actually couples this pipeline to those shaders.
 const LAYOUT: &[VertexAttribute] = builtin::MESH_LAYOUT;
 
+/// The scene's record and the pipeline's layout describe the same bytes
+/// **in the same order**, checked when this crate is compiled.
+///
+/// **The order half is not decoration, and it became load-bearing the
+/// day a second `Vec4` joined the list.** A total is all a sum can see:
+/// with a position, a colour, a coordinate, a normal and a tangent, the
+/// last two can be exchanged and the sum is unchanged. `push_vertex`
+/// would then write the normal where the pipeline expects the tangent,
+/// every lit draw would read three of the wrong floats, and the equality
+/// below — and the record-time assertion in the rendering crate, which
+/// also compares only strides — would both stay green. Before the
+/// tangent there was no same-sum permutation of the tail and this could
+/// not happen.
+///
+/// A `const` block rather than a test, because both sides are constants
+/// and nothing about it needs to run.
+const _: () = {
+    assert!(
+        VERTEX_STRIDE == builtin::MESH_STRIDE,
+        "the scene's record and the pipeline's layout pack to different widths"
+    );
+    assert!(LAYOUT.len() == 5, "the record is five attributes");
+    assert!(matches!(LAYOUT[0], VertexAttribute::Vec3), "position");
+    assert!(matches!(LAYOUT[1], VertexAttribute::Vec4), "colour");
+    assert!(matches!(LAYOUT[2], VertexAttribute::Vec2), "coordinate");
+    assert!(matches!(LAYOUT[3], VertexAttribute::Vec3), "normal");
+    assert!(matches!(LAYOUT[4], VertexAttribute::Vec4), "tangent");
+};
+
 /// What can go wrong building or uploading. Creation only: the draw
 /// itself cannot fail, and the render belongs to the target.
 #[derive(Debug)]
@@ -1900,42 +1929,26 @@ mod tests {
         assert!(matches!(depth.store, StoreOp::Discard));
     }
 
-    /// The layout and the packed stride describe the same bytes, checked
-    /// mechanically so only the shader stays coupled by comment. The
-    /// rendering crate asserts this equality at record time; failing it
-    /// here is a great deal easier to read.
-    #[test]
-    fn the_layout_and_the_stride_describe_the_same_bytes() {
-        let packed: u32 = LAYOUT
-            .iter()
-            .map(|attribute| attribute_width(*attribute))
-            .sum();
-        assert_eq!(packed, VERTEX_STRIDE, "the layout and the scene disagree");
-    }
-
-    /// The packed width of one attribute.
+    /// Every attribute reports the width the record is packed at.
     ///
-    /// Named rather than inlined so the exhaustive match is reachable:
-    /// the rendering crate's enum carries no `#[non_exhaustive]`
-    /// precisely so a new format is a compile error here, and a match
-    /// folded into the sum above would leave the arms this layout does
-    /// not use unexecuted.
-    fn attribute_width(attribute: VertexAttribute) -> u32 {
-        match attribute {
-            VertexAttribute::Vec2 | VertexAttribute::Uint32x2 => 8,
-            VertexAttribute::Vec3 => 12,
-            VertexAttribute::Vec4 => 16,
-            VertexAttribute::Uint32 | VertexAttribute::Unorm8x4 => 4,
-        }
-    }
-
+    /// **The equality this file used to check here is a `const` block
+    /// now**, above, along with the order the sum cannot see. What is
+    /// left is the part that has to run: an exhaustive sweep of the
+    /// widths themselves.
+    ///
+    /// It calls `byte_len` rather than a copy of it. There was a copy
+    /// here, kept so the arms this layout does not use would still be
+    /// executed somewhere; it was a second place to write 12 where 16
+    /// belonged, on a value that decides where a shader reads. The enum
+    /// carries no `#[non_exhaustive]`, so a new format is still a compile
+    /// error inside `byte_len`, and this sweep still runs every arm.
     #[test]
     fn every_attribute_reports_its_packed_width() {
-        assert_eq!(attribute_width(VertexAttribute::Vec2), 8);
-        assert_eq!(attribute_width(VertexAttribute::Vec3), 12);
-        assert_eq!(attribute_width(VertexAttribute::Vec4), 16);
-        assert_eq!(attribute_width(VertexAttribute::Uint32), 4);
-        assert_eq!(attribute_width(VertexAttribute::Uint32x2), 8);
-        assert_eq!(attribute_width(VertexAttribute::Unorm8x4), 4);
+        assert_eq!(VertexAttribute::Vec2.byte_len(), 8);
+        assert_eq!(VertexAttribute::Vec3.byte_len(), 12);
+        assert_eq!(VertexAttribute::Vec4.byte_len(), 16);
+        assert_eq!(VertexAttribute::Uint32.byte_len(), 4);
+        assert_eq!(VertexAttribute::Uint32x2.byte_len(), 8);
+        assert_eq!(VertexAttribute::Unorm8x4.byte_len(), 4);
     }
 }
