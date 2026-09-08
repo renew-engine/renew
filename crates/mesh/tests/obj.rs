@@ -182,7 +182,7 @@ fn a_face_with_two_corners_is_refused() {
 /// `NotFinite` carries `index`, documented as the record, zero-based, as
 /// the file stores them, and rendered as `record {index}`. Nothing here
 /// asserted it, and the first version of this reader passed the
-/// *component* MM so a bad `z` on the first vertex reported "record 2",
+/// *component* — so a bad `z` on the first vertex reported "record 2",
 /// sending whoever read the message to a record that need not exist.
 ///
 /// Probed by passing the component index again: red, on both halves.

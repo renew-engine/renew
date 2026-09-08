@@ -75,7 +75,7 @@ pub mod stl;
 /// **The ceilings on the factors were not enough, which is the whole
 /// point of this one.** `MAX_FACE_CORNERS` bounds a single face and
 /// `refuse_impossible_count` bounds a row count against the bytes that
-/// could supply it $M and neither bounds their product. A fan turns a
+/// could supply it — and neither bounds their product. A fan turns a
 /// face of `n` corners into `(n - 2) * 3` positions, so a file of a
 /// megabyte, every byte of it legitimate, built fifty-eight megabytes of
 /// geometry. Linear in the input and therefore inside the letter of the
@@ -96,7 +96,7 @@ pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of:
 /// independent: raising `MAX_GEOMETRY_BYTES` far enough would let a
 /// count through that `corners * 36` cannot hold on a 32-bit target, and
 /// a release build has no overflow checks to notice. Thirty-six is the
-/// bytes one corner costs with every optional array present MM twelve
+/// bytes one corner costs with every optional array present — twelve
 /// for the position, four for its share of a face normal, twelve for a
 /// corner normal, eight for a coordinate.
 const _: () = {

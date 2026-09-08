@@ -235,7 +235,7 @@ fn a_value_that_is_not_a_finite_number_is_refused() {
 /// `NotFinite` carries `index`, documented as the record as the file
 /// stores them and rendered as `record {index}`. For a library a record
 /// is a material, and the first version of this reader passed the colour
-/// component instead MM which named a material that need not exist.
+/// component instead — which named a material that need not exist.
 ///
 /// Probed by passing the component index again: red.
 #[test]

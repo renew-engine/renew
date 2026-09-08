@@ -185,8 +185,8 @@ renew asset-pack --from build/meshes/ --pack game.rpk
 ```
 
 **The format is decided by the bytes, not the file name.** PLY and OBJ
-identify themselves MM one by a magic word, the other by keywords only it
-uses MM and STL is what is left, because the format has no magic number
+identify themselves — one by a magic word, the other by keywords only it
+uses — and STL is what is left, because the format has no magic number
 at all and "these are not STL bytes" is the same observation as "these
 are STL bytes cut short". A material library is recognised before that
 fallback and refused by name, since it describes surfaces rather than

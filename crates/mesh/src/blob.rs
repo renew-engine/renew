@@ -95,7 +95,7 @@ const VEC2: usize = 8;
 /// rather than being handled, because there is no handling that helps.
 /// The lengths are what tell the reader where each array begins, so a
 /// mesh whose arrays disagree with its corner count does not fail to
-/// write MM it writes a *different, well-formed mesh*. One with a single
+/// write — it writes a *different, well-formed mesh*. One with a single
 /// corner normal and six texture coordinates comes back with three of
 /// each, silently, and nothing downstream can tell. A refusal would be
 /// kinder than that and an assertion is kinder still, because it fires
@@ -159,7 +159,7 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     // Every byte this will hold, counted before any is written.
     //
     // **The reservation used to count the positions and nothing else**,
-    // and then three more arrays were appended into the same buffer MM
+    // and then three more arrays were appended into the same buffer —
     // three times under on a mesh carrying all of them, which cost two
     // reallocations, twice the peak and a third of the call. The four
     // terms below are the whole fix, and they are free.

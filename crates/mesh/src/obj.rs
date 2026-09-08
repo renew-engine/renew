@@ -78,7 +78,7 @@ const MAX_FACE_CORNERS: usize = 1024;
 /// **The budget counts lines that could have been a keyword, and a
 /// comment is not one.** An earlier version took the first sixty-four
 /// lines flat, which meant a file with a sixty-four-line licence banner
-/// MM an ordinary thing for an exporter to write MM answered no and was
+/// — an ordinary thing for an exporter to write — answered no and was
 /// then read by whatever the caller fell back to. `read` accepted that
 /// same file perfectly well; only this said otherwise. Skipping comments
 /// and blank lines costs nothing on a real header and leaves the budget
@@ -125,7 +125,7 @@ pub fn looks_like(bytes: &[u8]) -> bool {
 ///
 /// Small on purpose. A file whose first several statements say nothing
 /// an OBJ says is not an OBJ, and every line spent past that is spent on
-/// a file this is going to decline anyway MM which for a text STL is a
+/// a file this is going to decline anyway — which for a text STL is a
 /// scan of the whole thing.
 const CONSIDERED_LINES: usize = 16;
 

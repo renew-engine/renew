@@ -308,8 +308,8 @@ fn a_blob_declaring_no_corners_is_refused() {
 ///
 /// **This used to plant its infinity in a position and nowhere else**,
 /// and the gap was not theoretical: replacing the checked reads in
-/// `pairs` with raw ones MM so texture coordinates could come back as
-/// NaN MM left this file, the corpus gate and the property suite all
+/// `pairs` with raw ones — so texture coordinates could come back as
+/// NaN — left this file, the corpus gate and the property suite all
 /// green. The fuzz target could not have found it either, because its
 /// finiteness chain covered positions and corner normals and stopped
 /// there.
@@ -382,7 +382,7 @@ fn writing_a_ragged_mesh_is_a_defect_not_a_refusal() {
 ///
 /// `Mesh` derives `Default`, so `Mesh::default()` is a reachable public
 /// value, and writing it produced a twenty-byte blob that `read` then
-/// refused MM which made "what this crate wrote, this crate reads" false
+/// refused — which made "what this crate wrote, this crate reads" false
 /// of the crate's own default.
 #[test]
 #[should_panic(expected = "whole triangles and at least one")]
@@ -446,7 +446,7 @@ fn every_byte_string_gets_an_answer() {
         for _ in 0..=next() % 6 {
             // **Modulo the length, not modulo 64.** The first version of
             // this sweep took `next() % 64` and so never touched a byte
-            // past offset 63 MM which on this template is most of the
+            // past offset 63 — which on this template is most of the
             // positions and the whole of all three optional arrays.
             // Every input it accepted was the template's own shape, so
             // the three pairing assertions below only ever saw one
