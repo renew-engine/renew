@@ -705,10 +705,13 @@ stored. Carry the field name and the record index. Do not "clamp" it: a
 NaN clamped to zero is a vertex at the origin, which is a wrong model
 that renders, and that is worse than a refusal.
 
-**Nearest thing here.** `TraceErrorKind::NonFinite` refuses a bit pattern
-naming an infinity or a NaN — but for a float written as hexadecimal in a
-text field, not for geometry. The reasoning transfers exactly; the code
-does not.
+**In the tree.** `MeshError::NotFinite { field, index }` — **refused by all
+five mesh readers**, STL, PLY, OBJ, MTL and the blob, on every coordinate,
+normal and texture coordinate as it is read. `TraceErrorKind::NonFinite`
+refuses the same thing for a float written as hexadecimal in a text field.
+
+*This entry read "the reasoning transfers exactly; the code does not" until
+the readers existed. They do, and it does.*
 
 ### 19. Negative zero, and the second spelling of a number
 
@@ -770,9 +773,12 @@ This is entry 11 — outside this build's range — but the range comes from
 the engine's number type rather than from the file format, which is why
 it is easy to forget: nothing in the file is wrong.
 
-**Nearest thing here.** `PackError::TooLarge { field, value }` has the
-shape: a value that cannot be represented on this target, named with the
-field it came from.
+**In the tree.** `MeshError::TooLarge { field, value }` — PLY refuses an
+element count, a list length, or a schema larger than this reader will hold,
+**before the allocation it would imply is attempted**, which is the half that
+matters: a header is a promise about size, and believing it is how a
+twelve-byte file asks for four gigabytes. `PackError::TooLarge { field, value }`
+has the same shape, for a value that cannot be represented on this target.
 
 ## Streams that have to agree
 
@@ -819,9 +825,12 @@ The rule that keeps this honest: an importer may substitute only where
 the substitution is announced and where the wrong outcome is visibly
 wrong. Everything else is a refusal.
 
-**Nearest thing here.** `WavError::MissingChunk { id }` is the shape —
-a required section named by identifier — but it answers about one
-container, not about a set of streams that have to be present together.
+**In the tree.** `MeshError::Unsupported { wanted }` — PLY refuses a file
+whose vertex element declares no `x`, and one carrying no `face` element at
+all, **naming which of the two is missing** rather than reporting the file as
+empty. That is this entry for a single stream. `WavError::MissingChunk { id }`
+is the shape for a container. **Neither yet answers about a set of streams that
+have to be present together**, which is what glTF attributes will need.
 
 ### 23. A component type or stride that contradicts its own accessor
 
@@ -872,6 +881,24 @@ belongs with the entries discussed under [The tolerance
 problem](#the-tolerance-problem) below. Refusing exact degeneracy and
 counting near-degeneracy is a defensible split, as long as the reader
 says which it did.
+
+**In the tree, and the answer is "neither, deliberately".** No mesh reader
+refuses a degenerate triangle. `crates/mesh/README.md` states the rule and the
+reason: degenerate triangles, inconsistent winding and unclosed surfaces "read
+successfully, because they are facts about a model rather than about a file,
+and refusing them would refuse a great deal of real art."
+
+**The consequence this entry predicts is handled where it happens rather than
+at the reader.** `render3d::scene::face_normal` is
+`unit(cross(sub(b, a), sub(c, a))).unwrap_or([0.0, 0.0, 0.0])` — so a
+degenerate face yields a zero normal, **not the NaN this entry warns arrives
+"from a file that contained no NaN at all"**. That is the split this entry asks
+for, made explicit: the file is accepted, and the one computation that would
+have manufactured a NaN from it does not.
+
+**What is still open** is everything downstream of the renderer — collision,
+lightmap parameterisation, adjacency — which this tree does not have yet and
+which each do the same division. The entry stands for them.
 
 ### 25. A normal that is not a unit vector
 
@@ -970,7 +997,16 @@ costs a full traversal and the contract may not require a single winding.
 State the answer either way; the point of this entry is that it should be
 a decision rather than an omission.
 
-**Nearest thing here.** None.
+**In the tree, and it is a decision: counted, not refused.**
+`Mesh::winding_disagreements` returns how many triangles have a stored normal
+pointing away from the face their corners wind. `crates/mesh/README.md` gives
+the reasoning — "a few in a large model is an exporter's rounding, and *all* of
+them is a file with its winding convention inverted, which is worth knowing
+before it is drawn inside out."
+
+**A count says more than a refusal here**, which is why this entry is answered
+by a number rather than by an error: the two failures it distinguishes want
+different responses, and a boolean would collapse them.
 
 ## Topology
 
