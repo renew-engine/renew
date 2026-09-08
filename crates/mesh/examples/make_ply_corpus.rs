@@ -266,6 +266,22 @@ fn malformed_seeds() -> Vec<(&'static str, Vec<u8>)> {
     many.push_str("end_header\n");
     seeds.push(("enormous-schema.seed", many.into_bytes()));
 
+    // **The refusal this corpus never reached.** The census in
+    // `tests/ply.rs` says this reader can answer `NoGeometry`, and the
+    // replay census said the committed seeds reached nine of its ten
+    // outcomes — which is the hole the outcome floor exists to notice,
+    // and did not, because the floor had been set high enough to pass
+    // without it. A file declaring both elements and populating neither
+    // is the shortest way to provoke it.
+    seeds.push((
+        "both-elements-empty.seed",
+        b"ply\nformat ascii 1.0\nelement vertex 0\n\
+          property float x\nproperty float y\nproperty float z\n\
+          element face 0\nproperty list uchar int vertex_indices\n\
+          end_header\n"
+            .to_vec(),
+    ));
+
     seeds
 }
 

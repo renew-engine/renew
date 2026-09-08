@@ -1,7 +1,8 @@
-//! Readers for the mesh files other tools write.
+//! Readers for the mesh files other tools write, and a writer for the
+//! one this repository owns.
 //!
-//! **Bytes in, validated geometry out, and nothing else.** This crate
-//! never opens a file, never takes a path and never reads a clock. A
+//! **Bytes in, validated geometry out, and bytes back out again.** This
+//! crate never opens a file, never takes a path and never reads a clock. A
 //! caller that reads a file owns the file and owns the bound on reading
 //! it; what arrives here is a byte string, which is what lets the same
 //! reader serve a file on disk, a member of an archive, and a chunk
@@ -54,7 +55,9 @@
 // every engine crate carries at its root.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod blob;
 mod error;
+pub mod format;
 pub mod mtl;
 pub mod obj;
 pub mod ply;
@@ -73,7 +76,7 @@ pub mod stl;
 /// **The ceilings on the factors were not enough, which is the whole
 /// point of this one.** `MAX_FACE_CORNERS` bounds a single face and
 /// `refuse_impossible_count` bounds a row count against the bytes that
-/// could supply it $M and neither bounds their product. A fan turns a
+/// could supply it — and neither bounds their product. A fan turns a
 /// face of `n` corners into `(n - 2) * 3` positions, so a file of a
 /// megabyte, every byte of it legitimate, built fifty-eight megabytes of
 /// geometry. Linear in the input and therefore inside the letter of the
@@ -85,6 +88,25 @@ pub(crate) const MAX_GEOMETRY_BYTES: usize = 256 << 20;
 
 /// How many positions that ceiling allows.
 pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
+
+/// The ceiling is what keeps a corner count from overflowing the
+/// arithmetic that turns it into a byte length, so it has to stay inside
+/// the narrowest pointer this engine is built for.
+///
+/// **Checked here rather than trusted**, because the two numbers are
+/// independent: raising `MAX_GEOMETRY_BYTES` far enough would let a
+/// count through that `corners * 36` cannot hold on a 32-bit target, and
+/// a release build has no overflow checks to notice. Thirty-six is the
+/// bytes one corner costs with every optional array present — twelve
+/// for the position, four for its share of a face normal, twelve for a
+/// corner normal, eight for a coordinate.
+const _: () = {
+    assert!(
+        MAX_POSITIONS < u32::MAX as usize / 36,
+        "a corner count at the ceiling must survive being multiplied by the bytes a corner \
+         costs, on the narrowest target this engine builds for"
+    );
+};
 
 /// Refuse before the geometry arrives rather than after it.
 ///

@@ -165,7 +165,7 @@ $ cargo run --bin renew -- help
 | `build` `test` `bench` `lint` `check` | the workspace, with one canonical command each |
 | `run` `record` `replay` | start a sample, capture the input it saw, play it back and compare |
 | `determinism` | emit this target's digests, or compare several targets' |
-| `asset-pack` `asset-inspect` `ui-compile` | content, built and verified from the command line |
+| `asset-pack` `asset-inspect` `asset-import` `ui-compile` | content, built, imported and verified from the command line |
 | `coverage` `modules` `doctor` `configure` | the state of the tree and the machine it is on |
 
 Every one of them accepts `--json` and answers with a single document carrying a `schema_version`,

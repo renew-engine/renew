@@ -440,15 +440,16 @@ jobs:
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-json $sel
           cargo build $sel
           cargo test $sel
-      # The mesh readers, which nothing in the tree depends on yet -- so
-      # this cell, like the JSON reader's above it, is written before it
-      # can catch anything. That is when a cell is worth writing rather
-      # than deferring: the first crate to depend on this one should
-      # discover the obligation from a red lane here rather than from
-      # nobody.
+      # The mesh readers. This cell was written while nothing in the tree
+      # depended on them, on the argument that the first crate to depend
+      # on this one should discover the obligation from a red lane here
+      # rather than from nobody -- and that is what happened: the CLI
+      # took an edge for `asset-import`, this cell went red for a list
+      # that was no longer upward-closed, and the exclusion below is the
+      # answer. Same shape as the pack format's cell above.
       - name: Build and test without the mesh readers
         run: |
-          sel="--workspace --exclude renew-mesh"
+          sel="--workspace --exclude renew-mesh --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-mesh $sel
           cargo build $sel
           cargo test $sel

@@ -63,6 +63,12 @@ fn run(invocation: &Invocation) -> ExitCode {
             invocation.json,
         ),
         // Parsing guarantees both paths, as it does for the pack.
+        Command::AssetImport => run_asset_import(
+            invocation.from.as_deref().unwrap_or_default(),
+            invocation.out.as_deref().unwrap_or_default(),
+            invocation.json,
+        ),
+        // Parsing guarantees both paths, as it does for the pack.
         Command::UiCompile => run_ui_compile(
             invocation.from.as_deref().unwrap_or_default(),
             invocation.out.as_deref().unwrap_or_default(),
@@ -467,6 +473,186 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Read a model file into the canonical form a pack can store.
+///
+/// The format is decided by the bytes rather than by the name, and by
+/// `renew_mesh::format::detect` rather than by anything here: which
+/// reader owns which bytes is a fact about those formats, and a tool
+/// that decided it separately would be a second place to get it wrong.
+/// Whether two paths name one file on disk.
+///
+/// **String equality is not the question.** `--out ./model.stl` and
+/// `--from model.stl` are one file spelled two ways, and on Windows they
+/// are one file spelled several more. `canonicalize` answers it for the
+/// source, which exists by the time this is asked; the destination
+/// usually does not exist yet, so its directory is canonicalised and the
+/// file name compared against that.
+///
+/// **An unanswerable question is not a match.** Where the answer cannot
+/// be had — an unreadable directory, a path with no file name — this says
+/// "not the same file" and lets the write proceed, because refusing an
+/// import for a reason that may not be true is the worse failure.
+fn names_one_file(from: &Path, out: &Path) -> bool {
+    let Ok(source) = from.canonicalize() else {
+        return false;
+    };
+    if let Ok(destination) = out.canonicalize() {
+        return source == destination;
+    }
+    let (Some(directory), Some(name)) = (out.parent(), out.file_name()) else {
+        return false;
+    };
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
+    };
+    directory
+        .canonicalize()
+        .is_ok_and(|resolved| resolved.join(name) == source)
+}
+
+fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
+    let started = Instant::now();
+
+    // **Checked before the file is opened, because reading first is what
+    // makes the damage silent.** Writing the blob over the model destroys
+    // the one file that could produce it again, and the command then
+    // reports success: the caller has no reason to look, and nothing left
+    // to look at. `SameFile` is this tool's own name for the same reason
+    // `NotGeometry` is — no reader was asked, so no reader refused.
+    if names_one_file(Path::new(from), Path::new(out_path)) {
+        return import_failure(
+            &format!(
+                "{from}: --from and --out name the same file, and writing the blob \
+                 would destroy the model it was made from"
+            ),
+            Some("SameFile"),
+            json_mode,
+            started,
+        );
+    }
+
+    let bytes = match std::fs::read(from) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return import_failure(
+                &format!("cannot read {from}: {error}"),
+                None,
+                json_mode,
+                started,
+            );
+        }
+    };
+
+    let found = renew_mesh::format::detect(&bytes);
+    let format = found.name();
+    let Some(read) = found.read(&bytes) else {
+        // A material library is not a broken mesh, and saying so is this
+        // tool's judgement rather than a reader's refusal: no reader was
+        // asked, so none refused. `NotGeometry` is the CLI's own name,
+        // kept out of `MeshError` so a script can tell a verdict about a
+        // file from a verdict about its format.
+        return import_failure(
+            &format!(
+                "{from}: a {format} file describes surfaces rather than their shape, \
+                      and this reads geometry"
+            ),
+            Some("NotGeometry"),
+            json_mode,
+            started,
+        );
+    };
+    let mesh = match read {
+        Ok(mesh) => mesh,
+        Err(refusal) => {
+            return import_failure(
+                &format!("{from}: {refusal}"),
+                Some(refusal.name()),
+                json_mode,
+                started,
+            );
+        }
+    };
+
+    // The file is not read again after this, and it can be as large as
+    // the model: holding it across the write was a quarter of this
+    // command's peak for nothing.
+    drop(bytes);
+
+    let blob = renew_mesh::blob::write(&mesh);
+    // One direct write, for the reason `ui-compile` gives: a build-time
+    // tool whose output is regenerated by rerunning it.
+    if let Err(error) = std::fs::write(out_path, &blob) {
+        return import_failure(
+            &format!("cannot write {out_path}: {error}"),
+            None,
+            json_mode,
+            started,
+        );
+    }
+
+    let triangles = i64::try_from(mesh.triangles()).unwrap_or(i64::MAX);
+    let size = i64::try_from(blob.len()).unwrap_or(i64::MAX);
+    if json_mode {
+        // `envelope_base` puts `schema_version` first already, which is
+        // what D11 asks of a public JSON surface. A second one here
+        // would be a duplicate key in the object, and a reader taking
+        // whichever it met first would be right by luck.
+        let mut fields = envelope_base("asset-import", "ok", 0, started, "");
+        fields.push(("format".to_string(), Value::String(format.to_string())));
+        fields.push(("triangles".to_string(), Value::Number(triangles)));
+        // Which optional streams survived the read, so a caller can tell
+        // a lit mesh from a bare one without opening the blob.
+        fields.push((
+            "face_normals".to_string(),
+            Value::Bool(!mesh.face_normals.is_empty()),
+        ));
+        fields.push((
+            "corner_normals".to_string(),
+            Value::Bool(!mesh.corner_normals.is_empty()),
+        ));
+        fields.push((
+            "corner_texcoords".to_string(),
+            Value::Bool(!mesh.corner_texcoords.is_empty()),
+        ));
+        fields.push(("bytes".to_string(), Value::Number(size)));
+        fields.push(("out".to_string(), Value::String(out_path.to_string())));
+        fields.push(("refusal".to_string(), Value::Null));
+        emit_stdout_line(&Value::Object(fields).render());
+    } else {
+        emit_stdout(&format!(
+            "read {triangles} triangles of {format} into {out_path} ({size} bytes)\n"
+        ));
+    }
+    ExitCode::SUCCESS
+}
+
+/// A refusal, in whichever form was asked for.
+///
+/// The JSON carries the variant's name beside the sentence, because
+/// **a message is for a person and a name is for a program**: the
+/// sentences are meant to improve, and a script keying on one breaks
+/// when they do.
+fn import_failure(
+    message: &str,
+    refusal: Option<&'static str>,
+    json_mode: bool,
+    started: Instant,
+) -> ExitCode {
+    if json_mode {
+        let mut fields = envelope_base("asset-import", "error", 1, started, message);
+        fields.push((
+            "refusal".to_string(),
+            refusal.map_or(Value::Null, |name| Value::String(name.to_string())),
+        ));
+        emit_stdout_line(&Value::Object(fields).render());
+    } else {
+        eprintln!("error: {message}");
+    }
+    ExitCode::FAILURE
 }
 
 /// `renew ui-compile` -- compile a text document into the binary blob.
@@ -2131,6 +2317,46 @@ fn count(value: usize) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// **The three ways `names_one_file` says no**, which is the answer
+    /// that lets a write proceed — so each is a place where getting it
+    /// wrong means either destroying a file or refusing a legitimate
+    /// import for a reason that is not true.
+    ///
+    /// The integration suite drives the yes: two spellings of one path,
+    /// refused. What it cannot reach from a subprocess is the shape of
+    /// the no, which is what this covers.
+    #[test]
+    fn names_one_file_says_no_where_it_cannot_say_yes() {
+        use std::path::Path;
+
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+
+        // A destination with no file name at all. Nothing can be
+        // compared, so the answer is no and the write goes on to fail on
+        // its own terms — a refusal here would be a guess.
+        assert!(!super::names_one_file(&real, Path::new("")));
+
+        // A source that is not there. Canonicalising it fails, and a
+        // file that does not exist is not the same file as anything.
+        assert!(!super::names_one_file(
+            Path::new("no-file-of-this-name-exists.stl"),
+            &real
+        ));
+
+        // A bare name whose directory is not the source's.
+        assert!(!super::names_one_file(
+            &real,
+            Path::new("no-file-of-this-name-exists.blob")
+        ));
+
+        // **And the empty parent really is the working directory**, not
+        // "no directory": a bare name matching the source is caught.
+        // `cargo test` runs a unit test with the package root as its
+        // working directory, which is where this manifest is, so the two
+        // spellings below name one file.
+        assert!(super::names_one_file(&real, Path::new("Cargo.toml")));
+    }
+
     use super::*;
 
     /// One healthy engine crate, in the shape `cargo metadata

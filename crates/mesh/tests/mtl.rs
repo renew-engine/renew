@@ -235,7 +235,7 @@ fn a_value_that_is_not_a_finite_number_is_refused() {
 /// `NotFinite` carries `index`, documented as the record as the file
 /// stores them and rendered as `record {index}`. For a library a record
 /// is a material, and the first version of this reader passed the colour
-/// component instead MM which named a material that need not exist.
+/// component instead — which named a material that need not exist.
 ///
 /// Probed by passing the component index again: red.
 #[test]
@@ -380,7 +380,7 @@ fn the_census_and_the_files_agree() {
             "`{name}` is provoked by a file here, and the census calls it unreachable"
         );
         assert_eq!(
-            variant(&got),
+            got.name(),
             *name,
             "the file meant to provoke `{name}` provoked something else"
         );
@@ -413,22 +413,5 @@ fn the_census_and_the_files_agree() {
             mtl_cannot_reach(&refusal).is_some(),
             "{refusal:?} is claimed reachable and nothing here provokes it"
         );
-    }
-}
-
-/// A refusal's variant, as a name, with no wildcard arm.
-fn variant(refusal: &MeshError) -> &'static str {
-    match refusal {
-        MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-        MeshError::CountMismatch { .. } => "CountMismatch",
-        MeshError::TooLarge { .. } => "TooLarge",
-        MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-        MeshError::NotANumber { .. } => "NotANumber",
-        MeshError::NotFinite { .. } => "NotFinite",
-        MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-        MeshError::IndexZero { .. } => "IndexZero",
-        MeshError::NotAFace { .. } => "NotAFace",
-        MeshError::Unsupported { .. } => "Unsupported",
-        MeshError::NoGeometry => "NoGeometry",
     }
 }

@@ -204,6 +204,35 @@ pub enum MeshError {
     NoGeometry,
 }
 
+impl MeshError {
+    /// The variant's own name, for a caller that has to act on which
+    /// refusal this is rather than read it.
+    ///
+    /// **A message is for a person and a name is for a program.** The
+    /// sentences below are meant to improve, and a script keying on one
+    /// breaks when it does; these names are part of the surface and do
+    /// not change without the variant changing.
+    ///
+    /// No wildcard arm, so a variant added later stops this compiling
+    /// until it is named.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::TooShortForHeader { .. } => "TooShortForHeader",
+            Self::CountMismatch { .. } => "CountMismatch",
+            Self::TooLarge { .. } => "TooLarge",
+            Self::ExpectedKeyword { .. } => "ExpectedKeyword",
+            Self::NotANumber { .. } => "NotANumber",
+            Self::NotFinite { .. } => "NotFinite",
+            Self::IndexOutOfRange { .. } => "IndexOutOfRange",
+            Self::IndexZero { .. } => "IndexZero",
+            Self::NotAFace { .. } => "NotAFace",
+            Self::Unsupported { .. } => "Unsupported",
+            Self::NoGeometry => "NoGeometry",
+        }
+    }
+}
+
 impl fmt::Display for MeshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

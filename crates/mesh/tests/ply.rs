@@ -907,3 +907,138 @@ fn a_binary_face_claiming_too_many_corners_is_refused() {
         "the refusal reports the number the file asked for"
     );
 }
+
+/// A header declaring far more elements than the reader will hold.
+///
+/// Two thousand of them, which is past the ceiling by enough that the
+/// exact ceiling can move without this file needing an edit.
+fn crowded_schema() -> String {
+    let mut header = String::from("ply\nformat ascii 1.0\n");
+    for index in 0..2000 {
+        writeln!(header, "element spare{index} 0").expect("a String is always writable");
+    }
+    header.push_str("end_header\n");
+    header
+}
+
+/// Which refusals this reader can produce, and which it cannot.
+///
+/// **This suite was the one without a census.** The other four each
+/// carry this pair — a wildcard-free match, and a test that checks the
+/// match against the files — and the README claimed all five did. It
+/// was four. The claim was found by counting rather than by reading,
+/// which is the only way that kind of sentence is ever found.
+///
+/// The value of the shape is not the list. It is that adding a variant
+/// to `MeshError` stops this file compiling until somebody says which
+/// readers can reach it, and that a refusal which quietly stops being
+/// reachable cannot go on being listed as if it were.
+///
+/// **The reason is the return value, not a comment beside it**, so that
+/// a failure prints why this format was thought unable to get here.
+fn ply_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
+    match refusal {
+        // Reachable, and each is provoked by a file in this suite.
+        MeshError::CountMismatch { .. }
+        | MeshError::ExpectedKeyword { .. }
+        | MeshError::NotANumber { .. }
+        | MeshError::NotFinite { .. }
+        | MeshError::IndexOutOfRange { .. }
+        | MeshError::NotAFace { .. }
+        | MeshError::TooLarge { .. }
+        | MeshError::Unsupported { .. }
+        | MeshError::NoGeometry => None,
+        MeshError::TooShortForHeader { .. } => Some(
+            "this format's header is text of no fixed length, so there is no count of bytes \
+             it can be short of; a header that stops early is a keyword that is missing",
+        ),
+        MeshError::IndexZero { .. } => {
+            Some("this format numbers vertices from zero, so zero is an ordinary index")
+        }
+    }
+}
+
+/// **The census and the files agree, in both directions.**
+///
+/// Every refusal a file here provokes is one the census calls
+/// reachable, and every refusal it calls reachable is provoked by a
+/// file here. Either half alone is a claim nobody checks: without the
+/// first the census can call something unreachable that the suite
+/// reaches every run, and without the second it can go on listing a
+/// refusal no file has produced since the reader stopped making it.
+#[test]
+fn the_census_and_the_files_agree() {
+    // A binary body far smaller than the counts the header promised:
+    // eight vertices need ninety-six bytes and twelve arrive.
+    let mut short_body = b"ply
+format binary_little_endian 1.0
+element vertex 8
+         property float x
+property float y
+property float z
+element face 1
+         property list uchar int vertex_indices
+end_header
+"
+    .to_vec();
+    short_body.extend_from_slice(&[0u8; 12]);
+
+    let nan_corner = ascii_square().replace("0 0 0", "nan 0 0");
+
+    let provoked = [
+        // A header whose first word is not the magic one.
+        refusal(b"not a ply at all\nend_header\n"),
+        // A vertex element and no face element: geometry this reader
+        // has no way to use.
+        refusal(
+            b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\n\
+              property float y\nproperty float z\nend_header\n0 0 0\n",
+        ),
+        // Both elements present and both empty.
+        refusal(
+            b"ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\n\
+              property float y\nproperty float z\nelement face 0\n\
+              property list uchar int vertex_indices\nend_header\n",
+        ),
+        // A body that stops before the counts the header promised.
+        refusal(&short_body),
+        // A schema declaring more elements than this reader will hold.
+        refusal(crowded_schema().as_bytes()),
+        // A face index that is not a number.
+        refusal(ascii_square().replace("3 0 1 2", "3 0 wombat 2").as_bytes()),
+        // A coordinate that is not finite.
+        refusal(nan_corner.as_bytes()),
+        // A face naming a vertex past the end of the list.
+        refusal(ascii_square().replace("3 0 1 2", "3 0 1 9").as_bytes()),
+        // A face with too few corners to be a surface.
+        refusal(ascii_square().replace("3 0 1 2", "2 0 1").as_bytes()),
+    ];
+
+    for refused in &provoked {
+        assert!(
+            ply_cannot_reach(refused).is_none(),
+            "{refused:?} was provoked by a file in this suite, and the census says this \
+             reader cannot reach it: {}",
+            ply_cannot_reach(refused).unwrap_or("")
+        );
+    }
+
+    for name in [
+        "CountMismatch",
+        "ExpectedKeyword",
+        "NotANumber",
+        "NotFinite",
+        "IndexOutOfRange",
+        "NotAFace",
+        "TooLarge",
+        "Unsupported",
+        "NoGeometry",
+    ] {
+        assert!(
+            provoked
+                .iter()
+                .any(|refused| format!("{refused:?}").starts_with(name)),
+            "`{name}` is called reachable and no file in this suite provokes it"
+        );
+    }
+}

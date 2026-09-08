@@ -1,6 +1,7 @@
-//! Properties of the STL reader, over inputs nobody chose.
+//! Properties of the STL reader and the blob codec, over inputs nobody
+//! chose.
 //!
-//! The suite beside this one names cases. These four say something about
+//! The suite beside this one names cases. These five say something about
 //! *every* input of a shape, which is the half a named case cannot
 //! reach — and between them they are what stands behind the claim in the
 //! crate's own documentation that a reader answers for every byte string
@@ -13,7 +14,7 @@
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
 use proptest::prelude::*;
-use renew_mesh::stl;
+use renew_mesh::{Mesh, blob, stl};
 
 /// A binary STL over `triangles`, built the way an exporter would.
 fn binary(triangles: &[([f32; 3], [[f32; 3]; 3])]) -> Vec<u8> {
@@ -68,6 +69,68 @@ fn vector() -> impl Strategy<Value = [f32; 3]> {
 
 fn triangles() -> impl Strategy<Value = Vec<([f32; 3], [[f32; 3]; 3])>> {
     proptest::collection::vec((vector(), [vector(), vector(), vector()]), 1..12)
+}
+
+/// Coordinates for the blob, with both zeros deliberately in the mix.
+///
+/// **The ranges above will not produce a negative zero**, and negative
+/// zero is the value that makes the difference between the two ways of
+/// asking whether a round trip was lossless. `-0.0 == 0.0` is true, so a
+/// codec that turned one into the other would satisfy an equality check
+/// while having thrown information away. Generating it, and comparing
+/// bits below, is what turns that from a claim into a test.
+fn blob_coordinate() -> impl Strategy<Value = f32> {
+    prop_oneof![
+        4 => coordinate(),
+        1 => Just(0.0f32),
+        1 => Just(-0.0f32),
+    ]
+}
+
+fn blob_vector() -> impl Strategy<Value = [f32; 3]> {
+    [blob_coordinate(), blob_coordinate(), blob_coordinate()]
+}
+
+/// A mesh of the shape every reader in this crate produces: whole
+/// triangles, at least one, and each optional array either empty or
+/// exactly its full length. Those are `blob::write`'s stated contract,
+/// so a generator that broke them would be testing an assertion rather
+/// than the codec.
+fn mesh() -> impl Strategy<Value = Mesh> {
+    (1usize..8, any::<bool>(), any::<bool>(), any::<bool>()).prop_flat_map(
+        |(faces, has_face, has_corner, has_uv)| {
+            let corners = faces * 3;
+            (
+                proptest::collection::vec(blob_vector(), corners),
+                proptest::collection::vec(blob_vector(), if has_face { faces } else { 0 }),
+                proptest::collection::vec(blob_vector(), if has_corner { corners } else { 0 }),
+                proptest::collection::vec(
+                    [blob_coordinate(), blob_coordinate()],
+                    if has_uv { corners } else { 0 },
+                ),
+            )
+                .prop_map(
+                    |(positions, face_normals, corner_normals, corner_texcoords)| Mesh {
+                        positions,
+                        face_normals,
+                        corner_normals,
+                        corner_texcoords,
+                    },
+                )
+        },
+    )
+}
+
+/// Every float of a mesh, in one order, as the bits it is stored as.
+fn bits(mesh: &Mesh) -> Vec<u32> {
+    mesh.positions
+        .iter()
+        .chain(&mesh.face_normals)
+        .chain(&mesh.corner_normals)
+        .flatten()
+        .chain(mesh.corner_texcoords.iter().flatten())
+        .map(|value| value.to_bits())
+        .collect()
 }
 
 proptest! {
@@ -174,5 +237,34 @@ proptest! {
             "{at} of {} bytes was accepted as a mesh",
             whole.len()
         );
+    }
+
+    /// **What `write` wrote, `read` gives back — bit for bit.**
+    ///
+    /// Compared as bits rather than as floats, and the difference is not
+    /// pedantry. `-0.0 == 0.0` is true, so an equality check passes a
+    /// codec that normalised a negative zero away; `to_bits` does not.
+    /// The generator above puts both zeros in deliberately so this
+    /// distinction is exercised rather than merely available.
+    ///
+    /// The blob is the one format here this repository also writes, so
+    /// it is the only one where a round trip is a claim about a pair of
+    /// functions rather than about a file somebody else produced — and
+    /// a lossy canonical form is worse than a lossy reader, because
+    /// everything downstream trusts it to be canonical.
+    #[test]
+    fn a_mesh_written_as_a_blob_comes_back_bit_for_bit(source in mesh()) {
+        let bytes = blob::write(&source);
+        let read = blob::read(&bytes).expect("a blob this test wrote");
+
+        prop_assert_eq!(read.positions.len(), source.positions.len());
+        prop_assert_eq!(read.face_normals.len(), source.face_normals.len());
+        prop_assert_eq!(read.corner_normals.len(), source.corner_normals.len());
+        prop_assert_eq!(read.corner_texcoords.len(), source.corner_texcoords.len());
+        prop_assert_eq!(bits(&read), bits(&source));
+
+        // And the form is canonical: the same mesh written twice is the
+        // same bytes, which is what every cache above a blob assumes.
+        prop_assert_eq!(blob::write(&read), bytes);
     }
 }

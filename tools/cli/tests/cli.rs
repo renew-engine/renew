@@ -2091,6 +2091,320 @@ fn the_readme_shows_the_usage_text_the_binary_prints() -> std::io::Result<()> {
 }
 
 /// A tiny legal document for the compile tests, and its node count.
+/// One triangle, written the way each format writes it.
+///
+/// **Authored here rather than downloaded**, which is this repository's
+/// rule for fixtures and which bites hardest for a model: the obvious
+/// way to get an OBJ is to take somebody's, and that is a licence
+/// question rather than a test.
+const A_TRIANGLE_AS_OBJ: &str = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+const A_TRIANGLE_AS_PLY: &str = "ply\nformat ascii 1.0\nelement vertex 3\n\
+                                 property float x\nproperty float y\nproperty float z\n\
+                                 element face 1\nproperty list uchar int vertex_indices\n\
+                                 end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+const A_TRIANGLE_AS_STL: &str = "solid one\n\
+                                 facet normal 0 0 1\n  outer loop\n\
+                                 vertex 0 0 0\n vertex 1 0 0\n vertex 0 1 0\n\
+                                 endloop\nendfacet\nendsolid one\n";
+
+/// `asset-import` end to end: the blob lands where `--out` says, the
+/// format is reported as what it is, and the reader that owns it accepts
+/// the result.
+///
+/// **Every format is imported through the same call**, because the point
+/// of the arm is that a caller does not have to know which one it holds.
+///
+/// **Neither the model nor the blob is named after its format**, and
+/// that is deliberate rather than tidy. The first version of this test
+/// wrote its output to `{format}.msh` and then asserted the printed line
+/// contained `format` — but the printed line contains the output path,
+/// so the assertion was true whatever the tool had detected. Relabelling
+/// `ply` and `stl` in the source left all 61 tests in this file green.
+/// The names below share no substring with any format, and the format is
+/// asserted from the JSON where it is a field rather than a fragment.
+#[test]
+fn asset_import_writes_a_blob_the_reader_accepts() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import")?;
+    for (name, source, format) in [
+        ("first.dat", A_TRIANGLE_AS_OBJ, "obj"),
+        ("second.dat", A_TRIANGLE_AS_PLY, "ply"),
+        ("third.dat", A_TRIANGLE_AS_STL, "stl"),
+    ] {
+        let model = directory.join(name);
+        let out = directory.join(format!("{name}.out"));
+        fs::write(&model, source)?;
+
+        let output = run(&[
+            "--json",
+            "asset-import",
+            "--from",
+            &model.to_string_lossy(),
+            "--out",
+            &out.to_string_lossy(),
+        ])?;
+        assert!(output.status.success(), "{format} must import: {output:?}");
+        let document = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            document.contains(&format!("\"format\":\"{format}\"")),
+            "detected as {format}, as a field and not as a fragment of a path: {document:?}"
+        );
+        assert!(document.contains("\"triangles\":1"), "{document:?}");
+
+        let bytes = fs::read(&out)?;
+        let mesh = renew_mesh::blob::read(&bytes).expect("the blob must read back as a mesh");
+        assert_eq!(mesh.triangles(), 1);
+    }
+    Ok(())
+}
+
+/// **The human line names the count and the format too.**
+///
+/// Split from the loop above because it is a different claim about a
+/// different output, and because the prose line is the half a person
+/// reads.
+#[test]
+fn asset_import_prints_what_it_read_and_what_it_thought_it_was() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-prose")?;
+    let model = directory.join("first.dat");
+    let out = directory.join("first.out");
+    fs::write(&model, A_TRIANGLE_AS_PLY)?;
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "{output:?}");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("read 1 triangles") && printed.contains("of ply"),
+        "the line says the count and the format: {printed:?}"
+    );
+    Ok(())
+}
+
+/// **The format is detected from the bytes, not the name.**
+///
+/// An OBJ called `.stl` still imports as an OBJ. This is the assertion
+/// that would fail if detection ever moved to the extension, which is
+/// the obvious shortcut and the wrong one: a file's name is what
+/// somebody typed, and its bytes are what it is.
+#[test]
+fn asset_import_reads_the_bytes_and_not_the_extension() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-liar")?;
+    let model = directory.join("actually-an-obj.stl");
+    let blob = directory.join("out.msh");
+    fs::write(&model, A_TRIANGLE_AS_OBJ)?;
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "the bytes are an OBJ: {output:?}");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("of obj"),
+        "detected by content, not by the name somebody typed: {printed:?}"
+    );
+    Ok(())
+}
+
+/// **A material library is refused by name, not read as a broken mesh.**
+///
+/// It would otherwise reach the STL fallback and be reported as a
+/// truncated model — true, and no help to whoever pointed the tool at
+/// the wrong half of an export.
+#[test]
+fn asset_import_refuses_a_material_library_for_what_it_is() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-mtl")?;
+    let model = directory.join("scene.mtl");
+    let blob = directory.join("out.msh");
+    fs::write(&model, "newmtl steel\nKd 0.4 0.4 0.45\n")?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "a library is not geometry");
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"refusal\":\"NotGeometry\""),
+        "refused by a name of this tool's own: no reader was asked, so none refused, \
+         and a script needs a verdict about a format told apart from one about a file: \
+         {document:?}"
+    );
+    assert!(
+        document.contains("\"format\":\"mtl\"") || document.contains("mtl file"),
+        "and it says which format it decided this was: {document:?}"
+    );
+    assert!(
+        !blob.exists(),
+        "a refused import writes no blob, so a stale one is never left looking fresh"
+    );
+    Ok(())
+}
+
+/// The success envelope: the shared schema-versioned shape, plus what
+/// this arm adds.
+///
+/// **`schema_version` appears once.** It comes from the envelope every
+/// subcommand shares; an arm pushing its own would put the key in the
+/// object twice, and a reader taking whichever it met first would be
+/// right by luck.
+#[test]
+fn asset_import_json_emits_one_schema_versioned_document() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-json")?;
+    let model = directory.join("model.obj");
+    let blob = directory.join("model.msh");
+    fs::write(&model, A_TRIANGLE_AS_OBJ)?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success());
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.starts_with("{\"schema_version\":2,\"command\":\"asset-import\""),
+        "the envelope leads with its schema: {document:?}"
+    );
+    assert_eq!(
+        document.matches("\"schema_version\"").count(),
+        1,
+        "exactly one, or the object has a duplicate key: {document:?}"
+    );
+    for field in [
+        "\"status\":\"ok\"",
+        "\"exit_code\":0",
+        "\"format\":\"obj\"",
+        "\"triangles\":1",
+        "\"face_normals\":false",
+        "\"corner_normals\":false",
+        "\"corner_texcoords\":false",
+        "\"bytes\":",
+        "\"out\":",
+        "\"refusal\":null",
+    ] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    Ok(())
+}
+
+/// **The optional streams are reported as the file actually carried
+/// them.**
+///
+/// An OBJ naming normals and coordinates comes back with both flags set,
+/// where the bare triangle above sets neither. A caller can tell a lit
+/// mesh from a bare one without opening the blob, which is the whole
+/// reason the fields are there.
+#[test]
+fn asset_import_json_reports_which_streams_the_file_carried() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-streams")?;
+    let model = directory.join("lit.obj");
+    let blob = directory.join("lit.msh");
+    fs::write(
+        &model,
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n",
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success());
+    let document = String::from_utf8_lossy(&output.stdout);
+    for field in [
+        "\"corner_normals\":true",
+        "\"corner_texcoords\":true",
+        // OBJ states no normal for a face as a whole, whatever its
+        // corners carry.
+        "\"face_normals\":false",
+    ] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    Ok(())
+}
+
+/// **A malformed model is refused by variant name as well as by
+/// sentence.**
+///
+/// A message is for a person and a name is for a program: the sentences
+/// are meant to improve, and a script keying on one breaks when they do.
+#[test]
+fn asset_import_json_names_the_refusal_a_script_can_act_on() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-bad")?;
+    let model = directory.join("bad.obj");
+    let blob = directory.join("bad.msh");
+    // A face naming a fourth vertex the file never declared.
+    fs::write(&model, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 4\n")?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "a refusal is a failed run");
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(document.starts_with("{\"schema_version\":2,\"command\":\"asset-import\""));
+    for field in [
+        "\"status\":\"error\"",
+        "\"exit_code\":1",
+        "\"refusal\":\"IndexOutOfRange\"",
+    ] {
+        assert!(document.contains(field), "{field} in {document:?}");
+    }
+    Ok(())
+}
+
+/// **A file that cannot be read at all is a failure of reading, not a
+/// refusal of the format.**
+///
+/// `refusal` stays null, because nothing about the bytes was wrong —
+/// there were no bytes. A script that retries on a read error and gives
+/// up on a malformed model needs those two apart.
+#[test]
+fn asset_import_json_leaves_the_refusal_null_when_nothing_was_read() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-missing")?;
+    let model = directory.join("not-here.obj");
+    let blob = directory.join("out.msh");
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success());
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"refusal\":null"),
+        "no bytes were read, so no reader refused anything: {document:?}"
+    );
+    Ok(())
+}
+
 const COMPILABLE: (&str, &str) = ("column gap=2 {\n    node w=8 h=4 bg=#102030\n}\n", "2");
 
 /// `ui-compile` end to end: the blob lands where --out says, the
@@ -2272,5 +2586,133 @@ fn ui_compile_json_reports_an_unreadable_input() -> std::io::Result<()> {
     for field in ["\"status\":\"error\"", "\"errors\":[]", "cannot read"] {
         assert!(document.contains(field), "{field} in {document:?}");
     }
+    Ok(())
+}
+
+/// **`--from x --out x` used to read the model and then overwrite it.**
+///
+/// The read completes, the bytes are dropped to keep the peak down, and
+/// the write then truncates the file they came from. The command
+/// *succeeds*: the file is now the blob, and the model it was made from
+/// is gone with nothing to remake it from. A tool that destroys its
+/// input and reports success is worse than one that fails, because the
+/// caller has no reason to look.
+///
+/// Refused by name, and the source is checked afterwards to still be the
+/// source — an assertion on the refusal alone would pass just as well if
+/// the file were destroyed before the check.
+#[test]
+fn asset_import_refuses_to_write_over_the_model_it_reads() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-in-place")?;
+    let model = directory.join("mesh.stl");
+    fs::write(&model, A_TRIANGLE_AS_STL)?;
+
+    // The same file, and then the same file spelled differently, because
+    // a check on the strings would pass the first and fail the second.
+    let indirect = directory.join(".").join("mesh.stl");
+    for spelling in [model.clone(), indirect] {
+        let output = run(&[
+            "--json",
+            "asset-import",
+            "--from",
+            &model.to_string_lossy(),
+            "--out",
+            &spelling.to_string_lossy(),
+        ])?;
+        assert!(
+            !output.status.success(),
+            "writing over the model must fail: {output:?}"
+        );
+        let document = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            document.contains("\"refusal\":\"SameFile\""),
+            "the refusal is named for a script, not only described: {document:?}"
+        );
+        assert_eq!(
+            fs::read(&model)?,
+            A_TRIANGLE_AS_STL.as_bytes(),
+            "and the model is still there, byte for byte"
+        );
+    }
+    Ok(())
+}
+
+/// **A blob that cannot be written says so, and says where.**
+///
+/// The read succeeded and the mesh is in hand, so this is the one
+/// failure the command can hit with nothing wrong with the model. The
+/// path names a directory that is not there, which is the ordinary way
+/// to arrive here: a caller who typed the output directory wrong.
+#[test]
+fn asset_import_reports_a_destination_it_cannot_write() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-unwritable")?;
+    let model = directory.join("mesh.stl");
+    fs::write(&model, A_TRIANGLE_AS_STL)?;
+    let out = directory.join("no-such-directory").join("mesh.blob");
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "a destination that cannot be written must fail: {output:?}"
+    );
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"refusal\":null"),
+        "no reader refused this, so the name is null and the sentence carries it: {document:?}"
+    );
+    assert!(
+        document.contains("cannot write"),
+        "the sentence names what could not be done, and with --json it travels inside the          envelope rather than on the process's own stderr: {document:?}"
+    );
+    Ok(())
+}
+
+/// **The same refusal without `--json`.**
+///
+/// Every other test here asks for the envelope, which is the half a
+/// script reads. A person at a terminal gets the other half, and a
+/// command whose plain output was broken would pass every one of them.
+#[test]
+fn asset_import_refuses_in_plain_text_too() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-plain")?;
+    let model = directory.join("materials.mtl");
+    fs::write(&model, "newmtl steel\nKd 0.4 0.4 0.45\n")?;
+    let out = directory.join("materials.blob");
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "a material library carries no geometry: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "without --json there is no envelope on stdout: {output:?}"
+    );
+    let complaint = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        complaint.starts_with("error: "),
+        "a person reads this, so it opens with what it is: {complaint:?}"
+    );
+    assert!(
+        complaint.contains("surfaces rather than their shape"),
+        "and it says what was wrong with the file: {complaint:?}"
+    );
+    assert!(
+        !out.exists(),
+        "and nothing was written where the blob would have gone"
+    );
     Ok(())
 }

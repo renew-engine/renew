@@ -8,12 +8,12 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Twelve readers in this tree already take bytes nobody here wrote. Their
+Thirteen readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one.
 
 **The second half was written before any reader here took geometry, and
-three of the eleven now do** — the STL, PLY and OBJ readers in `crates/mesh`, built
+four of the thirteen now do** — the STL, PLY, OBJ and blob readers in `crates/mesh`, built
 against this list rather than against the handful of files that happened
 to be on somebody's disk, which is what the list was for. Where an entry
 below says there is no local precedent, check `crates/mesh` first: its
@@ -61,6 +61,7 @@ is dead code that reads like safety.
 | PLY | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `ply_read` | 16 |
 | OBJ | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `obj_read` | 16 |
 | MTL | `MeshError` | `crates/mesh/src/error.rs` | 4 of the 11 | `mtl_read` | 13 |
+| Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 8 of the 11 | `blob_read` | 16 |
 
 **The MTL row is the shortest in this table, and that is the honest
 number rather than a gap.** A material library indexes nothing, declares
@@ -70,9 +71,10 @@ seven it cannot reach. **A reader with few answers needs a tighter
 corpus floor, not the same one**, which is why its gate takes one seed of
 slack where the others take two.
 
-**The four mesh readers share one error type, and each names in a test
+**The five mesh readers share one error type, and each names in a test
 which variants it cannot reach** — STL has no index to be out of range,
-PLY has no keyword to be missing, OBJ has no header to be too short for
+PLY numbers its vertices from zero so no index of its own can be, OBJ
+has no header of a fixed length to be too short for
 — so the shared type costs no reader the ability to say its own list is
 complete. **That census is what forced `IndexZero` into existence and
 what deleted a refusal from the STL reader that no input could produce**:
