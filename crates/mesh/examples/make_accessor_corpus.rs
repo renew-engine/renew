@@ -9,12 +9,18 @@
 //! replay gate read the same bytes.
 //!
 //! **What a random walk will not find here is a claim that is nearly
-//! right.** The head is nine bytes and the fuzzer will vary all of them
-//! quickly; what it will not stumble on is a count, a stride and a
+//! right.** The head is thirteen bytes and the fuzzer will vary all of
+//! them quickly; what it will not stumble on is a count, a stride and a
 //! region that agree to within one byte, which is where every
-//! interesting fault in this layer lives. These seeds sit on both sides
-//! of that line — one that fits exactly, one that is a byte short, and
-//! one of each refusal besides.
+//! interesting fault in these layers lives. These seeds sit on both
+//! sides of that line — one that fits exactly, one that is a byte short,
+//! and one of each refusal besides.
+//!
+//! **Some seeds resolve a buffer view first**, which puts the claim that
+//! a region is really inside its buffer in front of the claim that
+//! elements are really inside the region. They are two of the three
+//! claims an accessor makes, and only the second can be checked without
+//! the first.
 //!
 //! Run when the corpus needs regenerating:
 //!
@@ -35,7 +41,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use renew_mesh::accessor::{Component, Shape};
+use renew_mesh::accessor::{BufferView, Component, Shape};
 
 #[path = "../tests/shared/accessor_seed.rs"]
 mod seed;
@@ -51,6 +57,7 @@ fn claim(component: Component, shape: Shape, count: usize, region: &[u8]) -> See
         count,
         byte_offset: 0,
         byte_stride: None,
+        view: None,
         normalized: false,
         as_indices: false,
         region,
@@ -122,6 +129,20 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
         (
             "byte-components".to_owned(),
             encode(&claim(Component::U8, Shape::Vec3, 2, &[7u8; 6])),
+        ),
+        // **Through a view**, which puts the claim that a region is
+        // really inside its buffer in front of the claim that elements
+        // are really inside the region.
+        (
+            "through-a-view".to_owned(),
+            encode(&Seed {
+                view: Some(BufferView {
+                    byte_offset: 8,
+                    byte_length: 24,
+                    byte_stride: None,
+                }),
+                ..claim(Component::F32, Shape::Vec2, 3, &[0u8; 64])
+            }),
         ),
     ]
 }
@@ -202,6 +223,29 @@ fn refused_seeds() -> Vec<(String, Vec<u8>)> {
             encode(&Seed {
                 as_indices: true,
                 ..claim(Component::I16, Shape::Scalar, 2, &room)
+            }),
+        ),
+        (
+            "view-past-the-buffer".to_owned(),
+            encode(&Seed {
+                view: Some(BufferView {
+                    byte_offset: 48,
+                    byte_length: 32,
+                    byte_stride: None,
+                }),
+                ..claim(Component::F32, Shape::Vec3, 1, &[0u8; 64])
+            }),
+        ),
+        (
+            "stride-wider-than-view".to_owned(),
+            encode(&Seed {
+                byte_stride: Some(64),
+                view: Some(BufferView {
+                    byte_offset: 0,
+                    byte_length: 16,
+                    byte_stride: Some(64),
+                }),
+                ..claim(Component::F32, Shape::Vec3, 2, &[0u8; 64])
             }),
         ),
         (

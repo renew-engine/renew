@@ -32,10 +32,17 @@
     reason = "each of the three includers uses a different half of this"
 )]
 
+pub use renew_mesh::accessor::BufferView;
 use renew_mesh::accessor::{Accessor, AccessorError, Component, Shape};
 
-/// The fixed head: parameters, then the region.
-pub const HEAD: usize = 9;
+/// The fixed head: parameters, then the buffer.
+///
+/// **Thirteen bytes, and it was nine.** The last four carry a buffer
+/// view, so one corpus reaches both layers: a seed can hand its bytes to
+/// an accessor directly, or resolve a region out of them first and hand
+/// over that. Widening the head reshuffles every committed seed, which
+/// costs nothing here because every one of them is generated.
+pub const HEAD: usize = 13;
 
 /// The parameters as the head spells them, before anything judges them.
 ///
@@ -56,6 +63,15 @@ pub struct Seed<'a> {
     pub byte_stride: Option<usize>,
     /// Whether integers are fractions of their own range.
     pub normalized: bool,
+    /// The view to resolve out of the bytes first, when the head asks
+    /// for one.
+    ///
+    /// `None` hands the bytes to the accessor directly, which is what
+    /// every seed did before this field existed. `Some` puts the layer
+    /// that decides whether a region is really inside its buffer in
+    /// front of the layer that decides whether elements are really
+    /// inside a region — the two claims catalogue entry 23 keeps apart.
+    pub view: Option<BufferView>,
     /// Whether to read the region as element addresses rather than as
     /// attributes.
     ///
@@ -90,13 +106,24 @@ pub fn decode(bytes: &[u8]) -> Option<Seed<'_>> {
     let byte_offset = usize::from(u16::from_le_bytes([head[4], head[5]]));
     let stride = usize::from(u16::from_le_bytes([head[6], head[7]]));
     let flags = head[8];
+    let view_offset = usize::from(u16::from_le_bytes([head[9], head[10]]));
+    let view_length = usize::from(u16::from_le_bytes([head[11], head[12]]));
+    let byte_stride = (flags & 1 != 0).then_some(stride);
 
     Some(Seed {
         code,
         shape,
         count,
         byte_offset,
-        byte_stride: (flags & 1 != 0).then_some(stride),
+        byte_stride,
+        // The view shares the accessor's stride, because that is where
+        // the format puts it and where a caller assembling from a
+        // document would copy it from.
+        view: (flags & 8 != 0).then_some(BufferView {
+            byte_offset: view_offset,
+            byte_length: view_length,
+            byte_stride,
+        }),
         normalized: flags & 2 != 0,
         as_indices: flags & 4 != 0,
         region,
@@ -140,7 +167,25 @@ pub fn encode(seed: &Seed<'_>) -> Vec<u8> {
     if seed.as_indices {
         flags |= 4;
     }
+    if seed.view.is_some() {
+        flags |= 8;
+    }
     out.push(flags);
+    let view = seed.view.unwrap_or(BufferView {
+        byte_offset: 0,
+        byte_length: 0,
+        byte_stride: None,
+    });
+    out.extend_from_slice(
+        &u16::try_from(view.byte_offset)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u16::try_from(view.byte_length)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
     out.extend_from_slice(seed.region);
     out
 }
@@ -166,22 +211,43 @@ impl Seed<'_> {
     }
 }
 
+impl<'a> Seed<'a> {
+    /// The bytes the accessor is checked against: the whole region, or
+    /// the part of it this seed's view resolves to.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`BufferView::resolve`] refuses, when there is a view.
+    pub fn bytes(&self) -> Result<&'a [u8], AccessorError> {
+        match self.view {
+            Some(view) => view.resolve(self.region),
+            None => Ok(self.region),
+        }
+    }
+}
+
 /// The answer a seed gets, as a name.
 ///
 /// `Ok` for a claim the reader accepts, `NoHead` for bytes too short to
-/// carry parameters at all, and the refusal's own name otherwise.
+/// carry parameters at all, and the refusal's own name otherwise —
+/// **including a view's**, which is the layer in front of the accessor
+/// rather than a different kind of answer.
 #[must_use]
 pub fn outcome(bytes: &[u8]) -> &'static str {
     let Some(seed) = decode(bytes) else {
         return "NoHead";
     };
+    let region = match seed.bytes() {
+        Ok(region) => region,
+        Err(refusal) => return refusal.name(),
+    };
     match seed.accessor() {
         Err(refusal) => refusal.name(),
-        Ok(accessor) if seed.as_indices => match accessor.indices(seed.region) {
+        Ok(accessor) if seed.as_indices => match accessor.indices(region) {
             Err(refusal) => refusal.name(),
             Ok(_) => "Ok",
         },
-        Ok(accessor) => match accessor.view(seed.region) {
+        Ok(accessor) => match accessor.view(region) {
             Err(refusal) => refusal.name(),
             Ok(_) => "Ok",
         },

@@ -136,7 +136,7 @@ pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), Mesh
     Ok(())
 }
 
-pub use accessor::{Accessor, AccessorError, Component, Shape};
+pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
 

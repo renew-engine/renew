@@ -34,9 +34,19 @@ fuzz_target!(|data: &[u8]| {
         // A component code outside the table is an answer.
         return;
     };
+    // A view that does not fit its buffer is an answer too, and it is
+    // the layer in front: nothing below can tell whether the region it
+    // was handed was really there.
+    let Ok(region) = parsed.bytes() else {
+        return;
+    };
+    assert!(
+        region.len() <= parsed.region.len(),
+        "a resolved region cannot be larger than the buffer it came from"
+    );
 
     if parsed.as_indices {
-        let Ok(indices) = accessor.indices(parsed.region) else {
+        let Ok(indices) = accessor.indices(region) else {
             return;
         };
         assert_eq!(indices.len(), accessor.count, "a view holds what it accepted");
@@ -55,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    let Ok(view) = accessor.view(parsed.region) else {
+    let Ok(view) = accessor.view(region) else {
         // So is every other refusal. Which one is the suite's business
         // beside the crate; that the call returned at all is this
         // target's.
@@ -93,9 +103,9 @@ fuzz_target!(|data: &[u8]| {
     let span = (accessor.count - 1) * accessor.stride();
     let last = accessor.byte_offset + span + accessor.element_size();
     assert!(
-        last <= parsed.region.len(),
+        last <= region.len(),
         "this view reaches byte {last} of a {}-byte region",
-        parsed.region.len()
+        region.len()
     );
 
     // A normalised integer is a fraction of its own range, and the
@@ -122,6 +132,6 @@ fuzz_target!(|data: &[u8]| {
     // Reading twice answers the same, which is what makes a corpus mean
     // anything: a reader whose answer depended on anything but its input
     // could not be reasoned about from recorded bytes at all.
-    let again = accessor.view(parsed.region).expect("what read once reads again");
+    let again = accessor.view(region).expect("what read once reads again");
     assert_eq!(again, view, "the same claim over the same bytes");
 });

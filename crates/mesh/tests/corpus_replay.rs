@@ -955,12 +955,12 @@ mod accessor_seed;
 
 /// The committed accessor corpus never shrinks below this many
 /// **distinct** inputs.
-const ACCESSOR_LOW_WATER: usize = 19;
+const ACCESSOR_LOW_WATER: usize = 22;
 
 /// How many distinct outcomes the accessor seeds must still reach.
 ///
 /// **Measured, not guessed** — `accessor_census` below prints it.
-const ACCESSOR_DISTINCT_OUTCOMES: usize = 10;
+const ACCESSOR_DISTINCT_OUTCOMES: usize = 12;
 
 /// Refusals a seed must provoke, each guarding something a count cannot.
 ///
@@ -980,7 +980,12 @@ const ACCESSOR_DISTINCT_OUTCOMES: usize = 10;
 ///   unreachable until a flag bit was added to the head**: every seed
 ///   called `view`, so half this layer's public surface had no seed at
 ///   all and neither the corpus nor the fuzzer would ever have said so.
-const ACCESSOR_REQUIRED: [&str; 7] = [
+/// * `ViewOutOfRange` is the claim an accessor cannot make on its own —
+///   whether the region it was handed was really inside its buffer — and
+///   `StrideExceedsView` is the one stride rule that is about the view
+///   rather than the value. A corpus reaching neither would leave the
+///   layer in front of the accessor entirely unexercised.
+const ACCESSOR_REQUIRED: [&str; 9] = [
     "OutOfRange",
     "StrideSmallerThanElement",
     "OffsetNotAligned",
@@ -988,6 +993,8 @@ const ACCESSOR_REQUIRED: [&str; 7] = [
     "NormalizedIsMeaningless",
     "NotAnIndexType",
     "NormalizedIndices",
+    "ViewOutOfRange",
+    "StrideExceedsView",
 ];
 
 fn accessor_corpus_dir() -> PathBuf {
@@ -1125,6 +1132,11 @@ fn the_seed_encoding_round_trips() {
             count,
             byte_offset,
             byte_stride,
+            view: byte_stride.map(|stride| accessor_seed::BufferView {
+                byte_offset: 4,
+                byte_length: 8,
+                byte_stride: Some(stride),
+            }),
             normalized,
             as_indices: normalized,
             region: &region,
@@ -1140,6 +1152,11 @@ fn the_seed_encoding_round_trips() {
         assert_eq!(
             back.as_indices, normalized,
             "the third flag bit survives too"
+        );
+        assert_eq!(
+            back.view.map(|view| (view.byte_offset, view.byte_length)),
+            byte_stride.map(|_| (4, 8)),
+            "and the view the fourth bit carries"
         );
         assert_eq!(back.region, &region[..]);
     }
