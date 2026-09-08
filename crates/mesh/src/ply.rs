@@ -909,16 +909,18 @@ mod tests {
         refuse_over_ceiling(MAX_POSITIONS - 3, 3)
             .expect("a mesh that exactly fills the ceiling is not over it");
 
-        let refusal = refuse_over_ceiling(MAX_POSITIONS - 3, 6)
-            .expect_err("three positions past the ceiling is over it");
-        let MeshError::TooLarge { field, value } = refusal else {
-            panic!("the ceiling refuses by name: {refusal}");
-        };
-        assert_eq!(field, "total geometry");
+        // Compared whole rather than destructured: a `let ... else`
+        // panic is a line only a failing run reaches, and this test is
+        // measured like the code beside it.
         assert_eq!(
-            value,
-            (MAX_POSITIONS as u64 + 3) * 12,
-            "the number reported is bytes, not positions"
+            refuse_over_ceiling(MAX_POSITIONS - 3, 6),
+            Err(MeshError::TooLarge {
+                field: "total geometry",
+                // Bytes, not positions: the unit the ceiling is written
+                // in and the one a caller can act on.
+                value: (MAX_POSITIONS + 3) as u64 * 12,
+            }),
+            "three positions past the ceiling is over it, and it says so by name"
         );
 
         // Neither factor alone reaches it, which is the case a ceiling

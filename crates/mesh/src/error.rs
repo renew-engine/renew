@@ -420,10 +420,13 @@ mod tests {
         ] {
             let text = format!("a{character}b");
             let shown = quoted(&text);
+            // The code point is bound here rather than formatted
+            // inside the message: an argument evaluated only when
+            // the assertion fails is a line no passing run reaches.
+            let code = u32::from(character);
             assert!(
                 !shown.contains(character),
-                "U+{:04X} reached a message unescaped: `{shown}`",
-                character as u32
+                "U+{code:04X} reached a message unescaped: `{shown}`"
             );
             assert!(
                 shown.starts_with('a') && shown.ends_with('b'),
