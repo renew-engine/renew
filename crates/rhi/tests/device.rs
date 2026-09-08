@@ -769,7 +769,11 @@ fn malformed_frames_are_refused_by_name() {
         ))
         .expect("mesh pipeline");
     let mesh = device
-        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
+        .create_mesh(&MeshDesc::new(
+            &[0u8; builtin::MESH_STRIDE as usize * 3],
+            builtin::MESH_STRIDE,
+            &[0, 1, 2],
+        ))
         .expect("mesh");
     refused(
         "a mesh pipeline drawn with no geometry",
@@ -1083,7 +1087,11 @@ fn malformed_frames_are_refused_by_name() {
         )
         .expect("depth-only pipeline");
     let quad_mesh = device
-        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
+        .create_mesh(&MeshDesc::new(
+            &[0u8; builtin::MESH_STRIDE as usize * 3],
+            builtin::MESH_STRIDE,
+            &[0, 1, 2],
+        ))
         .expect("mesh");
     refused(
         "a depth-only pipeline drawn into a color image",

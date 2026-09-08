@@ -186,7 +186,15 @@ pub enum VertexAttribute {
 }
 
 impl VertexAttribute {
-    pub(crate) fn byte_len(self) -> u32 {
+    /// How many bytes this attribute occupies in a vertex record.
+    ///
+    /// **Public so that a caller can derive a stride rather than
+    /// restate one.** A record's stride is the sum of its attributes,
+    /// and every place that wrote the sum as a literal had to be found
+    /// and changed the first time an attribute was added — which is how
+    /// three tests came to assert a stride the layout no longer had.
+    #[must_use]
+    pub const fn byte_len(self) -> u32 {
         match self {
             Self::Vec2 | Self::Uint32x2 => 8,
             Self::Vec3 => 12,

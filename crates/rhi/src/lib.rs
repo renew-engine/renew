@@ -428,7 +428,25 @@ pub mod builtin {
         crate::VertexAttribute::Vec3,
         crate::VertexAttribute::Vec4,
         crate::VertexAttribute::Vec2,
+        crate::VertexAttribute::Vec3,
     ];
+
+    /// The byte stride of one [`MESH_LAYOUT`] record, summed from the
+    /// layout rather than restated beside it.
+    ///
+    /// **Derived because the literal has already drifted once.** Three
+    /// tests carried `36` as a constant, and adding one attribute to the
+    /// layout made every one of them describe a record that no longer
+    /// existed. A sum cannot disagree with what it sums.
+    pub const MESH_STRIDE: u32 = {
+        let mut total = 0;
+        let mut at = 0;
+        while at < MESH_LAYOUT.len() {
+            total += MESH_LAYOUT[at].byte_len();
+            at += 1;
+        }
+        total
+    };
 
     /// The mesh pair with a camera: **world-space** positions and
     /// colours per vertex, multiplied by a matrix supplied once per
