@@ -101,6 +101,32 @@ impl Component {
         matches!(self, Self::U8 | Self::U16 | Self::U32)
     }
 
+    /// Read one component as the fraction of its own range that the
+    /// format defines.
+    ///
+    /// Each conversion divides by the largest magnitude its type can
+    /// spell rather than by its range, and the signed ones are clamped
+    /// because two’s complement reaches one further down than up:
+    /// `-128 / 127` is less than `-1`, and the format says the answer is
+    /// `-1`.
+    ///
+    /// **The two widest types answer with the value unchanged**, and
+    /// that arm is not dead code being humoured: `normalized` is refused
+    /// on them when a view is made, so nothing reaches this through
+    /// [`View::float`] — which is exactly why the conversion lives here,
+    /// as something a test can call, rather than inline where the arm
+    /// could only ever be exempted.
+    #[must_use]
+    pub fn normalize(self, value: f32) -> f32 {
+        match self {
+            Self::I8 => (value / 127.0).max(-1.0),
+            Self::U8 => value / 255.0,
+            Self::I16 => (value / 32767.0).max(-1.0),
+            Self::U16 => value / 65535.0,
+            Self::U32 | Self::F32 => value,
+        }
+    }
+
     /// The type a code names.
     ///
     /// # Errors
@@ -593,19 +619,7 @@ impl View<'_> {
         if !self.accessor.normalized {
             return Some(value);
         }
-        // The conversions the format names, each dividing by the largest
-        // magnitude its type can spell rather than by its range, and
-        // clamping the signed ones because two's complement reaches one
-        // further down than up.
-        let normalized = match self.accessor.component {
-            Component::I8 => (value / 127.0).max(-1.0),
-            Component::U8 => value / 255.0,
-            Component::I16 => (value / 32767.0).max(-1.0),
-            Component::U16 => value / 65535.0,
-            // Refused when the view was made.
-            Component::U32 | Component::F32 => value,
-        };
-        Some(normalized)
+        Some(self.accessor.component.normalize(value))
     }
 }
 
@@ -685,6 +699,38 @@ mod tests {
         );
     }
 
+    /// **Every arm of the normalising conversion, including the two
+    /// nothing reaches through a view.**
+    ///
+    /// `normalized` is refused on the widest two when a view is made, so
+    /// their arm is unreachable from the outside — and calling it here
+    /// is the difference between a line that is covered and a line that
+    /// is exempted with a promise.
+    #[test]
+    fn every_component_normalises_the_way_the_format_says() {
+        // **Compared by bits, and that is the honest comparison here
+        // rather than a way around the lint.** Every value below is
+        // exact: a number divided by itself is one, a clamp returns its
+        // own bound, and the identity arm returns what it was handed. A
+        // tolerance would be admitting doubt this function does not have.
+        let exact = |got: f32, want: f32, what: &str| {
+            assert_eq!(got.to_bits(), want.to_bits(), "{what}: {got} is not {want}");
+        };
+
+        exact(Component::U8.normalize(255.0), 1.0, "unorm8 ceiling");
+        exact(Component::U8.normalize(0.0), 0.0, "unorm8 floor");
+        exact(Component::U16.normalize(65535.0), 1.0, "unorm16 ceiling");
+        exact(Component::I8.normalize(127.0), 1.0, "snorm8 ceiling");
+        exact(Component::I16.normalize(32767.0), 1.0, "snorm16 ceiling");
+        // Clamped: the floor divides to slightly less than -1.
+        exact(Component::I8.normalize(-128.0), -1.0, "snorm8 floor");
+        exact(Component::I16.normalize(-32768.0), -1.0, "snorm16 floor");
+        // And the two that have no normalised reading answer with what
+        // they were given.
+        exact(Component::U32.normalize(7.0), 7.0, "u32 is unchanged");
+        exact(Component::F32.normalize(-2.5), -2.5, "f32 is unchanged");
+    }
+
     /// Element sizes are the table the format prints.
     #[test]
     fn element_sizes_are_the_published_ones() {
@@ -693,8 +739,14 @@ mod tests {
         assert_eq!(packed(Component::F32, Shape::Vec3, 1).element_size(), 12);
         assert_eq!(packed(Component::F32, Shape::Vec4, 1).element_size(), 16);
         assert_eq!(packed(Component::U8, Shape::Vec3, 1).element_size(), 3);
+        // All four names, not one: the other three arms were uncovered
+        // and the gate said so.
+        assert_eq!(Shape::Scalar.name(), "SCALAR");
+        assert_eq!(Shape::Vec2.name(), "VEC2");
         assert_eq!(Shape::Vec3.name(), "VEC3");
+        assert_eq!(Shape::Vec4.name(), "VEC4");
         assert_eq!(Shape::Scalar.components(), 1);
+        assert_eq!(Shape::Vec4.components(), 4);
     }
 
     /// A tightly packed accessor strides by its element size, and one

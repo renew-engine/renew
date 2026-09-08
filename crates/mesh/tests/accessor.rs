@@ -527,13 +527,17 @@ fn the_census_and_the_claims_agree() {
         .is_some(),
         "the one the census calls unreachable from here"
     );
+    // Named as well as printed. It is unreachable from here on a
+    // 64-bit target, so its arm of `name` is only executed if something
+    // asks for it on purpose -- and a refusal a caller cannot key on is
+    // half a refusal.
+    let too_large = AccessorError::TooLarge {
+        field: "count times stride",
+        value: 7,
+    };
+    assert_eq!(too_large.name(), "TooLarge");
     assert!(
-        !AccessorError::TooLarge {
-            field: "count times stride",
-            value: 7,
-        }
-        .to_string()
-        .is_empty(),
+        !too_large.to_string().is_empty(),
         "and it still says something, because a 32-bit target reaches it"
     );
 }
