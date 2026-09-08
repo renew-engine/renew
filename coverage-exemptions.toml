@@ -96,27 +96,32 @@ reason = "The settle arm for an entry that is neither sampled nor targeted. Unre
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [1336, 1337]
+lines = [1365, 1366]
 reason = "The depthless-adapter arm of the shadow map's refusal, which translates the rendering crate's DepthUnsupported into this crate's own variant rather than reporting it as a texture failure. Unreachable wherever a depth format exists, which is every measuring lane's adapter: the format is chosen at device bring-up from a void query no fault layer can mutate, and the layer's quirk list carries no depthless-adapter quirk either. The sibling arm (any other creation failure) is driven by the R10 fault scenario."
 
 [[exempt]]
+file = "crates/render3d/src/scene.rs"
+lines = [249, 250, 251, 252]
+reason = "The arm that refuses a tangent frame when projecting the mapping onto the surface leaves nothing at all. Reachable only if `along_u` is parallel to the normal, and it cannot be: `flattened` is `along_u` with its normal component removed, so it is perpendicular by construction and stays perpendicular however small it gets. Two million adversarial sliver triangles - the shape that makes the cross product behind the normal cancel - did not reach it. Kept rather than deleted because it is the only answer this function would otherwise have for a caller whose mapping degenerates that far, and a reader with no answer for a case is worse than an arm no input has yet found."
+
+[[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [786]
+lines = [815]
 reason = "The creation-failure propagation on the cutout pipeline's bring-up. Never taken where creation succeeds, which is every measuring lane's adapter: provoking it needs a device refusing a pipeline the sibling paths already build, and the fault layer's quirk list carries no such refusal."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [882]
+lines = [911]
 reason = "The creation-failure propagation on the blended pipeline's bring-up - the same arm the cutout carries above it, for the same reason: no measuring lane's adapter refuses a pipeline its sibling paths already build."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [816, 817, 818]
+lines = [845, 846, 847]
 reason = "A Debug impl writing the renderer's constant name. Calling it needs a live renderer, which needs a device, and a device-bound test that exists to print a constant string would be coverage without a claim; the impl exists so an error context can name the renderer."
 
 [[exempt]]
 file = "crates/render3d/src/gpu.rs"
-lines = [912, 913, 914]
+lines = [941, 942, 943]
 reason = "The blended renderer's Debug impl - the cutout's twin at 816, exempt for the same reason: a device-bound test that prints a constant string is coverage without a claim."
 
 [[exempt]]
@@ -136,7 +141,7 @@ reason = "The DepthUnsupported refusal for a depth-carrying frame on a depthless
 
 [[exempt]]
 file = "crates/rhi/src/vk/pipeline.rs"
-lines = [1389, 1390, 1391]
+lines = [1414, 1415, 1416]
 reason = "The DepthUnsupported refusal for a depth-state pipeline on a depthless adapter - the pipeline-creation twin of the target-side refusal, unreachable for the same reason: the lanes' adapters offer a depth format and the void format query cannot be faulted."
 
 [[exempt]]

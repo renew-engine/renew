@@ -739,6 +739,145 @@ fn two_textures_share_one_pipeline() {
     assert_no_validation_errors(&device);
 }
 
+/// Four textures through ONE pipeline — the ceiling this tree declares,
+/// reached for the first time.
+///
+/// **A limit nothing reaches is a limit nobody has tested.**
+/// `MAX_SAMPLED_BINDINGS` has been four since it was written, its
+/// comment has said "four sampled slots is legal" for as long, and the
+/// widest pipeline that had ever asked was the two-slot pair above. The
+/// set-layout loop, the item's slot array and the record path's set
+/// array all have to hold at four; two of them proves that they hold at
+/// two.
+///
+/// Four is also not an arbitrary target. It is `maxBoundDescriptorSets`'
+/// guaranteed floor, so a pipeline shaped like this is one every
+/// conformant adapter accepts, and it is exactly the width a
+/// normal-mapped material wants: base colour, normal,
+/// metallic-roughness, occlusion.
+///
+/// The fragment stage splits the target into quadrants rather than
+/// halves, so a bind order that is wrong in any one of the four places
+/// is a visibly wrong image. With halves, two of four could swap unseen.
+/// The rotated frame draws the same four bindings shifted by one, which
+/// no partial correctness can satisfy: every quadrant changes.
+///
+/// Probed two ways. Transposing `x` and `y` in the quadrant model:
+/// red, 150 codes apart at (4,0) — so the split is checked against the
+/// shader rather than against itself. Collapsing the shader to read
+/// slot 0 everywhere: red at the same pixel — so four sets are
+/// genuinely bound and read, not declared and ignored.
+#[test]
+fn four_textures_share_one_pipeline() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 1;
+    /// One flat texel each, far enough apart that a quadrant reading the
+    /// wrong slot is not a near miss.
+    const ATLASES: [[u8; 4]; 4] = [
+        [200, 20, 20, 255],
+        [20, 200, 20, 255],
+        [20, 20, 200, 255],
+        [200, 200, 20, 255],
+    ];
+
+    /// Which slot a target pixel's quadrant reads — the CPU statement of
+    /// the fragment stage's split, in the order the shader declares its
+    /// sets: lower left, lower right, upper left, upper right.
+    ///
+    /// The target's rows run top-down and the shader's `v` runs with
+    /// them, so "lower" here is the first half of `fragUv.y` and the
+    /// first half of the rows together.
+    fn quadrant(x: u32, y: u32) -> usize {
+        usize::from(y >= SIZE / 2) * 2 + usize::from(x >= SIZE / 2)
+    }
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let size = Extent {
+        width: TEXELS,
+        height: TEXELS,
+    };
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    // One sampler across all four, which is the same claim the two-slot
+    // test makes and worth re-making at the ceiling: a sampler is an
+    // input to a binding, never owned by one, so N bindings do not mean
+    // N samplers.
+    let textures: Vec<_> = ATLASES
+        .iter()
+        .map(|atlas| {
+            device
+                .create_texture(&TextureDesc::new(size, atlas))
+                .expect("texture")
+        })
+        .collect();
+    let bindings: Vec<_> = textures
+        .iter()
+        .map(|texture| {
+            device
+                .create_binding(&BindingDesc::new(BindingSource::Texture(texture), &sampler))
+                .expect("binding")
+        })
+        .collect();
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED_QUAD, TargetFormat::Rgba8Srgb)
+                .sampled_bindings(u32::try_from(ATLASES.len()).expect("four fits")),
+        )
+        .expect("four-slot pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    // Every rotation of the four, so each binding is asked for from each
+    // slot. One frame would leave three of the four orders unexercised.
+    for shift in 0..ATLASES.len() {
+        let order: Vec<_> = (0..ATLASES.len())
+            .map(|slot| &bindings[(slot + shift) % ATLASES.len()])
+            .collect();
+        let items = [Item::new(&pipeline).bindings(&order)];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("four-slot render");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let offset = ((y * SIZE + x) as usize) * 4;
+                let slot = quadrant(x, y);
+                let atlas = ATLASES[(slot + shift) % ATLASES.len()];
+                assert_within_one_code(
+                    &pixels[offset..offset + 4],
+                    stored(&atlas).as_slice(),
+                    &format!(
+                        "pixel ({x},{y}) is in quadrant {slot}, which at shift {shift} \
+                         reads slot {slot} holding atlas {} on adapter {:?}",
+                        (slot + shift) % ATLASES.len(),
+                        device.adapter()
+                    ),
+                );
+            }
+        }
+    }
+
+    // Teardown first, oracle second, in the order the two-slot test
+    // records: the target releases its frame references before the
+    // bindings drop, and the sources go after the bindings.
+    drop(target);
+    drop(pipeline);
+    drop(bindings);
+    drop(textures);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
 /// The atlas trio the sampled tests start from: texture, sampler, and
 /// the binding over both.
 fn atlas_fixture(
@@ -1012,9 +1151,11 @@ fn a_kept_image_survives_frames_that_never_render_it() {
 }
 
 /// A quad over the left half of clip space at `depth`, packed to the
-/// mesh layout's 36-byte records: positions pass straight through the
-/// mesh vertex stage; colour and uv ride along unread — the layout
-/// describes the record, not the use.
+/// mesh layout's records: positions pass straight through the mesh
+/// vertex stage; everything after them rides along unread — the layout
+/// describes the record, not the use. The width comes from
+/// `builtin::MESH_STRIDE` below rather than from this sentence, which
+/// said 36 for two attributes longer than that was true.
 fn left_half_quad(depth: f32) -> Vec<u8> {
     let mut vertices = Vec::new();
     for [x, y] in [

@@ -158,11 +158,14 @@ No window or presentation, no image writing, and no meshing — a voxel
 mesher belongs to the sample that knows its world. The camera is a
 matrix, not a viewpoint type: eye/target/projection maths belongs to the
 caller — the engine's camera crate, ordinarily — and this crate takes
-the sixty-four bytes that result. The vertex layout is a
-position, a colour and a texture coordinate, packed to 36 bytes with no
-padding: the rendering crate asserts at record time that a mesh's stride
-matches the pipeline's, and a `#[repr(C)]` struct over the maths crate's
-aligned vectors would not give 36.
+the sixty-four bytes that result. The vertex layout is a position, a
+colour, a texture coordinate, a normal and a tangent, packed with no
+padding to whatever the layout sums to — a number this file deliberately
+does not restate, because it has changed twice and every copy of it was
+wrong afterwards. The rendering crate asserts at record time that a
+mesh's stride matches the pipeline's, and a `#[repr(C)]` struct over the
+maths crate's aligned vectors would not give the packed width at all:
+`Vec4` is sixteen-byte aligned and would pad the `Vec3`s out to meet it.
 
 ## Testing note
 

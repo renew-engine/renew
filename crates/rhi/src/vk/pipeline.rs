@@ -373,6 +373,39 @@ pub(crate) fn validate_push_constant_size(size: u32) {
 /// push ceiling, which is the whole point of the channel.
 pub const MAX_UNIFORM_BLOCK_BYTES: u32 = 16_384;
 
+/// Refuse a pipeline that would bind more descriptor sets than every
+/// conformant adapter guarantees.
+///
+/// **Bound sets are one budget, not two.** A sampled slot takes a set
+/// and a uniform block takes a set, and the guaranteed floor for
+/// `maxBoundDescriptorSets` is what [`MAX_SAMPLED_BINDINGS`] names — so
+/// four sampled slots is legal, three plus a block is legal, and four
+/// plus a block is not, however much room a particular adapter has.
+///
+/// **A pure validator rather than an assertion inside `create_pipeline`,
+/// because that is where it can be tested.** It spent its life inline,
+/// reachable only through a call that needs a device, on a path the
+/// suites skip wherever no adapter exists — so the one refusal that
+/// stops a pipeline building on one machine and failing on another was
+/// itself never provoked. The three validators beside this one are the
+/// shape it should have had.
+///
+/// [`MAX_SAMPLED_BINDINGS`]: crate::MAX_SAMPLED_BINDINGS
+/// **The block is a yes-or-no here, not a size.** A four-byte block and
+/// the largest block the spec guarantees spend one set each, so a byte
+/// count is a number this function must not look at — and two adjacent
+/// `u32` parameters can be passed in the wrong order and still compile.
+pub(crate) fn validate_bound_sets(sampled_bindings: u32, has_uniform_block: bool) {
+    let sampled_slots = sampled_bindings as usize;
+    let uniform_slots = usize::from(has_uniform_block);
+    assert!(
+        sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
+        "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
+         device minimum), and a uniform block spends one: {sampled_slots} sampled plus \
+         {uniform_slots} block"
+    );
+}
+
 /// Refuse a uniform-block declaration outside what the spec guarantees,
 /// or one std140 cannot describe.
 ///
@@ -1352,17 +1385,9 @@ impl Device {
         // so the panic owns nothing.
         validate_sampled_bindings(desc.sampled_bindings);
         validate_uniform_block(desc.uniform_block);
+        validate_bound_sets(desc.sampled_bindings, desc.uniform_block > 0);
         let sampled_slots = desc.sampled_bindings as usize;
         let uniform_slots = usize::from(desc.uniform_block > 0);
-        // Bound sets are one budget, not two: the guaranteed floor for
-        // `maxBoundDescriptorSets` is what `MAX_SAMPLED_BINDINGS` names,
-        // and a block spends one of them.
-        assert!(
-            sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
-            "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
-             device minimum), and a uniform block spends one: {sampled_slots} sampled plus \
-             {uniform_slots} block"
-        );
         // The depth-only pairing: the format is what licenses the
         // missing fragment stage, and a depth-only pipeline without
         // depth state does nothing at all. One direction only — an
@@ -1929,6 +1954,54 @@ mod tests {
         // across the pair.
         let offsets: Vec<u32> = both.attributes[..4].iter().map(|a| a.offset).collect();
         assert_eq!(offsets, vec![0, 12, 0, 8]);
+    }
+
+    /// The set budget is one budget, and every boundary of it answers.
+    ///
+    /// **This refusal had no test until the fourth slot was first
+    /// reached.** It lived inline in `create_pipeline`, behind a call
+    /// that needs an adapter, on a path every suite skips where no
+    /// adapter exists — so the one check that stops a pipeline building
+    /// on a generous adapter and failing on a conformant one had itself
+    /// never been provoked. Extracting it to a validator is what makes
+    /// this possible; the test is the reason the extraction was worth
+    /// doing.
+    ///
+    /// Both sides matter. The ceiling has to be *reachable*, or a
+    /// material wanting base colour, normal, metallic-roughness and
+    /// occlusion is refused for no reason a device would give; and it
+    /// has to be *enforced*, or that same material silently gains a
+    /// fifth set on the machine it was written on.
+    #[test]
+    fn sampled_slots_and_a_block_share_one_set_budget() {
+        // The ceiling as the width the API takes. `try_from` rather than
+        // a cast because the cast is a lint here and the conversion
+        // cannot fail for a constant this small.
+        let ceiling = u32::try_from(MAX_SAMPLED_BINDINGS).expect("the ceiling is a small number");
+        // The ceiling, with nothing else asking for a set.
+        validate_bound_sets(ceiling, false);
+        // One short of it, with a block taking the last one.
+        validate_bound_sets(ceiling - 1, true);
+        // A block's *size* is not what spends the set: any non-zero
+        // block costs exactly one, so the smallest and the largest are
+        // the same question and both must pass here.
+        validate_bound_sets(ceiling - 1, true);
+        validate_bound_sets(ceiling - 1, true);
+        // And nothing at all, which is most pipelines in this tree.
+        validate_bound_sets(0, false);
+
+        // The ceiling plus a block: the case a device with a larger
+        // `maxBoundDescriptorSets` would accept, which is exactly why it
+        // is refused here.
+        assert!(
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling, true)).is_err(),
+            "four sampled slots and a uniform block is five sets, and five is not guaranteed"
+        );
+        // Past the ceiling on sampled slots alone.
+        assert!(
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling + 1, false)).is_err(),
+            "over the ceiling must refuse whether or not a block is asked for"
+        );
     }
 
     /// The fixed-width arrays make over-declaring a truncation rather

@@ -23,26 +23,28 @@
 //! frame being reproducible. A caller who wants a different order pushes
 //! in a different order.
 
-/// Bytes in one vertex record: a three-float position and a four-float
-/// colour, packed with no padding.
+/// Bytes in one vertex record: a three-float position, a four-float
+/// colour, a two-float texture coordinate, a three-float normal, and a
+/// four-float tangent carrying its handedness.
 ///
-/// **Not a `#[repr(C)]` struct, and that is not a style choice.** The
+/// **Taken from the layout rather than written down.** This was a
+/// literal, and it was wrong twice — once when the normal landed and
+/// once when the tangent did. `MESH_STRIDE` is a compile-time sum over
+/// the attribute list the pipeline is actually built from, so the two
+/// cannot disagree and there is no third place to update.
+///
+/// **The bytes are still written out one float at a time rather than
+/// through a `#[repr(C)]` struct, and the reason is alignment.** The
 /// maths crate's `Vec4` is `#[repr(C, align(16))]`; its `Vec3` is twelve
-/// bytes at align four. A `#[repr(C)]` record of the two therefore pads
-/// the `Vec3` out to the sixteen-byte boundary the `Vec4` demands and
-/// occupies **thirty-two** bytes, not twenty-eight — the alignment of one
-/// field, not of both, is what does it. The rendering crate asserts at
-/// the moment a draw is recorded that a mesh's stride equals the stride
-/// the pipeline's per-vertex layout packs to, so a padded record would
-/// fail at the draw rather than here, a long way from the mistake.
-/// Writing the bytes explicitly makes the layout the code's subject
-/// rather than the compiler's.
-///
-/// The alignment claim is about a crate this one does not depend on, so
-/// nothing compiles it. It is stated as the reason for a decision, not
-/// relied on: what the code relies on is the assertion in `gpu.rs` that
-/// this constant equals the packed width of the layout actually declared.
-pub(crate) const VERTEX_STRIDE: u32 = 48;
+/// bytes at align four. A `#[repr(C)]` record of the two pads the `Vec3`
+/// out to the boundary the `Vec4` demands, so the struct is wider than
+/// the layout it is supposed to describe — the alignment of one field,
+/// not of both, is what does it. The rendering crate asserts at record
+/// time that a mesh's stride equals the stride the pipeline's layout
+/// packs to, so a padded record would fail at the draw rather than here,
+/// a long way from the mistake. Writing the bytes explicitly makes the
+/// layout the code's subject rather than the compiler's.
+pub(crate) const VERTEX_STRIDE: u32 = renew_rhi::builtin::MESH_STRIDE;
 
 /// The mapping [`Scene::quad`] and [`Scene::quad_shaded`] supply when the
 /// caller says nothing: the four corners onto the four corners of the
@@ -59,12 +61,20 @@ const WHOLE_TILE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0
 /// The unit normal of the plane through three corners, in the winding
 /// they are given.
 ///
-/// **Computed rather than asked for, and that is a decision with a cost
-/// worth naming.** Nothing in this crate has ever carried a normal, so
-/// no caller has one to give; computing it means every existing quad
-/// gains a correct normal with no caller change, and the alternative —
-/// a zero placeholder — would put a value in the buffer that means
-/// "no direction" and reads as a direction.
+///
+/// The products here are written plainly rather than with `mul_add`.
+/// **Fused multiply-add is an instruction only where the target has
+/// one**, and the baseline these crates build for does not: each call
+/// becomes a call into the C runtime's `fmaf`, which costs more than the
+/// rounding it saves is worth on a value that ends up in a lighting
+/// term. The engine's own vector maths writes them the same way.
+/// **Computed for the caller that has nothing to give.** This is what
+/// the deriving appenders use, and it is why every existing quad gained
+/// a correct normal with no caller change: the alternative, a zero
+/// placeholder, would put a value in the buffer that means "no
+/// direction" and reads as a direction. A caller that does know its
+/// frame says so through [`Scene::quad_uv_with_frame`] and never
+/// reaches this.
 ///
 /// **A degenerate triangle has no plane, and this says so by returning
 /// zero rather than by dividing by it.** Three collinear or coincident
@@ -74,29 +84,226 @@ const WHOLE_TILE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0
 /// a reader can test for, and a degenerate triangle covers no pixels
 /// so nothing samples it.
 fn face_normal(first: [f32; 3], second: [f32; 3], third: [f32; 3]) -> [f32; 3] {
-    let edge = [
-        second[0] - first[0],
-        second[1] - first[1],
-        second[2] - first[2],
-    ];
-    let other = [
-        third[0] - first[0],
-        third[1] - first[1],
-        third[2] - first[2],
-    ];
-    let cross = [
-        edge[1].mul_add(other[2], -(edge[2] * other[1])),
-        edge[2].mul_add(other[0], -(edge[0] * other[2])),
-        edge[0].mul_add(other[1], -(edge[1] * other[0])),
-    ];
-    let length = cross[0]
-        .mul_add(cross[0], cross[1].mul_add(cross[1], cross[2] * cross[2]))
-        .sqrt();
-    if length > 0.0 && length.is_finite() {
-        [cross[0] / length, cross[1] / length, cross[2] / length]
-    } else {
-        [0.0, 0.0, 0.0]
+    // Composed from the helpers rather than written out, which is not
+    // tidiness: this spelled out its own subtraction, cross product and
+    // normalisation, and the normalisation was the naive one — so a face
+    // whose corners were a few nanometres apart came back with a normal
+    // of length 0.89 while `unit`, ten lines away, handled it.
+    unit(cross(sub(second, first), sub(third, first))).unwrap_or([0.0, 0.0, 0.0])
+}
+
+/// The tangent frame of a surface: which way it faces, and which way its
+/// texture's `u` axis runs across it.
+///
+/// **A normal alone is not enough to read a normal map.** A normal map
+/// stores directions in the surface's own space, so a shader needs three
+/// axes to move them into the world: the normal, a tangent along
+/// increasing `u`, and a bitangent along increasing `v`. The third is not
+/// stored, because it is `cross(normal, tangent) * handedness` and the
+/// sign is the only part of it that is not already known — which is
+/// exactly what glTF's own `TANGENT` accessor does, and why this is four
+/// floats rather than six.
+///
+/// **Why a type rather than two more parameters.** The two travel
+/// together and are only correct together: a tangent orthogonalised
+/// against one normal and written beside another describes a surface that
+/// does not exist. Making them one value means an appender takes one
+/// extra argument now and the same one argument if a third axis is ever
+/// stored, and it gives a caller that already knows its frame somewhere
+/// to say so.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// The unit normal.
+    pub normal: [f32; 3],
+    /// The unit tangent in `xyz`, and in `w` the sign the bitangent is
+    /// reconstructed with: `cross(normal, tangent) * w`.
+    pub tangent: [f32; 4],
+}
+
+impl Frame {
+    /// The frame with no direction in it: what a surface with no plane
+    /// at all gets, and the tangent half of what a surface with no
+    /// usable mapping gets.
+    ///
+    /// Zero rather than an arbitrary axis, for the reason
+    /// [`face_normal`] returns zero: a value that is not a direction is
+    /// testable, and a plausible direction is a lighting term nobody can
+    /// trace back to the geometry that produced it.
+    pub const NOWHERE: Self = Self {
+        normal: [0.0, 0.0, 0.0],
+        tangent: [0.0, 0.0, 0.0, 1.0],
+    };
+
+    /// The frame of the plane through three corners carrying those three
+    /// texture coordinates.
+    ///
+    /// The normal is the plane's, in the winding given. The tangent is
+    /// the direction `u` increases in, found by solving the two edge
+    /// vectors against their coordinate deltas, then made perpendicular
+    /// to the normal and unit length. The handedness is the sign of the
+    /// bitangent that solve produced, so a mirrored mapping — the same
+    /// island flipped, which every atlas packer emits sooner or later —
+    /// keeps its lighting instead of inverting it.
+    ///
+    /// **Every way this can fail returns zero rather than a NaN**, and
+    /// three of the four keep the normal while doing it. Collinear
+    /// corners have no plane, so that one is [`NOWHERE`] entire; a
+    /// mapping with no direction in it sits on a real surface, so the
+    /// normal survives and only the tangent is zeroed. A caller can
+    /// tell the two apart, which is the point of not returning a NaN.
+    /// Collinear corners have no plane; corners whose coordinates are
+    /// collinear in `uv` space (all three equal, or a whole face mapped
+    /// to one texel) give a zero determinant and no direction for `u`;
+    /// a tangent parallel to the normal survives neither. A NaN here
+    /// would reach a vertex buffer and come out as lighting, so each of
+    /// those is a branch rather than a division.
+    ///
+    /// [`NOWHERE`]: Self::NOWHERE
+    #[must_use]
+    pub fn of_face(corners: [[f32; 3]; 3], uvs: [[f32; 2]; 3]) -> Self {
+        let normal = face_normal(corners[0], corners[1], corners[2]);
+        if normal == [0.0, 0.0, 0.0] {
+            return Self::NOWHERE;
+        }
+        let edge = sub(corners[1], corners[0]);
+        let other = sub(corners[2], corners[0]);
+        let (du1, dv1) = (uvs[1][0] - uvs[0][0], uvs[1][1] - uvs[0][1]);
+        let (du2, dv2) = (uvs[2][0] - uvs[0][0], uvs[2][1] - uvs[0][1]);
+        // The determinant of the coordinate deltas. Zero means the three
+        // coordinates lie on a line, which fixes no direction for `u`.
+        //
+        // **Deleting this check reddens nothing, which was measured
+        // rather than assumed.** A zero determinant makes the reciprocal
+        // below infinite, every component of `along_u` infinite or NaN,
+        // and the guard in `unit` refuses it four operations later — so
+        // the behaviour is identical either way. It stays because those
+        // four operations are the difference between code that names the
+        // condition it is refusing and code that relies on a NaN
+        // arriving somewhere else intact, and because the two guards
+        // refuse different things: this one a mapping with no direction
+        // in it, that one a reciprocal too large to use.
+        let det = du1 * dv2 - du2 * dv1;
+        if det == 0.0 || !det.is_finite() {
+            return Self {
+                normal,
+                ..Self::NOWHERE
+            };
+        }
+        let inverse = 1.0 / det;
+        let along_u = [
+            (edge[0] * dv2 - other[0] * dv1) * inverse,
+            (edge[1] * dv2 - other[1] * dv1) * inverse,
+            (edge[2] * dv2 - other[2] * dv1) * inverse,
+        ];
+        // **Gram-Schmidt, and it is not a formality.** In exact arithmetic
+        // `along_u` is a combination of `edge` and `other`, so it lies in
+        // their plane and is already perpendicular to the normal. In `f32`
+        // that argument fails exactly where it matters: on a sliver — a
+        // triangle whose third corner sits almost on the line through the
+        // other two — the cross product that made the normal is nearly
+        // total cancellation, and what it yields is mostly rounding.
+        // Sweeping four hundred thousand slivers finds faces where the
+        // unprojected tangent comes back with `dot(normal, tangent)`
+        // above 0.99: a tangent lying along the normal, whose reconstructed
+        // bitangent is a hundredth of the length it should be. Aspect
+        // ratios that extreme are ordinary in imported geometry, and
+        // `triangle` is the importer's call.
+        //
+        // **This step was written, deleted because probing it reddened
+        // nothing, and restored.** Nothing it broke was tested; that is a
+        // statement about the tests, and there is a sliver case beside
+        // them now.
+        let Some(direction) = unit(along_u) else {
+            return Self {
+                normal,
+                ..Self::NOWHERE
+            };
+        };
+        let leaning = dot(normal, direction);
+        let flattened = [
+            direction[0] - normal[0] * leaning,
+            direction[1] - normal[1] * leaning,
+            direction[2] - normal[2] * leaning,
+        ];
+        // `direction` is unit, so what survives the projection has length
+        // `sqrt(1 - leaning^2)` — the sine of the angle between the
+        // mapping's `u` and the surface it is supposed to lie on. Below a
+        // thousandth, about three and a half arcminutes, what is left is
+        // rounding rather than direction, and a normalised residual of
+        // rounding is a confident wrong answer. Refused instead, which is
+        // what the rest of this function does with a question it cannot
+        // answer.
+        // **One guard, not two.** A residual bound sat here as well —
+        // refuse when the projection leaves less than a thousandth — and
+        // two million adversarial slivers never reached it, which is the
+        // measurement rather than a guess. The reason it cannot be
+        // reached is the same one that made deleting the projection look
+        // safe, running the other way: `flattened` is `direction` with
+        // its normal component removed, so it is perpendicular to the
+        // normal by construction and stays perpendicular however small
+        // it gets. Small is noisy, not wrong. What is left for `unit` to
+        // refuse is the case where nothing at all survives, and that one
+        // is real: a determinant whose reciprocal overflows leaves
+        // `along_u` infinite before any of this runs.
+        let Some(tangent) = unit(flattened) else {
+            return Self {
+                normal,
+                ..Self::NOWHERE
+            };
+        };
+        let handedness = if det < 0.0 { -1.0 } else { 1.0 };
+        Self {
+            normal,
+            tangent: [tangent[0], tangent[1], tangent[2], handedness],
+        }
     }
+}
+
+fn sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+/// `vector` scaled to unit length, or `None` when it has none to scale.
+///
+/// **Divided through by its largest component before it is squared.**
+/// Squaring is where a small vector is lost: components around `1e-22`
+/// square to `1e-44`, which is subnormal in an `f32` and carries a
+/// couple of bits, so the square root of their sum is wrong by percent
+/// and the "unit" result comes back at a length like 1.0097. That is
+/// not a rounding difference in a lighting term, it is a visible one,
+/// and it passes a naive `length > 0.0` guard without complaint.
+///
+/// Pre-scaling puts the largest component at exactly one, so the sum of
+/// squares lands between one and three whatever the input's magnitude
+/// was. It costs one pass and one divide, and it is what makes the
+/// "unit" in this function's name and in [`Frame`]'s fields true rather
+/// than usually true.
+fn unit(vector: [f32; 3]) -> Option<[f32; 3]> {
+    let largest = vector[0].abs().max(vector[1].abs()).max(vector[2].abs());
+    // A NaN fails `is_finite`, so it takes this branch through the
+    // second test rather than the first.
+    if largest <= 0.0 || !largest.is_finite() {
+        return None;
+    }
+    let scaled = [
+        vector[0] / largest,
+        vector[1] / largest,
+        vector[2] / largest,
+    ];
+    let length = dot(scaled, scaled).sqrt();
+    Some([scaled[0] / length, scaled[1] / length, scaled[2] / length])
 }
 
 /// The place a packed vertex record names.
@@ -229,13 +436,53 @@ impl Scene {
     pub fn quad_uv(&mut self, corners: [[f32; 3]; 4], colours: [[f32; 4]; 4], uvs: [[f32; 2]; 4]) {
         // Recorded before the push, so the triangles below index the
         // corners this call adds rather than whatever came before.
+        // One frame for the whole quad, derived from the first three
+        // corners and written to all four.
+        //
+        // **That is exact only if the four are coplanar, and nothing here
+        // makes them so** — `quad`'s own documentation says a caller
+        // listing them crosswise gets a bow tie. A caller that wants a
+        // fold wants two triangles; a caller that draws one anyway gets
+        // the first triangle's frame on the second, which is the same
+        // answer a flat quad would have given and a wrong one otherwise.
+        // Said rather than assumed, because the cost of being wrong here
+        // is lighting that disagrees with geometry along one diagonal.
+        let frame = Frame::of_face(
+            [corners[0], corners[1], corners[2]],
+            [uvs[0], uvs[1], uvs[2]],
+        );
+        self.quad_uv_with_frame(corners, colours, uvs, frame);
+    }
+
+    /// The same quad with its tangent frame supplied rather than derived.
+    ///
+    /// **For the caller that already knows.** [`quad_uv`] spends a cross
+    /// product, two square roots and a handful of divides per face
+    /// recovering a frame from the corners; a caller that built those
+    /// corners from an axis basis, or read the frame out of a file that
+    /// carries one, is paying to be told what it already knew. The voxel
+    /// sample in this repository is the first of those and a glTF
+    /// importer is the second, which is why this exists now rather than
+    /// when a second caller appeared.
+    ///
+    /// The frame is written to all four corners unchanged. Nothing
+    /// normalises it or checks it against the corners — a caller passing
+    /// this is asserting it knows better, and a crate that re-derived the
+    /// answer to check would cost exactly what this call is for.
+    ///
+    /// [`quad_uv`]: Self::quad_uv
+    pub fn quad_uv_with_frame(
+        &mut self,
+        corners: [[f32; 3]; 4],
+        colours: [[f32; 4]; 4],
+        uvs: [[f32; 2]; 4],
+        frame: Frame,
+    ) {
+        // Recorded before the push, so the triangles below index the
+        // corners this call adds rather than whatever came before.
         let base = self.vertex_count();
-        // One normal for the whole quad: its four corners are coplanar
-        // by construction here, and a caller that wants them not to be
-        // is drawing two triangles rather than a quad.
-        let normal = face_normal(corners[0], corners[1], corners[2]);
         for ((corner, colour), uv) in corners.into_iter().zip(colours).zip(uvs) {
-            self.push_vertex(corner, colour, uv, normal);
+            self.push_vertex(corner, colour, uv, frame);
         }
         for offset in [0, 1, 2, 0, 2, 3] {
             self.indices.push(base + offset);
@@ -259,16 +506,32 @@ impl Scene {
     /// either way draws, and a caller importing a file keeps whatever
     /// its source said.
     ///
-    /// The normal is computed from the three corners rather than taken
-    /// from the caller. A file that carries its own per-vertex normals
-    /// is not yet expressible; when it is, this gains a sibling rather
-    /// than a parameter, because a caller that has real normals wants
-    /// all three and a caller that has none wants zero.
+    /// The frame is computed from the three corners. A caller that
+    /// already knows it uses [`triangle_with_frame`], which is the
+    /// sibling this doc used to say would arrive one day.
+    ///
+    /// [`triangle_with_frame`]: Self::triangle_with_frame
     pub fn triangle(&mut self, corners: [[f32; 3]; 3], colours: [[f32; 4]; 3], uvs: [[f32; 2]; 3]) {
+        self.triangle_with_frame(corners, colours, uvs, Frame::of_face(corners, uvs));
+    }
+
+    /// The same triangle with its tangent frame supplied rather than
+    /// derived — [`quad_uv_with_frame`] for three corners, and the call a
+    /// file importer wants, because a format that carries normals and
+    /// tangents carries them per vertex and has no use for a crate that
+    /// recomputes a face's.
+    ///
+    /// [`quad_uv_with_frame`]: Self::quad_uv_with_frame
+    pub fn triangle_with_frame(
+        &mut self,
+        corners: [[f32; 3]; 3],
+        colours: [[f32; 4]; 3],
+        uvs: [[f32; 2]; 3],
+        frame: Frame,
+    ) {
         let base = self.vertex_count();
-        let normal = face_normal(corners[0], corners[1], corners[2]);
         for ((corner, colour), uv) in corners.into_iter().zip(colours).zip(uvs) {
-            self.push_vertex(corner, colour, uv, normal);
+            self.push_vertex(corner, colour, uv, frame);
         }
         for offset in [0, 1, 2] {
             self.indices.push(base + offset);
@@ -276,25 +539,55 @@ impl Scene {
     }
 
     /// One vertex record, packed exactly as [`VERTEX_STRIDE`] describes.
-    fn push_vertex(
-        &mut self,
-        position: [f32; 3],
-        colour: [f32; 4],
-        uv: [f32; 2],
-        normal: [f32; 3],
-    ) {
-        for value in position {
-            self.vertices.extend_from_slice(&value.to_ne_bytes());
-        }
-        for value in colour {
-            self.vertices.extend_from_slice(&value.to_ne_bytes());
-        }
-        for value in uv {
-            self.vertices.extend_from_slice(&value.to_ne_bytes());
-        }
-        for value in normal {
-            self.vertices.extend_from_slice(&value.to_ne_bytes());
-        }
+    ///
+    /// **Assembled whole, then appended once.** This wrote each float
+    /// with its own `extend_from_slice` until the record reached sixteen
+    /// of them, at which point that was sixteen capacity checks and
+    /// sixteen length updates per vertex to move sixty-four bytes. The
+    /// measurement is in this repository's mesh-build benchmark and it
+    /// is not small — see the ladder recorded with this change.
+    ///
+    /// The array is the layout, in the order
+    /// `renew_rhi::builtin::MESH_LAYOUT` is declared in. That order is
+    /// written down in three places in this file — here, the offsets the
+    /// tests read from, and the message on the stride assertion — and
+    /// only this one decides what a shader gets. The compile-time check
+    /// in `gpu.rs` is what ties it to the layout a pipeline is built
+    /// from.
+    ///
+    /// **The conversion is by type, not by iteration.** It zipped the
+    /// floats against the record's four-byte chunks, which meant a
+    /// seventeenth float added without growing the stride would have
+    /// been dropped into a correct-looking vertex buffer with no error
+    /// anywhere — the same shape of defect this crate's own fixtures
+    /// kept hitting. `map` and `as_flattened` make the widths a
+    /// compile-time question, and the assertion below says what they
+    /// must come to.
+    fn push_vertex(&mut self, position: [f32; 3], colour: [f32; 4], uv: [f32; 2], frame: Frame) {
+        const _: () = assert!(
+            VERTEX_STRIDE as usize == 16 * size_of::<f32>(),
+            "the record is sixteen floats wide; the array below writes exactly that many"
+        );
+        let floats = [
+            position[0],
+            position[1],
+            position[2],
+            colour[0],
+            colour[1],
+            colour[2],
+            colour[3],
+            uv[0],
+            uv[1],
+            frame.normal[0],
+            frame.normal[1],
+            frame.normal[2],
+            frame.tangent[0],
+            frame.tangent[1],
+            frame.tangent[2],
+            frame.tangent[3],
+        ];
+        let record = floats.map(f32::to_ne_bytes);
+        self.vertices.extend_from_slice(record.as_flattened());
     }
 
     /// Whole vertex records pushed so far.
@@ -310,7 +603,7 @@ impl Scene {
         // Every push adds exactly one stride, so the division is exact.
         let records = self.vertices.len() / VERTEX_STRIDE as usize;
         // **Asserted rather than argued away.** A scene of more than a
-        // `u32` of records needs 2^32 * 28 bytes, about 120 GiB — beyond
+        // `u32` of records needs 2^32 * 64 bytes, about 256 GiB — beyond
         // anything this engine will build on the host, but well inside
         // what a 64-bit host can address, so "impossible" would be a
         // claim rather than a fact. It matters which: saturating here
@@ -512,8 +805,8 @@ mod tests {
         );
         assert_eq!(
             VERTEX_STRIDE,
-            12 + 16 + 8 + 12,
-            "a vec3 position, a vec4 colour, a vec2 coordinate and a vec3 normal"
+            12 + 16 + 8 + 12 + 16,
+            "a vec3 position, a vec4 colour, a vec2 coordinate, a vec3 normal and a vec4 tangent"
         );
     }
 
@@ -521,7 +814,7 @@ mod tests {
     /// nothing between them — the property a shader reading this layout
     /// depends on.
     #[test]
-    fn a_record_is_its_position_then_colour_then_coordinate_then_normal() {
+    fn a_record_is_its_position_then_colour_then_coordinate_then_frame() {
         let mut scene = Scene::new();
         scene.quad(CORNERS, [0.25, 0.5, 0.75, 1.0]);
         let first = &scene.vertices()[..VERTEX_STRIDE as usize];
@@ -532,15 +825,386 @@ mod tests {
             .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
         // The two after the colour are the default mapping's first
-        // corner, the origin of the tile; the last three are the face
-        // normal, which these corners put on +Z: they wind counter-
-        // clockwise seen from +Z, and (2,0,0) x (2,2,0) is (0,0,4).
+        // corner, the origin of the tile. Then the face normal, which
+        // these corners put on +Z: they wind counter-clockwise seen from
+        // +Z, and (2,0,0) x (2,2,0) is (0,0,4). Then the tangent, which
+        // the whole-tile mapping puts on +X — `u` runs from corner 0 to
+        // corner 1, and that edge is +X — with a handedness of +1,
+        // because `cross(+Z, +X)` is `+Y` and `v` does run along `+Y`
+        // here. Every one of those five is a different axis of the same
+        // frame, so a record that lost track of which is which would
+        // have to move a number between two of them to pass.
         assert_eq!(
             floats,
             vec![
-                -1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0
+                -1.0, -1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0
             ]
         );
+    }
+
+    /// **The tangent points the way `u` increases, and that is the whole
+    /// contract.** Everything else about a tangent frame is derivable
+    /// from it plus the normal; this is the part that has to come from
+    /// the geometry and its mapping together.
+    ///
+    /// Checked on a face whose `u` axis is deliberately not the first
+    /// edge: the corners lie in the XY plane, the first edge runs along
+    /// `+X`, and `u` runs along `+Y` across them. A tangent that quietly
+    /// returned the first edge, or `+X`, or the position delta, is a
+    /// different vector from the right answer rather than accidentally
+    /// equal to it.
+    ///
+    /// **The numbers are chosen so the obvious wrong solve is visible,
+    /// and the first version of this test failed to do that.** With
+    /// `du1 = 0` and `dv1 = dv2`, swapping the two `dv` terms leaves
+    /// every expression numerically identical, so the mutant passed and
+    /// the test proved nothing about the solve. Here `dv1` is 1 and
+    /// `dv2` is 0, and the swap collapses the determinant from -1 to 0.
+    ///
+    /// Probed by swapping `dv2` and `dv1` throughout the solve: red, the
+    /// determinant goes to zero and the frame comes back with no tangent
+    /// at all.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the normal of an axis-aligned face is exact, and the handedness is a sign this code writes as a literal 1 or -1"
+    )]
+    #[test]
+    fn the_tangent_runs_the_way_the_coordinate_does() {
+        // A right triangle on the XY plane. Its edges are +X and +Y; the
+        // mapping puts `u` along the second and `v` along the first.
+        let frame = Frame::of_face(
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+        );
+        assert_eq!(frame.normal, [0.0, 0.0, 1.0], "the plane is the XY plane");
+        let [x, y, z, w] = frame.tangent;
+        assert!(
+            (x - 0.0).abs() < 1e-6 && (y - 1.0).abs() < 1e-6 && (z - 0.0).abs() < 1e-6,
+            "`u` increases along +Y here, so the tangent must: got {:?}",
+            frame.tangent
+        );
+        assert_eq!(
+            w, -1.0,
+            "`u` along +Y and `v` along +X about a +Z normal is a \
+             left-handed mapping, and the sign is where that is recorded"
+        );
+    }
+
+    /// A mirrored mapping keeps its lighting, and the sign in `w` is how.
+    ///
+    /// **This is the reason the tangent is four floats.** Flip the
+    /// coordinates of one face across `v` and the surface is unchanged,
+    /// the normal is unchanged, and the way `u` runs is unchanged — only
+    /// the bitangent turns over. A three-float tangent cannot say that,
+    /// so a shader reconstructing `cross(n, t)` lights the mirrored
+    /// island as though its normal map were inverted. Every atlas packer
+    /// mirrors something eventually, so this is a case that arrives
+    /// rather than one that might.
+    ///
+    /// Probed by returning a constant `1.0` for the handedness: red on
+    /// the mirrored half.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the handedness is a sign written as a literal, and the two tangents are the same arithmetic on the same inputs, so equality is the claim rather than an approximation of it"
+    )]
+    #[test]
+    fn a_mirrored_mapping_flips_the_handedness_and_nothing_else() {
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let upright = Frame::of_face(corners, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]);
+        let mirrored = Frame::of_face(corners, [[0.0, 0.0], [1.0, 0.0], [1.0, -1.0]]);
+        assert_eq!(
+            upright.normal, mirrored.normal,
+            "mirroring the mapping does not move the surface"
+        );
+        assert_eq!(
+            [upright.tangent[0], upright.tangent[1], upright.tangent[2]],
+            [
+                mirrored.tangent[0],
+                mirrored.tangent[1],
+                mirrored.tangent[2]
+            ],
+            "`u` still runs the same way; only `v` was flipped"
+        );
+        assert_eq!(upright.tangent[3], 1.0);
+        assert_eq!(
+            mirrored.tangent[3], -1.0,
+            "a mirrored island reconstructs its bitangent the other way"
+        );
+    }
+
+    /// The stored tangent is perpendicular to the normal and of unit
+    /// length, on a face where the raw solve gives neither.
+    ///
+    /// A sheared mapping — one whose `u` and `v` are not at right angles
+    /// on the surface — produces a raw tangent of arbitrary length, so
+    /// the unit-length half of this needs the normalisation to hold.
+    ///
+    /// **The perpendicular half has no mutant, and that is the finding
+    /// rather than a gap.** A projection step was written here to enforce
+    /// it; deleting it changed no test and no byte, because `along_u` is
+    /// built from two edges of the face and therefore already lies in its
+    /// plane. The step is gone and this assertion stays: it is the
+    /// property every shader reading the record relies on, and the first
+    /// change to store an interpolated or caller-derived tangent instead
+    /// is the one that would break it.
+    #[expect(
+        clippy::float_cmp,
+        reason = "only the handedness is compared exactly, and it is a sign written as a literal; the vectors are compared with a tolerance"
+    )]
+    #[test]
+    fn the_stored_tangent_is_perpendicular_and_unit_length() {
+        // A face tilted out of every coordinate plane, with a mapping
+        // that is neither square nor axis-aligned on it.
+        let frame = Frame::of_face(
+            [[0.0, 0.0, 0.0], [2.0, 1.0, 0.5], [0.5, 2.0, 1.5]],
+            [[0.0, 0.0], [1.0, 0.4], [0.3, 1.0]],
+        );
+        let [x, y, z, w] = frame.tangent;
+        let length = (x * x + y * y + z * z).sqrt();
+        assert!(
+            (length - 1.0).abs() < 1e-5,
+            "the tangent must be unit length, got {length}"
+        );
+        let leaning = x * frame.normal[0] + y * frame.normal[1] + z * frame.normal[2];
+        assert!(
+            leaning.abs() < 1e-5,
+            "the tangent must lie in the plane, got a dot product of {leaning}"
+        );
+        assert!(w == 1.0 || w == -1.0, "handedness is a sign, got {w}");
+    }
+
+    /// **Every way a frame can fail to exist gives zero, never a NaN.**
+    ///
+    /// A NaN in a vertex buffer is the worst of these outcomes: it
+    /// reaches the shader, contaminates whatever it touches, and shows up
+    /// as geometry that vanishes at some angles. Zero is not a direction
+    /// either, but it is a value a reader can test for and a shader can
+    /// fall back from.
+    ///
+    /// The four ways in: no plane at all, a mapping with no direction in
+    /// it, three coordinates on a line, and a mapping so small that the
+    /// reciprocal of its determinant is not a number this type holds.
+    ///
+    /// **The last one is here because it is the only case the guard in
+    /// `unit` catches on its own**, and a guard no input reaches is a
+    /// guard nobody can trust. The first three are refused by the
+    /// determinant check before that guard is asked anything, so with
+    /// only those, replacing `unit`'s refusal with a fallback axis passes
+    /// — measured, not assumed. A determinant of `1e-40` is a real `f32`
+    /// and its reciprocal is not, which is how an atlas cell a hundred
+    /// millionth of a texel across reaches this.
+    ///
+    /// Probed by replacing the `unit` refusal with a fallback axis: red
+    /// on the fourth case. Probed by deleting the determinant check:
+    /// green, and that is recorded at the check itself rather than here.
+    #[expect(
+        clippy::float_cmp,
+        reason = "every value compared here is one this code writes as a literal zero or one: the point is that no arithmetic reached the output at all"
+    )]
+    #[test]
+    fn a_frame_that_cannot_exist_is_zero_rather_than_a_nan() {
+        let flat = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        // Collinear corners: no plane, so nothing downstream either.
+        let collinear = Frame::of_face([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], flat);
+        assert_eq!(collinear, Frame::NOWHERE);
+
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // A whole face mapped to one texel: a real plane, and no
+        // direction for `u` anywhere on it.
+        let one_texel = Frame::of_face(corners, [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]);
+        assert_eq!(
+            one_texel.normal,
+            [0.0, 0.0, 1.0],
+            "the plane is still there"
+        );
+        assert_eq!(one_texel.tangent, Frame::NOWHERE.tangent);
+
+        // Three coordinates on a line: a determinant of zero from the
+        // other direction, and what a degenerate atlas cell gives.
+        let collinear_uv = Frame::of_face(corners, [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]);
+        assert_eq!(collinear_uv.tangent, Frame::NOWHERE.tangent);
+
+        // A determinant that is a number and whose reciprocal is not:
+        // 1e-20 squared is a subnormal `f32`, and one divided by it is
+        // past what the type holds. Nothing here is zero, so the
+        // determinant check passes it through.
+        let vanishing = Frame::of_face(corners, [[0.0, 0.0], [1e-20, 0.0], [0.0, 1e-20]]);
+        assert_eq!(
+            vanishing.normal,
+            [0.0, 0.0, 1.0],
+            "the surface is unremarkable; only its mapping is not"
+        );
+        assert_eq!(vanishing.tangent, Frame::NOWHERE.tangent);
+
+        for frame in [collinear, one_texel, collinear_uv, vanishing] {
+            for value in frame.normal {
+                assert!(value.is_finite(), "a normal must not be a NaN");
+            }
+            for value in frame.tangent {
+                assert!(value.is_finite(), "a tangent must not be a NaN");
+            }
+        }
+    }
+
+    /// **A sliver's frame is still a frame**, over a sweep rather than a
+    /// hand-picked face.
+    ///
+    /// This is the test that was missing, and its absence is the whole
+    /// reason it is written as a sweep. `Frame::of_face` had a projection
+    /// step; deleting it reddened nothing, so it was deleted as dead
+    /// arithmetic. It was not dead. The argument for deleting it —
+    /// `along_u` is a combination of two in-plane edges, so it already
+    /// lies in the plane — is true in exact arithmetic and false in
+    /// `f32` on a sliver, where the cross product behind the normal is
+    /// nearly total cancellation and what survives is mostly rounding.
+    /// Without the projection this sweep finds faces whose stored tangent
+    /// lies **along** the stored normal: `dot` above 0.99, and a
+    /// reconstructed bitangent a hundredth of unit length. A shader
+    /// rebuilding the third axis from that gets a collapsed basis.
+    ///
+    /// A single well-conditioned face cannot see any of it, which is
+    /// what the four tests above are and why they all stayed green.
+    ///
+    /// The shape swept is the one that provokes it: a third corner
+    /// pulled onto the line through the other two, with the distance off
+    /// that line swept across six orders of magnitude, and arbitrary
+    /// coordinates on top. Slivers like this are ordinary in imported
+    /// geometry, and `triangle` is the call an importer makes.
+    ///
+    /// Probed by making the projection a no-op (`leaning = 0.0`): red,
+    /// "a stored tangent leant 0.99836713 into its own normal".
+    #[test]
+    fn a_sliver_triangle_gets_a_frame_that_is_still_a_frame() {
+        // Seeded, so a failure is a failure anybody can reproduce.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // 24 bits into the mantissa, so every value is exact and
+            // the sweep is the same on every target.
+            f32::from(u16::try_from((seed >> 48) & 0xFFFF).unwrap_or(0)) / 32768.0 - 1.0
+        };
+
+        let mut worst_lean = 0.0f32;
+        let mut worst_bitangent = 0.0f32;
+        let mut examined = 0u32;
+        for _ in 0..200_000 {
+            let first = [next() * 10.0, next() * 10.0, next() * 10.0];
+            let second = [next() * 10.0, next() * 10.0, next() * 10.0];
+            // The third corner, on the line through the first two, then
+            // nudged off it by an amount sweeping 1e-7 to 1e-1.
+            let along = 0.5 + next() * 0.5;
+            let off = 10f32.powf(next() * 3.0 - 4.0);
+            let third = [
+                (second[0] - first[0]) * along + first[0] + off * next(),
+                (second[1] - first[1]) * along + first[1] + off * next(),
+                (second[2] - first[2]) * along + first[2] + off * next(),
+            ];
+            let uvs = [[next(), next()], [next(), next()], [next(), next()]];
+
+            let frame = Frame::of_face([first, second, third], uvs);
+            let tangent = [frame.tangent[0], frame.tangent[1], frame.tangent[2]];
+            // A refused frame is a fine answer and says so by being zero;
+            // this test is about the ones that claim to be frames.
+            if frame.normal == [0.0, 0.0, 0.0] || tangent == [0.0, 0.0, 0.0] {
+                continue;
+            }
+            examined += 1;
+
+            let lean = (frame.normal[0] * tangent[0]
+                + frame.normal[1] * tangent[1]
+                + frame.normal[2] * tangent[2])
+                .abs();
+            worst_lean = worst_lean.max(lean);
+
+            // The axis a shader actually rebuilds. If the tangent leans
+            // into the normal this collapses, which is the failure the
+            // dot product above is a proxy for.
+            let bitangent = [
+                frame.normal[1] * tangent[2] - frame.normal[2] * tangent[1],
+                frame.normal[2] * tangent[0] - frame.normal[0] * tangent[2],
+                frame.normal[0] * tangent[1] - frame.normal[1] * tangent[0],
+            ];
+            let length = (bitangent[0] * bitangent[0]
+                + bitangent[1] * bitangent[1]
+                + bitangent[2] * bitangent[2])
+                .sqrt();
+            worst_bitangent = worst_bitangent.max((length - 1.0).abs());
+        }
+
+        assert!(
+            examined > 100_000,
+            "the sweep must actually produce frames to check, got {examined}"
+        );
+        assert!(
+            worst_lean < 1e-3,
+            "a stored tangent leant {worst_lean} into its own normal; \
+             perpendicularity is what a shader rebuilding the third axis \
+             depends on"
+        );
+        assert!(
+            worst_bitangent < 1e-3,
+            "a reconstructed bitangent came out {worst_bitangent} from unit length"
+        );
+    }
+
+    /// A supplied frame reaches the buffer exactly as given, and a
+    /// derived one is what the deriving call would have produced.
+    ///
+    /// **What a caller that already knows its frame is buying**: no
+    /// re-derivation, and no silent correction of a value it asserted.
+    ///
+    /// The deriving call is pinned against written-out floats rather
+    /// than against the supplying call. An earlier version compared the
+    /// two scenes to each other and called that evidence that "every
+    /// existing caller keeps its bytes" — but `triangle` **is**
+    /// `triangle_with_frame` with `of_face` in front of it, so that
+    /// assertion could not fail whatever either of them did. A claim
+    /// about bytes needs bytes.
+    #[test]
+    fn a_supplied_frame_is_written_and_a_derived_one_matches_it() {
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+
+        let mut derived = Scene::new();
+        derived.triangle(corners, [WHITE; 3], uvs);
+        let first = &derived.vertices()[..VERTEX_STRIDE as usize];
+        let floats: Vec<f32> = first
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect();
+        // Position, colour, coordinate, then the frame these corners and
+        // this mapping give: the plane is the XY plane, `u` runs along
+        // the first edge, and `u` × `v` agrees with the normal.
+        assert_eq!(
+            floats,
+            vec![
+                0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0
+            ],
+            "the deriving call's first record"
+        );
+
+        // And a frame nothing would derive is written unchanged: this
+        // crate does not check a caller's assertion, because checking it
+        // costs exactly what the call exists to save.
+        let claimed = Frame {
+            normal: [0.0, 1.0, 0.0],
+            tangent: [0.0, 0.0, 1.0, -1.0],
+        };
+        let mut asserted = Scene::new();
+        asserted.triangle_with_frame(corners, [WHITE; 3], uvs, claimed);
+        let record = &asserted.vertices()[..VERTEX_STRIDE as usize];
+        let floats: Vec<f32> = record
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect();
+        assert_eq!(&floats[9..12], &claimed.normal, "the normal as claimed");
+        assert_eq!(&floats[12..16], &claimed.tangent, "the tangent as claimed");
     }
 
     /// **A quad with no coordinates given gets a whole tile**, not a

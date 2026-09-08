@@ -314,28 +314,33 @@ fn mesh_fixture(
         builtin::MESH_LAYOUT,
     ))?;
     let mut vertices = Vec::new();
-    for corner in [
+    for (index, corner) in [
         [-1.0f32, -1.0, 0.0],
         [1.0, -1.0, 0.0],
         [1.0, 1.0, 0.0],
         [-1.0, 1.0, 0.0],
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         for value in corner {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
         for value in [0.0f32, 1.0, 0.0, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        // The texture coordinate and the normal the layout declares.
-        // These shaders consume neither; the record must still be what
-        // the pipeline says it is, because the fetch is bounded by the
-        // stride rather than by what the stage reads.
-        for value in [0.0f32, 0.0] {
-            vertices.extend_from_slice(&value.to_ne_bytes());
-        }
-        for value in [0.0f32, 0.0, 1.0] {
-            vertices.extend_from_slice(&value.to_ne_bytes());
-        }
+        // Pad the record out to whatever the layout packs to, rather
+        // than writing each attribute this fixture does not read.
+        //
+        // **Both of these files have now been broken twice by the same
+        // kind of change** — once by the normal and once by the tangent
+        // — because a fixture that spells out an attribute list is a
+        // second copy of the layout, and the second copy is always the
+        // one that goes stale. What this draw needs is a stride the
+        // pipeline agrees with and corners that are not all the same
+        // point; nothing here reads past the coordinate, so the rest is
+        // zero and stays correct however the record grows.
+        vertices.resize((index + 1) * builtin::MESH_STRIDE as usize, 0);
     }
     let mesh = device.create_mesh(&renew_rhi::MeshDesc::new(
         &vertices,

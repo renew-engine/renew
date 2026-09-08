@@ -385,6 +385,37 @@ pub mod builtin {
         vertex_count: 6,
     };
 
+    /// Fragment stage SPIR-V sampling four slots, one per quadrant of
+    /// the target: set 0 lower left, set 1 lower right, set 2 upper
+    /// left, set 3 upper right.
+    pub static TEXTURED_QUAD_FS_SPV: &[u8] = include_bytes!("../shaders/textured_quad.frag.spv");
+
+    /// The four-slot quad: [`TEXTURED`]'s vertex stage over a fragment
+    /// stage reading [`MAX_SAMPLED_BINDINGS`] sampled bindings — the
+    /// widest pipeline this tree's layout admits.
+    ///
+    /// **Why the ceiling gets a shader rather than only a constant.** A
+    /// limit nothing reaches is a limit nobody has tested: the array
+    /// sizes, the set-layout loop and the record path's set array all
+    /// have to hold at four, and until this existed the widest thing
+    /// that had ever asked was [`TEXTURED_PAIR`] at two. Four is also
+    /// not an arbitrary target — it is `maxBoundDescriptorSets`'
+    /// guaranteed floor, so a pipeline shaped like this is one every
+    /// conformant adapter accepts, and it is exactly the width a
+    /// normal-mapped material wants: base colour, normal,
+    /// metallic-roughness, occlusion.
+    ///
+    /// The target splits into quadrants rather than halves so that a
+    /// wrong bind order in any one of the four places is visible; with
+    /// halves, two of the four could swap unseen.
+    ///
+    /// [`MAX_SAMPLED_BINDINGS`]: crate::MAX_SAMPLED_BINDINGS
+    pub const TEXTURED_QUAD: Shaders<'static> = Shaders {
+        vertex: TEXTURED_VS_SPV,
+        fragment: TEXTURED_QUAD_FS_SPV,
+        vertex_count: 6,
+    };
+
     /// Vertex stage SPIR-V reading a per-vertex stream.
     pub static MESH_VS_SPV: &[u8] = include_bytes!("../shaders/mesh.vert.spv");
     /// Fragment stage SPIR-V passing the interpolated colour through.
@@ -415,20 +446,35 @@ pub mod builtin {
     };
 
     /// The per-vertex layout [`MESH`] consumes: clip-space position,
-    /// then colour, then a texture coordinate. Packs to **36 bytes**,
-    /// which is the stride every mesh drawn by that pipeline must carry.
+    /// then colour, then a texture coordinate, then the surface normal,
+    /// then the tangent with its handedness. Packs to [`MESH_STRIDE`]
+    /// bytes, which is the stride every mesh drawn by that pipeline must
+    /// carry.
     ///
-    /// The coordinate is carried even though this pipeline never samples
-    /// anything, and `mesh.vert` says why at the declaration: the record
-    /// is shared with the paths that do sample, and a pipeline describes
-    /// the whole record rather than the part one shader happens to read.
-    /// An attribute a shader ignores is legal; a record the pipeline
-    /// mis-describes is not.
+    /// **The width is not restated here on purpose.** An earlier version
+    /// of this comment said "36 bytes" and went on saying it after the
+    /// normal was appended, which is the drift [`MESH_STRIDE`] exists to
+    /// end. The stride is a sum of this list; a sentence is not.
+    ///
+    /// Most of the record is carried by pipelines that never read it, and
+    /// `mesh.vert` says why at the declaration: the record is shared with
+    /// the paths that do, and a pipeline describes the whole record rather
+    /// than the part one shader happens to read. An attribute a shader
+    /// ignores is legal; a record the pipeline mis-describes is not.
+    ///
+    /// **Every attribute is appended, never inserted**, so each addition
+    /// leaves the locations before it where they were and no committed
+    /// SPIR-V is recompiled. The tangent is a `Vec4` rather than a `Vec3`
+    /// for the same reason glTF's is: `xyz` is the tangent and `w` is the
+    /// sign the bitangent is reconstructed with, so a shader that wants
+    /// the third axis computes `cross(normal, tangent.xyz) * tangent.w`
+    /// and needs nothing else in the record.
     pub const MESH_LAYOUT: &[crate::VertexAttribute] = &[
         crate::VertexAttribute::Vec3,
         crate::VertexAttribute::Vec4,
         crate::VertexAttribute::Vec2,
         crate::VertexAttribute::Vec3,
+        crate::VertexAttribute::Vec4,
     ];
 
     /// The byte stride of one [`MESH_LAYOUT`] record, summed from the

@@ -12,10 +12,12 @@
 // to do work the crate cannot yet supply. A consumer drawing world
 // geometry transforms on the way into the vertex buffer until then.
 //
-// Layout here and the `VertexAttribute` slice at pipeline creation
-// describe the same bytes: location 0 = vec3 position (clip space),
-// location 1 = vec4 colour. Change one and the other in the same commit
-// or the draw reads garbage.
+// The record has five attributes and this stage reads the ones it
+// needs. Locations, in order: 0 vec3 position, 1 vec4 colour, 2 vec2
+// texture coordinate, 3 vec3 normal, 4 vec4 tangent (xyz, and the
+// bitangent's sign in w). A stage may ignore any of them; what it may
+// not do is disagree about which location is which, so change this
+// list and MESH_LAYOUT in the same commit or the draw reads garbage.
 
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
