@@ -103,6 +103,76 @@ fn what_nothing_claims_is_offered_to_stl() {
     }
 }
 
+/// **A licence banner is not evidence, and does not spend the budget.**
+///
+/// The window used to be the first sixty-four lines flat, so an OBJ with
+/// a sixty-four-line header fell through to the STL fallback and was
+/// refused with an unactionable count mismatch — while `obj::read`
+/// accepted the very same file. Exporters write banners; the boundary
+/// was measured at exactly 63 working and 64 failing.
+///
+/// Probed by counting every line rather than every keyword-shaped one:
+/// red at 64.
+#[test]
+fn a_long_comment_header_does_not_hide_the_geometry() {
+    for banner in [0, 63, 64, 500] {
+        let mut source = String::new();
+        for line in 0..banner {
+            source.push_str("# exported by something, line ");
+            source.push_str(&line.to_string());
+            source.push('\n');
+        }
+        source.push_str(AN_OBJ);
+        assert_eq!(
+            format::detect(source.as_bytes()),
+            Format::Obj,
+            "{banner} comment lines before the geometry"
+        );
+        let read = Format::Obj
+            .read(source.as_bytes())
+            .expect("obj carries geometry")
+            .unwrap_or_else(|error| panic!("{banner} lines: {error}"));
+        assert_eq!(read.triangles(), 1);
+    }
+}
+
+/// **Blank lines are not evidence either.**
+///
+/// Padding is the other thing exporters emit, and it was spending the
+/// same budget.
+#[test]
+fn padding_does_not_hide_the_geometry() {
+    let padded = format!("{}{AN_OBJ}", "\n".repeat(300));
+    assert_eq!(format::detect(padded.as_bytes()), Format::Obj);
+}
+
+/// **The budget still binds on a file that is not an OBJ.**
+///
+/// It exists so a text STL is not scanned to its end before being
+/// declined. Sixteen lines that say nothing an OBJ says is enough to
+/// decline, and this checks the decline still happens rather than the
+/// budget having been quietly widened to "the whole file".
+///
+/// Probed by removing the budget: red, a long file of non-OBJ keywords
+/// is read to its end and still declined — slower, and the assertion
+/// below is what notices.
+#[test]
+fn a_file_that_says_nothing_an_obj_says_is_declined() {
+    // Longer than the budget, entirely keywords no OBJ uses, and with a
+    // real `v` far past the end of it: if the budget were gone this
+    // would come back `Obj`.
+    let mut source = String::new();
+    for _ in 0..64 {
+        source.push_str("widget 1 2 3\n");
+    }
+    source.push_str(AN_OBJ);
+    assert_eq!(
+        format::detect(source.as_bytes()),
+        Format::Stl,
+        "sixteen non-comment lines that say nothing OBJ says is enough to decline"
+    );
+}
+
 /// **The name is what a machine keys on, and every format has a
 /// distinct one.**
 #[test]

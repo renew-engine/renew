@@ -231,9 +231,21 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
             corners: corners % 3,
         });
     }
-    // Before any allocation: the count is four bytes an attacker writes,
-    // and the arrays it sizes are the amplification this ceiling exists
-    // to stop.
+    // **This is an overflow guard, and the comment here used to call it
+    // an amplification guard, which it is not.**
+    //
+    // There is no amplification to stop. The length check below requires
+    // the byte total the header implies to EQUAL the file's own length,
+    // so the bytes this reader allocates are the bytes it was handed
+    // minus a twenty-byte header: the factor is exactly one, and the
+    // worst case from a twenty-byte file is nothing at all. Swept, not
+    // argued: every multiple-of-three count the ceiling admits, in a
+    // header-only file with every presence bit set, refuses before it
+    // reserves anything.
+    //
+    // What the ceiling really does is run BEFORE `wanted` is computed,
+    // so `corners * VEC3` cannot overflow on a target whose pointers are
+    // narrower than the count. That is worth keeping and worth naming.
     refuse_over_ceiling(0, corners)?;
 
     let triangles = corners / 3;

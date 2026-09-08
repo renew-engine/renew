@@ -346,17 +346,26 @@ fn writing_an_empty_mesh_is_a_defect() {
 /// **A corner count no file could supply is refused before it is
 /// believed.**
 ///
-/// Four bytes of header say how much memory to reserve, which is the
-/// amplification a ceiling exists to stop: the refusal has to arrive
-/// before the allocation, not after it.
+/// **The name of this used to claim the wrong property.** It said the
+/// refusal arrives "before allocating", as though four bytes of header
+/// could make this reader reserve a quarter of a gigabyte. They cannot:
+/// the length check requires the byte total the header implies to equal
+/// the file's own length, so what is allocated is what was handed over
+/// minus a header, and the worst case from a twenty-byte file is
+/// nothing.
 ///
-/// **Not probed by moving the ceiling**, deliberately: the mutant that
-/// would prove this assertion is one that reserves four billion vectors,
-/// and a probe whose red is an out-of-memory kill tells nobody anything
-/// they can read. What is checked instead is the refusal's own name and
-/// that it arrives at all, which is the observable half.
+/// What the ceiling guards is the arithmetic that computes that total,
+/// which runs after it. So what this test can honestly assert is that a
+/// count no file could supply is refused, by name, and that is what it
+/// does.
+///
+/// **Not probed by moving the ceiling**: the mutant would be one that
+/// multiplies four billion by twelve, and a probe whose red is an
+/// arithmetic wrap in a release build and a panic in a debug one tells a
+/// reader less than the arithmetic does. The `const` assertion beside
+/// `MAX_POSITIONS` is what holds the two constants together.
 #[test]
-fn a_corner_count_larger_than_any_file_is_refused_before_allocating() {
+fn a_corner_count_no_file_could_supply_is_refused() {
     let mut bytes = blob::write(&furnished());
     // Just under four billion corners, in twenty-four bytes of file.
     bytes[12..16].copy_from_slice(&0xFFFF_FFF0_u32.to_le_bytes());

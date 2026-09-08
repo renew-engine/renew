@@ -88,6 +88,25 @@ pub(crate) const MAX_GEOMETRY_BYTES: usize = 256 << 20;
 /// How many positions that ceiling allows.
 pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
 
+/// The ceiling is what keeps a corner count from overflowing the
+/// arithmetic that turns it into a byte length, so it has to stay inside
+/// the narrowest pointer this engine is built for.
+///
+/// **Checked here rather than trusted**, because the two numbers are
+/// independent: raising `MAX_GEOMETRY_BYTES` far enough would let a
+/// count through that `corners * 36` cannot hold on a 32-bit target, and
+/// a release build has no overflow checks to notice. Thirty-six is the
+/// bytes one corner costs with every optional array present MM twelve
+/// for the position, four for its share of a face normal, twelve for a
+/// corner normal, eight for a coordinate.
+const _: () = {
+    assert!(
+        MAX_POSITIONS < u32::MAX as usize / 36,
+        "a corner count at the ceiling must survive being multiplied by the bytes a corner \
+         costs, on the narrowest target this engine builds for"
+    );
+};
+
 /// Refuse before the geometry arrives rather than after it.
 ///
 /// `have` is what has been emitted, `adding` what the next face would

@@ -73,25 +73,61 @@ const MAX_FACE_CORNERS: usize = 1024;
 /// **This is a weak answer and says so.** OBJ has no magic word and no
 /// header: the first line of a valid file may be a comment, a blank
 /// line, or geometry. So the question this can honestly answer is "does
-/// a line here begin with a keyword that only OBJ uses", and a file that
-/// opens with a thousand comment lines answers no.
+/// a line near the front begin with a keyword only OBJ uses".
+///
+/// **The budget counts lines that could have been a keyword, and a
+/// comment is not one.** An earlier version took the first sixty-four
+/// lines flat, which meant a file with a sixty-four-line licence banner
+/// MM an ordinary thing for an exporter to write MM answered no and was
+/// then read by whatever the caller fell back to. `read` accepted that
+/// same file perfectly well; only this said otherwise. Skipping comments
+/// and blank lines costs nothing on a real header and leaves the budget
+/// doing its actual job, which is to stop a file that is not an OBJ from
+/// being scanned to its end.
+///
+/// Reading line by line rather than validating the whole file first is
+/// the same economy: a byte string that is not text stops at the first
+/// line that is not, instead of after a pass over every byte of it.
 ///
 /// Use it to choose between formats when a caller has no better hint,
 /// never to decide that a file is safe to read. [`read`] answers for
 /// every byte string either way.
 #[must_use]
 pub fn looks_like(bytes: &[u8]) -> bool {
-    let Ok(text) = core::str::from_utf8(bytes) else {
-        return false;
-    };
-    text.lines().take(64).any(|line| {
-        let mut words = line.split_ascii_whitespace();
-        matches!(
-            words.next(),
-            Some("v" | "vn" | "vt" | "f" | "mtllib" | "usemtl")
-        )
-    })
+    let mut considered = 0;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(text) = core::str::from_utf8(line) else {
+            // An OBJ is text, and `read` refuses one that is not.
+            return false;
+        };
+        let Some(keyword) = text.split_ascii_whitespace().next() else {
+            // Blank. Exporters pad, and padding is not evidence.
+            continue;
+        };
+        if keyword.starts_with('#') {
+            // A comment carries anything at all to the end of its line,
+            // which is exactly why it says nothing about the format.
+            continue;
+        }
+        if matches!(keyword, "v" | "vn" | "vt" | "f" | "mtllib" | "usemtl") {
+            return true;
+        }
+        considered += 1;
+        if considered >= CONSIDERED_LINES {
+            return false;
+        }
+    }
+    false
 }
+
+/// How many lines that could have been a keyword are looked at before
+/// answering no.
+///
+/// Small on purpose. A file whose first several statements say nothing
+/// an OBJ says is not an OBJ, and every line spent past that is spent on
+/// a file this is going to decline anyway MM which for a text STL is a
+/// scan of the whole thing.
+const CONSIDERED_LINES: usize = 16;
 
 /// Read an OBJ file's geometry.
 ///
