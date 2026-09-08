@@ -101,7 +101,7 @@ reason = "The depthless-adapter arm of the shadow map's refusal, which translate
 
 [[exempt]]
 file = "crates/render3d/src/scene.rs"
-lines = [249, 250, 251]
+lines = [249]
 reason = "The arm that refuses a tangent frame when projecting the mapping onto the surface leaves nothing at all. Reachable only if `along_u` is parallel to the normal, and it cannot be: `flattened` is `along_u` with its normal component removed, so it is perpendicular by construction and stays perpendicular however small it gets. Two million adversarial sliver triangles - the shape that makes the cross product behind the normal cancel - did not reach it. Kept rather than deleted because it is the only answer this function would otherwise have for a caller whose mapping degenerates that far, and a reader with no answer for a case is worse than an arm no input has yet found."
 
 [[exempt]]
