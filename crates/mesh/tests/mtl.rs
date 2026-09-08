@@ -126,6 +126,30 @@ fn a_map_names_the_file_at_the_end_of_its_line() {
     );
 }
 
+/// **A `map_*` line with nothing after it names no file and adds no
+/// map.**
+///
+/// The keyword is understood and the line is empty of a name; inventing
+/// one would put a file in the material that the library never
+/// mentioned.
+///
+/// Probed by pushing a map with an empty name: red, a material comes
+/// back carrying a texture nothing asked for.
+#[test]
+fn a_map_line_with_no_name_adds_no_map() {
+    let bare = "newmtl wall
+map_Kd
+Kd 0.5
+";
+    let read = mtl::read(bare.as_bytes()).expect("a bare map keyword is not a refusal");
+    assert!(read[0].maps.is_empty(), "no name, no map");
+    assert_eq!(
+        read[0].diffuse,
+        Some([0.5, 0.5, 0.5]),
+        "and the line after it is still read"
+    );
+}
+
 /// **Keywords this reader does not implement cost the file nothing.**
 ///
 /// A real library is full of them, and none changes the factors above.

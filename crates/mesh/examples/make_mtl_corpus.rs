@@ -61,6 +61,9 @@ fn readable_seeds() -> Vec<(&'static str, &'static str)> {
         // A map line whose options run to the very end, so the last word
         // is not a file name at all.
         ("map-all-options.seed", "newmtl wall\nmap_Kd -bm 0.2\n"),
+        // And one with nothing after the keyword, which names no file
+        // and adds no map.
+        ("bare-map.seed", "newmtl wall\nmap_Kd\n"),
         // A name declared twice, where the format says the later wins.
         (
             "redefined-name.seed",

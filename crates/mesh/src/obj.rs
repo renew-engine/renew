@@ -477,18 +477,26 @@ fn resolve(word: &str, count: usize, line: u32, face: u32) -> Result<usize, Mesh
     if raw == 0 {
         return Err(MeshError::IndexZero { line });
     }
-    let declared = i64::try_from(count).unwrap_or(i64::MAX);
     // Positive counts from one; negative counts back from the end of
-    // what has been declared, so `-1` is the most recent.
-    let at = if raw > 0 { raw - 1 } else { declared + raw };
-    if at < 0 || at >= declared {
-        return Err(MeshError::IndexOutOfRange {
-            index: raw,
-            count,
-            face,
-        });
-    }
-    usize::try_from(at).map_err(|_| MeshError::IndexOutOfRange {
+    // what has been declared, so `-1` is the most recent. Both arms end
+    // in a `usize` that is in range or in nothing at all.
+    //
+    // **There was a second `IndexOutOfRange` here, for the conversion
+    // from the signed index to a `usize` failing.** It could not fire:
+    // the range check above had already bounded the value by `count`,
+    // which came out of a `usize` to begin with. Doing the arithmetic in
+    // `usize` from the start removes the arm rather than leaving a
+    // refusal nothing can reach.
+    let at = if raw > 0 {
+        usize::try_from(raw - 1).ok().filter(|at| *at < count)
+    } else {
+        // `unsigned_abs` rather than negation, because `i64::MIN` has no
+        // positive counterpart to negate to.
+        usize::try_from(raw.unsigned_abs())
+            .ok()
+            .and_then(|back| count.checked_sub(back))
+    };
+    at.ok_or(MeshError::IndexOutOfRange {
         index: raw,
         count,
         face,

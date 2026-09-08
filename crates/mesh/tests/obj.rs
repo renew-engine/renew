@@ -214,6 +214,58 @@ f 1 2 3
     assert_eq!(index, 1, "the second `vn`, counted among the normals");
 }
 
+/// **A texture coordinate may have one component, and the second is
+/// zero.**
+///
+/// The format allows one, two or three; one is a position along a
+/// one-dimensional texture, and zero is what the second axis of such a
+/// coordinate means. The module said so and nothing tested it.
+///
+/// Probed by refusing a one-component `vt`: red, a legal file stops
+/// reading.
+#[test]
+fn a_texture_coordinate_of_one_component_has_zero_for_its_second() {
+    let one_axis = "v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0
+vt 0.5
+vt 1
+f 1/1 2/2 3/3
+";
+    let mesh = obj::read(one_axis.as_bytes()).expect("one component is a coordinate");
+    assert_eq!(
+        mesh.corner_texcoords,
+        vec![[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]]
+    );
+}
+
+/// **The shape check names the texture coordinate when that is what
+/// disagreed.**
+///
+/// The other half of the mismatch: the normal case had a test and this
+/// one had nothing, so the arm naming the coordinate was reached by no
+/// input at all.
+///
+/// Probed by naming the normal in both arms: red, the message sends a
+/// reader to the wrong stream.
+#[test]
+fn a_face_disagreeing_about_coordinates_says_so() {
+    let mixed = "v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+f 1/1 2/1 3
+";
+    let MeshError::Unsupported { wanted } = refusal(mixed.as_bytes()) else {
+        panic!("a half-textured face has no representation here");
+    };
+    assert!(
+        wanted.contains("texture coordinate"),
+        "the refusal names the stream that disagreed: {wanted}"
+    );
+}
+
 /// **A file that declares no face declares no geometry.**
 ///
 /// Vertices alone are a point cloud, which is a legal thing to write and

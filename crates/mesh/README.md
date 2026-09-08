@@ -174,8 +174,8 @@ repository would be a dependency with a licence, and a directory of them
 would be a dependency nobody recorded — and a mesh, unlike a datagram, is
 the kind of file that has an author. `examples/make_corpus.rs` builds the
 25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones,
-`examples/make_obj_corpus.rs` the 23 OBJ ones and
-`examples/make_mtl_corpus.rs` the 20 MTL ones; between them every
+`examples/make_obj_corpus.rs` the 25 OBJ ones and
+`examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
 committed seed is built here rather than found. **For OBJ that rule bites
 hardest**: an OBJ is what a person exports out of a modelling tool, so
 the obvious way to get one is to take somebody's model.

@@ -102,6 +102,18 @@ fn readable_seeds() -> Vec<(&'static str, String)> {
              usemtl steel\n{POSITIONS}cstype bezier\nf 1 2 3\n"
         ),
     ));
+    // A one-component texture coordinate, which the format allows and
+    // which means a position along a one-dimensional texture.
+    seeds.push((
+        "one-component-texcoord.seed",
+        format!("{POSITIONS}vt 0\nvt 0.5\nvt 1\nf 1/1 2/2 3/3\n"),
+    ));
+    // A face whose corners disagree about their TEXTURE coordinates
+    // rather than their normals, which is the other half of that check.
+    seeds.push((
+        "half-textured-face.seed",
+        format!("{POSITIONS}vt 0 0\nf 1/1 2/1 3\n"),
+    ));
     // Exponents, signs and a trailing fourth component on `v`, which the
     // format allows and this reader steps over.
     seeds.push((
