@@ -741,7 +741,7 @@ mod tests",
         .collect();
     assert!(
         missing.is_empty(),
-        "the parser accepts {missing:?} and the usage text never mentions them;          a flag a user cannot discover may as well not exist"
+        "the parser accepts {missing:?} and the usage text never mentions them; a flag a user cannot discover may as well not exist"
     );
 }
 

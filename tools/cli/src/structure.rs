@@ -409,7 +409,7 @@ pub fn evaluate(shapes: &[CrateShape]) -> Vec<Finding> {
 ///
 /// The zoning policy each engine crate enforces lives in that file —
 /// tripwires that reject a clock, a filesystem call, or a raw thread
-/// spawn from a crate whose contract forbids them. Nine crates have added
+/// spawn from a crate whose contract forbids them. Thirty-one crates have added
 /// it by hand, correctly, every time. That is exactly when the habit
 /// should stop being a habit: the crate that forgets will not fail to
 /// compile, will not fail a test, and will simply have no tripwires,
@@ -1063,7 +1063,7 @@ mod tests {
         let mut lints = String::from("disallowed-methods = [\n");
         for method in REQUIRED_FLOAT_METHOD_BANS {
             for kind in ["f32", "f64"] {
-                lints.push_str("    { path = \"");
+                lints.push_str(" { path = \"");
                 lints.push_str(kind);
                 lints.push_str("::");
                 lints.push_str(method);
@@ -1222,7 +1222,7 @@ disallowed-methods = [
         // the edit the raw `contains` could not see.
         let commented = r#"
 disallowed-methods = [
-#    { path = "f32::mul_add", reason = "temporarily off" },
+# { path = "f32::mul_add", reason = "temporarily off" },
 ]
 "#;
         assert!(
@@ -1294,13 +1294,15 @@ disallowed-methods = [
         // crate answer yes and this whole rule pass vacuously — measured,
         // not supposed: emptying it leaves `check` reporting a healthy
         // workspace and reddens nothing else here.
-        assert!(
-            REQUIRED_FLOAT_METHOD_BANS.len() >= 6,
-            "the sentinels span the classes of hazard; a shorter list is a weaker claim than the              one this rule is documented to make"
-        );
-        assert!(
-            REQUIRED_FLOAT_METHOD_BANS.contains(&"mul_add"),
-            "the fused multiply-add is the one this tree has measured changing its answer between              lowerings, so it is the one entry that may never be dropped"
+        // **Pinned, not counted.** This used to assert `len() >= 6` under
+        // a message claiming the list "spans the classes of hazard" — so
+        // swapping `recip` for `cos` left the operator-in-disguise class
+        // unrepresented with both assertions green. A policy constant is
+        // pinned or it is not checked.
+        assert_eq!(
+            REQUIRED_FLOAT_METHOD_BANS,
+            ["mul_add", "sqrt", "powf", "ln", "sin", "recip"],
+            "one per class: a fused multiply-add, a root, a power, a logarithm, a trigonometric function, and a division written as a call. Changing this list is changing what the gate certifies, so it changes here too."
         );
 
         let shapes = [
@@ -1351,7 +1353,11 @@ disallowed-methods = [
             .iter()
             .find(|finding| finding.rule == "float-closure")
             .expect("the transitive float crate is reported");
-        assert!(found.message.contains("maths"), "{}", found.message);
+        assert!(
+            found.message.contains("maths") && found.message.contains("deny"),
+            "the deny finding and the method-ban finding both name the crate, so the crate name alone does not say which was reported: {}",
+            found.message
+        );
 
         // The same graph with the far crate denying is silent.
         let clean = [
