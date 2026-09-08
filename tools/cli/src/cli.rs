@@ -959,6 +959,48 @@ mod tests {
         }
     }
 
+    /// **Both paths are required, and neither is invented.**
+    ///
+    /// A tool that derived an output name from an input name is a tool
+    /// that can overwrite a file the caller did not name, so the parser
+    /// refuses rather than defaulting — and it says which of the two is
+    /// missing, because "usage:" is not an answer to "what did I get
+    /// wrong".
+    #[test]
+    fn asset_import_needs_both_of_its_paths() {
+        assert_eq!(
+            parse(&arguments(&["asset-import", "--out", "mesh.blob"])),
+            Err(ParseError::MissingOption {
+                command: "asset-import",
+                option: "--from <path>",
+            })
+        );
+        assert_eq!(
+            parse(&arguments(&["asset-import", "--from", "model.stl"])),
+            Err(ParseError::MissingOption {
+                command: "asset-import",
+                option: "--out <path>",
+            })
+        );
+
+        // And with both, it parses to exactly the two paths and nothing
+        // else — no default, no derived name.
+        assert_eq!(
+            parse(&arguments(&[
+                "asset-import",
+                "--from",
+                "model.stl",
+                "--out",
+                "mesh.blob",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                from: Some("model.stl".to_string()),
+                out: Some("mesh.blob".to_string()),
+                ..plain(Command::AssetImport)
+            }))
+        );
+    }
+
     /// The two modes are one subcommand, and parsing is what keeps them
     /// from becoming three: neither is a run asked to do nothing, both is
     /// a run asked to do two things, and choosing one silently is how a

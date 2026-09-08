@@ -2636,3 +2636,83 @@ fn asset_import_refuses_to_write_over_the_model_it_reads() -> std::io::Result<()
     }
     Ok(())
 }
+
+/// **A blob that cannot be written says so, and says where.**
+///
+/// The read succeeded and the mesh is in hand, so this is the one
+/// failure the command can hit with nothing wrong with the model. The
+/// path names a directory that is not there, which is the ordinary way
+/// to arrive here: a caller who typed the output directory wrong.
+#[test]
+fn asset_import_reports_a_destination_it_cannot_write() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-unwritable")?;
+    let model = directory.join("mesh.stl");
+    fs::write(&model, A_TRIANGLE_AS_STL)?;
+    let out = directory.join("no-such-directory").join("mesh.blob");
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "a destination that cannot be written must fail: {output:?}"
+    );
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"refusal\":null"),
+        "no reader refused this, so the name is null and the sentence carries it: {document:?}"
+    );
+    assert!(
+        document.contains("cannot write"),
+        "the sentence names what could not be done, and with --json it travels inside the          envelope rather than on the process's own stderr: {document:?}"
+    );
+    Ok(())
+}
+
+/// **The same refusal without `--json`.**
+///
+/// Every other test here asks for the envelope, which is the half a
+/// script reads. A person at a terminal gets the other half, and a
+/// command whose plain output was broken would pass every one of them.
+#[test]
+fn asset_import_refuses_in_plain_text_too() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-plain")?;
+    let model = directory.join("materials.mtl");
+    fs::write(&model, "newmtl steel\nKd 0.4 0.4 0.45\n")?;
+    let out = directory.join("materials.blob");
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "a material library carries no geometry: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "without --json there is no envelope on stdout: {output:?}"
+    );
+    let complaint = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        complaint.starts_with("error: "),
+        "a person reads this, so it opens with what it is: {complaint:?}"
+    );
+    assert!(
+        complaint.contains("surfaces rather than their shape"),
+        "and it says what was wrong with the file: {complaint:?}"
+    );
+    assert!(
+        !out.exists(),
+        "and nothing was written where the blob would have gone"
+    );
+    Ok(())
+}

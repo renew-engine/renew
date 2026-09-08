@@ -2317,6 +2317,46 @@ fn count(value: usize) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// **The three ways `names_one_file` says no**, which is the answer
+    /// that lets a write proceed — so each is a place where getting it
+    /// wrong means either destroying a file or refusing a legitimate
+    /// import for a reason that is not true.
+    ///
+    /// The integration suite drives the yes: two spellings of one path,
+    /// refused. What it cannot reach from a subprocess is the shape of
+    /// the no, which is what this covers.
+    #[test]
+    fn names_one_file_says_no_where_it_cannot_say_yes() {
+        use std::path::Path;
+
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+
+        // A destination with no file name at all. Nothing can be
+        // compared, so the answer is no and the write goes on to fail on
+        // its own terms — a refusal here would be a guess.
+        assert!(!super::names_one_file(&real, Path::new("")));
+
+        // A source that is not there. Canonicalising it fails, and a
+        // file that does not exist is not the same file as anything.
+        assert!(!super::names_one_file(
+            Path::new("no-file-of-this-name-exists.stl"),
+            &real
+        ));
+
+        // A bare name whose directory is not the source's.
+        assert!(!super::names_one_file(
+            &real,
+            Path::new("no-file-of-this-name-exists.blob")
+        ));
+
+        // **And the empty parent really is the working directory**, not
+        // "no directory": a bare name matching the source is caught.
+        // `cargo test` runs a unit test with the package root as its
+        // working directory, which is where this manifest is, so the two
+        // spellings below name one file.
+        assert!(super::names_one_file(&real, Path::new("Cargo.toml")));
+    }
+
     use super::*;
 
     /// One healthy engine crate, in the shape `cargo metadata
