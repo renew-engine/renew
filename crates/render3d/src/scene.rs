@@ -161,13 +161,6 @@ impl Frame {
     /// [`NOWHERE`]: Self::NOWHERE
     #[must_use]
     pub fn of_face(corners: [[f32; 3]; 3], uvs: [[f32; 2]; 3]) -> Self {
-        /// How much of a unit tangent must survive projection onto the
-        /// surface for what is left to be a direction rather than
-        /// rounding: the sine of the angle between the mapping's `u` and
-        /// the plane, so a thousandth is about three and a half
-        /// arcminutes.
-        const LEAST_RESIDUAL: f32 = 1e-3;
-
         let normal = face_normal(corners[0], corners[1], corners[2]);
         if normal == [0.0, 0.0, 0.0] {
             return Self::NOWHERE;
@@ -240,40 +233,24 @@ impl Frame {
         // rounding is a confident wrong answer. Refused instead, which is
         // what the rest of this function does with a question it cannot
         // answer.
-        let residual = dot(flattened, flattened).sqrt();
-        // `is_nan` spelled out rather than folded into a negated
-        // comparison: a NaN must take this branch, and `<=` alone would
-        // let it past.
-        if residual <= LEAST_RESIDUAL || residual.is_nan() {
-            return Self {
-                normal,
-                ..Self::NOWHERE
-            };
-        }
+        // **One guard, not two.** A residual bound sat here as well —
+        // refuse when the projection leaves less than a thousandth — and
+        // two million adversarial slivers never reached it, which is the
+        // measurement rather than a guess. The reason it cannot be
+        // reached is the same one that made deleting the projection look
+        // safe, running the other way: `flattened` is `direction` with
+        // its normal component removed, so it is perpendicular to the
+        // normal by construction and stays perpendicular however small
+        // it gets. Small is noisy, not wrong. What is left for `unit` to
+        // refuse is the case where nothing at all survives, and that one
+        // is real: a determinant whose reciprocal overflows leaves
+        // `along_u` infinite before any of this runs.
         let Some(tangent) = unit(flattened) else {
             return Self {
                 normal,
                 ..Self::NOWHERE
             };
         };
-        // Handedness: whether the mapping is mirrored on this face. A
-        // mirrored island reconstructs its bitangent the other way, and
-        // that sign is the whole reason `w` is stored.
-        //
-        // **It is the sign of the determinant, and nothing more.** This
-        // built the bitangent, crossed it against the normal and the
-        // tangent and took a dot product, which is the same answer
-        // arrived at the long way: `cross(along_u, along_v)` reduces to
-        // `inverse * (edge × other)`, so the scalar triple product is
-        // `inverse * ‖edge × other‖ / ‖along_u‖`, whose two magnitudes are
-        // positive by construction. Nine multiplies, a cross and two dot
-        // products for a comparison against zero that `det` already
-        // answered.
-        //
-        // It is also the better answer at the edges. Where `along_v`
-        // overflowed to infinity and `along_u` did not, the old form
-        // compared a NaN, `NaN < 0.0` is false, and a mirrored face
-        // silently got `+1`.
         let handedness = if det < 0.0 { -1.0 } else { 1.0 };
         Self {
             normal,
