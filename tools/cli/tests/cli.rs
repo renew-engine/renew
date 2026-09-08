@@ -2588,3 +2588,51 @@ fn ui_compile_json_reports_an_unreadable_input() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+/// **`--from x --out x` used to read the model and then overwrite it.**
+///
+/// The read completes, the bytes are dropped to keep the peak down, and
+/// the write then truncates the file they came from. The command
+/// *succeeds*: the file is now the blob, and the model it was made from
+/// is gone with nothing to remake it from. A tool that destroys its
+/// input and reports success is worse than one that fails, because the
+/// caller has no reason to look.
+///
+/// Refused by name, and the source is checked afterwards to still be the
+/// source — an assertion on the refusal alone would pass just as well if
+/// the file were destroyed before the check.
+#[test]
+fn asset_import_refuses_to_write_over_the_model_it_reads() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-in-place")?;
+    let model = directory.join("mesh.stl");
+    fs::write(&model, A_TRIANGLE_AS_STL)?;
+
+    // The same file, and then the same file spelled differently, because
+    // a check on the strings would pass the first and fail the second.
+    let indirect = directory.join(".").join("mesh.stl");
+    for spelling in [model.clone(), indirect] {
+        let output = run(&[
+            "--json",
+            "asset-import",
+            "--from",
+            &model.to_string_lossy(),
+            "--out",
+            &spelling.to_string_lossy(),
+        ])?;
+        assert!(
+            !output.status.success(),
+            "writing over the model must fail: {output:?}"
+        );
+        let document = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            document.contains("\"refusal\":\"SameFile\""),
+            "the refusal is named for a script, not only described: {document:?}"
+        );
+        assert_eq!(
+            fs::read(&model)?,
+            A_TRIANGLE_AS_STL.as_bytes(),
+            "and the model is still there, byte for byte"
+        );
+    }
+    Ok(())
+}

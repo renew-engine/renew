@@ -203,6 +203,14 @@ in `refusal` as well as the sentence in `stderr`**, because a message is
 for a person and a name is for a program: the sentences are meant to
 improve, and a script keying on one breaks when they do.
 
+**Two of those names are this tool's own rather than a reader's**, and
+the distinction is worth a script knowing. `NotGeometry` says the file
+was read fine and describes materials rather than shape; `SameFile` says
+`--from` and `--out` name one file, which is refused before the file is
+opened, because writing the blob there would destroy the only thing that
+could produce it again. Every other name comes from the reader that
+refused, so it is a verdict about the file's contents.
+
 `asset-import` reads meshes and nothing else. There is no image or
 audio import, because a real one needs a decoder for each and one that
 only copied bytes would be worse than its absence.

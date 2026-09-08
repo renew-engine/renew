@@ -481,8 +481,60 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
 /// `renew_mesh::format::detect` rather than by anything here: which
 /// reader owns which bytes is a fact about those formats, and a tool
 /// that decided it separately would be a second place to get it wrong.
+/// Whether two paths name one file on disk.
+///
+/// **String equality is not the question.** `--out ./model.stl` and
+/// `--from model.stl` are one file spelled two ways, and on Windows they
+/// are one file spelled several more. `canonicalize` answers it for the
+/// source, which exists by the time this is asked; the destination
+/// usually does not exist yet, so its directory is canonicalised and the
+/// file name compared against that.
+///
+/// **An unanswerable question is not a match.** Where the answer cannot
+/// be had — an unreadable directory, a path with no file name — this says
+/// "not the same file" and lets the write proceed, because refusing an
+/// import for a reason that may not be true is the worse failure.
+fn names_one_file(from: &Path, out: &Path) -> bool {
+    let Ok(source) = from.canonicalize() else {
+        return false;
+    };
+    if let Ok(destination) = out.canonicalize() {
+        return source == destination;
+    }
+    let (Some(directory), Some(name)) = (out.parent(), out.file_name()) else {
+        return false;
+    };
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
+    };
+    directory
+        .canonicalize()
+        .is_ok_and(|resolved| resolved.join(name) == source)
+}
+
 fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
     let started = Instant::now();
+
+    // **Checked before the file is opened, because reading first is what
+    // makes the damage silent.** Writing the blob over the model destroys
+    // the one file that could produce it again, and the command then
+    // reports success: the caller has no reason to look, and nothing left
+    // to look at. `SameFile` is this tool's own name for the same reason
+    // `NotGeometry` is — no reader was asked, so no reader refused.
+    if names_one_file(Path::new(from), Path::new(out_path)) {
+        return import_failure(
+            &format!(
+                "{from}: --from and --out name the same file, and writing the blob \
+                 would destroy the model it was made from"
+            ),
+            Some("SameFile"),
+            json_mode,
+            started,
+        );
+    }
+
     let bytes = match std::fs::read(from) {
         Ok(bytes) => bytes,
         Err(error) => {
