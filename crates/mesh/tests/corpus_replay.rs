@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{MeshError, blob, mtl, obj, ply, stl};
+use renew_mesh::{blob, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -107,34 +107,19 @@ fn corpus() -> Vec<Vec<u8>> {
 /// its fields, so two truncations at different offsets count as one
 /// answer.
 ///
-/// **Matched on the enum, and with no wildcard.** `MeshError` is closed,
-/// so a refusal added later stops this file compiling until somebody
-/// decides whether a seed should reach it. That is the whole benefit of
-/// the enum being closed, collected here.
+/// **The names come from `MeshError::name`, which is where the closed
+/// enum is spent now.** This function used to spell all eleven out, with
+/// a note saying the wildcard-free match was what forced somebody to
+/// decide about a new variant. That forcing did not go away when the
+/// list moved: `name` has no wildcard either, so a variant added later
+/// still stops the build — and the per-reader question, "what does this
+/// one mean to STL", is asked by `stl_cannot_reach` in the suite beside
+/// the reader, which is a better place for it than a corpus gate. What
+/// went away is five copies of one list.
 fn outcome(bytes: &[u8]) -> &'static str {
     match stl::read(bytes) {
         Ok(_) => "Ok",
-        Err(refusal) => match refusal {
-            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-            MeshError::CountMismatch { .. } => "CountMismatch",
-            MeshError::TooLarge { .. } => "TooLarge",
-            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-            MeshError::NotANumber { .. } => "NotANumber",
-            MeshError::NotFinite { .. } => "NotFinite",
-            MeshError::NoGeometry => "NoGeometry",
-            // The three the indexed reader adds. **Unreachable from an
-            // STL and named here anyway**, because the enum is closed
-            // and this match has no wildcard: adding them stopped this
-            // file compiling until somebody decided what they mean to
-            // this reader, which is the whole benefit of the enum being
-            // closed. STL repeats every corner, so there is no index to
-            // be out of range; it has no face element to be short of
-            // corners; and it has no schema to be unsupported.
-            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-            MeshError::IndexZero { .. } => "IndexZero",
-            MeshError::NotAFace { .. } => "NotAFace",
-            MeshError::Unsupported { .. } => "Unsupported",
-        },
+        Err(refusal) => refusal.name(),
     }
 }
 
@@ -289,19 +274,7 @@ fn ply_corpus() -> Vec<Vec<u8>> {
 fn ply_outcome(bytes: &[u8]) -> &'static str {
     match ply::read(bytes) {
         Ok(_) => "Ok",
-        Err(refusal) => match refusal {
-            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-            MeshError::CountMismatch { .. } => "CountMismatch",
-            MeshError::TooLarge { .. } => "TooLarge",
-            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-            MeshError::NotANumber { .. } => "NotANumber",
-            MeshError::NotFinite { .. } => "NotFinite",
-            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-            MeshError::IndexZero { .. } => "IndexZero",
-            MeshError::NotAFace { .. } => "NotAFace",
-            MeshError::Unsupported { .. } => "Unsupported",
-            MeshError::NoGeometry => "NoGeometry",
-        },
+        Err(refusal) => refusal.name(),
     }
 }
 
@@ -423,19 +396,7 @@ fn obj_corpus() -> Vec<Vec<u8>> {
 fn obj_outcome(bytes: &[u8]) -> &'static str {
     match obj::read(bytes) {
         Ok(_) => "Ok",
-        Err(refusal) => match refusal {
-            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-            MeshError::CountMismatch { .. } => "CountMismatch",
-            MeshError::TooLarge { .. } => "TooLarge",
-            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-            MeshError::NotANumber { .. } => "NotANumber",
-            MeshError::NotFinite { .. } => "NotFinite",
-            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-            MeshError::IndexZero { .. } => "IndexZero",
-            MeshError::NotAFace { .. } => "NotAFace",
-            MeshError::Unsupported { .. } => "Unsupported",
-            MeshError::NoGeometry => "NoGeometry",
-        },
+        Err(refusal) => refusal.name(),
     }
 }
 
@@ -582,19 +543,7 @@ fn mtl_corpus() -> Vec<Vec<u8>> {
 fn mtl_outcome(bytes: &[u8]) -> &'static str {
     match mtl::read(bytes) {
         Ok(_) => "Ok",
-        Err(refusal) => match refusal {
-            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-            MeshError::CountMismatch { .. } => "CountMismatch",
-            MeshError::TooLarge { .. } => "TooLarge",
-            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-            MeshError::NotANumber { .. } => "NotANumber",
-            MeshError::NotFinite { .. } => "NotFinite",
-            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-            MeshError::IndexZero { .. } => "IndexZero",
-            MeshError::NotAFace { .. } => "NotAFace",
-            MeshError::Unsupported { .. } => "Unsupported",
-            MeshError::NoGeometry => "NoGeometry",
-        },
+        Err(refusal) => refusal.name(),
     }
 }
 
@@ -727,19 +676,7 @@ fn blob_corpus() -> Vec<Vec<u8>> {
 fn blob_outcome(bytes: &[u8]) -> &'static str {
     match blob::read(bytes) {
         Ok(_) => "Ok",
-        Err(refusal) => match refusal {
-            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
-            MeshError::CountMismatch { .. } => "CountMismatch",
-            MeshError::TooLarge { .. } => "TooLarge",
-            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
-            MeshError::NotANumber { .. } => "NotANumber",
-            MeshError::NotFinite { .. } => "NotFinite",
-            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
-            MeshError::IndexZero { .. } => "IndexZero",
-            MeshError::NotAFace { .. } => "NotAFace",
-            MeshError::Unsupported { .. } => "Unsupported",
-            MeshError::NoGeometry => "NoGeometry",
-        },
+        Err(refusal) => refusal.name(),
     }
 }
 

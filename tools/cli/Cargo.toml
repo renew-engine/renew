@@ -27,6 +27,11 @@ renew-asset = { path = "../../crates/asset" }
 # captures it with the runtime crate's own canonical writer.
 renew-ui = { path = "../../crates/ui" }
 
+# The importer's readers and the canonical form they are written into.
+# The CLI is a face over them and owns none of the format knowledge: it
+# reads a file, hands the bytes over, and writes back what comes out.
+renew-mesh = { path = "../../crates/mesh" }
+
 # Test-only, and already approved for exactly this use: the entry covering
 # it scopes it to dev-dependencies in test code, never linked into shipped
 # code. The hand-rolled JSON reader is the third parser of external input

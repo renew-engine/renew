@@ -24,6 +24,7 @@ commands:
   modules    list every module with its maturity, from the manifests
   asset-pack  build an asset pack from a directory of files
   asset-inspect  list an asset pack's entries, optionally verifying them
+  asset-import  read a model file into the canonical form a pack can store
   ui-compile  compile a text document into the binary form the engine loads
   determinism  emit this target's simulation digests, or compare several targets'
   doctor     check the development environment
@@ -35,10 +36,11 @@ options:
   --output <path>   (record only, required) the trace file to write
   --input <path>    (replay only, required) the trace file to read
   --pack <path>     (asset-pack, asset-inspect; required) the pack file
-  --from <path>     (asset-pack, ui-compile; required) the directory to
-                    pack, or the text document to compile
-  --out <path>      (ui-compile only, required) where the compiled document
-                    is written
+  --from <path>     (asset-pack, ui-compile, asset-import; required) the
+                    directory to pack, the text document to compile, or
+                    the model file to read
+  --out <path>      (ui-compile, asset-import; required) where the
+                    compiled document, or the canonical mesh, is written
   --verify          (asset-inspect only) check each entry against its digest
   --emit <path>     (determinism only) write this target's digests here
   --compare <path>  (determinism only, repeatable) a target report to compare
@@ -171,6 +173,35 @@ separator a filesystem happens to use reaches the bytes.
 its recorded digest. It is off by default because listing reads only the
 table while verifying reads every byte — a distinction that matters once a
 pack is large.
+
+## Importing a model
+
+`asset-import` reads a model file into the canonical form a pack can
+store, so a model is parsed once rather than every time it loads.
+
+```
+renew asset-import --from tree.obj --out tree.msh
+renew asset-pack --from build/meshes/ --pack game.rpk
+```
+
+**The format is decided by the bytes, not the file name.** PLY and OBJ
+identify themselves MM one by a magic word, the other by keywords only it
+uses MM and STL is what is left, because the format has no magic number
+at all and "these are not STL bytes" is the same observation as "these
+are STL bytes cut short". A material library is recognised before that
+fallback and refused by name, since it describes surfaces rather than
+their shape and would otherwise be reported as a truncated mesh: true,
+and no help to anyone.
+
+STL, PLY and OBJ are read; glTF is not, yet. Nothing is written but
+geometry, so a model's materials do not travel with it through this arm.
+
+`asset-import --json` adds, to the envelope every subcommand shares,
+the `format` detected, the `triangles` read, one boolean per optional
+stream, the `bytes` written and the `out` path. **On a refusal it carries the variant's name
+in `refusal` as well as the sentence in `stderr`**, because a message is
+for a person and a name is for a program: the sentences are meant to
+improve, and a script keying on one breaks when they do.
 
 There is no `import` subcommand. A real importer needs an image or audio
 decoder, and one that only copied bytes would be worse than its absence.

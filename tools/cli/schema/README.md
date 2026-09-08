@@ -91,7 +91,8 @@ deliver their reds in their **own payload arrays** — `findings` for check, `un
 `stale` for coverage — with `status` `failed`, `failures` empty, and `stderr` empty. For
 those two, a consumer reads `status` plus the payload, because their verdict lives there.
 On every other subcommand that carries `failures` at all — the rollout table below marks
-which; `doctor`, `asset-inspect`, `asset-pack`, `ui-compile` and `help` never do, and of those
+which; `doctor`, `asset-inspect`, `asset-pack`, `asset-import`, `ui-compile` and `help` never
+do, and of those
 only `doctor` and `asset-inspect` ever report `status` `failed` (the other three are `ok` or
 `error`) — the array carries both kinds: the reasons a run could not deliver a verdict
 (refusals, aborts) *and* delivered reds (`step-failed`, the two determinism verdicts). It is
@@ -149,7 +150,7 @@ the failure code in place of `target`.
 | `check`, `modules` | once classified | no | yes |
 | `coverage` | once classified | no | yes |
 | `doctor` | no — it diagnoses environments that may have no workspace at all | no | no |
-| `asset-pack`, `asset-inspect`, `ui-compile` | no — they operate on files, not trees | no | no |
+| `asset-pack`, `asset-inspect`, `asset-import`, `ui-compile` | no — they operate on files, not trees | no | no |
 | `help` | no | no | no |
 
 `doctor` is the one subcommand that reads a tree without naming one: where a workspace root
