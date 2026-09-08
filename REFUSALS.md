@@ -8,7 +8,7 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Seven readers in this tree already take bytes nobody here wrote. Their
+Eight readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one. The second half is the part no
 reader here has needed yet: geometry. It is written before the importer
@@ -44,6 +44,7 @@ is dead code that reads like safety.
 | UI text | `Diagnostic` | `tools/cli/src/ui_compile.rs` | a message | `ui_text` | 10 |
 | Datagram | `WireError` | `crates/net/src/wire.rs` | 20 | `net_datagram` | 20 |
 | PNG | `DecodeError` | `crates/png/src/decode.rs` | 17 | `png_decode` | 16 |
+| JSON | `JsonErrorKind` | `crates/json/src/error.rs` | 29 | `json_parse` | 30 |
 | Deflate, inside PNG | `InflateError` | `crates/png/src/inflate.rs` | 7 | `png_decode` | — |
 | Mesh descriptor | `TargetError::Creation` | `crates/rhi/src/vk/mesh.rs` | 8, as strings | none | none |
 
@@ -52,7 +53,12 @@ only geometry validation in the tree, it is real, and its refusals are
 formatted strings rather than variants — which is the shape the rest of
 this document argues against.
 
-## Six rules every refusal here follows
+## Six rules the refusals here are held to
+
+**"Held to" rather than "follow":** two readers do not hold rule one, and
+this document said rule five more strongly than any reader holds it. Both
+are recorded below rather than quietly softened, because a rule with a
+named exception is a design and a rule with a hidden one is a lie.
 
 **One.** *One variant per way the input can be wrong.* No `Other`, no
 string-typed catch-all. `crates/asset/src/error.rs` states the reason: a
@@ -79,12 +85,28 @@ reader's table is the thing that is incomplete. Skipping converts somebody
 else's bug into your silent wrong answer, and it surfaces years later as
 an asset that did not change when it was changed.
 
-**Five.** *A refused input costs no allocation.* Validate the length
-before you slice, and the shape before you reserve. `Pack` returns borrows
-of the caller's buffer, so a malformed pack allocates nothing at all; the
-PNG decoder computes its full expanded size and compares it against a
-ceiling before a single byte is reserved. A reader that allocates first
-turns a refusal into an out-of-memory kill, which is not an answer.
+**Five.** *A refused input never allocates more than its own length buys.*
+Validate the arithmetic before you reserve. A reader that reserves on a
+declared number turns a refusal into an out-of-memory kill, which is not
+an answer — sixty bytes of header can ask for sixty-four gigabytes.
+
+**An earlier version of this rule said "a refused input costs no
+allocation", and that was false of both readers it named.** `Pack::read`
+reserves its entry vector before parsing a single entry, so a pack that
+refuses on entry four hundred has already reserved for all of them; the
+PNG decoder accumulates `PLTE`, `tRNS` and every `IDAT` body before it can
+reach the error that rejects the file. What both actually hold is the
+weaker and sufficient property: **the reservation is bounded by a linear
+function of the bytes the caller already had in memory.** `Pack` checks
+that header, table, names and data account for the file *exactly* before
+reserving, which caps the vector at one entry per thirty-two bytes of
+input; the PNG decoder's accumulations are slices of the file, and the one
+number that is not — the expanded image — is computed in full and
+compared against `CEILING` before a byte of it is reserved.
+
+That is the distinction worth keeping: the danger is never allocation, it
+is *amplification*. A hostile file that costs its own size to refuse is
+fine. One that costs a million times its size is the attack.
 
 **Six.** *The writer's mistakes are a different enum from the reader's.*
 `PackError` and `BuildError` are split, and `WireError` and `WriteError`
@@ -93,16 +115,30 @@ whoever is packing, in their own inputs, and it can name them; a read
 failure is a statement about a file of unknown origin. An importer will
 want the same split the moment it can also write.
 
-### The one place this tree does not hold rule one
+### Two places in this tree do not hold rule one
 
 `tools/cli/src/ui_compile.rs` returns `Diagnostic { line, column, message }`
-— a formatted string. It holds rules two through five completely, and it
-is fuzzed and corpus-gated like the others, but a caller cannot match on
-*why* it refused. It is a compiler for text a person is editing, where
-prose is what the reader wants, so the trade was deliberate. Copy it only
-if your consumer is a human at a terminal. An importer's consumer is a
-build step that has to decide whether to retry, substitute, or fail the
-run, and it cannot decide that from a sentence.
+— a formatted string. It is fuzzed and corpus-gated like the others, but a
+caller cannot match on *why* it refused. It is a compiler for text a person
+is editing, where prose is what the reader wants, so the trade was
+deliberate.
+
+`tools/cli/src/json.rs` is the second, and it was missed when this section
+claimed there was one. It is a hand-rolled JSON reader serving the CLI's
+own `--json` output and its reading of `cargo metadata`; it refuses with
+strings and has no fuzz target of its own. Its input is a program this
+repository invoked rather than a file a stranger supplied — a real
+distinction, and not the same as being safe.
+
+**The correction is worth more than the entry.** The heading said "the one
+place", which is a claim about every reader in the tree, and it was checked
+by confirming that `ui_compile.rs` is such a place. That is a different
+proposition. **A universal is not verified by an example**, and this
+document is made almost entirely of universals.
+
+Copy either only if your consumer is a person at a terminal. An importer's
+consumer is a build step deciding whether to retry, substitute or fail, and
+it cannot decide that from a sentence.
 
 ## Keeping the catalogue reachable
 
@@ -121,11 +157,18 @@ refusal are caught, and one of them was not testing what it claimed.
 
 **A replay gate over the committed corpus.** Every input under
 `fuzz/corpus/<target>/` is fed back through the parser on the stable
-toolchain at every merge. It gates on three things: a low-water mark on
-*distinct* inputs, counted by content so the corpus cannot be padded back
-to strength with copies; a floor on how many distinct outcomes the seeds
-reach between them; and a list of refusals that must stay reachable by
-name.
+toolchain at every merge, so a recorded input that starts panicking fails a
+merge rather than a nightly job nobody is watching.
+
+**What each gate asserts is NOT uniform across the tree, and an earlier
+version of this section said it was.** The strongest form — a low-water
+mark on *distinct* inputs counted by content, a floor on how many distinct
+outcomes the seeds reach between them, and a list of refusals that must
+stay reachable **by name** — is carried by `crates/png` and `crates/json`.
+The rest replay their corpus and assert that every input still answers,
+without the distinctness and by-name floors. **The three-part form is what
+an importer should copy; it is not what it will find if it opens whichever
+gate is nearest.**
 
 That last one exists because a count floor alone is not enough, and the
 evidence is recorded rather than assumed: deleting the PNG decoder's
@@ -660,9 +703,20 @@ representable, or not usefully representable, once converted into the
 fixed-point type simulation runs on.
 
 **Provoked by.** A coordinate of `1e30` — a common sentinel in exported
-scenes, and about 24 orders of magnitude past what Q47.16 holds. Also by
-values so small they convert to zero, which turns a thin triangle into a
-degenerate one somewhere the importer is no longer looking.
+scenes, and about **16** orders of magnitude past what Q47.16 represents
+(±1.4 × 10¹⁴). Also by values so small they convert to zero, which turns a
+thin triangle into a degenerate one somewhere the importer is no longer
+looking.
+
+An earlier version of this entry said 24, which is the distance to the
+*squarable* bound rather than the representable one, and the mistake is
+worth keeping visible because the two numbers are both real and eight
+orders apart. `crates/fixed` publishes both: ±1.4 × 10¹⁴ representable,
+±1.2 × 10⁷ squarable — because physics squares things and a squared
+value has to fit the type it lands in. **For a coordinate that will be
+fed to physics, the squarable bound is the one that binds**, so the
+distance that matters here is nearer 23 orders than 16. A refusal at the
+boundary should say which bound it checked.
 
 **Why refuse at the boundary.** Because the conversion is where the
 information is lost, and it is the last place anything knows both

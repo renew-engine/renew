@@ -216,7 +216,9 @@ counted in development builds.
 
 Anything that reads bytes the engine did not write is held to [REFUSALS.md](REFUSALS.md): every way
 input can be wrong gets its own named refusal carrying the numbers, a test that provokes it, and a
-recorded corpus replayed on every merge.
+recorded corpus replayed on every merge. Two readers in the command-line tool do not meet that bar
+today and are named there rather than left to be discovered — a bar with a recorded exception is a
+bar, and one with a silent exception is a slogan.
 
 ## Contributing
 

@@ -13,10 +13,13 @@ typed question asked of every value in it, because validation claims an
 accepted document has nothing deferred left in it. An input that breaks
 any of those claims is a finding.
 
-`json_parse` is also the only target given its bytes unfiltered.
-`trace_parse` guards its input with `from_utf8`, because that parser
-takes text and every crash found past a lossy conversion would be
-unreachable from a real file; the JSON reader takes bytes on purpose, so
+**Six of the eight take their bytes unfiltered; two do not, and the
+dividing line is what the parser's own signature accepts.**
+`trace_parse` and `ui_text` guard their input with `from_utf8` and return
+early on failure, because both of those parsers take `&str` — a crash
+found past a lossy conversion would be unreachable from any real file.
+The other six take `&[u8]`, so there is nothing for them to guard. The
+JSON reader in particular takes bytes on purpose, so
 that a caller holding one chunk of a larger file need not answer the "is
 this even text" question itself — which means the fuzzer is the thing
 that has to ask it.
@@ -34,7 +37,8 @@ dependencies, so the scheduled job runs that check here instead.
 
 ## What these add over the existing suites
 
-Both parsers already assert the property these targets test. The pack
+**Two of these parsers already assert the property their own target
+tests, in their stable-workspace suites.** The pack
 reader's suite says it "answers, one way or the other, for every byte
 string it can be handed"; the codec has the same over arbitrary text, plus
 a mutation property shaped like a real file.
@@ -51,10 +55,24 @@ not a first line of defence, a deeper one.
 the coverage-guided search found worth keeping, minimized by
 `cargo fuzz cmin`. **Two corpora start differently** — `png_decode`'s
 seeds are written by `cargo run -p renew-png --example make_corpus` and
-`json_parse`'s by `cargo run -p renew-json --example make_corpus`, each
-of which builds every one, so those directories carry no file this
-repository did not author and no licence question with them. Each
-generator is committed beside its seeds and they change together. Once a target's
+`json_parse`'s by `cargo run -p renew-json --example make_corpus`, each of
+which builds every byte it writes rather than copying a file from
+anywhere, so no licence question arrives with the starting seeds.
+
+**What is *not* gated is which of those seeds survive, and that is
+deliberate.** Neither generator runs in CI, and no test compares the
+committed directory against what a generator would produce today —
+because `cargo fuzz cmin` renames what it keeps to a content hash and
+drops what adds no coverage, so a check that demanded seed-for-seed
+identity would forbid the minimisation the procedure requires. **The
+property the merge gate holds instead is about reach, not identity:**
+`corpus_replay.rs` beside each parser asserts a floor on the number of
+*distinct* answers the surviving corpus provokes and names the individual
+refusals that must stay reachable. A corpus can be minimised freely; it
+cannot quietly stop exercising a guard. Running a generator after
+changing it is a manual step, and nothing here will notice if it is
+skipped — the reach floor is what would eventually catch the
+consequence. Once a target's
 corpus exists the rule below is the same for all of them: the fuzzer adds
 its own finds, and nothing here deletes them. Runs start from it (locally
 and on the schedule),
@@ -92,7 +110,13 @@ scheduled job uploads the directory when a run fails.
 
 ## What these targets deliberately do not assert
 
-Only that the parser answers. Whether the answer is *correct* belongs to
-the round-trip properties beside each parser — a fuzz target that asserted
-on content would fail on inputs that are legitimately malformed, and the
-corpus would fill with noise.
+**That an accepted input is *meaningful*.** Four of the eight do assert
+something past "it answered" — the datagram re-encodes to its own bytes,
+a UI document instantiates, compiled text reads back, a JSON document
+answers every typed question — but each of those is a claim the parser
+itself makes about what it accepts, checked only on inputs it accepted.
+**None of them assert anything about a rejected input, and none assert
+that a decoded value is the right value.** Whether the answer is correct
+belongs to the round-trip properties beside each parser: a fuzz target
+that asserted on content would fail on inputs that are legitimately
+malformed, and the corpus would fill with noise.
