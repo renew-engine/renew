@@ -1,0 +1,33 @@
+[package]
+name = "renew-mesh"
+description = "Readers for the mesh files other tools write: geometry validated on the way in, with one named refusal for every way a file can be wrong"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["gamedev", "mesh", "stl", "3d", "engine"]
+categories = ["game-development", "parser-implementations"]
+readme = "README.md"
+homepage.workspace = true
+
+[package.metadata.renew]
+purpose = "Turn the bytes of a mesh file this engine did not write into validated geometry, refusing by name everything it cannot vouch for."
+maturity = "bootstrap"
+core = false
+extension_points = []
+simulation = false
+
+# Deliberately empty, for the reason the pack reader's and the JSON
+# reader's are. This crate turns bytes into geometry. It never opens a
+# file and never accepts a path, which keeps the whole untrusted-input
+# surface to one function per format, makes the crate fuzzable with no
+# filesystem, and leaves the size bound on a whole-file read where it can
+# actually be enforced -- with the caller doing the reading.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints]
+workspace = true

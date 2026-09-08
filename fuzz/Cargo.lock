@@ -108,6 +108,7 @@ dependencies = [
  "renew-audio",
  "renew-cli",
  "renew-json",
+ "renew-mesh",
  "renew-net",
  "renew-png",
  "renew-trace",
@@ -116,6 +117,10 @@ dependencies = [
 
 [[package]]
 name = "renew-json"
+version = "0.1.1"
+
+[[package]]
+name = "renew-mesh"
 version = "0.1.1"
 
 [[package]]

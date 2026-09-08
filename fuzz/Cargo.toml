@@ -26,6 +26,7 @@ renew-cli = { path = "../tools/cli" }
 renew-net = { path = "../crates/net" }
 renew-png = { path = "../crates/png" }
 renew-json = { path = "../crates/json" }
+renew-mesh = { path = "../crates/mesh" }
 
 # Fuzzing measures the parser, not the optimiser's mood. Debug assertions
 # stay on so a violated internal invariant is a finding rather than
@@ -87,6 +88,13 @@ bench = false
 [[bin]]
 name = "json_parse"
 path = "fuzz_targets/json_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stl_read"
+path = "fuzz_targets/stl_read.rs"
 test = false
 doc = false
 bench = false
