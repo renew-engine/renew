@@ -150,11 +150,15 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Material>, MeshError> {
             });
             continue;
         }
-        if !is_property(keyword) {
+        // Looked up once. An earlier version asked `is_property` here
+        // and then asked `map_slot` again inside the match, which left
+        // an arm for a keyword that was a map on the first question and
+        // not on the second — a branch no input could take.
+        let Some(property) = property_of(keyword) else {
             // Anything this reader does not implement, which is most of
             // what a real library carries.
             continue;
-        }
+        };
 
         // A property needs a material to belong to. Stating one before
         // any `newmtl` is a file whose first material is missing rather
@@ -171,38 +175,49 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Material>, MeshError> {
             });
         };
 
-        match keyword {
-            "Ka" => material.ambient = Some(colour(&mut words, "ambient", line, record)?),
-            "Kd" => material.diffuse = Some(colour(&mut words, "diffuse", line, record)?),
-            "Ks" => material.specular = Some(colour(&mut words, "specular", line, record)?),
-            "Ke" => material.emissive = Some(colour(&mut words, "emissive", line, record)?),
-            "Ns" => material.shininess = Some(scalar(&mut words, "shininess", line, record)?),
-            "d" => material.opacity = Some(scalar(&mut words, "opacity", line, record)?),
+        match property {
+            Property::Ambient => {
+                material.ambient = Some(colour(&mut words, "ambient", line, record)?);
+            }
+            Property::Diffuse => {
+                material.diffuse = Some(colour(&mut words, "diffuse", line, record)?);
+            }
+            Property::Specular => {
+                material.specular = Some(colour(&mut words, "specular", line, record)?);
+            }
+            Property::Emissive => {
+                material.emissive = Some(colour(&mut words, "emissive", line, record)?);
+            }
+            Property::Shininess => {
+                material.shininess = Some(scalar(&mut words, "shininess", line, record)?);
+            }
+            Property::Opacity => {
+                material.opacity = Some(scalar(&mut words, "opacity", line, record)?);
+            }
             // The reciprocal spelling. See this module's documentation
             // for why the last one written wins rather than the two
             // being reconciled.
-            "Tr" => material.opacity = Some(1.0 - scalar(&mut words, "opacity", line, record)?),
-            _ => {
-                if let Some(slot) = map_slot(keyword) {
-                    // A map line may carry options before the file name
-                    // (`-s 1 1 1 wood.png`), so the name is the last
-                    // word rather than the second.
-                    //
-                    // **That is a heuristic and not a parse.** A line
-                    // whose options run to the end (`map_Kd -bm 0.2`)
-                    // has no file name in it, and this takes the option's
-                    // value for one. The alternative is to implement the
-                    // option grammar, which is per-tool and undocumented;
-                    // the cost of guessing here is a name that fails to
-                    // resolve, which the caller was going to have to
-                    // handle anyway, since this crate cannot tell it
-                    // whether any name resolves.
-                    if let Some(name) = words.last() {
-                        material.maps.push(TextureMap {
-                            slot,
-                            name: name.to_owned(),
-                        });
-                    }
+            Property::Transparency => {
+                material.opacity = Some(1.0 - scalar(&mut words, "opacity", line, record)?);
+            }
+            Property::Map(slot) => {
+                // A map line may carry options before the file name
+                // (`-s 1 1 1 wood.png`), so the name is the last word
+                // rather than the second.
+                //
+                // **That is a heuristic and not a parse.** A line whose
+                // options run to the end (`map_Kd -bm 0.2`) has no file
+                // name in it, and this takes the option's value for one.
+                // The alternative is to implement the option grammar,
+                // which is per-tool and undocumented; the cost of
+                // guessing here is a name that fails to resolve, which
+                // the caller was going to have to handle anyway, since
+                // this crate cannot tell it whether any name resolves.
+                if let Some(name) = words.last() {
+                    material.maps.push(TextureMap {
+                        slot,
+                        name: name.to_owned(),
+                    });
                 }
             }
         }
@@ -214,12 +229,46 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Material>, MeshError> {
     Ok(library)
 }
 
-/// Whether a keyword is one this reader attaches to a material.
+/// What a keyword attaches to a material.
 ///
-/// Split out so the "belongs to a material" check happens once, before
-/// the match, rather than being repeated down every arm.
-fn is_property(keyword: &str) -> bool {
-    matches!(keyword, "Ka" | "Kd" | "Ks" | "Ke" | "Ns" | "d" | "Tr") || map_slot(keyword).is_some()
+/// **One lookup, so the dispatch cannot disagree with the guard.** The
+/// question "does this keyword belong to a material" and the question
+/// "which slot does it fill" have to be answered together or an arm
+/// exists for a keyword that answers yes to the first and no to the
+/// second — which is a branch no input can take and a line no test can
+/// cover.
+enum Property {
+    /// `Ka`.
+    Ambient,
+    /// `Kd`.
+    Diffuse,
+    /// `Ks`.
+    Specular,
+    /// `Ke`.
+    Emissive,
+    /// `Ns`.
+    Shininess,
+    /// `d`.
+    Opacity,
+    /// `Tr`, the reciprocal of `d`.
+    Transparency,
+    /// One of the `map_*` lines, and which slot it fills.
+    Map(MapSlot),
+}
+
+/// Which property a keyword names, or nothing if this reader does not
+/// implement it.
+fn property_of(keyword: &str) -> Option<Property> {
+    match keyword {
+        "Ka" => Some(Property::Ambient),
+        "Kd" => Some(Property::Diffuse),
+        "Ks" => Some(Property::Specular),
+        "Ke" => Some(Property::Emissive),
+        "Ns" => Some(Property::Shininess),
+        "d" => Some(Property::Opacity),
+        "Tr" => Some(Property::Transparency),
+        other => map_slot(other).map(Property::Map),
+    }
 }
 
 /// Which slot a `map_*` keyword fills, if any.
