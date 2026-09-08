@@ -288,6 +288,27 @@ mod tests {
         assert_eq!(unsigned.winding_disagreements(), 0);
     }
 
+    /// **A normal with no triangle under it is not counted.**
+    ///
+    /// The count zips normals against position triples and asks
+    /// `positions.get(at..at + 3)`, so a mesh carrying more normals than
+    /// triangles takes the `None` arm. No reader here produces one — both
+    /// check the pairing — but `Mesh` is a public type a caller builds by
+    /// hand, and the arm existed with nothing reaching it.
+    ///
+    /// Probed by returning `true` there: red, the spare normal counts as
+    /// a disagreement.
+    #[test]
+    fn a_normal_past_the_last_triangle_is_not_counted() {
+        let one_triangle_two_normals = Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            // The first agrees with the winding; the second has no
+            // corners to agree or disagree with.
+            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+        };
+        assert_eq!(one_triangle_two_normals.winding_disagreements(), 0);
+    }
+
     /// The shape of an empty mesh, and of one that is not.
     #[test]
     fn a_mesh_counts_its_triangles() {

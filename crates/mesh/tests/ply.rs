@@ -10,6 +10,8 @@
 // back is a broken test rather than a condition to recover from.
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
+use core::fmt::Write as _;
+
 use renew_mesh::{Mesh, MeshError, ply};
 
 /// A square, as two triangles over four shared corners.
@@ -753,4 +755,155 @@ fn every_scalar_type_is_decoded_at_its_own_width_and_sign() {
             }
         }
     }
+}
+
+/// **A blank line in the header is not a keyword.**
+///
+/// Exporters pad their headers, and `split_ascii_whitespace().next()` on
+/// an empty line is `None`. The arm that skips it was reached by no test:
+/// every fixture here wrote a header with no slack in it.
+#[test]
+fn a_blank_line_in_the_header_is_skipped() {
+    let padded = "ply\nformat ascii 1.0\n\nelement vertex 3\n\
+                  property float x\nproperty float y\nproperty float z\n\n\
+                  element face 1\nproperty list uchar int vertex_indices\n\
+                  end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+    let mesh = ply::read(padded.as_bytes()).expect("a padded header is an ordinary header");
+    assert_eq!(mesh.triangles(), 1);
+}
+
+/// **A header with more elements than the schema holds is refused.**
+///
+/// `MAX_SCHEMA` bounds how many elements a header may declare, and
+/// nothing reached it — the ceiling could be deleted and every test
+/// stayed green. It is a small file that asks for the refusal: a header
+/// is text, and a thousand `element` lines is a few kilobytes.
+///
+/// Probed by deleting the check: red, the header is accepted.
+#[test]
+fn a_header_declaring_more_elements_than_the_schema_holds_is_refused() {
+    let mut header = String::from("ply\nformat ascii 1.0\n");
+    for index in 0..2000 {
+        writeln!(header, "element spare{index} 0").expect("a String is always writable");
+    }
+    header.push_str("end_header\n");
+
+    let MeshError::TooLarge { field, value } = refusal(header.as_bytes()) else {
+        panic!("a schema past its ceiling is refused by name");
+    };
+    assert_eq!(field, "element count");
+    assert!(
+        value > 1,
+        "the refusal says how many were asked for: {value}"
+    );
+}
+
+/// **A header without the magic word is refused, even when it ends
+/// properly.**
+///
+/// The header is located by its terminator rather than its opening,
+/// because a binary body is not text and the opening cannot be trusted
+/// to be where the search starts. So a file can reach the schema parser
+/// having never said `ply`, and the parser is what has to notice.
+///
+/// Probed by deleting the check: red, a file that never claims to be a
+/// PLY is read as one.
+#[test]
+fn a_header_that_never_says_ply_is_refused_by_name() {
+    let anonymous = "format ascii 1.0\nelement vertex 0\nend_header\n";
+    let MeshError::ExpectedKeyword {
+        expected,
+        found,
+        line,
+    } = refusal(anonymous.as_bytes())
+    else {
+        panic!("a file that never says `ply` is refused for that");
+    };
+    assert_eq!(expected, "ply");
+    assert!(found.is_empty(), "nothing stood in for it: `{found}`");
+    assert_eq!(line, 1, "the word belongs on the first line");
+}
+
+/// **A file whose schema is complete and whose faces are absent has no
+/// geometry.**
+///
+/// Distinct from the refusals that name a missing *part of the schema*:
+/// here the schema is whole, the vertices are there, and the face
+/// element declares none. Nothing comes out, and saying so is the
+/// answer.
+#[test]
+fn vertices_with_no_faces_are_no_geometry() {
+    let pointless = "ply\nformat ascii 1.0\nelement vertex 3\n\
+                     property float x\nproperty float y\nproperty float z\n\
+                     element face 0\nproperty list uchar int vertex_indices\n\
+                     end_header\n0 0 0\n1 0 0\n0 1 0\n";
+    assert!(
+        matches!(refusal(pointless.as_bytes()), MeshError::NoGeometry),
+        "three vertices and no face is no surface"
+    );
+}
+
+/// **An ASCII body that is not text is refused rather than lossily
+/// converted.**
+///
+/// The header says `ascii`, so the body is read as text — and a file
+/// whose header says one thing and whose body is another is exactly the
+/// kind of input this reader exists to refuse. Converting lossily would
+/// invent characters the file does not contain.
+///
+/// Probed by decoding an empty slice in place of the body, so the
+/// refusal cannot come from this line: red, and red on ten other
+/// tests with it, which is the shape of a line every ASCII read goes
+/// through.
+#[test]
+fn an_ascii_body_that_is_not_text_is_refused() {
+    let mut bytes = b"ply\nformat ascii 1.0\nelement vertex 3\n\
+                      property float x\nproperty float y\nproperty float z\n\
+                      element face 1\nproperty list uchar int vertex_indices\n\
+                      end_header\n"
+        .to_vec();
+    // A lone continuation byte: valid nowhere in UTF-8.
+    bytes.extend_from_slice(&[0xFF, 0xFE, b'\n']);
+
+    let MeshError::ExpectedKeyword { expected, .. } = refusal(&bytes) else {
+        panic!("a body that is not text is refused by name");
+    };
+    assert_eq!(expected, "an ascii body");
+}
+
+/// **A binary face claiming more corners than a face may have is refused
+/// before the corners are read.**
+///
+/// The ceiling on one face's corner count had no test in the binary
+/// path: it could be deleted and the suite stayed green. The number is
+/// read from the file, so an unbounded one is a length an attacker
+/// chooses.
+///
+/// Probed by deleting the check: red, the reader takes the count at its
+/// word.
+#[test]
+fn a_binary_face_claiming_too_many_corners_is_refused() {
+    let mut bytes = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\n\
+                      property float x\nproperty float y\nproperty float z\n\
+                      element face 1\nproperty list uint int vertex_indices\n\
+                      end_header\n"
+        .to_vec();
+    for corner in 0..3u32 {
+        for value in [f32::from(u8::try_from(corner).unwrap_or(0)), 0.0, 0.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    // The corner count, as wide as its declared type and far past any
+    // face a real surface has.
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+    let MeshError::TooLarge { field, value } = refusal(&bytes) else {
+        panic!("a corner count past the ceiling is refused by name");
+    };
+    assert_eq!(field, "face corner count");
+    assert_eq!(
+        value,
+        u64::from(u32::MAX),
+        "the refusal reports the number the file asked for"
+    );
 }

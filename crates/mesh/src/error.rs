@@ -398,6 +398,40 @@ mod tests {
         }
     }
 
+    /// **Every range `is_dangerous` names, exercised.**
+    ///
+    /// The predicate lists five Cf ranges and two separators, and the
+    /// suite reached only some of them: `U+2060`–`U+2064` and
+    /// `U+2066`–`U+2069` were named by the code and by nothing else, so
+    /// deleting either arm changed no test. They are the invisible
+    /// joiners and the isolate controls — the ones that reorder a line
+    /// without putting a mark on it, which is the whole reason the
+    /// predicate is wider than `char::is_control`.
+    ///
+    /// Probed by deleting each range in turn: red, the character comes
+    /// back unescaped.
+    #[test]
+    fn every_character_the_predicate_names_is_escaped() {
+        // One from each arm, so no arm stands for another.
+        for character in [
+            '\u{0007}', '\u{00AD}', '\u{061C}', '\u{180E}', '\u{200B}', '\u{200F}', '\u{202A}',
+            '\u{202E}', '\u{2060}', '\u{2064}', '\u{2066}', '\u{2069}', '\u{FEFF}', '\u{2028}',
+            '\u{2029}',
+        ] {
+            let text = format!("a{character}b");
+            let shown = quoted(&text);
+            assert!(
+                !shown.contains(character),
+                "U+{:04X} reached a message unescaped: `{shown}`",
+                character as u32
+            );
+            assert!(
+                shown.starts_with('a') && shown.ends_with('b'),
+                "the text around it survived: `{shown}`"
+            );
+        }
+    }
+
     /// A quoted run is bounded, and says so when it is cut.
     ///
     /// Probed by returning `text.to_owned()`: red, the refusal quotes
@@ -409,10 +443,13 @@ mod tests {
 
         let long = "x".repeat(10_000);
         let cut = quoted(&long);
-        assert!(
-            cut.chars().count() == MAX_QUOTED + 1,
-            "a quote is {MAX_QUOTED} characters and the mark that it was cut, got {}",
-            cut.chars().count()
+        // `assert_eq!` rather than `assert!` with the count repeated in
+        // the message: the repeat is only evaluated when the assertion
+        // fails, so it is a line no passing run can reach.
+        assert_eq!(
+            cut.chars().count(),
+            MAX_QUOTED + 1,
+            "a quote is {MAX_QUOTED} characters and the mark that it was cut"
         );
         assert!(cut.ends_with('…'), "a cut quote says it was cut: `{cut}`");
     }

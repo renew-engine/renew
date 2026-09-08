@@ -553,6 +553,32 @@ const MAX_GEOMETRY_BYTES: usize = 256 << 20;
 /// How many positions that ceiling allows.
 const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
 
+/// Refuse before the geometry arrives rather than after it.
+///
+/// `have` is what has been emitted, `adding` what the next face would
+/// add. The sum is what the ceiling is on: a cap on one face's corners
+/// and a cap on the row count bound neither their product, which is the
+/// whole reason this exists.
+///
+/// **Split out of the loop so it can be proved without allocating the
+/// quarter-gigabyte it exists to prevent.** Reaching the branch in place
+/// takes a thirty-megabyte input that first emits every position under
+/// the ceiling; the arithmetic is the same either way, and the test that
+/// pins it is beside the constant rather than inside a fixture nobody
+/// would run twice.
+fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), MeshError> {
+    let total = have.saturating_add(adding);
+    if total > MAX_POSITIONS {
+        return Err(MeshError::TooLarge {
+            field: "total geometry",
+            // Reported in bytes, which is the unit the ceiling is
+            // written in and the one a caller can act on.
+            value: (total.saturating_mul(core::mem::size_of::<[f32; 3]>())) as u64,
+        });
+    }
+    Ok(())
+}
+
 /// Turn vertices and faces into triangles.
 ///
 /// The one place the two halves meet, so the index check that separates
@@ -582,12 +608,7 @@ fn assemble(vertices: &[[f32; 3]], faces: &[Vec<u64>]) -> Result<Mesh, MeshError
         // arrives before the memory does — which is the difference
         // between a policy ceiling and a representation limit.
         let fanned = (corners.len() - 2) * 3;
-        if positions.len().saturating_add(fanned) > MAX_POSITIONS {
-            return Err(MeshError::TooLarge {
-                field: "total geometry",
-                value: (positions.len().saturating_add(fanned) * 12) as u64,
-            });
-        }
+        refuse_over_ceiling(positions.len(), fanned)?;
         // A fan from the first corner. Correct for a convex polygon,
         // which is what a triangle and a quad from a subdivision surface
         // both are; see this module's own documentation for why nothing
@@ -870,5 +891,40 @@ impl Cursor<'_> {
             ])),
             Scalar::F64 => f64::from_le_bytes(buffer),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_POSITIONS, MeshError, refuse_over_ceiling};
+
+    /// **The ceiling is on the product, and it refuses at the boundary
+    /// rather than past it.**
+    ///
+    /// Probed by deleting the check: red, the over-ceiling case is
+    /// accepted. Probed by widening `>` to `>=`: red, the exactly-full
+    /// case is refused when it fits.
+    #[test]
+    fn the_geometry_ceiling_counts_what_is_there_and_what_is_coming() {
+        refuse_over_ceiling(MAX_POSITIONS - 3, 3)
+            .expect("a mesh that exactly fills the ceiling is not over it");
+
+        let refusal = refuse_over_ceiling(MAX_POSITIONS - 3, 6)
+            .expect_err("three positions past the ceiling is over it");
+        let MeshError::TooLarge { field, value } = refusal else {
+            panic!("the ceiling refuses by name: {refusal}");
+        };
+        assert_eq!(field, "total geometry");
+        assert_eq!(
+            value,
+            (MAX_POSITIONS as u64 + 3) * 12,
+            "the number reported is bytes, not positions"
+        );
+
+        // Neither factor alone reaches it, which is the case a ceiling
+        // on the factors would miss.
+        refuse_over_ceiling(MAX_POSITIONS - 1, 1).expect("still inside");
+        refuse_over_ceiling(usize::MAX, 1)
+            .expect_err("the sum saturates rather than wrapping under the ceiling");
     }
 }
