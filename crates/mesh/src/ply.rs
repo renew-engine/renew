@@ -234,15 +234,54 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
 
 /// Whether these bytes open the way a PLY does.
 ///
+/// How far past the magic word a line ending may be and the word still
+/// be a magic word.
+///
+/// The magic is a line holding `ply` and nothing else, so what follows is
+/// at most a carriage return and whatever trailing spaces an exporter
+/// left. Sixteen bytes is generous for that and short enough that a file
+/// which is not a PLY is declined without being scanned.
+const AFTER_THE_MAGIC: usize = 16;
+
 /// The magic word and nothing more. PLY has one, which is what lets this
 /// reader say "not a PLY" where the STL reader cannot.
+///
+/// **The word has to be the whole word.** This asked only whether the
+/// file *starts with* `ply`, and `ply` is an English prefix: a binary STL
+/// whose eighty-byte header opens "plywood panel" was handed to this
+/// reader, which refused it for having no `end_header`, so the tool
+/// reported a PLY refusal about a file that was never a PLY.
+///
+/// **The rest of this module was already stricter.** `read` tokenises the
+/// line and matches the whole word, and `header_end` requires
+/// `end_header` to both open a line and close one. Only this function
+/// took a prefix for a magic, which made the detector and the reader
+/// disagree about the same bytes — the one thing a detector must not do,
+/// because every refusal downstream is then answering a question about
+/// the wrong format.
 #[must_use]
 pub fn looks_like(bytes: &[u8]) -> bool {
     let mut cursor = bytes;
     while cursor.first().is_some_and(u8::is_ascii_whitespace) {
         cursor = cursor.get(1..).unwrap_or(&[]);
     }
-    cursor.starts_with(b"ply")
+    let Some(rest) = cursor.strip_prefix(b"ply") else {
+        return false;
+    };
+
+    // Bounded deliberately: without the window, a file that is not a PLY
+    // and holds no line ending at all is scanned to its end to decide
+    // that it is not a PLY.
+    let window = rest.get(..AFTER_THE_MAGIC).unwrap_or(rest);
+    match window.iter().position(|byte| *byte == b'\n') {
+        // Whatever sits between the word and the line ending has to be
+        // nothing: a carriage return, or spaces, or neither.
+        Some(end) => window[..end].iter().all(u8::is_ascii_whitespace),
+        // No line ending within reach. Only a file that ends right after
+        // the word can still be one, and it has no header, so the reader
+        // says so by name rather than the detector guessing.
+        None => window.is_empty(),
+    }
 }
 
 /// Read the header, returning the schema, the encoding, and where the

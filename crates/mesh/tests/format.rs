@@ -230,3 +230,74 @@ fn every_byte_string_gets_a_format() {
         }
     }
 }
+
+/// **A binary STL's header is eighty bytes of whatever its exporter felt
+/// like**, and one of the things an exporter writes there is the name of
+/// the thing it exported.
+///
+/// `ply` is a real English prefix — plywood, plywood-panel, plyboard —
+/// and detection asked only whether the file *starts with* those three
+/// bytes. So a valid binary STL named after plywood was handed to the PLY
+/// reader, which refused it for having no `end_header`, and the tool
+/// reported a PLY refusal about a file that was never a PLY.
+///
+/// **The reader was already stricter than the detector.** `ply::read`
+/// tokenises the first line and matches the whole word, and `header_end`
+/// requires `end_header` to both open and close a line. Only
+/// `looks_like` took a prefix for a magic word — so the two disagreed
+/// about the same bytes, which is the one thing a detector must never do.
+#[test]
+fn a_binary_stl_whose_header_begins_with_the_ply_magic_is_still_an_stl() {
+    for header in [
+        &b"plywood test model"[..],
+        &b"ply"[..],
+        &b"plyboard, 4mm"[..],
+        &b"ply-1"[..],
+    ] {
+        let mut padded = [b' '; 80];
+        padded[..header.len()].copy_from_slice(header);
+
+        let mut file = padded.to_vec();
+        file.extend_from_slice(&1u32.to_le_bytes());
+        for value in [0.0f32, 0.0, 1.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        for corner in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            for value in corner {
+                file.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        file.extend_from_slice(&0u16.to_le_bytes());
+
+        let shown = String::from_utf8_lossy(header).to_string();
+        assert_eq!(
+            format::detect(&file),
+            Format::Stl,
+            "a binary STL whose header opens {shown:?} is an STL"
+        );
+        let read = Format::Stl
+            .read(&file)
+            .expect("stl carries geometry")
+            .unwrap_or_else(|error| panic!("{shown:?}: {error}"));
+        assert_eq!(read.triangles(), 1, "{shown:?}");
+    }
+}
+
+/// **And the magic still has to be the magic.**
+///
+/// The fix above is a place where tightening a check can go one step too
+/// far and start declining real files, so this pins the other side: a
+/// PLY is still a PLY with the line endings and the trailing whitespace
+/// real files carry, and the leading blank lines the detector already
+/// skipped.
+#[test]
+fn the_ply_magic_is_still_recognised_however_its_line_ends() {
+    for opening in ["ply\n", "ply\r\n", "ply   \n", "\n\nply\n", "  ply\n"] {
+        let source = format!("{opening}{}", A_PLY.trim_start_matches("ply\n"));
+        assert_eq!(
+            format::detect(source.as_bytes()),
+            Format::Ply,
+            "opening {opening:?}"
+        );
+    }
+}
