@@ -55,8 +55,62 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod error;
+pub mod mtl;
+pub mod obj;
 pub mod ply;
 pub mod stl;
+
+/// The most geometry this reader will build out of one file, in bytes.
+///
+/// **A policy ceiling, not a representation limit, and the two are not
+/// the same refusal.** A representation limit is reached only after the
+/// allocation has been attempted; this one is a refusal that costs
+/// nothing. It is the same reasoning the image decoder gives for its own
+/// two hundred and fifty-six megabytes, and this is the same number, for
+/// the same reason: far past any model a game loads and far short of
+/// anything that hurts.
+///
+/// **The ceilings on the factors were not enough, which is the whole
+/// point of this one.** `MAX_FACE_CORNERS` bounds a single face and
+/// `refuse_impossible_count` bounds a row count against the bytes that
+/// could supply it $M and neither bounds their product. A fan turns a
+/// face of `n` corners into `(n - 2) * 3` positions, so a file of a
+/// megabyte, every byte of it legitimate, built fifty-eight megabytes of
+/// geometry. Linear in the input and therefore inside the letter of the
+/// rule that a refused input costs no more than its own length buys; and
+/// a caller adopting the image decoder's own file bound would still have
+/// been handed twelve gigabytes from one mesh. Amplification is the
+/// danger, not allocation.
+pub(crate) const MAX_GEOMETRY_BYTES: usize = 256 << 20;
+
+/// How many positions that ceiling allows.
+pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
+
+/// Refuse before the geometry arrives rather than after it.
+///
+/// `have` is what has been emitted, `adding` what the next face would
+/// add. The sum is what the ceiling is on: a cap on one face's corners
+/// and a cap on the row count bound neither their product, which is the
+/// whole reason this exists.
+///
+/// **Shared by every reader that fans a polygon, and split out so it can be proved without allocating the
+/// quarter-gigabyte it exists to prevent.** Reaching the branch in place
+/// takes a thirty-megabyte input that first emits every position under
+/// the ceiling; the arithmetic is the same either way, and the test that
+/// pins it is beside the constant rather than inside a fixture nobody
+/// would run twice.
+pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), MeshError> {
+    let total = have.saturating_add(adding);
+    if total > MAX_POSITIONS {
+        return Err(MeshError::TooLarge {
+            field: "total geometry",
+            // Reported in bytes, which is the unit the ceiling is
+            // written in and the one a caller can act on.
+            value: (total.saturating_mul(core::mem::size_of::<[f32; 3]>())) as u64,
+        });
+    }
+    Ok(())
+}
 
 pub use error::MeshError;
 
@@ -74,10 +128,11 @@ pub use error::MeshError;
 /// mesh is handed back rather than asserted here:
 ///
 /// * `positions.len()` is a multiple of three and is not zero.
-/// * `normals` is either empty or exactly `positions.len() / 3` long —
-///   one per triangle, which is what the formats that carry normals
-///   carry. Per-vertex normals are a later format's problem.
-/// * Every float in either array is finite.
+/// * `face_normals` is either empty or exactly `positions.len() / 3`
+///   long — one per triangle.
+/// * `corner_normals` and `corner_texcoords` are each either empty or
+///   exactly `positions.len()` long — one per corner.
+/// * Every float in every array is finite.
 ///
 /// A caller that builds one of these by hand owns those invariants; the
 /// fields are public because a reader that hid them would be asking
@@ -99,7 +154,36 @@ pub struct Mesh {
     /// cannot then tell what the exporter said from what this crate
     /// guessed. The renderer's own frame derivation is where that guess
     /// belongs, because it is where a caller opts into it.
-    pub normals: Vec<[f32; 3]>,
+    ///
+    /// A *face* normal is one the file stated for the whole triangle,
+    /// which is what STL stores. It is not the same fact as a normal per
+    /// corner, and the two live in separate arrays rather than one
+    /// array with a convention, because a reader that folded them would
+    /// be answering a question about smoothing that belongs to whoever
+    /// draws the mesh.
+    pub face_normals: Vec<[f32; 3]>,
+    /// One normal per corner — so `positions.len()` of them — or empty
+    /// when the format carried none.
+    ///
+    /// This is what a format with an indexed, per-vertex normal stream
+    /// carries: two triangles sharing an edge can name different normals
+    /// at the same point, which is how a hard edge and a smooth one are
+    /// told apart, and averaging them into one per face would throw that
+    /// away irrecoverably.
+    pub corner_normals: Vec<[f32; 3]>,
+    /// One texture coordinate per corner, or empty when the format
+    /// carried none.
+    ///
+    /// Per corner rather than per position for the same reason as the
+    /// normals: a seam in a UV map is exactly one position carrying two
+    /// different coordinates in two different faces.
+    ///
+    /// **Not clamped, and not flipped.** Coordinates outside the unit
+    /// square are ordinary — they are how a texture is made to repeat —
+    /// and which end of the vertical axis is zero is a convention the
+    /// file does not state, so a reader that flipped it would be
+    /// guessing on the caller's behalf.
+    pub corner_texcoords: Vec<[f32; 2]>,
 }
 
 impl Mesh {
@@ -139,7 +223,7 @@ impl Mesh {
     /// anything.
     #[must_use]
     pub fn winding_disagreements(&self) -> usize {
-        self.normals
+        self.face_normals
             .iter()
             .enumerate()
             .filter(|(triangle, stored)| {
@@ -181,7 +265,8 @@ mod tests {
     fn triangle(corners: [[f32; 3]; 3], normal: [f32; 3]) -> Mesh {
         Mesh {
             positions: corners.to_vec(),
-            normals: vec![normal],
+            face_normals: vec![normal],
+            ..Mesh::default()
         }
     }
 
@@ -231,7 +316,8 @@ mod tests {
                 [0.0, 1.0, 0.0],
                 [1.0, 0.0, 0.0],
             ],
-            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            face_normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            ..Mesh::default()
         };
         assert_eq!(
             mesh.winding_disagreements(),
@@ -283,7 +369,8 @@ mod tests {
 
         let unsigned = Mesh {
             positions: corners.to_vec(),
-            normals: Vec::new(),
+            face_normals: Vec::new(),
+            ..Mesh::default()
         };
         assert_eq!(unsigned.winding_disagreements(), 0);
     }
@@ -304,7 +391,8 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             // The first agrees with the winding; the second has no
             // corners to agree or disagree with.
-            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+            face_normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+            ..Mesh::default()
         };
         assert_eq!(one_triangle_two_normals.winding_disagreements(), 0);
     }
@@ -322,5 +410,42 @@ mod tests {
         );
         assert!(!one.is_empty());
         assert_eq!(one.triangles(), 1);
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::{MAX_POSITIONS, MeshError, refuse_over_ceiling};
+
+    /// **The ceiling is on the product, and it refuses at the boundary
+    /// rather than past it.**
+    ///
+    /// Probed by deleting the check: red, the over-ceiling case is
+    /// accepted. Probed by widening `>` to `>=`: red, the exactly-full
+    /// case is refused when it fits.
+    #[test]
+    fn the_geometry_ceiling_counts_what_is_there_and_what_is_coming() {
+        refuse_over_ceiling(MAX_POSITIONS - 3, 3)
+            .expect("a mesh that exactly fills the ceiling is not over it");
+
+        // Compared whole rather than destructured: a `let ... else`
+        // panic is a line only a failing run reaches, and this test is
+        // measured like the code beside it.
+        assert_eq!(
+            refuse_over_ceiling(MAX_POSITIONS - 3, 6),
+            Err(MeshError::TooLarge {
+                field: "total geometry",
+                // Bytes, not positions: the unit the ceiling is written
+                // in and the one a caller can act on.
+                value: (MAX_POSITIONS + 3) as u64 * 12,
+            }),
+            "three positions past the ceiling is over it, and it says so by name"
+        );
+
+        // Neither factor alone reaches it, which is the case a ceiling
+        // on the factors would miss.
+        refuse_over_ceiling(MAX_POSITIONS - 1, 1).expect("still inside");
+        refuse_over_ceiling(usize::MAX, 1)
+            .expect_err("the sum saturates rather than wrapping under the ceiling");
     }
 }

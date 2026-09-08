@@ -1,10 +1,11 @@
 # renew-fuzz
 
-Fuzz harnesses for the ten parsers that read data the engine did not
+Fuzz harnesses for the twelve parsers that read data the engine did not
 write: the asset pack reader, the input-trace codec, the WAV reader, the
 UI document reader, the UI text grammar, the datagram reader, the PNG
-decoder, the JSON reader, and the two mesh readers, STL and PLY. Five of
-them go further than the rest: bytes that read as a UI document are also
+decoder, the JSON reader, the three mesh readers STL, PLY and OBJ, and
+the MTL material libraries an OBJ refers to. Seven of them go further
+than the rest: bytes that read as a UI document are also
 instantiated as a tree, because validation claims instantiation never
 needs to re-check; text that compiles is read back through the
 runtime reader, because the compiler claims it only mints what that
@@ -16,12 +17,12 @@ matching what its format can carry, because those are what the returned
 type claims of itself. An input that breaks any of those claims is a
 finding.
 
-**Eight of the ten take their bytes unfiltered; two do not, and the
+**Ten of the twelve take their bytes unfiltered; two do not, and the
 dividing line is what the parser's own signature accepts.**
 `trace_parse` and `ui_text` guard their input with `from_utf8` and return
 early on failure, because both of those parsers take `&str` — a crash
 found past a lossy conversion would be unreachable from any real file.
-The other eight take `&[u8]`, so there is nothing for them to guard. The
+The other ten take `&[u8]`, so there is nothing for them to guard. The
 JSON reader in particular takes bytes on purpose, so
 that a caller holding one chunk of a larger file need not answer the "is
 this even text" question itself — which means the fuzzer is the thing
@@ -56,11 +57,12 @@ not a first line of defence, a deeper one.
 
 `corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
-`cargo fuzz cmin`. **Four corpora start differently** — `png_decode`'s
+`cargo fuzz cmin`. **Six corpora start differently** — `png_decode`'s
 seeds are written by `cargo run -p renew-png --example make_corpus`,
 `json_parse`'s by `cargo run -p renew-json --example make_corpus`, and the
-two mesh corpora by `cargo run -p renew-mesh --example make_corpus`
-(`stl_read`) and `--example make_ply_corpus` (`ply_read`), each of
+four `renew-mesh` corpora by `cargo run -p renew-mesh --example
+make_corpus` (`stl_read`), `--example make_ply_corpus`, `--example
+make_obj_corpus` and `--example make_mtl_corpus`, each of
 which builds every byte it writes rather than copying a file from
 anywhere, so no licence question arrives with the starting seeds. For the
 mesh pair that is not only licensing: a mesh is the one format here whose
@@ -117,7 +119,7 @@ scheduled job uploads the directory when a run fails.
 
 ## What these targets deliberately do not assert
 
-**That an accepted input is *meaningful*.** Six of the ten do assert
+**That an accepted input is *meaningful*.** Eight of the twelve do assert
 something past "it answered" — the datagram re-encodes to its own bytes,
 a UI document instantiates, compiled text reads back, a JSON document
 answers every typed question, and a mesh that reads has whole triangles,

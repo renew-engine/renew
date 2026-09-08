@@ -1,0 +1,8 @@
+newmtl wall
+map_Ka ao.png
+map_Kd -s 1 1 1 brick.png
+map_Ks spec.png
+map_Ns gloss.png
+map_d cutout.png
+map_bump height.png
+norm normal.png

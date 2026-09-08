@@ -1,0 +1,11 @@
+# exported by something
+mtllib scene.mtl
+o cube
+g default
+s off
+usemtl steel
+v 0 0 0
+v 1 0 0
+v 0 1 0
+cstype bezier
+f 1 2 3

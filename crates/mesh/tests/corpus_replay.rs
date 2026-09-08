@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{MeshError, ply, stl};
+use renew_mesh::{MeshError, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -131,6 +131,7 @@ fn outcome(bytes: &[u8]) -> &'static str {
             // be out of range; it has no face element to be short of
             // corners; and it has no schema to be unsupported.
             MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
             MeshError::NotAFace { .. } => "NotAFace",
             MeshError::Unsupported { .. } => "Unsupported",
         },
@@ -154,8 +155,8 @@ fn every_recorded_input_answers() {
         if let Ok(mesh) = stl::read(&bytes) {
             assert_eq!(mesh.positions.len() % 3, 0);
             assert!(!mesh.is_empty());
-            assert!(mesh.normals.is_empty() || mesh.normals.len() == mesh.triangles());
-            for value in mesh.positions.iter().chain(&mesh.normals).flatten() {
+            assert!(mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles());
+            for value in mesh.positions.iter().chain(&mesh.face_normals).flatten() {
                 assert!(value.is_finite());
             }
             let _ = mesh.winding_disagreements();
@@ -296,6 +297,7 @@ fn ply_outcome(bytes: &[u8]) -> &'static str {
             MeshError::NotANumber { .. } => "NotANumber",
             MeshError::NotFinite { .. } => "NotFinite",
             MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
             MeshError::NotAFace { .. } => "NotAFace",
             MeshError::Unsupported { .. } => "Unsupported",
             MeshError::NoGeometry => "NoGeometry",
@@ -311,7 +313,7 @@ fn every_recorded_ply_input_answers() {
         if let Ok(mesh) = ply::read(&bytes) {
             assert_eq!(mesh.positions.len() % 3, 0);
             assert!(!mesh.is_empty());
-            assert!(mesh.normals.is_empty());
+            assert!(mesh.face_normals.is_empty());
             for value in mesh.positions.iter().flatten() {
                 assert!(value.is_finite());
             }
@@ -356,6 +358,311 @@ fn the_ply_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn ply_census() {
     let distinct: BTreeSet<Vec<u8>> = ply_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| ply_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The OBJ corpus, held to the same claims by the same shape of gate.
+// ---------------------------------------------------------------------
+
+/// The committed OBJ corpus never shrinks below this many **distinct**
+/// inputs. Distinct by content, for the reason above.
+const OBJ_LOW_WATER: usize = 16;
+
+/// How many distinct outcomes the OBJ seeds must still reach.
+///
+/// **Measured, not guessed** — `obj_census` below prints it. The floor
+/// sits two under what the committed seeds reach, so `cargo fuzz cmin`
+/// has room to minimise and no more.
+const OBJ_DISTINCT_OUTCOMES: usize = 7;
+
+/// Refusals an OBJ seed must provoke, each guarding something a count
+/// cannot.
+///
+/// * `IndexZero` is **the refusal this format adds over the other two**.
+///   It exists because OBJ numbers from one, and a zero there is a field
+///   nobody filled in rather than a number computed wrongly.
+/// * `IndexOutOfRange` covers both directions at once: a positive index
+///   past the end and a negative one reaching before the beginning are
+///   the same refusal down two different arms of the resolver.
+/// * `Unsupported` is the face whose corners disagree about their own
+///   shape — a well-formed file with no representation here, which is a
+///   different problem from a malformed one.
+/// * `NotFinite` stops a coordinate nothing downstream can bound
+///   reaching a vertex buffer.
+const OBJ_REQUIRED: [&str; 4] = ["IndexZero", "IndexOutOfRange", "Unsupported", "NotFinite"];
+
+fn obj_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/obj_read")
+}
+
+fn obj_corpus() -> Vec<Vec<u8>> {
+    let dir = obj_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the OBJ reader, as a name.
+///
+/// Matched on the enum with no wildcard, so a refusal added later stops
+/// this file compiling until somebody decides whether a seed reaches it.
+fn obj_outcome(bytes: &[u8]) -> &'static str {
+    match obj::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => match refusal {
+            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+            MeshError::CountMismatch { .. } => "CountMismatch",
+            MeshError::TooLarge { .. } => "TooLarge",
+            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+            MeshError::NotANumber { .. } => "NotANumber",
+            MeshError::NotFinite { .. } => "NotFinite",
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
+            MeshError::NoGeometry => "NoGeometry",
+        },
+    }
+}
+
+/// Every committed OBJ input answers, one way or the other, and every
+/// mesh that comes back holds what its type promises.
+#[test]
+fn every_recorded_obj_input_answers() {
+    for bytes in obj_corpus() {
+        let _ = obj::looks_like(&bytes);
+        // The other public entry point, asked of the same bytes.
+        let _ = obj::materials(&bytes);
+        if let Ok(mesh) = obj::read(&bytes) {
+            assert_eq!(mesh.positions.len() % 3, 0);
+            assert!(!mesh.is_empty());
+            assert!(mesh.face_normals.is_empty());
+            // The pairing this format brings: a corner without a normal
+            // has none that could be invented for it.
+            assert!(
+                mesh.corner_normals.is_empty() || mesh.corner_normals.len() == mesh.positions.len()
+            );
+            assert!(
+                mesh.corner_texcoords.is_empty()
+                    || mesh.corner_texcoords.len() == mesh.positions.len()
+            );
+            for value in mesh.positions.iter().chain(&mesh.corner_normals).flatten() {
+                assert!(value.is_finite());
+            }
+            let _ = mesh.winding_disagreements();
+        }
+    }
+}
+
+/// The OBJ corpus keeps its strength.
+#[test]
+fn the_obj_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = obj_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= OBJ_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {OBJ_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|bytes| obj_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= OBJ_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {OBJ_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in OBJ_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+    // A corpus of nothing but refusals teaches the search that
+    // everything is refused, and every branch past the first refusal
+    // goes unvisited.
+    assert!(
+        distinct.iter().filter(|b| obj::read(b).is_ok()).count() >= 6,
+        "the corpus needs files that read, or it tests refusal alone"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn obj_census() {
+    let distinct: BTreeSet<Vec<u8>> = obj_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| obj_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The MTL corpus, held to the same claims by the same shape of gate.
+// ---------------------------------------------------------------------
+
+/// The committed MTL corpus never shrinks below this many **distinct**
+/// inputs. Distinct by content, for the reason above.
+const MTL_LOW_WATER: usize = 13;
+
+/// How many distinct outcomes the MTL seeds must still reach.
+///
+/// **Measured, not guessed** — `mtl_census` below prints it, and the
+/// committed seeds reach five: `Ok` and every one of the four refusals
+/// this reader can make.
+///
+/// **The slack here is one seed rather than the two the gates above
+/// take, and the reason is arithmetic.** Those readers reach eight and
+/// nine outcomes, where two is a quarter of the range; this one reaches
+/// five, where two would be a forty-per-cent hole in a gate whose whole
+/// job is to notice holes. A reader with few answers needs a tighter
+/// floor, not the same one.
+const MTL_DISTINCT_OUTCOMES: usize = 4;
+
+/// Refusals an MTL seed must provoke.
+///
+/// This reader has only four it can make at all, which is itself the
+/// point: a material library indexes nothing, declares no counts and
+/// multiplies nothing, so the ways it can be wrong are few and each one
+/// carries weight.
+///
+/// * `ExpectedKeyword` is the property stated before any `newmtl` — a
+///   file whose first material is missing rather than a value with
+///   nowhere to go. It is also what bytes that are not text get.
+/// * `Unsupported` is the library that declares no material: well-formed
+///   and unusable, where the caller's next move is to find the right
+///   file rather than re-export this one.
+/// * `NotFinite` stops a factor nothing downstream can bound reaching a
+///   renderer.
+/// * `NotANumber` is the one a mutator finds by accident and the one
+///   that would otherwise be a silent zero.
+const MTL_REQUIRED: [&str; 4] = ["ExpectedKeyword", "Unsupported", "NotFinite", "NotANumber"];
+
+fn mtl_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/mtl_read")
+}
+
+fn mtl_corpus() -> Vec<Vec<u8>> {
+    let dir = mtl_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the MTL reader, as a name.
+///
+/// Matched on the enum with no wildcard, so a refusal added later stops
+/// this file compiling until somebody decides whether a seed reaches it.
+fn mtl_outcome(bytes: &[u8]) -> &'static str {
+    match mtl::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => match refusal {
+            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+            MeshError::CountMismatch { .. } => "CountMismatch",
+            MeshError::TooLarge { .. } => "TooLarge",
+            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+            MeshError::NotANumber { .. } => "NotANumber",
+            MeshError::NotFinite { .. } => "NotFinite",
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
+            MeshError::NoGeometry => "NoGeometry",
+        },
+    }
+}
+
+/// Every committed MTL input answers, and every library that comes back
+/// holds what its type promises.
+#[test]
+fn every_recorded_mtl_input_answers() {
+    for bytes in mtl_corpus() {
+        if let Ok(library) = mtl::read(&bytes) {
+            assert!(!library.is_empty());
+            for material in &library {
+                for colour in [
+                    material.ambient,
+                    material.diffuse,
+                    material.specular,
+                    material.emissive,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for value in colour {
+                        assert!(value.is_finite());
+                    }
+                }
+                for value in [material.shininess, material.opacity].into_iter().flatten() {
+                    assert!(value.is_finite());
+                }
+            }
+        }
+    }
+}
+
+/// The MTL corpus keeps its strength.
+#[test]
+fn the_mtl_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = mtl_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= MTL_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {MTL_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|bytes| mtl_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= MTL_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {MTL_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in MTL_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+    assert!(
+        distinct.iter().filter(|b| mtl::read(b).is_ok()).count() >= 6,
+        "the corpus needs files that read, or it tests refusal alone"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn mtl_census() {
+    let distinct: BTreeSet<Vec<u8>> = mtl_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| mtl_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),

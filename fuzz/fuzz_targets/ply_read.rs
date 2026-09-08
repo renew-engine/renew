@@ -44,7 +44,7 @@ fuzz_target!(|data: &[u8]| {
     );
     assert!(!mesh.is_empty(), "a mesh that read has geometry in it");
     assert!(
-        mesh.normals.is_empty(),
+        mesh.face_normals.is_empty(),
         "this reader stores no normals: PLY carries them per vertex and a triangle here carries one"
     );
     for value in mesh.positions.iter().flatten() {

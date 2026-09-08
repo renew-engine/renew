@@ -88,7 +88,7 @@ proptest! {
         let mesh = stl::read(&binary(&source)).expect("a file this test built");
         prop_assert_eq!(mesh.triangles(), source.len());
         for (index, (normal, corners)) in source.iter().enumerate() {
-            prop_assert_eq!(mesh.normals[index], *normal);
+            prop_assert_eq!(mesh.face_normals[index], *normal);
             for (offset, corner) in corners.iter().enumerate() {
                 prop_assert_eq!(mesh.positions[index * 3 + offset], *corner);
             }
@@ -114,7 +114,7 @@ proptest! {
         let mesh = stl::read(text(&source).as_bytes()).expect("a file this test built");
         prop_assert_eq!(mesh.triangles(), source.len());
         for (index, (normal, corners)) in source.iter().enumerate() {
-            prop_assert_eq!(mesh.normals[index], *normal);
+            prop_assert_eq!(mesh.face_normals[index], *normal);
             for (offset, corner) in corners.iter().enumerate() {
                 prop_assert_eq!(mesh.positions[index * 3 + offset], *corner);
             }
@@ -134,8 +134,8 @@ proptest! {
         if let Ok(mesh) = stl::read(&bytes) {
             prop_assert_eq!(mesh.positions.len() % 3, 0);
             prop_assert!(!mesh.is_empty());
-            prop_assert!(mesh.normals.is_empty() || mesh.normals.len() == mesh.triangles());
-            for value in mesh.positions.iter().chain(&mesh.normals).flatten() {
+            prop_assert!(mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles());
+            for value in mesh.positions.iter().chain(&mesh.face_normals).flatten() {
                 prop_assert!(value.is_finite());
             }
         }

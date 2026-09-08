@@ -202,7 +202,11 @@ fn read_binary(bytes: &[u8]) -> Result<Mesh, MeshError> {
         // choosing one of those, and this crate has no standing to.
     }
 
-    Ok(Mesh { positions, normals })
+    Ok(Mesh {
+        positions,
+        face_normals: normals,
+        ..Mesh::default()
+    })
 }
 
 /// Every coordinate of `vector` is a number a bounding box can hold.
@@ -289,7 +293,11 @@ fn read_text(bytes: &[u8]) -> Result<Mesh, MeshError> {
     if positions.is_empty() {
         return Err(MeshError::NoGeometry);
     }
-    Ok(Mesh { positions, normals })
+    Ok(Mesh {
+        positions,
+        face_normals: normals,
+        ..Mesh::default()
+    })
 }
 
 /// A cursor over whitespace-separated words, counting lines as it goes.

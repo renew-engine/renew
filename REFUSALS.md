@@ -8,19 +8,21 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Ten readers in this tree already take bytes nobody here wrote. Their
+Twelve readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one.
 
 **The second half was written before any reader here took geometry, and
-two of the ten now do** — the STL and PLY readers in `crates/mesh`, built
+three of the eleven now do** — the STL, PLY and OBJ readers in `crates/mesh`, built
 against this list rather than against the handful of files that happened
 to be on somebody's disk, which is what the list was for. Where an entry
 below says there is no local precedent, check `crates/mesh` first: its
-ten `MeshError` variants answer "not this format at all", "too short to
-hold its own header", "a declared count the bytes present cannot supply",
-"a value outside the format's own domain", "legal in the format, not
-implemented here", and the product ceiling of entry 31. The rest of part
+eleven `MeshError` variants answer "not this format at all", "too short
+to hold its own header", "a declared count the bytes present cannot
+supply", "a value outside the format's own domain", "zero where zero
+has no meaning" (entry 12, which OBJ's one-based indices are exactly),
+"legal in the format, not implemented here", and the product ceiling of
+entry 31. The rest of part
 two is still ahead of the code, and still says so.
 
 ## How to use this
@@ -55,13 +57,27 @@ is dead code that reads like safety.
 | JSON | `JsonErrorKind` | `crates/json/src/error.rs` | 29 | `json_parse` | 30 |
 | Deflate, inside PNG | `InflateError` | `crates/png/src/inflate.rs` | 7 | `png_decode` | — |
 | Mesh descriptor | `TargetError::Creation` | `crates/rhi/src/vk/mesh.rs` | 8, as strings | none | none |
-| STL | `MeshError` | `crates/mesh/src/error.rs` | 10, shared with PLY | `stl_read` | 18 |
-| PLY | `MeshError` | `crates/mesh/src/error.rs` | 10, shared with STL | `ply_read` | 16 |
+| STL | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `stl_read` | 18 |
+| PLY | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `ply_read` | 16 |
+| OBJ | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `obj_read` | 16 |
+| MTL | `MeshError` | `crates/mesh/src/error.rs` | 4 of the 11 | `mtl_read` | 13 |
 
-**The two mesh readers share one error type, and each names in a test
+**The MTL row is the shortest in this table, and that is the honest
+number rather than a gap.** A material library indexes nothing, declares
+no counts and multiplies nothing, so four refusals is the whole of what
+can go wrong in it, and its census writes a sentence for each of the
+seven it cannot reach. **A reader with few answers needs a tighter
+corpus floor, not the same one**, which is why its gate takes one seed of
+slack where the others take two.
+
+**The four mesh readers share one error type, and each names in a test
 which variants it cannot reach** — STL has no index to be out of range,
-PLY has no keyword to be missing — so the shared type costs neither
-reader the ability to say its own list is complete.
+PLY has no keyword to be missing, OBJ has no header to be too short for
+— so the shared type costs no reader the ability to say its own list is
+complete. **That census is what forced `IndexZero` into existence and
+what deleted a refusal from the STL reader that no input could produce**:
+it demands a sentence per variant per reader, and a sentence that cannot
+be written truthfully is a finding.
 
 The mesh-descriptor row is the one to read before writing an importer
 that touches the GPU. Its refusals are formatted strings rather than

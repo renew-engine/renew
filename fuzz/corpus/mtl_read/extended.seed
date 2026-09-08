@@ -1,0 +1,7 @@
+# exported by something
+newmtl modern
+illum 2
+Pr 0.4
+Pm 0
+aniso 0.1
+Kd 0.5 0.5 0.5

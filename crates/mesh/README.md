@@ -1,8 +1,17 @@
 # renew-mesh
 
-Readers for the mesh files other tools write — STL and PLY so far. Bytes in, validated
-geometry out, and nothing else: this crate never opens a file, never
-takes a path, and never reads a clock.
+Readers for the mesh files other tools write — STL, PLY and OBJ so far, plus the
+MTL material libraries an OBJ refers to. Bytes in, validated geometry
+out, and nothing else: this crate never opens a file, never takes a path,
+and never reads a clock.
+
+That last promise is why OBJ's `mtllib` is read as a name and not
+followed: a material library is a second file, and naming one is as far
+as a reader that cannot open anything is able to go. `obj::materials`
+hands those names back, as an entry point of its own rather than a
+second return value from `obj::read` — the two questions have different
+callers, and one of them wants to know what a file depends on before
+deciding whether to load it at all.
 
 ```rust
 use renew_mesh::stl;
@@ -133,29 +142,43 @@ random noise, single-byte corruptions and every prefix of a good file.
 `tests/ply.rs` does the same for PLY, where the header is a schema rather
 than a fixed layout, so it also reads every scalar type at its own width,
 sign and byte order, and bounds the time a header is allowed to take.
-`tests/properties.rs` round-trips generated meshes through both STL
-spellings and asserts that every byte string gets an answer.
+`tests/obj.rs` does it for OBJ, where the whole input is a grammar: both
+index spellings, the four ways a corner may name its streams, and the
+line-by-line refusals a format with no header has instead of a size
+check. `tests/mtl.rs` does it for the material libraries, where the
+interesting cases are structural rather than numeric — a property before
+the material it belongs to, two reciprocal spellings of one factor, a
+map line whose options run past its file name. `tests/properties.rs` round-trips generated meshes through both
+STL spellings and asserts that every byte string gets an answer.
 
-**Each reader's census is a test, not a comment.** Both suites map every
-`MeshError` variant to either a file in the suite that provokes it or a
-sentence saying why this format cannot reach it, with no wildcard arm —
+**Each reader's census is a test, not a comment.** All four suites map
+every `MeshError` variant to either a file in the suite that provokes it
+or a sentence saying why this format cannot reach it, with no wildcard
+arm —
 so a new variant does not compile until someone says which it is, and a
 refusal that stops being reachable cannot sit there unnoticed.
 
-`fuzz/fuzz_targets/stl_read.rs` and `ply_read.rs` take bytes unfiltered —
-for STL the dispatch between the two encodings is itself untrusted-input
-handling, and for PLY the header is — and each asserts the invariants a
-returned mesh carries. `tests/corpus_replay.rs` replays both committed
-corpora on stable, on every merge, with a floor on the number of distinct
-inputs and on the number of distinct answers they reach, plus four
-refusals named individually per format.
+`fuzz/fuzz_targets/stl_read.rs`, `ply_read.rs`, `obj_read.rs` and
+`mtl_read.rs` take bytes unfiltered — for STL the dispatch between the
+two encodings is itself untrusted-input handling, for PLY the header is,
+and for OBJ and MTL every line is — and each asserts the invariants its
+own return type carries. `tests/corpus_replay.rs` replays all four
+committed corpora on stable, on every merge, with a floor on the number
+of distinct inputs and on the number of distinct answers they reach, plus
+four refusals named individually per format. **MTL's outcome floor takes
+one seed of slack where the others take two**: it can make only four
+refusals, so the usual margin would be a hole rather than a margin.
 
 **Every fixture is generated.** A model downloaded from a sample
 repository would be a dependency with a licence, and a directory of them
 would be a dependency nobody recorded — and a mesh, unlike a datagram, is
 the kind of file that has an author. `examples/make_corpus.rs` builds the
-25 STL seeds and `examples/make_ply_corpus.rs` the 23 PLY ones; between
-them every committed seed is built here rather than found.
+25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones,
+`examples/make_obj_corpus.rs` the 25 OBJ ones and
+`examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
+committed seed is built here rather than found. **For OBJ that rule bites
+hardest**: an OBJ is what a person exports out of a modelling tool, so
+the obvious way to get one is to take somebody's model.
 
 ## Manifest
 
