@@ -339,6 +339,9 @@ fn every_byte_string_gets_an_answer() {
 /// until somebody decides which it is.
 fn mtl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::NotThisFormat { .. } => Some(
+            "this format has no signature to fail: a file is offered to this reader by detection rather than claiming to be one, and a line it cannot read is refused as a bad line rather than as somebody else's format",
+        ),
         // Reachable, and each is provoked by a file in this suite.
         MeshError::ExpectedKeyword { .. }
         | MeshError::NotANumber { .. }

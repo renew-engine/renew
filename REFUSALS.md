@@ -239,7 +239,24 @@ perfectly good JPEG.
 this), `PackError::NotAPack`, `WavError::NotRiff` and `NotWave` — two
 variants, because the container and the payload kind are separate claims —
 `DocumentError::NotADocument`, `WireError::BadMagic`,
-`TraceErrorKind::NotATrace`.
+`TraceErrorKind::NotATrace`, `MeshError::NotThisFormat { expected }`.
+
+**And the mesh one is the entry's own argument, learned the hard way.**
+For three rounds of work the mesh readers had no such variant. PLY answered
+a file of another format with `ExpectedKeyword` naming `end_header` on line
+1 — because the terminator was searched for before anything checked the
+magic — which is *the identical refusal a genuinely truncated PLY gets*.
+Two faults, one message, and the message described the fault the file did
+not have. That is this entry's "somebody looking for corruption in a
+perfectly good JPEG", reproduced exactly, in the reader written last.
+
+**STL still cannot reach it, and that is not an omission.** The format has
+no magic: its binary encoding opens with eighty bytes of anything at all,
+so "these are not STL bytes" and "these are STL bytes that were cut short"
+are the same observation. OBJ and MTL have no signature either. A reader
+whose format gives it no way to tell should say the more useful thing —
+the count declared and the bytes that arrived — and its refusal census
+should say why it cannot do this one, which all three do.
 
 ### 2. Too short to hold its own header
 
@@ -258,7 +275,14 @@ interesting way, there is nothing there.
 **In the tree.** `PackError::NoHeader { len }`,
 `WavError::TooShort { len }`, `DocumentError::NoHeader { len }`,
 `WireError::TooShort { len }`, `TraceErrorKind::Empty`,
-`DecodeError::BadHeader` (no `IHDR`, or one that is not thirteen bytes).
+`DecodeError::BadHeader` (no `IHDR`, or one that is not thirteen bytes),
+`MeshError::TooShortForHeader { needs, len }` — carrying both numbers, so
+the message is the requirement and the shortfall rather than "too short".
+
+The mesh blob shows the "one comparison up front" argument paying off
+literally: its header offsets are a running sum of field widths and every
+field after the check is read with a total accessor, because the length
+was established once.
 
 ### 3. A version this build does not read
 
@@ -278,7 +302,15 @@ implemented; never a newer one.
 **In the tree.** `PackError::UnknownFormat { found }`,
 `DocumentError::UnknownVersion { found }`,
 `WireError::BadVersion { saw }`,
-`TraceErrorKind::UnsupportedVersion { found, supported }`.
+`TraceErrorKind::UnsupportedVersion { found, supported }`,
+`MeshError::Unsupported { wanted: "a blob of version 1" }`.
+
+The mesh blob also has this entry's subtler member, in its own shape: a
+presence bitmask with a bit set outside this version's vocabulary is
+refused as `Unsupported { wanted: "a blob using only the arrays this
+version defines" }` rather than masked off. A file whose header uses a
+construct the reader does not know is a file a later build wrote, and
+quietly ignoring the bit would read its arrays at the wrong offsets.
 
 There is a subtler member of this family worth copying:
 `TraceErrorKind::EventFromANewerFormat { kind, introduced, declared }`
@@ -331,7 +363,15 @@ equality, never a lower bound.
 **In the tree.** `PackError::SizeMismatch { declared, actual }`,
 `WavError::TrailingBytes`,
 `WireError::SizeMismatch { kind, declared, actual }`,
-`DocumentError::SizeMismatch`, `TraceErrorKind::TrailingText`.
+`DocumentError::SizeMismatch`, `TraceErrorKind::TrailingText`,
+`MeshError::CountMismatch { declared, actual, count }`.
+
+The mesh blob is equality (`wanted != bytes.len()`), and it buys more than
+this entry claims. Because the byte total the header implies must *equal*
+the length in hand, the bytes the reader allocates are the bytes it was
+handed: the amplification factor is exactly one, and a header-only file
+can ask for nothing. An "at least" comparison would have given that up
+along with everything else in this entry.
 
 ### 6. A checksum that does not match its bytes
 
@@ -378,8 +418,19 @@ region arithmetic to 64 bits so a hostile count cannot wrap the sum on a
 
 **In the tree.** `DecodeError::TooLarge { width, height }`,
 `InflateError::TooLarge { limit }`, `PackError::TooLarge { field, value }`,
-`WireError::TooLong` and `TickOverflow`, and — for the seam that reads a
-path rather than bytes — `FsError::TooLarge { path, limit }`.
+`WireError::TooLong` and `TickOverflow`, `MeshError::TooLarge { field,
+value }`, and — for the seam that reads a path rather than bytes —
+`FsError::TooLarge { path, limit }`.
+
+`MeshError::TooLarge` is worth reading for the distinction it draws in its
+own documentation: **a policy ceiling, not a representation limit**. A
+representation limit is reached only after the allocation has been
+attempted; a policy ceiling is a refusal that costs nothing. It bounds a
+schema's element and property counts, the corners one face may name, and
+— separately — the total geometry a file may build, because the first
+three bound factors and none of them bounds the product. That last
+ceiling is this entry's `checked_mul` argument arriving as a fourth
+constant rather than as arithmetic.
 
 Note where that last one lives. The parser crates take bytes and never a
 path; the bound on reading an untrusted *file* belongs at the seam that
@@ -493,8 +544,18 @@ step assumes ran at least once.
 `NoImageData`, `PackError::EmptyName { index }` (an empty name no lookup
 could ever match), `WireError::FrameCountZero`, `InputBytesZero`,
 `ChatEmpty`, `SessionZero` and `DigestPeriodZero`, `DocumentError::Empty`,
-`IconError::Empty`, and the mesh descriptor's `create_mesh(no vertices)`,
-`create_mesh(no indices)` and `create_mesh(zero vertex stride)`.
+`IconError::Empty`, `MeshError::IndexZero { line }` and
+`MeshError::NoGeometry`, and the mesh descriptor's
+`create_mesh(no vertices)`, `create_mesh(no indices)` and
+`create_mesh(zero vertex stride)`.
+
+`IndexZero` is this entry's "separate variant from out of range" written
+out: OBJ numbers vertices from one, so a face naming vertex `0` is a
+default that escaped rather than a number computed wrongly, and the two
+send you to different code. `NoGeometry` is the other half — a file that
+is well-formed and declares nothing — refused rather than returned as an
+empty mesh, because every way a file ends up with zero triangles is a
+mistake upstream and a caller that wanted nothing did not need a file.
 
 ### 13. Redundant fields that disagree with what they are derived from
 
@@ -538,7 +599,11 @@ appears to have.
 
 **In the tree.** `PackError::NameNotUtf8 { index }`,
 `TraceErrorKind::NotADecimalInteger`, `IntegerTooLarge`, `NotTypedText`,
-`NotAHexPattern` and `UnwritableText`, `FsError::InvalidUtf8 { path }`.
+`NotAHexPattern` and `UnwritableText`, `FsError::InvalidUtf8 { path }`,
+`MeshError::NotANumber { found, line }` — the numeric half, for a column
+in an ASCII PLY or an OBJ that is not the number the grammar requires,
+carrying the text truncated to something printable so the message cannot
+itself become an injection of the file's bytes into a log.
 
 The fuzz targets show the boundary version of the same rule. The trace
 reader's contract starts at `&str`, so its target skips non-UTF-8 input
@@ -578,8 +643,18 @@ importer is in the same position: it reads each file once. Do the scan.
 `DocumentError::PatchOutOfPool { index, entry }` and
 `BadParent { index, parent }`,
 `InflateError::BadDistance { distance, produced }`,
-`WireError::SeatNotInRoster`, and
+`WireError::SeatNotInRoster`,
+`MeshError::IndexOutOfRange { index, count, face }`, and
 `create_mesh(index past the last vertex)`.
+
+The mesh one settles a question this entry does not raise: **its `index`
+is signed.** OBJ lets a face count backwards from what has been declared
+so far, so `-5` in a file with three vertices is a real thing a writer
+emits, and reporting its magnitude would send somebody looking for a fifth
+vertex that was never the subject. An index refusal should spell the index
+the way the file spelled it. It carries the face as well, because one bad
+face and an index base that is off by one everywhere are different
+problems and the count alone cannot tell them apart.
 
 ### 16. A required section that is absent
 
@@ -597,7 +672,16 @@ format has an explicit end marker, requiring it is how truncation is
 caught. If it does not, this is the strongest argument for adding one.
 
 **In the tree.** `DecodeError::NoImageData` and `MissingEnd`,
-`WavError::MissingChunk { id }` and `MissingPadByte`.
+`WavError::MissingChunk { id }` and `MissingPadByte`,
+`MeshError::ExpectedKeyword { expected: "end_header", .. }`.
+
+PLY is this entry's argument in a text format: the header is variable
+length and the body follows it immediately, so a file cut short inside the
+header has no terminator, and requiring `end_header` is the only thing
+that catches it. Note what it took to make that refusal *mean* truncation
+— until the magic was checked first, every file of every other format got
+this same answer, and a refusal that fires for two unrelated reasons
+carries no information about either.
 
 ### 17. A second legal spelling of one fact
 
@@ -773,12 +857,22 @@ This is entry 11 — outside this build's range — but the range comes from
 the engine's number type rather than from the file format, which is why
 it is easy to forget: nothing in the file is wrong.
 
-**In the tree.** `MeshError::TooLarge { field, value }` — PLY refuses an
-element count, a list length, or a schema larger than this reader will hold,
-**before the allocation it would imply is attempted**, which is the half that
-matters: a header is a promise about size, and believing it is how a
-twelve-byte file asks for four gigabytes. `PackError::TooLarge { field, value }`
-has the same shape, for a value that cannot be represented on this target.
+**Nearest thing here.** `PackError::TooLarge { field, value }`, for a
+value that cannot be represented on this target. **Nothing in this tree
+refuses a coordinate for being outside the engine's number range**, and
+`crates/mesh` cannot: it has no dependencies at all, so it never converts
+anything to `Fixed` and has no bound to check against. The refusal this
+entry asks for belongs to whatever converts an imported model into
+simulation state, which does not exist yet.
+
+*This entry briefly claimed `MeshError::TooLarge` implemented it. That
+variant is a **policy ceiling**, refusing counts a reader will not hold —
+entry 7 — and its own documentation records that an earlier version of
+*it* made the same conflation in the other direction. Two documents have
+now confused a limit chosen by a reader with a limit imposed by a number
+type, which is a good reason to keep the sentence that tells them
+apart: a representation limit is reached after the work is attempted, a
+policy ceiling before.*
 
 ## Streams that have to agree
 

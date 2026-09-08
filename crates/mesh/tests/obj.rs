@@ -563,6 +563,9 @@ fn the_names_returned_never_outweigh_the_file_they_came_from() {
 /// the STL reader that no input on any target could produce.
 fn obj_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::NotThisFormat { .. } => Some(
+            "this format has no signature to fail: a file is offered to this reader by detection rather than claiming to be one, and a line it cannot read is refused as a bad line rather than as somebody else's format",
+        ),
         // Reachable, and each is provoked by a file in this suite.
         MeshError::TooLarge { .. }
         | MeshError::ExpectedKeyword { .. }

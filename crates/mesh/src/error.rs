@@ -15,21 +15,31 @@
 //! that is not one, then a value that is a number and not a usable one.
 //!
 //! **Nothing here is a variant no reader constructs**, and getting to
-//! that took three deletions. Two variants were written from the shape
-//! of the format rather than the shape of the code — a truncated-record
+//! that took two deletions. Both were written from the shape of the
+//! format rather than the shape of the code — a truncated-record
 //! refusal and a trailing-bytes one — and neither was reachable once
 //! the length arithmetic had already accounted for the file exactly.
 //!
-//! **The third is a fact about STL worth keeping.** There was a "these
-//! bytes are not this format" refusal, on the reasoning that a caller
-//! who fed a PNG to a mesh reader has a routing bug and a caller with a
-//! truncated file has a download problem. Sound reasoning, and STL
-//! gives no way to act on it: **the format has no magic number.** Its
-//! binary encoding opens with eighty bytes of anything at all, so
-//! "these are not STL bytes" and "these are STL bytes that were cut
-//! short" are the same observation. The reader says the more useful of
-//! the two — the count that was declared and the bytes that arrived —
-//! and does not pretend to the distinction.
+//! **A third was deleted and has since come back, which is the more
+//! useful story.** `NotThisFormat` was removed on the reasoning that a
+//! caller who fed a PNG to a mesh reader has a routing bug and a caller
+//! with a truncated file has a download problem — sound — and that STL
+//! gives no way to act on the distinction, which is also sound: **that
+//! format has no magic number.** Its binary encoding opens with eighty
+//! bytes of anything at all, so "these are not STL bytes" and "these are
+//! STL bytes that were cut short" are the same observation. STL says the
+//! more useful of the two, the count declared and the bytes that
+//! arrived, and does not pretend to a distinction it cannot make.
+//!
+//! **The error was generalising one format's limitation to the enum.**
+//! PLY opens with the word `ply` and the blob with an eight-byte magic,
+//! and both could tell the two faults apart the whole time. PLY instead
+//! answered a foreign file with `ExpectedKeyword` naming `end_header` —
+//! a claim about a truncated PLY, made about a file that had never been
+//! one, and byte-identical to what a genuinely truncated PLY got. A
+//! refusal reachable by two unrelated faults says nothing about either.
+//! The variant is back, the readers that can reach it do, and the three
+//! that cannot say so in their own censuses.
 //!
 //! An error vocabulary with unreachable variants in it is a claim that
 //! cases exist which do not, and a caller matching exhaustively pays
@@ -92,6 +102,26 @@ pub enum MeshError {
         field: &'static str,
         /// The value, widened so the message is the same everywhere.
         value: u64,
+    },
+
+    /// These bytes are not this format at all.
+    ///
+    /// **The difference from every refusal below is what it tells the
+    /// caller to go and look at.** A malformed file of the right kind
+    /// sends a person to the file; a file of the wrong kind sends them
+    /// to the wiring — the wrong path, the wrong entry, a mislabelled
+    /// asset. Folding the two together sends somebody hunting for
+    /// corruption in a perfectly good file of another format.
+    ///
+    /// **Every other parser in this repository has this refusal** — the
+    /// PNG decoder, the pack reader, the WAV reader, the UI document,
+    /// the wire codec and the trace codec each name it. The mesh readers
+    /// did not, and answered instead with a keyword and a line number
+    /// they had invented, which was worse than a generic failure because
+    /// it was specific and wrong.
+    NotThisFormat {
+        /// What the opening bytes would have had to say.
+        expected: &'static str,
     },
 
     /// A word the grammar requires is not there.
@@ -221,6 +251,7 @@ impl MeshError {
             Self::TooShortForHeader { .. } => "TooShortForHeader",
             Self::CountMismatch { .. } => "CountMismatch",
             Self::TooLarge { .. } => "TooLarge",
+            Self::NotThisFormat { .. } => "NotThisFormat",
             Self::ExpectedKeyword { .. } => "ExpectedKeyword",
             Self::NotANumber { .. } => "NotANumber",
             Self::NotFinite { .. } => "NotFinite",
@@ -236,6 +267,14 @@ impl MeshError {
 impl fmt::Display for MeshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // Says what the file is not, and does not guess at what it
+            // is: the caller knows what it meant to open, and naming
+            // another format here would be a second guess on top of a
+            // first.
+            Self::NotThisFormat { expected } => write!(
+                f,
+                "these bytes do not open with {expected}, so they are not this format at all"
+            ),
             Self::TooShortForHeader { needs, len } => write!(
                 f,
                 "a {needs}-byte header is the least this format can be, and there are {len} bytes"
@@ -384,6 +423,16 @@ mod tests {
     /// **Matched exhaustively with no wildcard**, which is the whole
     /// benefit of the enum being closed: a refusal added later stops
     /// this file compiling until somebody writes what it says.
+    ///
+    /// **The match is checked by the compiler and the list below is
+    /// not, and that gap has already been fallen into.** Adding
+    /// `NotThisFormat` forced a new arm — the enum is closed, so it had
+    /// to — and the arm was written while the list was not touched, so
+    /// the new variant had a rule about its message and no instance to
+    /// apply it to. The test went on passing and measured one variant
+    /// fewer. The count below is the only part of this that fails when
+    /// that happens again; it is a hand-maintained number, and it is
+    /// here because the compiler cannot be made to hold this half.
     #[test]
     fn every_refusal_names_its_numbers() {
         let all = [
@@ -422,7 +471,12 @@ mod tests {
             },
             MeshError::Unsupported { wanted: "vertex" },
             MeshError::NoGeometry,
+            MeshError::NotThisFormat { expected: "ply" },
         ];
+
+        // One per variant. Raise it when the enum grows, in the same
+        // change that writes the new arm below.
+        assert_eq!(all.len(), 12, "a variant is missing an instance here");
 
         for refusal in &all {
             let shown = refusal.to_string();
@@ -430,6 +484,7 @@ mod tests {
             // Rule two: the numbers a caller would otherwise go to a hex
             // editor for are in the message.
             let numbers: Vec<&str> = match refusal {
+                MeshError::NotThisFormat { .. } => vec!["ply"],
                 MeshError::TooShortForHeader { .. } => vec!["84", "3"],
                 MeshError::CountMismatch { .. } => vec!["134", "90", "1"],
                 MeshError::TooLarge { .. } => vec!["element count", "4000000000"],
