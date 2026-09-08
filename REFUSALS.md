@@ -8,7 +8,7 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Twelve readers in this tree already take bytes nobody here wrote. Their
+Thirteen readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one.
 
@@ -61,6 +61,7 @@ is dead code that reads like safety.
 | PLY | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `ply_read` | 16 |
 | OBJ | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `obj_read` | 16 |
 | MTL | `MeshError` | `crates/mesh/src/error.rs` | 4 of the 11 | `mtl_read` | 13 |
+| Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 8 of the 11 | `blob_read` | 16 |
 
 **The MTL row is the shortest in this table, and that is the honest
 number rather than a gap.** A material library indexes nothing, declares

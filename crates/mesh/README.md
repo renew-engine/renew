@@ -1,7 +1,8 @@
 # renew-mesh
 
 Readers for the mesh files other tools write — STL, PLY and OBJ so far, plus the
-MTL material libraries an OBJ refers to. Bytes in, validated geometry
+MTL material libraries an OBJ refers to, and a canonical blob for keeping
+what was read without parsing the original again. Bytes in, validated geometry
 out, and nothing else: this crate never opens a file, never takes a path,
 and never reads a clock.
 
@@ -151,21 +152,24 @@ the material it belongs to, two reciprocal spellings of one factor, a
 map line whose options run past its file name. `tests/properties.rs` round-trips generated meshes through both
 STL spellings and asserts that every byte string gets an answer.
 
-**Each reader's census is a test, not a comment.** All four suites map
+**Each reader's census is a test, not a comment.** All five suites map
 every `MeshError` variant to either a file in the suite that provokes it
 or a sentence saying why this format cannot reach it, with no wildcard
 arm —
 so a new variant does not compile until someone says which it is, and a
 refusal that stops being reachable cannot sit there unnoticed.
 
-`fuzz/fuzz_targets/stl_read.rs`, `ply_read.rs`, `obj_read.rs` and
-`mtl_read.rs` take bytes unfiltered — for STL the dispatch between the
+`fuzz/fuzz_targets/stl_read.rs`, `ply_read.rs`, `obj_read.rs`,
+`mtl_read.rs` and `blob_read.rs` take bytes unfiltered — for STL the dispatch between the
 two encodings is itself untrusted-input handling, for PLY the header is,
 and for OBJ and MTL every line is — and each asserts the invariants its
-own return type carries. `tests/corpus_replay.rs` replays all four
+own return type carries. `tests/corpus_replay.rs` replays all five
 committed corpora on stable, on every merge, with a floor on the number
 of distinct inputs and on the number of distinct answers they reach, plus
-four refusals named individually per format. **MTL's outcome floor takes
+four refusals named individually per format. **The blob's replay checks
+something the others cannot**: that every seed which reads writes itself
+back to the same bytes, which is a claim only a format this crate also
+writes can make. **MTL's outcome floor takes
 one seed of slack where the others take two**: it can make only four
 refusals, so the usual margin would be a hole rather than a margin.
 
@@ -176,7 +180,9 @@ the kind of file that has an author. `examples/make_corpus.rs` builds the
 25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
-committed seed is built here rather than found. **For OBJ that rule bites
+committed seed is built here rather than found. **The blob's 23 seeds
+need no such argument at all**, because the format is this crate's own
+and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
 hardest**: an OBJ is what a person exports out of a modelling tool, so
 the obvious way to get one is to take somebody's model.
 

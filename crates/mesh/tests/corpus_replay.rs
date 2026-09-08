@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{MeshError, mtl, obj, ply, stl};
+use renew_mesh::{MeshError, blob, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -663,6 +663,158 @@ fn the_mtl_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn mtl_census() {
     let distinct: BTreeSet<Vec<u8>> = mtl_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| mtl_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The blob corpus, held to the same claims by the same shape of gate.
+// ---------------------------------------------------------------------
+
+/// The committed blob corpus never shrinks below this many **distinct**
+/// inputs. Distinct by content, for the reason above.
+const BLOB_LOW_WATER: usize = 16;
+
+/// How many distinct outcomes the blob seeds must still reach.
+///
+/// **Measured, not guessed** — `blob_census` below prints it.
+const BLOB_DISTINCT_OUTCOMES: usize = 7;
+
+/// Refusals a blob seed must provoke.
+///
+/// * `TooShortForHeader` and `CountMismatch` are the two a transfer that
+///   went wrong produces, and they are different problems: one is bytes
+///   that never held a header, the other is a header describing a body
+///   that is not there.
+/// * `Unsupported` is a blob from a later build — well-formed and
+///   unusable here, where the caller's next move is a newer build.
+/// * `TooLarge` is the four-byte corner count that sizes an allocation,
+///   which is the one number in this format an attacker would reach for.
+const BLOB_REQUIRED: [&str; 4] = [
+    "TooShortForHeader",
+    "CountMismatch",
+    "Unsupported",
+    "TooLarge",
+];
+
+fn blob_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/blob_read")
+}
+
+fn blob_corpus() -> Vec<Vec<u8>> {
+    let dir = blob_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the blob reader, as a name.
+///
+/// Matched on the enum with no wildcard, so a refusal added later stops
+/// this file compiling until somebody decides whether a seed reaches it.
+fn blob_outcome(bytes: &[u8]) -> &'static str {
+    match blob::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => match refusal {
+            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+            MeshError::CountMismatch { .. } => "CountMismatch",
+            MeshError::TooLarge { .. } => "TooLarge",
+            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+            MeshError::NotANumber { .. } => "NotANumber",
+            MeshError::NotFinite { .. } => "NotFinite",
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
+            MeshError::NoGeometry => "NoGeometry",
+        },
+    }
+}
+
+/// Every committed blob answers, and every mesh that comes back writes
+/// itself again unchanged.
+///
+/// **The canonical claim, replayed on stable at every merge.** The other
+/// corpora can only check that a reader answered; this one can check
+/// that the format is a bijection on what it accepts, because the writer
+/// is here too.
+#[test]
+fn every_recorded_blob_answers_and_rewrites_itself() {
+    for bytes in blob_corpus() {
+        let Ok(mesh) = blob::read(&bytes) else {
+            continue;
+        };
+        assert_eq!(mesh.positions.len() % 3, 0);
+        assert!(!mesh.is_empty());
+        assert!(mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles());
+        assert!(
+            mesh.corner_normals.is_empty() || mesh.corner_normals.len() == mesh.positions.len()
+        );
+        assert!(
+            mesh.corner_texcoords.is_empty() || mesh.corner_texcoords.len() == mesh.positions.len()
+        );
+        for value in mesh.positions.iter().flatten() {
+            assert!(value.is_finite());
+        }
+
+        let again = blob::write(&mesh);
+        let twice = blob::read(&again).expect("what this crate wrote, this crate reads");
+        assert_eq!(twice, mesh, "a blob read and rewritten is the same mesh");
+        assert_eq!(blob::write(&twice), again, "and the same bytes");
+    }
+}
+
+/// The blob corpus keeps its strength.
+#[test]
+fn the_blob_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = blob_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= BLOB_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {BLOB_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> =
+        distinct.iter().map(|bytes| blob_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= BLOB_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {BLOB_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in BLOB_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+    // The presence bits are independent, so a corpus that only ever held
+    // one shape would teach the search nothing about the other seven.
+    assert!(
+        distinct.iter().filter(|b| blob::read(b).is_ok()).count() >= 8,
+        "the corpus needs every presence shape that reads, or it tests one arm of three"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn blob_census() {
+    let distinct: BTreeSet<Vec<u8>> = blob_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| blob_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),
