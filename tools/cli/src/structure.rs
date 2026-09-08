@@ -27,6 +27,21 @@ pub const CORE_CRATES: &[&str] = &[
 /// crate claims determinism and this name is absent.
 const PLATFORM_CRATE: &str = "renew-platform";
 
+/// The float methods a crate in a simulation closure must ban by name.
+///
+/// **Not the whole list, and deliberately so.** The bans in each
+/// `clippy.toml` cover seventeen methods; requiring all thirty-four paths
+/// here would make this check a copy of that file, and the copy would rot.
+/// These six span the classes — a fused multiply-add, a root, a power, a
+/// logarithm, a trigonometric function, and a division written as a call —
+/// so a crate that has them has understood the rule rather than pasted a
+/// line.
+///
+/// `mul_add` leads because it is the one this tree has been bitten by:
+/// whether the multiply and the add round once or twice is a property of
+/// the target, not the source.
+const REQUIRED_FLOAT_METHOD_BANS: &[&str] = &["mul_add", "sqrt", "powf", "ln", "sin", "recip"];
+
 const MATURITIES: &[&str] = &["bootstrap", "internal", "stable"];
 const REQUIRED_FIELDS: &[&str] = &[
     "purpose",
@@ -66,6 +81,19 @@ pub struct CrateShape {
     /// rules stay pure functions of the shapes and their tests can
     /// construct a crate that does or does not carry it.
     pub denies_float: bool,
+    /// Does this crate ban the float maths the operator lint cannot see?
+    ///
+    /// **A second question, not a restatement of the first.**
+    /// `denies_float` reads a `deny` out of `src/lib.rs` and that deny
+    /// covers operators. This reads `clippy.toml` and asks whether the
+    /// method spellings are banned too — `a.mul_add(b, c)`, `a.sin()` —
+    /// which the deny does not reach, because they are calls.
+    ///
+    /// Kept separate rather than folded in, because the two are declared
+    /// in different files by different mechanisms and a crate can
+    /// honestly have one without the other. A finding that could not say
+    /// which was missing would send a reader to the wrong file.
+    pub bans_float_methods: bool,
     /// Parsed metadata table, or the list of schema problems.
     pub meta: Result<Meta, Vec<String>>,
 }
@@ -166,6 +194,14 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
         // is the safe direction: the rule reports rather than assumes.
         let denies_float = std::fs::read_to_string(format!("{dir}/src/lib.rs"))
             .is_ok_and(|source| source.contains("clippy::float_arithmetic"));
+        // Read from the lint file rather than the source, because that is
+        // where the ban lives. An unreadable file answers `false`, which
+        // is the safe direction: rule 7 already reports a crate with no
+        // `clippy.toml`, so this cannot be the only thing that noticed.
+        let lints = std::fs::read_to_string(format!("{dir}/clippy.toml")).unwrap_or_default();
+        let bans_float_methods = REQUIRED_FLOAT_METHOD_BANS.iter().all(|method| {
+            lints.contains(&format!("f32::{method}")) && lints.contains(&format!("f64::{method}"))
+        });
         let meta = validate_meta(package);
         shapes.push(CrateShape {
             name,
@@ -175,6 +211,7 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
             runtime_deps,
             foreign_deps,
             denies_float,
+            bans_float_methods,
             meta,
         });
     }
@@ -574,6 +611,15 @@ fn float_closure_rules(shape: &CrateShape, shapes: &[CrateShape], findings: &mut
         let Some(dep) = shapes.iter().find(|candidate| candidate.name == current) else {
             continue;
         };
+        if !dep.bans_float_methods {
+            findings.push(Finding {
+                rule: "float-closure",
+                message: format!(
+                    "{} declares simulation = true and reaches {current} (transitively), which does not ban the float maths the operator lint cannot see — `clippy::float_arithmetic` flags operators, so `a.mul_add(b, c)` and `a.sin()` compile clean under it, and whether a fused multiply-add rounds once or twice is a property of the target rather than of the source; the ban belongs in that crate's `clippy.toml` beside the ones for the clock and the filesystem",
+                    shape.name
+                ),
+            });
+        }
         if !dep.denies_float {
             findings.push(Finding {
                 rule: "float-closure",
@@ -674,6 +720,7 @@ mod tests {
     fn shape(name: &str, engine: bool, deps: &[&str], maturity: &str, core: bool) -> CrateShape {
         CrateShape {
             name: name.to_string(),
+            bans_float_methods: true,
             dir: format!("/w/crates/{name}"),
             engine,
             deps: deps.iter().map(ToString::to_string).collect(),
@@ -753,6 +800,7 @@ mod tests {
     fn schema_problems_surface_per_crate() {
         let shapes = [CrateShape {
             name: "broken".to_string(),
+            bans_float_methods: true,
             dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
@@ -838,6 +886,7 @@ mod tests {
     fn non_engine_crates_stay_in_their_lane() {
         let flagged = [CrateShape {
             name: "tool".to_string(),
+            bans_float_methods: true,
             dir: "/w/crates/x".to_string(),
             engine: false,
             deps: Vec::new(),
@@ -882,6 +931,7 @@ mod tests {
     fn sim(name: &str, deps: &[&str], simulation: bool) -> CrateShape {
         CrateShape {
             name: name.to_string(),
+            bans_float_methods: true,
             dir: format!("/w/crates/{name}"),
             engine: true,
             deps: deps.iter().map(|d| (*d).to_string()).collect(),
@@ -909,6 +959,7 @@ mod tests {
     ) -> CrateShape {
         CrateShape {
             denies_float,
+            bans_float_methods: true,
             foreign_deps: foreign.iter().map(|d| (*d).to_string()).collect(),
             ..sim(name, deps, simulation)
         }
@@ -922,6 +973,63 @@ mod tests {
             runtime_deps: Vec::new(),
             ..sim(name, &[], simulation)
         }
+    }
+
+    /// **The deny and the method ban are two claims, and the rule asks
+    /// both.**
+    ///
+    /// A crate can honestly deny `clippy::float_arithmetic` and still
+    /// compute with floats, because that lint flags operators and not
+    /// calls. This fixture is that crate: `denies_float` true,
+    /// `bans_float_methods` false. Before the second question existed it
+    /// was indistinguishable from a clean one.
+    #[test]
+    fn float_closure_asks_for_the_method_ban_as_well_as_the_deny() {
+        // **The list is the check.** `all()` over an empty list is true,
+        // so an emptied `REQUIRED_FLOAT_METHOD_BANS` would make every
+        // crate answer yes and this whole rule pass vacuously — measured,
+        // not supposed: emptying it leaves `check` reporting a healthy
+        // workspace and reddens nothing else here.
+        assert!(
+            REQUIRED_FLOAT_METHOD_BANS.len() >= 6,
+            "the sentinels span the classes of hazard; a shorter list is a weaker claim than the              one this rule is documented to make"
+        );
+        assert!(
+            REQUIRED_FLOAT_METHOD_BANS.contains(&"mul_add"),
+            "the fused multiply-add is the one this tree has measured changing its answer between              lowerings, so it is the one entry that may never be dropped"
+        );
+
+        let shapes = [
+            float_sim("world", &["middle"], true, true, &[]),
+            CrateShape {
+                bans_float_methods: false,
+                ..float_sim("middle", &[], false, true, &[])
+            },
+        ];
+        let found = evaluate(&shapes)
+            .into_iter()
+            .find(|finding| finding.rule == "float-closure")
+            .expect("a crate that denies operators but not methods is reported");
+        assert!(
+            found.message.contains("middle") && found.message.contains("mul_add"),
+            "the finding names the crate and an operation it must ban: {}",
+            found.message
+        );
+
+        // The same graph with the ban present is silent — so the finding
+        // is about the ban rather than about the crate being reachable at
+        // all, which is what a fixture with only the first half would
+        // have proved.
+        let clean = [
+            float_sim("world", &["middle"], true, true, &[]),
+            float_sim("middle", &[], false, true, &[]),
+        ];
+        assert!(
+            evaluate(&clean)
+                .iter()
+                .all(|finding| finding.rule != "float-closure"),
+            "a closure whose crates answer both questions has nothing to report"
+        );
     }
 
     #[test]
@@ -1258,6 +1366,7 @@ mod tests {
             shape("renew-diag", true, &["renew-broken"], "bootstrap", true),
             CrateShape {
                 name: "renew-broken".to_string(),
+                bans_float_methods: true,
                 dir: "/w/crates/x".to_string(),
                 engine: true,
                 deps: Vec::new(),
