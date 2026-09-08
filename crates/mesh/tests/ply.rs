@@ -600,3 +600,157 @@ fn a_comment_may_name_the_terminator_without_being_it() {
     let mesh = ply::read(file.as_bytes()).expect("a comment is not a terminator");
     assert_eq!(mesh.triangles(), 1);
 }
+
+/// One type under test: what the header calls it, what value the
+/// column carries, and that value's bytes in a given byte order.
+///
+/// Named rather than left as a tuple because the shape is the point.
+/// The value is chosen so that a plausible mistake about this type
+/// reads it as something else — a negative for the signed types, a
+/// value above the signed maximum for the unsigned ones, a fraction
+/// for the floating ones — and the encoder is what makes the file
+/// say it.
+struct Case {
+    name: &'static str,
+    value: f32,
+    encode: fn(bool) -> Vec<u8>,
+}
+
+fn order<const N: usize>(big: bool, be: [u8; N], le: [u8; N]) -> Vec<u8> {
+    if big { be.to_vec() } else { le.to_vec() }
+}
+
+fn width_cases() -> [Case; 8] {
+    [
+        Case {
+            name: "char",
+            value: -2.0,
+            encode: |_| vec![(-2i8).cast_unsigned()],
+        },
+        Case {
+            name: "uchar",
+            value: 254.0,
+            encode: |_| vec![254u8],
+        },
+        Case {
+            name: "short",
+            value: -300.0,
+            encode: |big| order(big, (-300i16).to_be_bytes(), (-300i16).to_le_bytes()),
+        },
+        Case {
+            name: "ushort",
+            value: 65236.0,
+            encode: |big| order(big, 65_236u16.to_be_bytes(), 65_236u16.to_le_bytes()),
+        },
+        Case {
+            name: "int",
+            value: -70000.0,
+            encode: |big| order(big, (-70_000i32).to_be_bytes(), (-70_000i32).to_le_bytes()),
+        },
+        Case {
+            name: "uint",
+            value: 3_000_000_000.0,
+            encode: |big| {
+                order(
+                    big,
+                    3_000_000_000u32.to_be_bytes(),
+                    3_000_000_000u32.to_le_bytes(),
+                )
+            },
+        },
+        Case {
+            name: "float",
+            value: -1.5,
+            encode: |big| order(big, (-1.5f32).to_be_bytes(), (-1.5f32).to_le_bytes()),
+        },
+        Case {
+            name: "double",
+            value: -1.5,
+            encode: |big| order(big, (-1.5f64).to_be_bytes(), (-1.5f64).to_le_bytes()),
+        },
+    ]
+}
+
+/// **Every scalar type the format defines, decoded at its own width,
+/// signedness and byte order.**
+///
+/// Nothing pinned this. The fixture that reads a binary PLY uses only
+/// `float`, `int` and `uchar`, and the corpus seed named
+/// `binary-every-width.seed` carries `char`, `short` and `double` — so
+/// the name overstated the file, `ushort` was decoded by nothing at all,
+/// and four separate mutations of the decoder survived the whole suite:
+/// a `double` read four bytes wide, a `short` with its byte order
+/// flipped, a `uint` read as `int`, and a `char` read unsigned.
+///
+/// The shape that catches all of them is to type a *coordinate* with
+/// each scalar in turn and give it a value that reads differently when
+/// the width, the sign or the order is wrong. A skipped property cannot
+/// do it: skipping is by width, so a wrong width shifts what follows,
+/// but a wrong *signedness* on a skipped column is invisible.
+///
+/// Probed by each of the four mutations above in turn: red on the type
+/// concerned, and on every type after it when the width was wrong.
+#[expect(
+    clippy::float_cmp,
+    reason = "the claim is that a named byte pattern decoded to a named value; a tolerance would pass a decoder that read the wrong width, which is the whole subject"
+)]
+#[test]
+fn every_scalar_type_is_decoded_at_its_own_width_and_sign() {
+    for Case {
+        name,
+        value: expected,
+        encode,
+    } in width_cases()
+    {
+        for big in [false, true] {
+            let order = if big {
+                "binary_big_endian"
+            } else {
+                "binary_little_endian"
+            };
+            // `x` carries the type under test; `y` and `z` are floats, so
+            // a wrong width for `x` shifts them and they come back wrong
+            // too — which is the second half of what this catches.
+            let mut bytes = format!(
+                "ply\nformat {order} 1.0\nelement vertex 3\n\
+                 property {name} x\nproperty float y\nproperty float z\n\
+                 element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+            )
+            .into_bytes();
+            for corner in 0..3u32 {
+                bytes.extend_from_slice(&encode(big));
+                for value in [f32::from(u8::try_from(corner).unwrap_or(0)), 7.5] {
+                    bytes.extend_from_slice(&if big {
+                        value.to_be_bytes()
+                    } else {
+                        value.to_le_bytes()
+                    });
+                }
+            }
+            bytes.push(3);
+            for index in [0u32, 1, 2] {
+                bytes.extend_from_slice(&if big {
+                    index.to_be_bytes()
+                } else {
+                    index.to_le_bytes()
+                });
+            }
+
+            let which = format!("`{name}` {order}");
+            let mesh = ply::read(&bytes).unwrap_or_else(|error| panic!("{which}: {error}"));
+            assert_eq!(mesh.triangles(), 1, "{which}");
+            for (corner, position) in mesh.positions.iter().enumerate() {
+                assert_eq!(
+                    position[0], expected,
+                    "{which}: x came back wrong, which is the width, the sign or the order"
+                );
+                assert_eq!(
+                    position[1],
+                    f32::from(u8::try_from(corner).unwrap_or(0)),
+                    "{which}: y moved, so `{name}` was read at the wrong width"
+                );
+                assert_eq!(position[2], 7.5, "{which}: z moved with it");
+            }
+        }
+    }
+}

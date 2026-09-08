@@ -204,6 +204,42 @@ mod tests {
         );
     }
 
+    /// **Each triangle's normal is compared against its own corners.**
+    ///
+    /// The count walks two arrays together, and every test of it used a
+    /// mesh whose triangles share their corners — so `at = triangle * 3`
+    /// was invisible, and a mutant comparing every normal against
+    /// triangle zero survived the whole suite. Two triangles wound
+    /// differently is what separates them.
+    #[test]
+    fn a_normal_is_compared_against_its_own_triangle() {
+        // Both lie in the XY plane and both carry +Z, but the second is
+        // wound the other way round, so its own corners say -Z. Answered
+        // per-triangle that is one disagreement; answered against
+        // triangle zero for both it is none.
+        //
+        // A first attempt put the second triangle in the XZ plane, where
+        // its wound normal is PERPENDICULAR to the stored one — which is
+        // neither agreement nor disagreement, so the count was zero
+        // either way and the fixture could not tell the two apart.
+        let mesh = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(
+            mesh.winding_disagreements(),
+            1,
+            "the second triangle is wound against the normal it carries"
+        );
+    }
+
     /// A rounded normal still agrees; only the half-space matters.
     ///
     /// **This is the assertion that keeps the count useful.** An
