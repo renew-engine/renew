@@ -50,7 +50,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use renew_render3d::Scene;
+use renew_render3d::{Frame, Scene};
 
 /// Faces per frame. The `with_capacity` documentation reasons about "a
 /// four-thousand-face world", so the lines are sized at the scale that
@@ -105,6 +105,39 @@ fn scene_geometry(c: &mut Criterion) {
             let mut scene = Scene::with_capacity(QUADS);
             for (corners, colours, uvs) in &faces {
                 scene.quad_uv(*corners, *colours, *uvs);
+            }
+            black_box(scene.index_count());
+            black_box(scene);
+        });
+    });
+
+    // The same faces, with the tangent frame handed over instead of
+    // recovered from the corners. **The third rung of the same ladder,
+    // and the one that says what the frame costs**: identical
+    // reservation, identical writes, identical drop, and the only
+    // difference is whether `Frame::of_face` runs — a cross product, two
+    // square roots, a determinant and six divides per face.
+    //
+    // A mesher that chose its own axes already knows the answer, which
+    // is what this measures the value of. The voxel sample in this
+    // repository is one; a file importer reading a format that carries
+    // normals and tangents is the other.
+    c.bench_function("scene_build_4096_supplied_frame", |b| {
+        // Out of the timed loop: a caller with a frame to hand over is
+        // not building it here either.
+        let frames: Vec<Frame> = faces
+            .iter()
+            .map(|(corners, _, uvs)| {
+                Frame::of_face(
+                    [corners[0], corners[1], corners[2]],
+                    [uvs[0], uvs[1], uvs[2]],
+                )
+            })
+            .collect();
+        b.iter(|| {
+            let mut scene = Scene::with_capacity(QUADS);
+            for ((corners, colours, uvs), frame) in faces.iter().zip(&frames) {
+                scene.quad_uv_with_frame(*corners, *colours, *uvs, *frame);
             }
             black_box(scene.index_count());
             black_box(scene);

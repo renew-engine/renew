@@ -47,4 +47,4 @@ pub use gpu::{
     MeshRenderer, Render3dError, ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer,
     TexturedMeshRenderer, depth_attachment, pass,
 };
-pub use scene::Scene;
+pub use scene::{Frame, Scene};

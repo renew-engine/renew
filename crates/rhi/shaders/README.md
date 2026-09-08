@@ -691,3 +691,25 @@ Target: SPIR-V 1.0
 ```
 
 2948 bytes, read off disk after compiling.
+
+`textured_quad.frag` was compiled 2026-09-08: four sampled slots on one
+pipeline, one per quadrant of the target. It is the first thing in this
+tree to reach `MAX_SAMPLED_BINDINGS`, which is `maxBoundDescriptorSets`'
+guaranteed floor and the width a normal-mapped material wants — base
+colour, normal, metallic-roughness, occlusion. Quadrants rather than
+halves because a wrong bind order in any one of four places has to be
+visible, and halves would let two of the four swap unseen. Version
+output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O textured_quad.frag -o textured_quad.frag.spv
+```
+
+1304 bytes, read off disk after compiling.
