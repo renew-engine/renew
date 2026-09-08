@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = true
+imported_floats = false
 
 [features]
 # Enabled by instrumented (sanitizer) test runs: allocation counting is

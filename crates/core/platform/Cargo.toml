@@ -17,6 +17,7 @@ maturity = "internal"
 core = true
 extension_points = ["window-app"]
 simulation = false
+imported_floats = false
 
 [features]
 # Windowing and input via the platform's window module. Default-on;

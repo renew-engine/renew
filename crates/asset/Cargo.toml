@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # Deliberately empty, for the same reason the trace codec's is. This
 # crate turns bytes into a pack and a pack into bytes; it never opens a

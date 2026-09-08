@@ -20,6 +20,7 @@ extension_points = []
 # underneath it this crate carries the simulation obligations: the float
 # closure walk, and the cross-target digest comparison.
 simulation = true
+imported_floats = false
 
 [dependencies]
 renew-ecs = { version = "0.1.1", path = "../ecs" }

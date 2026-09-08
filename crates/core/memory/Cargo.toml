@@ -17,6 +17,7 @@ maturity = "internal"
 core = true
 extension_points = []
 simulation = false
+imported_floats = false
 
 [features]
 # Enabled by instrumented (sanitizer) test runs: allocation counting is

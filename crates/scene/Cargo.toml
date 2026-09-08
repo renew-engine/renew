@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = true
+imported_floats = false
 
 # Storage and the number type, and nothing else. Two edges, both
 # deliberate: the pass reads and writes components, and it composes

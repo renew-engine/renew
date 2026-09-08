@@ -14,6 +14,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # The CLI's first dependency, and a workspace one: every engine
 # capability gets a command-line face, and the pack format lives in the

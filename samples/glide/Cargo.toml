@@ -13,6 +13,7 @@ purpose = "The glide game's driver: maps input to the world's one action, runs t
 maturity = "bootstrap"
 core = false
 simulation = false
+imported_floats = false
 
 extension_points = []
 

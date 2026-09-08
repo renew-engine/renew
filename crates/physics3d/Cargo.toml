@@ -19,6 +19,7 @@ extension_points = []
 # Collision state must reproduce, so this crate carries the simulation
 # obligations: the float closure walk and the cross-target digest comparison.
 simulation = true
+imported_floats = false
 
 [features]
 default = ["world"]

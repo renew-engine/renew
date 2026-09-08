@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = ["Blend"]
 simulation = false
+imported_floats = false
 
 # The maths crate and nothing else. Two things follow from that and both
 # are deliberate: the crate names no storage type, so it cannot drag an

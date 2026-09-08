@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # The pure half's only dependency is the seeded generator, so pools are
 # testable on any machine; the GPU-facing half sits behind the `render`

@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # The maths crate and nothing else: a camera is algebra plus the
 # rendering conventions, and the conventions are this crate's own

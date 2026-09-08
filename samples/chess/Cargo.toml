@@ -13,6 +13,7 @@ purpose = "Chess's command-line face: runs perft against a position, or plays a 
 maturity = "bootstrap"
 core = false
 simulation = false
+imported_floats = false
 
 extension_points = []
 

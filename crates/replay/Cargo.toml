@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = true
+imported_floats = false
 
 # The vocabulary this crate translates from, and the codec it translates
 # to. Deliberately nothing else: the crate declares `simulation = true`,

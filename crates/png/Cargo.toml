@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 [dev-dependencies]
 proptest = "1.11"

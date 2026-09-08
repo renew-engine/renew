@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = true
+imported_floats = false
 
 # Deliberately empty. Storage depends on nothing: it holds slots and
 # values, and everything about when or how it is driven belongs to a

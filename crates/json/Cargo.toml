@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = true
 
 # Deliberately empty, and load-bearing. A reader of untrusted bytes that
 # dragged a dependency in would widen the surface it exists to narrow,

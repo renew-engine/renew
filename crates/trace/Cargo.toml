@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # Deliberately empty, and load-bearing. The event vocabulary is this
 # crate's own, so a trace reader drags no windowing stack — no winit, no

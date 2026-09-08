@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = true
 
 # Deliberately empty, for the reason the pack reader's and the JSON
 # reader's are. This crate turns bytes into geometry. It never opens a

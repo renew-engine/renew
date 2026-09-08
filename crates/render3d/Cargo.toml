@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = false
+imported_floats = false
 
 # The rendering crate without its presentation feature: this crate builds
 # geometry and describes draws, it never presents, and taking the default

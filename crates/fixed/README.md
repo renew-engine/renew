@@ -43,6 +43,22 @@ concern; it lives in the maths crate, which depends on this one. A simulation
 cannot reach that crate, so it cannot perform the conversion — enforced by the
 structure checker's float-closure rule rather than by anyone remembering.
 
+**A second rule covers the case that one cannot see.** Float-closure asks
+whether the crates a simulation ships *compute* with floats, and answers it
+from the deny of `clippy::float_arithmetic`. That deny stops arithmetic; it
+does not stop a crate holding a float that came out of a file and turning it
+into an integer without any — `f32::to_bits` is a transmute with a nice name,
+and folding one into a digest compiles clean under the deny. So a crate also
+declares `imported_floats` in its manifest, meaning "my public API can hand you
+a floating-point value whose provenance is a file this engine did not write",
+and the imported-float closure rule keeps such a crate out of every
+simulation's shipping closure. The two rules are independent on purpose:
+computing with floats and forwarding somebody else's are different hazards, and
+a crate answers each about itself. **The reason the second exists is
+reproducibility** — a coordinate from another tool's exporter cannot be
+produced again by rerunning this engine, whatever arithmetic is or is not
+performed on it.
+
 Values are constructed from integers: `from_int`, `from_ratio` (how `9.81` is
 written without a float ever existing — `from_ratio(981, 100)`), and
 `from_bits` for serialisation. All three are `const fn`, because game constants

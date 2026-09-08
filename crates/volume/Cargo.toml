@@ -16,6 +16,7 @@ purpose = "Chunked dense storage of opaque voxel identifiers, with a grid-traver
 maturity = "bootstrap"
 core = false
 simulation = true
+imported_floats = false
 extension_points = []
 
 # Positions are fixed point, and a swept box is the physics crate's own

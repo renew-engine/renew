@@ -13,6 +13,7 @@ purpose = "The platformer's command-line face: parses a script name and a tick c
 maturity = "bootstrap"
 core = false
 simulation = false
+imported_floats = false
 
 extension_points = []
 

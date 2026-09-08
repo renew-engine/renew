@@ -34,6 +34,7 @@ const REQUIRED_FIELDS: &[&str] = &[
     "core",
     "extension_points",
     "simulation",
+    "imported_floats",
 ];
 
 /// One crate as the rules see it.
@@ -76,6 +77,20 @@ pub struct Meta {
     pub maturity: String,
     pub core: bool,
     pub simulation: bool,
+    /// Can this crate hand a caller a floating-point value that came out
+    /// of a file this engine did not write?
+    ///
+    /// **Provenance, not arithmetic.** Whether a crate *computes* with
+    /// floats is what the deny of `clippy::float_arithmetic` answers and
+    /// what rule 9 walks. This asks a different question, and the two are
+    /// independent: `renew-mesh` computes and imports, `renew-ui` reads
+    /// external data and imports nothing floating-point because it decodes
+    /// to `Fixed`, and most crates do neither.
+    ///
+    /// The distinction earns its keep because a number from somebody
+    /// else's exporter cannot be reproduced by rerunning this engine,
+    /// which is the whole of what I3 is protecting.
+    pub imported_floats: bool,
 }
 
 /// One rule violation.
@@ -251,6 +266,14 @@ fn validate_meta(package: &Value) -> Result<Meta, Vec<String>> {
         }
         None => None,
     };
+    let imported_floats = match field("imported_floats").map(Value::as_bool) {
+        Some(Some(flag)) => Some(flag),
+        Some(None) => {
+            problems.push("`imported_floats` is not a boolean".to_string());
+            None
+        }
+        None => None,
+    };
     if let Some(points) = field("extension_points") {
         match points.as_array() {
             Some(items) if items.iter().all(|item| item.as_str().is_some()) => {}
@@ -259,11 +282,18 @@ fn validate_meta(package: &Value) -> Result<Meta, Vec<String>> {
         }
     }
 
-    match (problems.is_empty(), maturity, core, simulation) {
-        (true, Some(maturity), Some(core), Some(simulation)) => Ok(Meta {
+    match (
+        problems.is_empty(),
+        maturity,
+        core,
+        simulation,
+        imported_floats,
+    ) {
+        (true, Some(maturity), Some(core), Some(simulation), Some(imported_floats)) => Ok(Meta {
             maturity,
             core,
             simulation,
+            imported_floats,
         }),
         _ => Err(problems),
     }
@@ -489,6 +519,7 @@ fn edge_rules(shape: &CrateShape, meta: &Meta, shapes: &[CrateShape], findings: 
     // walk and hide a path. Its schema failure is already its own finding.
     if meta.simulation {
         float_closure_rules(shape, shapes, findings);
+        imported_float_closure_rules(shape, shapes, findings);
         let mut stack: Vec<&str> = shape.deps.iter().map(String::as_str).collect();
         let mut visited: Vec<&str> = Vec::new();
         while let Some(current) = stack.pop() {
@@ -590,6 +621,96 @@ fn float_closure_rules(shape: &CrateShape, shapes: &[CrateShape], findings: &mut
     }
 }
 
+/// Rule 10 — imported-float closure.
+///
+/// **A float that came out of somebody else's file cannot be reproduced
+/// by rerunning this engine**, which is the whole of what I3 protects. So
+/// a crate promising determinism may not reach one, at any depth, through
+/// the edges it ships.
+///
+/// **This is not rule 9 again.** Rule 9 asks whether the crates in the
+/// closure *compute* with floats, and answers it from the deny of
+/// `clippy::float_arithmetic`. That deny stops arithmetic. It does not
+/// stop a crate holding an imported `f32` and turning it into an integer
+/// without arithmetic — `f32::to_bits` is a transmute with a nice name,
+/// and `u64::from(x.to_bits())` folded into a digest compiles clean under
+/// the deny. Measured, not supposed: those two lines were put into
+/// `Volume::digest` and `clippy -- -D warnings` reported nothing, in the
+/// crate that denies twice and declares `simulation = true`.
+///
+/// **The flag is about provenance rather than about floats.** A crate
+/// that computes floats internally and hands out none is not a hazard
+/// here; a crate that computes nothing and forwards a coordinate it read
+/// out of a file is. That thin forwarding carrier is the shape rule 9
+/// cannot see, because it can deny arithmetic honestly.
+///
+/// **Two halves, and the second keeps the first honest**, exactly as in
+/// rule 9: every workspace crate in the closure answers the question, and
+/// the closure holds no crate this checker cannot open. The unreadable
+/// half is reported under this rule's own name even though rule 9 walks
+/// the same closure and reports it too. **A rule that borrows another
+/// rule's guarantee is a rule that fails silently when the other one
+/// changes**, and the cost of the overlap is one duplicated line in a
+/// condition that has never occurred.
+///
+/// Walks shipping edges — `runtime_deps`, not `deps` — for rule 9's
+/// reason: a test framework is linked into test binaries and into nothing
+/// a simulation ships.
+///
+/// A dependency whose own metadata failed to parse is stepped over rather
+/// than assumed innocent, and the walk continues past it: its schema
+/// failure is already its own finding, and truncating here would let a
+/// broken manifest hide a path.
+fn imported_float_closure_rules(
+    shape: &CrateShape,
+    shapes: &[CrateShape],
+    findings: &mut Vec<Finding>,
+) {
+    let unreadable = |through: &str, foreign: &str| Finding {
+        rule: "imported-float-closure",
+        message: if shape.name == through {
+            format!(
+                "{} declares simulation = true and ships a dependency on {foreign}, which is not a workspace crate — this rule cannot read its manifest, so whether it hands out imported floats is unchecked",
+                shape.name
+            )
+        } else {
+            format!(
+                "{}'s shipping closure reaches {through}, which depends on {foreign} outside the workspace — this rule cannot read its manifest, so whether it hands out imported floats is unchecked",
+                shape.name
+            )
+        },
+    };
+
+    for foreign in &shape.foreign_deps {
+        findings.push(unreadable(&shape.name, foreign));
+    }
+
+    let mut stack: Vec<&str> = shape.runtime_deps.iter().map(String::as_str).collect();
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(current) = stack.pop() {
+        if seen.contains(&current) {
+            continue;
+        }
+        seen.push(current);
+        let Some(dep) = shapes.iter().find(|candidate| candidate.name == current) else {
+            continue;
+        };
+        if dep.meta.as_ref().is_ok_and(|meta| meta.imported_floats) {
+            findings.push(Finding {
+                rule: "imported-float-closure",
+                message: format!(
+                    "{} declares simulation = true and reaches {current} (transitively), which declares imported_floats = true — a coordinate from somebody else's file is not reproducible by rerunning this engine, so it cannot be allowed where a digest can see it",
+                    shape.name
+                ),
+            });
+        }
+        for foreign in &dep.foreign_deps {
+            findings.push(unreadable(current, foreign));
+        }
+        stack.extend(dep.runtime_deps.iter().map(String::as_str));
+    }
+}
+
 fn maturity_rank(maturity: &str) -> u8 {
     match maturity {
         "stable" => 2,
@@ -684,8 +805,148 @@ mod tests {
                 maturity: maturity.to_string(),
                 core,
                 simulation: false,
+                imported_floats: false,
             }),
         }
+    }
+
+    /// A crate whose closure reaches an importing crate, at the depth the
+    /// walk has to reach to see it.
+    fn importing_shape(name: &str, deps: &[&str], imports: bool, simulation: bool) -> CrateShape {
+        CrateShape {
+            name: name.to_string(),
+            dir: format!("/w/crates/{name}"),
+            engine: true,
+            deps: deps.iter().map(ToString::to_string).collect(),
+            runtime_deps: deps.iter().map(ToString::to_string).collect(),
+            foreign_deps: Vec::new(),
+            denies_float: true,
+            meta: Ok(Meta {
+                maturity: "bootstrap".to_string(),
+                core: false,
+                simulation,
+                imported_floats: imports,
+            }),
+        }
+    }
+
+    /// **A simulation crate may not reach imported floats, however far
+    /// away they are.**
+    ///
+    /// The fixture is deliberately three deep. A one-level check — "does
+    /// this crate's direct dependency import?" — passes this arrangement
+    /// completely, which is the whole reason the rule walks: the wrapper
+    /// in the middle is not a hypothetical, it is what a loader crate
+    /// looks like.
+    #[test]
+    fn a_simulation_crate_cannot_reach_imported_floats_through_a_wrapper() {
+        let shapes = [
+            importing_shape("renew-world", &["renew-loader"], false, true),
+            importing_shape("renew-loader", &["renew-mesh"], false, false),
+            importing_shape("renew-mesh", &[], true, false),
+        ];
+        let findings = evaluate(&shapes);
+        let ours: Vec<&Finding> = findings
+            .iter()
+            .filter(|finding| finding.rule == "imported-float-closure")
+            .collect();
+        assert_eq!(ours.len(), 1, "{findings:?}");
+        assert!(
+            ours[0].message.contains("renew-world") && ours[0].message.contains("renew-mesh"),
+            "the finding names both ends of the path, not just the rule: {:?}",
+            ours[0].message
+        );
+
+        // The same three crates with the middle one's edge removed: no
+        // path, no finding. Without this the test above would pass on a
+        // rule that fired on the mere presence of an importing crate.
+        let severed = [
+            importing_shape("renew-world", &["renew-loader"], false, true),
+            importing_shape("renew-loader", &[], false, false),
+            importing_shape("renew-mesh", &[], true, false),
+        ];
+        assert!(
+            evaluate(&severed)
+                .iter()
+                .all(|finding| finding.rule != "imported-float-closure"),
+            "an importing crate nobody reaches is not a finding"
+        );
+    }
+
+    /// **A crate that imports floats and simulates nothing is fine, and
+    /// so is a simulation crate that imports nothing.**
+    ///
+    /// The rule is about one crate reaching another, so both halves alone
+    /// must be silent — otherwise it is a ban on importing rather than a
+    /// ban on reaching.
+    #[test]
+    fn importing_floats_is_only_a_problem_where_a_simulation_can_see_them() {
+        let alone = [importing_shape("renew-mesh", &[], true, false)];
+        assert!(
+            evaluate(&alone)
+                .iter()
+                .all(|finding| finding.rule != "imported-float-closure"),
+            "importing floats is what a reader is for"
+        );
+
+        let clean = [
+            importing_shape("renew-world", &["renew-fixed"], false, true),
+            importing_shape("renew-fixed", &[], false, false),
+        ];
+        assert!(
+            evaluate(&clean)
+                .iter()
+                .all(|finding| finding.rule != "imported-float-closure"),
+            "a simulation that reaches no importer has nothing to answer for"
+        );
+    }
+
+    /// **A crate the checker cannot open is not a crate it cleared.**
+    ///
+    /// Reported under this rule's own name even though rule 9 walks the
+    /// same closure and reports it too: a rule that borrows another's
+    /// guarantee fails silently when the other one changes.
+    #[test]
+    fn a_dependency_outside_the_workspace_is_unchecked_not_absent() {
+        let mut world = importing_shape("renew-world", &["renew-helper"], false, true);
+        world.foreign_deps = vec!["somebody-elses-crate".to_string()];
+        let shapes = [world, importing_shape("renew-helper", &[], false, false)];
+        let findings = evaluate(&shapes);
+        let ours: Vec<&Finding> = findings
+            .iter()
+            .filter(|finding| finding.rule == "imported-float-closure")
+            .collect();
+        assert_eq!(ours.len(), 1, "{findings:?}");
+        assert!(
+            ours[0].message.contains("somebody-elses-crate")
+                && ours[0].message.contains("unchecked"),
+            "it says which crate and that the answer is unknown rather than no: {:?}",
+            ours[0].message
+        );
+    }
+
+    /// **A manifest missing the field is a schema finding, not a default.**
+    ///
+    /// The alternative — treating absence as `false` — is how a gate ends
+    /// up measuring nothing: every crate that never heard of the field
+    /// would silently answer the safe way.
+    #[test]
+    fn a_manifest_without_the_field_is_reported_rather_than_assumed() {
+        let doc = crate::json::parse(
+            r#"{"workspace_root":"/w","packages":[{"name":"renew-x","manifest_path":"/w/crates/x/Cargo.toml",
+               "dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap",
+               "core":false,"extension_points":[],"simulation":false}}}]}"#,
+        )
+        .expect("the fixture is valid JSON");
+        let shapes = shapes_from_metadata(&doc).expect("the document is metadata-shaped");
+        let findings = evaluate(&shapes);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "schema"
+                    && finding.message.contains("imported_floats")),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -848,6 +1109,7 @@ mod tests {
                 maturity: "bootstrap".to_string(),
                 core: true,
                 simulation: true,
+                imported_floats: false,
             }),
         }];
         let findings = evaluate(&flagged);
@@ -895,6 +1157,7 @@ mod tests {
                 maturity: "bootstrap".to_string(),
                 core: false,
                 simulation,
+                imported_floats: false,
             }),
         }
     }
@@ -1114,7 +1377,7 @@ mod tests {
     #[test]
     fn shapes_come_out_of_metadata_shaped_json() {
         let document = crate::json::parse(
-            r#"{"workspace_root":"/w","packages":[{"name":"renew-diag","manifest_path":"/w/crates/core/diag/Cargo.toml","dependencies":[{"name":"outside"},{"name":"renew-cli"}],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"extension_points":["sink"],"simulation":false}}},{"name":"renew-cli","manifest_path":"C:\\w\\tools\\cli\\Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":false,"extension_points":[],"simulation":false}}}]}"#,
+            r#"{"workspace_root":"/w","packages":[{"name":"renew-diag","manifest_path":"/w/crates/core/diag/Cargo.toml","dependencies":[{"name":"outside"},{"name":"renew-cli"}],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"extension_points":["sink"],"simulation":false,"imported_floats":false}}},{"name":"renew-cli","manifest_path":"C:\\w\\tools\\cli\\Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":false,"extension_points":[],"simulation":false,"imported_floats":false}}}]}"#,
         )
         .expect("document parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
@@ -1146,7 +1409,7 @@ mod tests {
         // The workspace root itself lives under a `crates` directory; only
         // paths under `<root>/crates/` are engine crates.
         let document = crate::json::parse(
-            r#"{"workspace_root":"/d/crates/renew","packages":[{"name":"tool","manifest_path":"/d/crates/renew/tools/x/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":false,"extension_points":[],"simulation":false}}},{"name":"renew-diag","manifest_path":"/d/crates/renew/crates/core/diag/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"extension_points":[],"simulation":false}}}]}"#,
+            r#"{"workspace_root":"/d/crates/renew","packages":[{"name":"tool","manifest_path":"/d/crates/renew/tools/x/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":false,"extension_points":[],"simulation":false,"imported_floats":false}}},{"name":"renew-diag","manifest_path":"/d/crates/renew/crates/core/diag/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"extension_points":[],"simulation":false,"imported_floats":false}}}]}"#,
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");
@@ -1219,7 +1482,7 @@ mod tests {
     #[test]
     fn empty_purpose_and_non_string_extension_items_are_named() {
         let document = crate::json::parse(
-            r#"{"workspace_root":"/w","packages":[{"name":"x","manifest_path":"/w/x/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"  ","maturity":"bootstrap","core":false,"extension_points":[1],"simulation":false}}}]}"#,
+            r#"{"workspace_root":"/w","packages":[{"name":"x","manifest_path":"/w/x/Cargo.toml","dependencies":[],"metadata":{"renew":{"purpose":"  ","maturity":"bootstrap","core":false,"extension_points":[1],"simulation":false,"imported_floats":false}}}]}"#,
         )
         .expect("parses");
         let shapes = shapes_from_metadata(&document).expect("shapes build");

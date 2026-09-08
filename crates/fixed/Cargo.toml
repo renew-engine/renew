@@ -23,6 +23,7 @@ extension_points = []
 # cross-target comparison's obligations, which belong to code that has state to
 # reproduce; a stateless number type has none. `renew-event` is the same shape.
 simulation = false
+imported_floats = false
 
 [dependencies]
 

@@ -13,6 +13,7 @@ purpose = "The glide game's rules as a pure fixed-step function of seed and inpu
 maturity = "bootstrap"
 core = false
 simulation = true
+imported_floats = false
 
 extension_points = []
 

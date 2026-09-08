@@ -13,6 +13,7 @@ purpose = "Chess as a pure function of position and move: generation, legality, 
 maturity = "bootstrap"
 core = false
 simulation = true
+imported_floats = false
 
 extension_points = []
 

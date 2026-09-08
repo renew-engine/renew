@@ -17,6 +17,7 @@ maturity = "bootstrap"
 core = false
 extension_points = []
 simulation = true
+imported_floats = false
 
 # The one dependency is the event vocabulary this crate translates from.
 # Taking a copy of it instead would mean every caller converting at the
