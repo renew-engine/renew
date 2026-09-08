@@ -30,7 +30,7 @@ const PLATFORM_CRATE: &str = "renew-platform";
 /// The float methods a crate in a simulation closure must ban by name.
 ///
 /// **Not the whole list, and deliberately so.** The bans in each
-/// `clippy.toml` cover seventeen methods; requiring all thirty-four paths
+/// `clippy.toml` cover nineteen methods; requiring all thirty-eight paths
 /// here would make this check a copy of that file, and the copy would rot.
 /// These six span the classes — a fused multiply-add, a root, a power, a
 /// logarithm, a trigonometric function, and a division written as a call —
@@ -249,8 +249,16 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
             .is_ok_and(|source| source.contains("clippy::float_arithmetic"));
         // Read from the lint file rather than the source, because that is
         // where the ban lives. An unreadable file answers `false`, which
-        // is the safe direction: rule 7 already reports a crate with no
-        // `clippy.toml`, so this cannot be the only thing that noticed.
+        // is the safe direction — and the rule below asks that question of
+        // the declaring crate as well as of what it reaches, so a
+        // simulation crate with no lint file is reported whether or not
+        // anything depends on it.
+        //
+        // This used to say the backstop was the rule requiring every
+        // engine crate to carry a `clippy.toml`. **That was false for the
+        // four sample worlds**, which declare `simulation = true` and live
+        // outside the engine roots, so that rule skips them: deleting a
+        // sample world's lint file reported nothing at all.
         let lints = std::fs::read_to_string(format!("{dir}/clippy.toml")).unwrap_or_default();
         let bans_float_methods = bans_the_required_float_methods(&lints);
         let meta = validate_meta(package);
