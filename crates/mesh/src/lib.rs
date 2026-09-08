@@ -55,6 +55,7 @@
 // every engine crate carries at its root.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod accessor;
 pub mod blob;
 mod error;
 pub mod format;
@@ -135,6 +136,7 @@ pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), Mesh
     Ok(())
 }
 
+pub use accessor::{Accessor, AccessorError, Component, Shape};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
 

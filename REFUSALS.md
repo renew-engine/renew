@@ -946,9 +946,35 @@ computes offsets from the stride will read outside the region without
 ever failing a bounds check on the region itself, because it never
 compared the two.
 
-**Nearest thing here.** `WavError::BlockAlign { declared, derived }` is
-exactly this rule, one level simpler: a declared value checked against
-the one its own siblings imply.
+**In the tree.** `AccessorError`, whose whole subject is this entry:
+`OutOfRange { needs, available }` compares the count, the stride and the
+region against each other; `StrideSmallerThanElement { stride, element }`
+catches a stride that would overlap the elements it separates;
+`StrideNotAligned`, `StrideOutOfRange` and `OffsetNotAligned` catch the
+values the format constrains directly; and `NormalizedIsMeaningless` and
+`NormalizedIndices` are this entry's second example — integers marked
+normalised where the consumer needs them unnormalised — split into the
+two different faults it turns out to be. `WavError::BlockAlign
+{ declared, derived }` is the same rule one level simpler: a declared
+value checked against the one its own siblings imply.
+
+**The bound is not the obvious expression, and getting it wrong fails in
+the direction nobody notices.** The region must hold `offset + (count -
+1) * stride + size`, because the last element needs its own size and not
+a whole stride. Writing `count * stride` is larger whenever the stride
+exceeds the element size — that is, whenever the data is interleaved —
+so the wrong expression **refuses correct files**, and only the
+interleaved ones. A suite with no interleaved case cannot tell the two
+apart at all; probing the mutation reddens six tests here, and would
+have reddened none before an interleaved fixture existed.
+
+**What is still open is the third claim.** This entry names three: the
+declared count, the stride, and the region the accessor addresses. The
+refusals above compare the first two against a region *handed to them*.
+Checking that the region is itself inside the buffer it names — byte
+length divided by stride as a fourth opinion on the count — belongs to
+whatever resolves a buffer view against a buffer, which does not exist
+yet.
 
 ## Geometry that is not geometry
 
