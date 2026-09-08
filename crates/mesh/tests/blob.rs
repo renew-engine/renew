@@ -153,6 +153,53 @@ fn the_header_is_little_endian_on_every_target() {
     );
 }
 
+/// **The buffer is reserved exactly once, for exactly what is written.**
+///
+/// `capacity == len` after the fact is the deterministic way to assert
+/// this — a timing test would say the same thing more slowly and less
+/// reliably. If the reservation counts too little the buffer grows and
+/// capacity overshoots; if it counts too much, capacity overshoots the
+/// other way. Either is a mismatch here.
+///
+/// **The reservation used to count the positions and nothing else**,
+/// then append three more arrays into the same buffer: three times under
+/// on a mesh carrying all of them.
+///
+/// Probed by restoring that: red on every shape that carries an optional
+/// array.
+#[test]
+fn the_buffer_is_reserved_for_exactly_what_is_written() {
+    let full = furnished();
+    for shape in 0..8u8 {
+        let mesh = Mesh {
+            positions: full.positions.clone(),
+            face_normals: if shape & 1 != 0 {
+                full.face_normals.clone()
+            } else {
+                Vec::new()
+            },
+            corner_normals: if shape & 2 != 0 {
+                full.corner_normals.clone()
+            } else {
+                Vec::new()
+            },
+            corner_texcoords: if shape & 4 != 0 {
+                full.corner_texcoords.clone()
+            } else {
+                Vec::new()
+            },
+        };
+        let bytes = blob::write(&mesh);
+        assert_eq!(
+            bytes.capacity(),
+            bytes.len(),
+            "shape {shape}: reserved {} for {} bytes, so the buffer either grew or was              over-asked",
+            bytes.capacity(),
+            bytes.len()
+        );
+    }
+}
+
 /// **Bytes too short to hold a header are refused as that.**
 #[test]
 fn something_shorter_than_a_header_is_refused() {

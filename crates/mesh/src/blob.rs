@@ -156,24 +156,71 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     // deliberately not silent: the count it writes will not match the
     // body, so `read` refuses with `CountMismatch` rather than handing
     // anybody a mesh that was never written.
+    // Every byte this will hold, counted before any is written.
+    //
+    // **The reservation used to count the positions and nothing else**,
+    // and then three more arrays were appended into the same buffer MM
+    // three times under on a mesh carrying all of them, which cost two
+    // reallocations, twice the peak and a third of the call. The four
+    // terms below are the whole fix, and they are free.
+    let needed = HEADER
+        + mesh.positions.len() * VEC3
+        + mesh.face_normals.len() * VEC3
+        + mesh.corner_normals.len() * VEC3
+        + mesh.corner_texcoords.len() * VEC2;
+
     let corners = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
-    let mut out = Vec::with_capacity(HEADER + mesh.positions.len() * VEC3);
+    let mut out = Vec::with_capacity(needed);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&corners.to_le_bytes());
     out.extend_from_slice(&present.to_le_bytes());
 
-    for value in mesh.positions.iter().flatten() {
-        out.extend_from_slice(&value.to_le_bytes());
+    // **One append per record, not per component.** Each
+    // `extend_from_slice` is a capacity check and a length update, so a
+    // three-component vector appended a float at a time paid for three
+    // of each to move twelve bytes. The same shape has been measured in
+    // this tree twice before, at roughly a nanosecond a call; staging
+    // the record in an array on the stack removes two thirds of them
+    // here.
+    for vector in &mesh.positions {
+        out.extend_from_slice(&triple(*vector));
     }
-    for value in mesh.face_normals.iter().flatten() {
-        out.extend_from_slice(&value.to_le_bytes());
+    for vector in &mesh.face_normals {
+        out.extend_from_slice(&triple(*vector));
     }
-    for value in mesh.corner_normals.iter().flatten() {
-        out.extend_from_slice(&value.to_le_bytes());
+    for vector in &mesh.corner_normals {
+        out.extend_from_slice(&triple(*vector));
     }
-    for value in mesh.corner_texcoords.iter().flatten() {
-        out.extend_from_slice(&value.to_le_bytes());
+    for vector in &mesh.corner_texcoords {
+        out.extend_from_slice(&pair(*vector));
+    }
+    debug_assert_eq!(
+        out.len(),
+        needed,
+        "the reservation counted something other than what was written"
+    );
+    out
+}
+
+/// One three-component vector, little-endian, as the bytes it occupies.
+///
+/// The chunk width is a constant rather than an argument, so each slot
+/// is an array of known length and the assignment below needs no
+/// length check at all.
+fn triple(vector: [f32; 3]) -> [u8; VEC3] {
+    let mut out = [0; VEC3];
+    for (slot, value) in out.as_chunks_mut::<4>().0.iter_mut().zip(vector) {
+        *slot = value.to_le_bytes();
+    }
+    out
+}
+
+/// One two-component vector, little-endian, as the bytes it occupies.
+fn pair(vector: [f32; 2]) -> [u8; VEC2] {
+    let mut out = [0; VEC2];
+    for (slot, value) in out.as_chunks_mut::<4>().0.iter_mut().zip(vector) {
+        *slot = value.to_le_bytes();
     }
     out
 }
