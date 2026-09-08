@@ -2253,6 +2253,67 @@ fn asset_import_refuses_a_material_library_for_what_it_is() -> std::io::Result<(
     Ok(())
 }
 
+/// **A binary glTF is turned away for the reader it lacks, not for
+/// being broken.**
+///
+/// Two things are being pinned, and the second is the one that used to
+/// be wrong. The container is *recognised* — before the format was known
+/// it fell through to the STL fallback and came back as a truncated
+/// model, which is a confident answer about the wrong file. And the
+/// refusal says the geometry has no reader here, which is a different
+/// verdict from "this file is malformed": the file may be perfect, and a
+/// script needs to tell "bring me a different file" apart from "this
+/// build cannot read this kind yet".
+#[test]
+fn asset_import_says_a_container_has_no_geometry_reader_yet() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-glb")?;
+    let model = directory.join("scene.glb");
+    let blob = directory.join("out.msh");
+
+    // The smallest container that is one: a twelve-byte header and a
+    // single JSON chunk, padded to alignment with the space the format
+    // names for that chunk. Built here rather than copied from anywhere,
+    // because a container wraps somebody's model.
+    let document: &[u8] = b"{\"asset\":{\"version\":\"2.0\"}} ";
+    let mut bytes = b"glTF".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&48u32.to_le_bytes());
+    bytes.extend_from_slice(&28u32.to_le_bytes());
+    bytes.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    bytes.extend_from_slice(document);
+    assert_eq!(bytes.len(), 48, "the header's total length is the file's");
+    fs::write(&model, &bytes)?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "no geometry came out of it");
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"refusal\":\"Unsupported\""),
+        "well-formed and unreadable here, which is not the same as malformed: {document:?}"
+    );
+    assert!(
+        document.contains("binary glTF"),
+        "and it names the reader that is missing rather than blaming the file: {document:?}"
+    );
+    assert!(
+        !document.contains("stl"),
+        "the container is recognised: it used to reach the fallback and be reported as a \
+         truncated STL: {document:?}"
+    );
+    assert!(
+        !blob.exists(),
+        "a refused import writes no blob, so a stale one is never left looking fresh"
+    );
+    Ok(())
+}
+
 /// The success envelope: the shared schema-versioned shape, plus what
 /// this arm adds.
 ///
