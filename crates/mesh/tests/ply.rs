@@ -10,7 +10,7 @@
 // back is a broken test rather than a condition to recover from.
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
-use renew_mesh::{MeshError, ply};
+use renew_mesh::{Mesh, MeshError, ply};
 
 /// A square, as two triangles over four shared corners.
 ///
@@ -402,4 +402,201 @@ fn the_magic_word_separates_this_format_from_others() {
     assert!(!ply::looks_like(b"solid teapot\n"));
     assert!(!ply::looks_like(&[0u8; 84]));
     assert!(!ply::looks_like(b""));
+}
+
+/// Read `bytes`, or say that the reader did not answer in time.
+///
+/// **A hang is not a failing test unless something is watching the
+/// clock.** The merge-gating replay beside this crate says as much in
+/// its own prose, and a reader that never returns is exactly the defect
+/// this helper exists to catch: the harness has no per-test deadline, so
+/// without one here a non-terminating read wedges the job instead of
+/// reddening it.
+///
+/// The crate's own lints ban `thread::spawn`, and rightly: the *library*
+/// never spawns, because parallelism belongs to the job system. A test
+/// that asserts a call returns at all has no other way to observe that
+/// it did not.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ban exists so the library never spawns; observing that a call did not return requires a thread that is not the one blocked in it"
+)]
+fn read_within(bytes: &'static [u8], seconds: u64) -> Result<Result<Mesh, MeshError>, ()> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(ply::read(bytes));
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(seconds))
+        .map_err(|_| ())
+}
+
+/// **A header that asks the reader to run forever is refused instead.**
+///
+/// This is the defect that shipped, and it is worth stating exactly what
+/// it was. Both row loops read `element.count` — a `u64` written by
+/// whoever wrote the file — and there was a ceiling on how many elements
+/// a header may declare, a ceiling on how many properties each may have,
+/// a ceiling on how many corners a face may name, and none at all on the
+/// number that costs time. An element with **no properties** consumes
+/// nothing per row, so the loop body never ran out of anything and
+/// `0..u64::MAX` spun on a two-hundred-byte file.
+///
+/// The nuisance element only has to sort before `vertex` and `face`,
+/// because the reader locates those before it starts reading rows.
+///
+/// A count is now refused against the bytes that could possibly supply
+/// it, which is the rule the pack reader applies to its entry table and
+/// the rule `REFUSALS.md` states for every reader here. A zero-width row
+/// makes that bound zero, so the file below is refused rather than run.
+///
+/// Probed by deleting the `refuse_impossible_count` call: the test hangs
+/// rather than failing, which is why it carries its own deadline.
+#[test]
+fn a_header_that_would_run_forever_is_refused() {
+    let poison: &'static str = "ply\nformat ascii 1.0\nelement pad 18446744073709551615\n\
+                  element vertex 3\nproperty float x\nproperty float y\nproperty float z\n\
+                  element face 1\nproperty list uchar int vertex_indices\nend_header\n\
+                  0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
+    // The deadline is the assertion; see `read_within`.
+    match read_within(poison.as_bytes(), 5) {
+        Ok(answer) => assert!(
+            answer.is_err(),
+            "a count no body could supply must be refused"
+        ),
+        Err(()) => panic!(
+            "`ply::read` did not answer within five seconds on a {}-byte file",
+            poison.len()
+        ),
+    }
+
+    // The same shape in the binary encoding, where the rows consume
+    // cursor rather than words.
+    let binary: &'static str = "ply\nformat binary_little_endian 1.0\nelement pad 18446744073709551615\n\
+                  element vertex 1\nproperty float x\nproperty float y\nproperty float z\n\
+                  element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+    match read_within(binary.as_bytes(), 5) {
+        Ok(answer) => assert!(answer.is_err(), "the binary path must refuse it too"),
+        Err(()) => panic!("`ply::read` did not answer within five seconds on a binary body"),
+    }
+}
+
+/// **A count larger than the bytes could supply is refused before a row
+/// is read**, which is the same rule stated positively.
+///
+/// The hang above is the extreme of this: a row width of zero means no
+/// count at all is satisfiable. Ordinary over-declaration is the common
+/// case, and it is what a truncated download looks like.
+#[test]
+fn a_count_larger_than_the_body_is_refused_before_reading() {
+    // Eight vertices declared, three supplied, in a body far too small
+    // for eight rows of three floats.
+    let short = "ply\nformat binary_little_endian 1.0\nelement vertex 8\n\
+                 property float x\nproperty float y\nproperty float z\n\
+                 element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+    let mut bytes = short.as_bytes().to_vec();
+    bytes.extend_from_slice(&[0u8; 12]);
+    assert!(
+        matches!(refusal(&bytes), MeshError::CountMismatch { .. }),
+        "eight vertices need ninety-six bytes and twelve arrived"
+    );
+}
+
+/// **A list before the coordinates does not move them.**
+///
+/// The reader located `x`, `y` and `z` by their position in the schema
+/// and then read them out of a row holding only scalars, so a list
+/// declared before them shifted every coordinate after it. With enough
+/// trailing scalars to absorb the shift the file read successfully and
+/// returned a neighbouring column as the position — `Ok`, with geometry
+/// the file does not describe, which is the worst answer a reader can
+/// give because nothing downstream can detect it.
+///
+/// Probed by numbering the coordinates by schema position again: red,
+/// the first vertex comes back at (20, 30, 40) where the file says
+/// (10, 20, 30).
+#[expect(
+    clippy::float_cmp,
+    reason = "the claim is that the file's own numbers came back unchanged, so equality with what the file says is exactly what must hold; a tolerance would pass a reader off by a whole column"
+)]
+#[test]
+fn a_list_before_the_coordinates_does_not_shift_them() {
+    let file = "ply\nformat ascii 1.0\nelement vertex 3\n\
+                property list uchar int junk\nproperty float x\nproperty float y\n\
+                property float z\nproperty float w\nproperty float v\n\
+                element face 1\nproperty list uchar int vertex_indices\nend_header\n\
+                0 10 20 30 40 50\n0 11 21 31 41 51\n0 12 22 32 42 52\n3 0 1 2\n";
+    let mesh = ply::read(file.as_bytes()).expect("a list is a legal property");
+    assert_eq!(
+        mesh.positions[0],
+        [10.0, 20.0, 30.0],
+        "the file says the first vertex is at (10, 20, 30)"
+    );
+}
+
+/// **An index that is not a vertex number is refused, not coerced.**
+///
+/// The conversion was `entry.max(0.0) as u64`, with a note beside it
+/// saying an out-of-range index is caught later against the vertex
+/// count. It was not: `max` had already turned a negative index into
+/// vertex zero before anything could see it, `NaN.max(0.0)` is `0.0` so
+/// a NaN index became vertex zero too, and a fractional index was
+/// truncated. All three produced `Ok` and geometry the file does not
+/// describe.
+#[test]
+fn an_index_that_is_not_a_vertex_number_is_refused() {
+    // A signed corner type, with -1 written as 0xFF.
+    let mut bytes = "ply\nformat binary_little_endian 1.0\nelement vertex 3\n\
+                     property float x\nproperty float y\nproperty float z\n\
+                     element face 1\nproperty list uchar char vertex_indices\nend_header\n"
+        .as_bytes()
+        .to_vec();
+    for corner in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for value in corner {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&[3, 0, 1, 0xFF]);
+    assert!(
+        matches!(refusal(&bytes), MeshError::NotANumber { .. }),
+        "vertex minus one is not vertex zero"
+    );
+
+    // A float corner type carrying a value between two vertices.
+    let mut fractional = "ply\nformat binary_little_endian 1.0\nelement vertex 3\n\
+                          property float x\nproperty float y\nproperty float z\n\
+                          element face 1\nproperty list uchar float vertex_indices\nend_header\n"
+        .as_bytes()
+        .to_vec();
+    for corner in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for value in corner {
+            fractional.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    fractional.push(3);
+    for index in [0.0f32, 1.0, 2.7] {
+        fractional.extend_from_slice(&index.to_le_bytes());
+    }
+    assert!(
+        matches!(refusal(&fractional), MeshError::NotANumber { .. }),
+        "vertex two-point-seven is not vertex two"
+    );
+}
+
+/// **A comment may say `end_header` without ending the header.**
+///
+/// The terminator was found by searching for those bytes anywhere, so a
+/// legal file naming a tool in a comment had its header truncated at the
+/// comment and was then refused for lacking the schema that followed.
+/// Exporters write tool names and paths into comments; that is what
+/// comments are for.
+#[test]
+fn a_comment_may_name_the_terminator_without_being_it() {
+    let file = "ply\nformat ascii 1.0\ncomment written by the end_header exporter\n\
+                element vertex 3\nproperty float x\nproperty float y\nproperty float z\n\
+                element face 1\nproperty list uchar int vertex_indices\nend_header\n\
+                0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+    let mesh = ply::read(file.as_bytes()).expect("a comment is not a terminator");
+    assert_eq!(mesh.triangles(), 1);
 }

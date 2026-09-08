@@ -138,6 +138,64 @@ struct Element {
     properties: Vec<Property>,
 }
 
+impl Element {
+    /// The fewest bytes one row of this element can occupy.
+    ///
+    /// **The number that makes a row count checkable.** A count is the
+    /// third attacker-controlled number in a PLY header, after the
+    /// element and property counts, and it was the one with no ceiling
+    /// — so a header could declare eighteen quintillion rows of an
+    /// element carrying no properties, each row consuming nothing, and
+    /// the reader would spin forever on a two-hundred-byte file. A row
+    /// cannot be narrower than this, so a count multiplied by it and
+    /// compared against the bytes actually present refuses that file
+    /// before a single row is read.
+    ///
+    /// **Zero is the answer that matters.** An element with no
+    /// properties has a row width of nothing, so the bound below says
+    /// the body can supply no rows of it, and any count at all is
+    /// refused. That is the case that hung.
+    ///
+    /// In a binary body a scalar occupies its declared width and a list
+    /// occupies at least its count field. In a text body every property
+    /// needs at least one character, so the property count is the floor.
+    fn least_row_bytes(&self, binary: bool) -> usize {
+        if !binary {
+            return self.properties.len();
+        }
+        self.properties
+            .iter()
+            .map(|property| match property.kind {
+                PropertyKind::Scalar(scalar) => scalar.width(),
+                PropertyKind::List { count, .. } => count.width(),
+            })
+            .sum()
+    }
+}
+
+/// Refuse an element declaring more rows than the bytes could hold.
+///
+/// This is the pack reader's rule applied one level in: **a count is
+/// reported by the file and believed by nobody**, and the bytes the
+/// caller already holds are what bound it. It is also the only thing
+/// standing between this reader and a header that asks it to run
+/// forever.
+fn refuse_impossible_count(element: &Element, body: usize, binary: bool) -> Result<(), MeshError> {
+    let least = element.least_row_bytes(binary);
+    // `None` when a row is zero bytes wide, which is the element that
+    // hung: no quantity of nothing is supplied by any body, so it
+    // reads as a capacity of zero and every count is refused.
+    let could_supply = body.checked_div(least).unwrap_or(0);
+    if element.count > could_supply as u64 {
+        return Err(MeshError::CountMismatch {
+            declared: element.count.saturating_mul(least as u64),
+            actual: body,
+            count: u32::try_from(element.count).unwrap_or(u32::MAX),
+        });
+    }
+    Ok(())
+}
+
 /// The most elements, properties or list entries a header may declare.
 ///
 /// **A header is a schema an attacker writes.** Without a ceiling, a
@@ -193,7 +251,7 @@ fn header(bytes: &[u8]) -> Result<(Vec<Element>, Encoding, usize), MeshError> {
     // bytes rather than by decoding the file: a body full of binary
     // floats is not text, and decoding the whole file to find where the
     // text stops would refuse every binary PLY there is.
-    let end = find(bytes, b"end_header").ok_or(MeshError::ExpectedKeyword {
+    let end = header_end(bytes).ok_or(MeshError::ExpectedKeyword {
         expected: "end_header",
         found: String::new(),
         line: 1,
@@ -335,11 +393,34 @@ fn parse_schema(text: &str) -> Result<(Vec<Element>, Encoding), MeshError> {
     Ok((elements, encoding))
 }
 
-/// The first offset of `needle` in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+/// Where the header's terminator begins.
+///
+/// **A keyword, not a substring.** This matched `end_header` anywhere in
+/// the bytes, so a legal file carrying `comment written by the
+/// end_header exporter` had its header cut off at the comment and was
+/// then refused for lacking the schema that followed it. Exporters write
+/// tool names and paths into comments, which is what comments are for.
+///
+/// A terminator sits alone on its line, so it has to start one and be
+/// followed by the end of one.
+fn header_end(bytes: &[u8]) -> Option<usize> {
+    const KEYWORD: &[u8] = b"end_header";
+    let mut at = 0;
+    while let Some(found) = bytes.get(at..).and_then(|rest| {
+        rest.windows(KEYWORD.len())
+            .position(|window| window == KEYWORD)
+    }) {
+        let start = at + found;
+        let opens_a_line = start == 0 || bytes.get(start - 1) == Some(&b'\n');
+        let closes_one = bytes
+            .get(start + KEYWORD.len())
+            .is_none_or(u8::is_ascii_whitespace);
+        if opens_a_line && closes_one {
+            return Some(start);
+        }
+        at = start + 1;
+    }
+    None
 }
 
 fn scalar_word(word: &str, line: u32) -> Result<Scalar, MeshError> {
@@ -369,21 +450,43 @@ impl Coordinates {
     /// coordinates anywhere and to interleave anything between them, and
     /// files from scanners routinely do — `x y z nx ny nz red green
     /// blue` is ordinary, and so is `x y z confidence intensity`.
+    ///
+    /// **Counted over scalars only, because that is what a row holds.**
+    /// A list is consumed and — except the face element's — discarded, so
+    /// it never reaches the row. Numbering these by their position in
+    /// the schema instead meant a list declared before `x` shifted every
+    /// coordinate after it, and the reader returned a neighbouring
+    /// column as the position: `Ok`, with geometry the file does not
+    /// describe, which is the worst of the three answers a reader can
+    /// give. It only surfaced when enough trailing scalars existed to
+    /// absorb the shift; otherwise it ran off the end and refused,
+    /// which is how the comment claiming "the fallback is a refusal
+    /// rather than a wrong coordinate" came to be written.
     fn locate(element: &Element) -> Result<Self, MeshError> {
         let mut at = [usize::MAX; 3];
-        for (index, property) in element.properties.iter().enumerate() {
+        let mut scalars = 0usize;
+        for property in &element.properties {
+            // A coordinate is one number, so a list named `x` is not
+            // one. Leaving it unmatched refuses the file below rather
+            // than reading its first entry as a position.
+            if !matches!(property.kind, PropertyKind::Scalar(_)) {
+                continue;
+            }
             let slot = match property.name.as_str() {
-                "x" => 0,
-                "y" => 1,
-                "z" => 2,
-                _ => continue,
+                "x" => Some(0),
+                "y" => Some(1),
+                "z" => Some(2),
+                _ => None,
             };
             // The first wins: a schema naming `x` twice is describing
             // something this reader has no way to choose between, and
             // taking the earlier is at least deterministic.
-            if at[slot] == usize::MAX {
-                at[slot] = index;
+            if let Some(slot) = slot
+                && at[slot] == usize::MAX
+            {
+                at[slot] = scalars;
             }
+            scalars += 1;
         }
         for (slot, wanted) in ["x", "y", "z"].into_iter().enumerate() {
             if at[slot] == usize::MAX {
@@ -492,6 +595,7 @@ fn ascii_body(elements: &[Element], body: &[u8]) -> Result<Mesh, MeshError> {
     // reader has no use for is still read: its rows have to be consumed
     // to reach the ones that follow.
     for (index, element) in elements.iter().enumerate() {
+        refuse_impossible_count(element, body.len(), false)?;
         for _ in 0..element.count {
             let mut row: Vec<f64> = Vec::new();
             let mut list: Vec<u64> = Vec::new();
@@ -599,6 +703,7 @@ fn binary_body(elements: &[Element], body: &[u8], big: bool) -> Result<Mesh, Mes
     let mut faces = Vec::new();
 
     for (index, element) in elements.iter().enumerate() {
+        refuse_impossible_count(element, body.len(), true)?;
         for _ in 0..element.count {
             let mut row: Vec<f64> = Vec::new();
             let mut list: Vec<u64> = Vec::new();
@@ -633,12 +738,29 @@ fn binary_body(elements: &[Element], body: &[u8], big: bool) -> Result<Mesh, Mes
                             Vec::with_capacity(corners.min(usize::from(MAX_FACE_CORNERS)));
                         for _ in 0..corners {
                             let entry = cursor.scalar(item, big)?;
+                            // **Refused, not coerced.** This was
+                            // `entry.max(0.0) as u64`, and the reason
+                            // beside it said an index out of range is
+                            // caught against the vertex count later. It
+                            // is not: `max` had already turned a
+                            // negative index into vertex zero, and
+                            // `NaN.max(0.0)` is `0.0`, so a file naming
+                            // vertex -1 or vertex NaN got vertex zero
+                            // and a caller got geometry the file does
+                            // not describe. A fractional index was
+                            // truncated the same way, silently.
+                            if !entry.is_finite() || entry < 0.0 || entry.fract() != 0.0 {
+                                return Err(MeshError::NotANumber {
+                                    found: quoted(&entry.to_string()),
+                                    line: 0,
+                                });
+                            }
                             #[expect(
                                 clippy::cast_possible_truncation,
                                 clippy::cast_sign_loss,
-                                reason = "an index is a whole number; one that is not in range is refused against the vertex count in `assemble`"
+                                reason = "the check above admits only a non-negative whole number, and one of that shape converts exactly; whether it names a vertex that exists is `assemble`'s question"
                             )]
-                            let index = entry.max(0.0) as u64;
+                            let index = entry as u64;
                             entries.push(index);
                         }
                         if index == face_at && slot == list_at {

@@ -257,6 +257,36 @@ pub(crate) const MAX_QUOTED: usize = 32;
 /// clear a screen, or hide the rest of the line it was reported on.
 /// Found by a test feeding the reader three arbitrary bytes and reading
 /// what came back.
+/// Whether a character must be escaped before it is printed back.
+///
+/// **`char::is_control` was not enough, and the gap was the exact threat
+/// this escaping was written against.** That predicate is Unicode
+/// category Cc alone, so `U+202E` RIGHT-TO-LEFT OVERRIDE passed through
+/// untouched — and a bidi override is precisely the thing that "hides
+/// the rest of the line it was reported on", which is the sentence the
+/// original comment used to justify escaping at all. `U+2028` LINE
+/// SEPARATOR, `U+200F`, `U+00AD` and `U+061C` went through with it.
+///
+/// So the question is not "is this a control character" but "can this
+/// change what a reader of the message sees". Cc for the terminal
+/// escapes, Cf for the bidi and formatting controls, and the two
+/// separators that end a line without being `\n`.
+fn is_dangerous(character: char) -> bool {
+    character.is_control()
+        || matches!(character,
+            // Cf: bidi overrides and embeddings, the soft hyphen, the
+            // Arabic letter mark, the zero-width joiners.
+            '\u{00AD}' | '\u{061C}' | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+            // Zl and Zp: a line and a paragraph separator, which end a
+            // line in a renderer without being a newline here.
+            | '\u{2028}' | '\u{2029}')
+}
+
 pub(crate) fn quoted(text: &str) -> String {
     let mut kept = String::new();
     let mut shown = 0usize;
@@ -264,7 +294,7 @@ pub(crate) fn quoted(text: &str) -> String {
     for character in text.chars() {
         // The escape rather than the character, so what is printed is
         // what the file held and not what it would have done.
-        let piece: String = if character.is_control() {
+        let piece: String = if is_dangerous(character) {
             format!("<U+{:04X}>", u32::from(character))
         } else {
             character.to_string()

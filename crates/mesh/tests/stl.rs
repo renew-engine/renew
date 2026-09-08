@@ -421,3 +421,40 @@ fn a_hostile_count_is_refused_before_it_is_reserved() {
     believable.extend_from_slice(&record(UP, UNIT));
     assert!(stl::read(&believable).is_ok(), "the honest version reads");
 }
+
+/// **A refusal quoting a file's own text cannot move a cursor, and that
+/// is a wider question than "is this a control character".**
+///
+/// The escaping was written against a named threat: control bytes
+/// travelling out of an unparseable file, through a log, into a terminal
+/// are how that file still gets "to move a cursor, clear a screen, or
+/// hide the rest of the line it was reported on". The predicate was
+/// `char::is_control`, which is Unicode category Cc alone — so
+/// `U+202E` RIGHT-TO-LEFT OVERRIDE passed through untouched, and a bidi
+/// override is *precisely* the thing that hides the rest of a line.
+///
+/// The escaping and the hole were written in the same commit, against
+/// the same sentence.
+///
+/// Probed by narrowing the predicate back to `is_control`: red, the
+/// override reaches the message intact.
+#[test]
+fn a_refusal_cannot_carry_a_character_that_rewrites_the_line() {
+    // Each of these changes what a reader of the message sees without
+    // being a control character in the Cc sense.
+    for hidden in ['\u{202E}', '\u{2028}', '\u{200F}', '\u{00AD}', '\u{061C}'] {
+        let file = format!("solid x\nfa{hidden}cet normal 0 0 1\n");
+        let MeshError::ExpectedKeyword { found, .. } = refusal(file.as_bytes()) else {
+            panic!("a word that is not `facet` should be refused as one");
+        };
+        assert!(
+            !found.contains(hidden),
+            "U+{:04X} reached the message raw, in `{found}`",
+            u32::from(hidden)
+        );
+        assert!(
+            found.contains(&format!("<U+{:04X}>", u32::from(hidden))),
+            "it should be shown as what the file held: `{found}`"
+        );
+    }
+}
