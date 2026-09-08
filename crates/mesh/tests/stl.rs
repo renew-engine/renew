@@ -148,14 +148,53 @@ endsolid x",
     }
 }
 
+/// Which reader can produce each refusal, and which cannot.
+///
+/// **This is the compile-time tripwire the test below used to claim and
+/// not have.** Its doc said "the enum is closed, so the compiler will
+/// not let this list silently miss one added later — the match below has
+/// no wildcard", and there was no match: the test is a flat run of
+/// assertions, and nothing stopped three variants being added to
+/// `MeshError` without it noticing. They were, and it did not.
+///
+/// A wildcard-free match is what makes the claim true. Adding a refusal
+/// now stops this file compiling until somebody decides which reader can
+/// reach it, and a test below turns that decision into a check.
+///
+/// **The reason is the answer, not a comment beside it.** Written as a
+/// bool, the unreachable arms had identical bodies and what separated
+/// them lived only in prose — which is the shape this whole review kept
+/// finding. A reason the test prints is a reason somebody reads.
+fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
+    match refusal {
+        // Reachable, and each is provoked by a file in this suite.
+        MeshError::TooShortForHeader { .. }
+        | MeshError::CountMismatch { .. }
+        | MeshError::ExpectedKeyword { .. }
+        | MeshError::NotANumber { .. }
+        | MeshError::NotFinite { .. }
+        | MeshError::NoGeometry => None,
+        MeshError::TooLarge { .. } => Some(
+            "a ceiling this reader sets on nothing: the length equality has already bounded              every count against the file before any conversion happens",
+        ),
+        MeshError::IndexOutOfRange { .. } => {
+            Some("this format repeats every corner, so it has no index to be out of range")
+        }
+        MeshError::NotAFace { .. } => {
+            Some("this format has no face element whose corner count could be short")
+        }
+        MeshError::Unsupported { .. } => {
+            Some("this format has no schema, so there is nothing in it to be unsupported")
+        }
+    }
+}
+
 /// Every refusal this reader can make is reachable, and each by a file
 /// that provokes only it.
 ///
 /// **A list rather than a test each**, because what matters is that no
 /// variant goes unseeded: a refusal nothing provokes is a refusal nobody
-/// has read the message of. The enum is closed, so the compiler will
-/// not let this list silently miss one added later — the match below has
-/// no wildcard.
+/// has read the message of.
 #[test]
 fn every_refusal_is_reachable() {
     // Three arbitrary bytes do not open like text, so they go to the
@@ -286,6 +325,65 @@ fn every_refusal_is_reachable() {
             line: 4
         }
     );
+}
+
+/// **The census and the files agree, in both directions.**
+///
+/// Every refusal a file in this suite provokes is one the census calls
+/// reachable, and every refusal it calls reachable is provoked by a file
+/// here. Without this the match is a claim nobody checks — which is
+/// exactly what the sentence it replaced turned out to be.
+#[test]
+fn the_census_and_the_files_agree() {
+    let mut short = binary(b"h", &[(UP, UNIT)]);
+    short.truncate(short.len() - 1);
+    let nan = binary(b"h", &[(UP, [[f32::NAN, 0.0, 0.0], UNIT[1], UNIT[2]])]);
+
+    let provoked = [
+        refusal(&[1, 2, 3]),
+        refusal(&short),
+        refusal(&binary(b"empty", &[])),
+        refusal(
+            b"solid x
+endsolid x
+",
+        ),
+        refusal(&nan),
+        refusal(
+            b"solid x
+facet wombat 0 0 1
+",
+        ),
+        refusal(
+            b"solid x
+facet normal 0 0 1
+outer loop
+vertex 1.0.0 0 0
+",
+        ),
+    ];
+    for refused in &provoked {
+        assert!(
+            stl_cannot_reach(refused).is_none(),
+            "{refused:?} was provoked by a file in this suite, and the census says this reader              cannot reach it: {}",
+            stl_cannot_reach(refused).unwrap_or("")
+        );
+    }
+    for name in [
+        "TooShortForHeader",
+        "CountMismatch",
+        "ExpectedKeyword",
+        "NotANumber",
+        "NotFinite",
+        "NoGeometry",
+    ] {
+        assert!(
+            provoked
+                .iter()
+                .any(|refused| format!("{refused:?}").starts_with(name)),
+            "`{name}` is called reachable and no file in this suite provokes it"
+        );
+    }
 }
 
 /// **Every byte string gets an answer.**

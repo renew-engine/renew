@@ -71,11 +71,22 @@ pub enum MeshError {
         count: u32,
     },
 
-    /// A count that cannot be turned into a size on this target.
+    /// A number past a ceiling this reader sets.
     ///
-    /// The 32-bit case is not hypothetical: a `u32` count times a
-    /// fifty-byte record overflows a 32-bit `usize` well before it
-    /// overflows the count.
+    /// **A policy ceiling, not a representation limit**, and the
+    /// distinction is the reason this exists at all: a representation
+    /// limit is reached only after the allocation has been attempted,
+    /// and a policy ceiling is a refusal that costs nothing. The
+    /// ceilings are on a schema's element and property counts, on how
+    /// many corners one face may name, and on the total geometry a file
+    /// may build — that last one because the first three bound
+    /// factors and none of them bounds the product.
+    ///
+    /// An earlier version of this doc said the variant was about a
+    /// count "that cannot be turned into a size on this target", and
+    /// gave the 32-bit overflow as the case. No reader here can reach
+    /// that: the pack-style length equality bounds the product by the
+    /// file before the conversion happens.
     TooLarge {
         /// Which header field held it.
         field: &'static str,
@@ -192,7 +203,7 @@ impl fmt::Display for MeshError {
             ),
             Self::TooLarge { field, value } => write!(
                 f,
-                "`{field}` is {value}, which is more than this target can address"
+                "`{field}` is {value}, past the ceiling this reader sets for it"
             ),
             Self::ExpectedKeyword {
                 expected,

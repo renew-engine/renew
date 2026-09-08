@@ -527,6 +527,32 @@ fn face_list(element: &Element) -> Result<usize, MeshError> {
         })
 }
 
+/// The most geometry this reader will build out of one file, in bytes.
+///
+/// **A policy ceiling, not a representation limit, and the two are not
+/// the same refusal.** A representation limit is reached only after the
+/// allocation has been attempted; this one is a refusal that costs
+/// nothing. It is the same reasoning the image decoder gives for its own
+/// two hundred and fifty-six megabytes, and this is the same number, for
+/// the same reason: far past any model a game loads and far short of
+/// anything that hurts.
+///
+/// **The ceilings on the factors were not enough, which is the whole
+/// point of this one.** `MAX_FACE_CORNERS` bounds a single face and
+/// `refuse_impossible_count` bounds a row count against the bytes that
+/// could supply it $M and neither bounds their product. A fan turns a
+/// face of `n` corners into `(n - 2) * 3` positions, so a file of a
+/// megabyte, every byte of it legitimate, built fifty-eight megabytes of
+/// geometry. Linear in the input and therefore inside the letter of the
+/// rule that a refused input costs no more than its own length buys; and
+/// a caller adopting the image decoder's own file bound would still have
+/// been handed twelve gigabytes from one mesh. Amplification is the
+/// danger, not allocation.
+const MAX_GEOMETRY_BYTES: usize = 256 << 20;
+
+/// How many positions that ceiling allows.
+const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
+
 /// Turn vertices and faces into triangles.
 ///
 /// The one place the two halves meet, so the index check that separates
@@ -551,6 +577,16 @@ fn assemble(vertices: &[[f32; 3]], faces: &[Vec<u64>]) -> Result<Mesh, MeshError
                     face,
                 });
             }
+        }
+        // Checked as the fan emits rather than after it, so the refusal
+        // arrives before the memory does — which is the difference
+        // between a policy ceiling and a representation limit.
+        let fanned = (corners.len() - 2) * 3;
+        if positions.len().saturating_add(fanned) > MAX_POSITIONS {
+            return Err(MeshError::TooLarge {
+                field: "total geometry",
+                value: (positions.len().saturating_add(fanned) * 12) as u64,
+            });
         }
         // A fan from the first corner. Correct for a convex polygon,
         // which is what a triangle and a quad from a subdivision surface

@@ -141,7 +141,7 @@ proptest! {
         }
     }
 
-    /// **No proper prefix of a file reads as that file.**
+    /// **No proper prefix of a binary file reads at all.**
     ///
     /// A reader that answered `Ok` to half a file would be handing a
     /// caller a mesh with triangles missing and no way to know it — the
@@ -149,10 +149,18 @@ proptest! {
     /// downstream can detect. Truncation is the commonest corruption
     /// there is, so it gets a property rather than a case.
     ///
-    /// A prefix may of course be refused, and usually is; what it may not
-    /// be is accepted as the whole.
+    /// **The assertion used to be that a prefix must not equal the whole,
+    /// and that could not fail.** A prefix accepted with triangles
+    /// missing has positions that differ from the whole file's, so it
+    /// *passed* — for precisely the outcome the paragraph above calls the
+    /// worst. Proved by returning the records that did arrive from a
+    /// truncated read: the property stayed green.
+    ///
+    /// The true claim is stronger and simpler. A binary file's length is
+    /// fixed by its own count, so no shorter prefix can satisfy it, and
+    /// there is no honest reading of half an STL. It must refuse.
     #[test]
-    fn no_proper_prefix_reads_as_the_whole_file(
+    fn no_proper_prefix_of_a_binary_file_reads(
         source in triangles(),
         cut in 0usize..1_000,
     ) {
@@ -161,13 +169,10 @@ proptest! {
         // sweep is the same everywhere and nothing has to be rounded.
         let at = whole.len() * cut / 1_000;
         prop_assume!(at < whole.len());
-        if let Ok(prefix) = stl::read(&whole[..at]) {
-            let full = stl::read(&whole).expect("the whole file reads");
-            prop_assert_ne!(
-                prefix.positions,
-                full.positions,
-                "a prefix read as the whole file"
-            );
-        }
+        prop_assert!(
+            stl::read(&whole[..at]).is_err(),
+            "{at} of {} bytes was accepted as a mesh",
+            whole.len()
+        );
     }
 }

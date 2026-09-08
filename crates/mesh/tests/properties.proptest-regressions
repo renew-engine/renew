@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# The case below did not come from a defect in this crate. It is the
+# shrunk input that distinguishes the strong form of the prefix
+# property from the weak one it replaced: it fails against a reader
+# that accepts a truncated file and keeps the records that arrived,
+# and passes against this one. Kept because that is exactly the seed
+# worth retrying first if the property is ever weakened again.
+cc ee55ac64029f7951c975dce592140da41c9f7493d3d97f01d9679ab45ac77642 # shrinks to source = [([0.0, 0.0, 0.0], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), ([0.0, 0.0, 0.0], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])], cut = 457
