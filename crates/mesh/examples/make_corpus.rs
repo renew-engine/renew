@@ -3,7 +3,7 @@
 //! **Every input here is first-party.** A model downloaded from a sample
 //! repository would be a dependency with a licence and a directory of
 //! them would be a dependency nobody recorded — the same rule the sample
-//! atlases and the other two generated corpora follow.
+//! atlases and the other three generated corpora follow.
 //!
 //! A fuzzer finds its own way past an eighty-byte header eventually, but
 //! it wastes most of a budget doing it, and it will essentially never

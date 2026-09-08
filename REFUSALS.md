@@ -8,12 +8,20 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Eight readers in this tree already take bytes nobody here wrote. Their
+Ten readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
-house pattern rather than inventing one. The second half is the part no
-reader here has needed yet: geometry. It is written before the importer
-so that the importer is built against a list, rather than against the
-handful of files that happen to be on somebody's disk.
+house pattern rather than inventing one.
+
+**The second half was written before any reader here took geometry, and
+two of the ten now do** — the STL and PLY readers in `crates/mesh`, built
+against this list rather than against the handful of files that happened
+to be on somebody's disk, which is what the list was for. Where an entry
+below says there is no local precedent, check `crates/mesh` first: its
+ten `MeshError` variants answer "not this format at all", "too short to
+hold its own header", "a declared count the bytes present cannot supply",
+"a value outside the format's own domain", "legal in the format, not
+implemented here", and the product ceiling of entry 31. The rest of part
+two is still ahead of the code, and still says so.
 
 ## How to use this
 
@@ -47,11 +55,20 @@ is dead code that reads like safety.
 | JSON | `JsonErrorKind` | `crates/json/src/error.rs` | 29 | `json_parse` | 30 |
 | Deflate, inside PNG | `InflateError` | `crates/png/src/inflate.rs` | 7 | `png_decode` | — |
 | Mesh descriptor | `TargetError::Creation` | `crates/rhi/src/vk/mesh.rs` | 8, as strings | none | none |
+| STL | `MeshError` | `crates/mesh/src/error.rs` | 10, shared with PLY | `stl_read` | 18 |
+| PLY | `MeshError` | `crates/mesh/src/error.rs` | 10, shared with STL | `ply_read` | 16 |
 
-The last row is the one to read before writing an importer. It is the
-only geometry validation in the tree, it is real, and its refusals are
-formatted strings rather than variants — which is the shape the rest of
-this document argues against.
+**The two mesh readers share one error type, and each names in a test
+which variants it cannot reach** — STL has no index to be out of range,
+PLY has no keyword to be missing — so the shared type costs neither
+reader the ability to say its own list is complete.
+
+The mesh-descriptor row is the one to read before writing an importer
+that touches the GPU. Its refusals are formatted strings rather than
+variants — the shape the rest of this document argues against — and it
+sees a vertex stream as opaque bytes: it can prove the stream divides by
+its stride and that no index escapes it, and nothing whatever about what
+the numbers mean.
 
 ## Six rules the refusals here are held to
 
@@ -609,17 +626,23 @@ permuted pool and an unreferenced entry.
 
 # Part two: what an importer of geometry meets
 
-Nothing in this tree refuses any of the following. That is not because
-they are exotic — they are the ordinary content of a model file — but
-because no reader here has yet taken one. The only geometry validation
-that exists is the mesh descriptor's eight checks, and it sees a vertex
-stream as opaque bytes: it can prove the stream divides by its stride and
-that no index escapes it, and it can prove nothing whatever about what
-the numbers mean.
+**This half was written when nothing in this tree refused any of the
+following, and that is no longer true of all of it.** `crates/mesh`
+answers the entries an untextured triangle-soup reader meets: a count
+that cannot be supplied by the bytes present, a header that never ends, a
+coordinate that is not finite, an index naming a vertex that is not
+there, a face that is not a surface, and a ceiling on the product rather
+than on its factors (entry 31). Those entries now have local precedent,
+and it is named in each.
+
+The rest is still ahead of the code — not because those cases are exotic,
+they are the ordinary content of a model file, but because no reader here
+has taken a format that carries them. Materials, skins, joint hierarchies
+and texture coordinates are all in that group.
 
 So this half is written the other way round from part one. Each entry
-says what to refuse and why, and says plainly that there is no local
-precedent to copy.
+says what to refuse and why, and says whether there is a local precedent
+to copy or none yet.
 
 Two facts about this engine shape the whole part, and both are worth
 holding while reading it:

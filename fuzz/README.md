@@ -1,24 +1,27 @@
 # renew-fuzz
 
-Fuzz harnesses for the eight parsers that read data the engine did not
+Fuzz harnesses for the ten parsers that read data the engine did not
 write: the asset pack reader, the input-trace codec, the WAV reader, the
 UI document reader, the UI text grammar, the datagram reader, the PNG
-decoder, and the JSON reader. Three of them go
-further than the rest: bytes that read as a UI document are also
+decoder, the JSON reader, and the two mesh readers, STL and PLY. Five of
+them go further than the rest: bytes that read as a UI document are also
 instantiated as a tree, because validation claims instantiation never
 needs to re-check; text that compiles is read back through the
 runtime reader, because the compiler claims it only mints what that
-reader accepts; and a JSON document that parses is walked, with every
+reader accepts; a JSON document that parses is walked, with every
 typed question asked of every value in it, because validation claims an
-accepted document has nothing deferred left in it. An input that breaks
-any of those claims is a finding.
+accepted document has nothing deferred left in it; and a mesh that reads
+is checked for whole triangles, finite coordinates and a normal array
+matching what its format can carry, because those are what the returned
+type claims of itself. An input that breaks any of those claims is a
+finding.
 
-**Six of the eight take their bytes unfiltered; two do not, and the
+**Eight of the ten take their bytes unfiltered; two do not, and the
 dividing line is what the parser's own signature accepts.**
 `trace_parse` and `ui_text` guard their input with `from_utf8` and return
 early on failure, because both of those parsers take `&str` — a crash
 found past a lossy conversion would be unreachable from any real file.
-The other six take `&[u8]`, so there is nothing for them to guard. The
+The other eight take `&[u8]`, so there is nothing for them to guard. The
 JSON reader in particular takes bytes on purpose, so
 that a caller holding one chunk of a larger file need not answer the "is
 this even text" question itself — which means the fuzzer is the thing
@@ -53,11 +56,15 @@ not a first line of defence, a deeper one.
 
 `corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
-`cargo fuzz cmin`. **Two corpora start differently** — `png_decode`'s
-seeds are written by `cargo run -p renew-png --example make_corpus` and
-`json_parse`'s by `cargo run -p renew-json --example make_corpus`, each of
+`cargo fuzz cmin`. **Four corpora start differently** — `png_decode`'s
+seeds are written by `cargo run -p renew-png --example make_corpus`,
+`json_parse`'s by `cargo run -p renew-json --example make_corpus`, and the
+two mesh corpora by `cargo run -p renew-mesh --example make_corpus`
+(`stl_read`) and `--example make_ply_corpus` (`ply_read`), each of
 which builds every byte it writes rather than copying a file from
-anywhere, so no licence question arrives with the starting seeds.
+anywhere, so no licence question arrives with the starting seeds. For the
+mesh pair that is not only licensing: a mesh is the one format here whose
+sample files are *art*, and art has an author.
 
 **What is *not* gated is which of those seeds survive, and that is
 deliberate.** Neither generator runs in CI, and no test compares the
@@ -110,11 +117,13 @@ scheduled job uploads the directory when a run fails.
 
 ## What these targets deliberately do not assert
 
-**That an accepted input is *meaningful*.** Four of the eight do assert
+**That an accepted input is *meaningful*.** Six of the ten do assert
 something past "it answered" — the datagram re-encodes to its own bytes,
 a UI document instantiates, compiled text reads back, a JSON document
-answers every typed question — but each of those is a claim the parser
-itself makes about what it accepts, checked only on inputs it accepted.
+answers every typed question, and a mesh that reads has whole triangles,
+finite coordinates and a normal count its format could have written — but
+each of those is a claim the parser itself makes about what it accepts,
+checked only on inputs it accepted.
 **None of them assert anything about a rejected input, and none assert
 that a decoded value is the right value.** Whether the answer is correct
 belongs to the round-trip properties beside each parser: a fuzz target

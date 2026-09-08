@@ -127,21 +127,35 @@ which is more than a reader should make alone.
 
 ## Testing
 
-`tests/stl.rs` provokes every refusal the reader can make, checks both
-dialects against the shapes exporters actually emit, and sweeps random
-noise, single-byte corruptions and every prefix of a good file.
+`tests/stl.rs` provokes every refusal the STL reader can make, checks
+both dialects against the shapes exporters actually emit, and sweeps
+random noise, single-byte corruptions and every prefix of a good file.
+`tests/ply.rs` does the same for PLY, where the header is a schema rather
+than a fixed layout, so it also reads every scalar type at its own width,
+sign and byte order, and bounds the time a header is allowed to take.
+`tests/properties.rs` round-trips generated meshes through both STL
+spellings and asserts that every byte string gets an answer.
 
-`fuzz/fuzz_targets/stl_read.rs` takes bytes unfiltered — the dispatch
-between the two encodings is itself untrusted-input handling — and
-asserts the invariants a returned mesh carries. `tests/corpus_replay.rs`
-replays the committed corpus on stable, on every merge, with a floor on
-both the number of distinct inputs and the number of distinct answers
-they reach, plus four refusals named individually.
+**Each reader's census is a test, not a comment.** Both suites map every
+`MeshError` variant to either a file in the suite that provokes it or a
+sentence saying why this format cannot reach it, with no wildcard arm —
+so a new variant does not compile until someone says which it is, and a
+refusal that stops being reachable cannot sit there unnoticed.
+
+`fuzz/fuzz_targets/stl_read.rs` and `ply_read.rs` take bytes unfiltered —
+for STL the dispatch between the two encodings is itself untrusted-input
+handling, and for PLY the header is — and each asserts the invariants a
+returned mesh carries. `tests/corpus_replay.rs` replays both committed
+corpora on stable, on every merge, with a floor on the number of distinct
+inputs and on the number of distinct answers they reach, plus four
+refusals named individually per format.
 
 **Every fixture is generated.** A model downloaded from a sample
 repository would be a dependency with a licence, and a directory of them
-would be a dependency nobody recorded. `examples/make_corpus.rs` builds
-every seed.
+would be a dependency nobody recorded — and a mesh, unlike a datagram, is
+the kind of file that has an author. `examples/make_corpus.rs` builds the
+25 STL seeds and `examples/make_ply_corpus.rs` the 23 PLY ones; between
+them every committed seed is built here rather than found.
 
 ## Manifest
 
