@@ -137,29 +137,37 @@ random noise, single-byte corruptions and every prefix of a good file.
 `tests/ply.rs` does the same for PLY, where the header is a schema rather
 than a fixed layout, so it also reads every scalar type at its own width,
 sign and byte order, and bounds the time a header is allowed to take.
-`tests/properties.rs` round-trips generated meshes through both STL
-spellings and asserts that every byte string gets an answer.
+`tests/obj.rs` does it for OBJ, where the whole input is a grammar: both
+index spellings, the four ways a corner may name its streams, and the
+line-by-line refusals a format with no header has instead of a size
+check. `tests/properties.rs` round-trips generated meshes through both
+STL spellings and asserts that every byte string gets an answer.
 
-**Each reader's census is a test, not a comment.** Both suites map every
-`MeshError` variant to either a file in the suite that provokes it or a
-sentence saying why this format cannot reach it, with no wildcard arm —
+**Each reader's census is a test, not a comment.** All three suites map
+every `MeshError` variant to either a file in the suite that provokes it
+or a sentence saying why this format cannot reach it, with no wildcard
+arm —
 so a new variant does not compile until someone says which it is, and a
 refusal that stops being reachable cannot sit there unnoticed.
 
-`fuzz/fuzz_targets/stl_read.rs` and `ply_read.rs` take bytes unfiltered —
-for STL the dispatch between the two encodings is itself untrusted-input
-handling, and for PLY the header is — and each asserts the invariants a
-returned mesh carries. `tests/corpus_replay.rs` replays both committed
-corpora on stable, on every merge, with a floor on the number of distinct
-inputs and on the number of distinct answers they reach, plus four
-refusals named individually per format.
+`fuzz/fuzz_targets/stl_read.rs`, `ply_read.rs` and `obj_read.rs` take
+bytes unfiltered — for STL the dispatch between the two encodings is
+itself untrusted-input handling, for PLY the header is, and for OBJ every
+line is — and each asserts the invariants a returned mesh carries.
+`tests/corpus_replay.rs` replays all three committed corpora on stable,
+on every merge, with a floor on the number of distinct inputs and on the
+number of distinct answers they reach, plus four refusals named
+individually per format.
 
 **Every fixture is generated.** A model downloaded from a sample
 repository would be a dependency with a licence, and a directory of them
 would be a dependency nobody recorded — and a mesh, unlike a datagram, is
 the kind of file that has an author. `examples/make_corpus.rs` builds the
-25 STL seeds and `examples/make_ply_corpus.rs` the 23 PLY ones; between
-them every committed seed is built here rather than found.
+25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones and
+`examples/make_obj_corpus.rs` the 23 OBJ ones; between them every
+committed seed is built here rather than found. **For OBJ that rule bites
+hardest**: an OBJ is what a person exports out of a modelling tool, so
+the obvious way to get one is to take somebody's model.
 
 ## Manifest
 

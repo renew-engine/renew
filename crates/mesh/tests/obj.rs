@@ -349,3 +349,118 @@ fn every_byte_string_gets_an_answer() {
         }
     }
 }
+
+/// **Every refusal this reader can make is reachable, and each by a file
+/// in this suite; every one it cannot make says why.**
+///
+/// No wildcard arm, so a variant added later stops this file compiling
+/// until somebody decides which it is. That is what caught a refusal in
+/// the STL reader that no input on any target could produce.
+fn obj_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
+    match refusal {
+        // Reachable, and each is provoked by a file in this suite.
+        MeshError::TooLarge { .. }
+        | MeshError::ExpectedKeyword { .. }
+        | MeshError::NotANumber { .. }
+        | MeshError::NotFinite { .. }
+        | MeshError::IndexOutOfRange { .. }
+        | MeshError::IndexZero { .. }
+        | MeshError::NotAFace { .. }
+        | MeshError::Unsupported { .. }
+        | MeshError::NoGeometry => None,
+        MeshError::TooShortForHeader { .. } => {
+            Some("this format has no header, so there is no least size it can be")
+        }
+        MeshError::CountMismatch { .. } => Some(
+            "this format declares no counts: a stream is as long as the lines that \
+             built it, so there is no declared number for the file to contradict",
+        ),
+    }
+}
+
+/// The census above and the files here agree.
+///
+/// Walks every variant, asks this suite for a file that provokes it, and
+/// fails if a variant claimed reachable has no file or one claimed
+/// unreachable turns up anyway.
+#[test]
+fn the_census_and_the_files_agree() {
+    // One provoking input per reachable variant, named by what it is.
+    let provocations: [(&str, Vec<u8>); 9] = [
+        ("TooLarge", {
+            let mut source = String::from("v 0 0 0\nv 1 0 0\nv 0 1 0\n");
+            source.push('f');
+            for _ in 0..2000 {
+                source.push_str(" 1");
+            }
+            source.push('\n');
+            source.into_bytes()
+        }),
+        ("ExpectedKeyword", {
+            let mut bytes = b"v 0 0 0\n".to_vec();
+            bytes.extend_from_slice(&[0xFF, 0xFE]);
+            bytes
+        }),
+        ("NotANumber", b"v 0 0 zero\nf 1 1 1\n".to_vec()),
+        ("NotFinite", b"v 0 0 inf\nf 1 1 1\n".to_vec()),
+        (
+            "IndexOutOfRange",
+            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 4\n".to_vec(),
+        ),
+        (
+            "IndexZero",
+            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n".to_vec(),
+        ),
+        ("NotAFace", b"v 0 0 0\nv 1 0 0\nf 1 2\n".to_vec()),
+        (
+            "Unsupported",
+            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3\n".to_vec(),
+        ),
+        ("NoGeometry", b"v 0 0 0\nv 1 0 0\nv 0 1 0\n".to_vec()),
+    ];
+
+    for (name, bytes) in &provocations {
+        let got = refusal(bytes);
+        assert!(
+            obj_cannot_reach(&got).is_none(),
+            "`{name}` is provoked by a file here, and the census calls it unreachable"
+        );
+        assert_eq!(
+            variant(&got),
+            *name,
+            "the file meant to provoke `{name}` provoked something else"
+        );
+    }
+
+    // And the two the census calls unreachable really have no file.
+    for refusal in [
+        MeshError::TooShortForHeader { needs: 84, len: 3 },
+        MeshError::CountMismatch {
+            declared: 1,
+            actual: 0,
+            count: 1,
+        },
+    ] {
+        assert!(
+            obj_cannot_reach(&refusal).is_some(),
+            "{refusal:?} is claimed reachable and nothing here provokes it"
+        );
+    }
+}
+
+/// A refusal's variant, as a name, with no wildcard arm.
+fn variant(refusal: &MeshError) -> &'static str {
+    match refusal {
+        MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+        MeshError::CountMismatch { .. } => "CountMismatch",
+        MeshError::TooLarge { .. } => "TooLarge",
+        MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+        MeshError::NotANumber { .. } => "NotANumber",
+        MeshError::NotFinite { .. } => "NotFinite",
+        MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+        MeshError::IndexZero { .. } => "IndexZero",
+        MeshError::NotAFace { .. } => "NotAFace",
+        MeshError::Unsupported { .. } => "Unsupported",
+        MeshError::NoGeometry => "NoGeometry",
+    }
+}
