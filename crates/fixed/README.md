@@ -39,9 +39,23 @@ finer than anything a game perceives.
 ## What the API refuses
 
 **No `f32` or `f64` in any signature.** Converting to a float is a presentation
-concern; it lives in the maths crate, which depends on this one. A simulation
-cannot reach that crate, so it cannot perform the conversion — enforced by the
-structure checker's float-closure rule rather than by anyone remembering.
+concern; it lives in `renew-math`. A simulation cannot reach that crate — not
+because of the dependency direction, which runs the other way, but because
+`renew-math` computes with floats and so cannot sit in a simulation's shipping
+closure. The float-closure rule is what sees to it, rather than anyone
+remembering.
+
+**That rule asks two questions, because one is not enough.** The first is
+whether a crate denies `clippy::float_arithmetic`, and that deny flags
+operators. It does not flag method calls: `a.mul_add(b, c)` and `a.sin()`
+compile clean under it, which was measured rather than assumed. So the second
+question is whether the crate also bans those methods by name in its
+`clippy.toml`, beside the bans for the clock and the filesystem. **`mul_add` is
+the reason the second question exists** — whether the multiply and the add
+round once or twice is a property of the target and the lowering rather than of
+the source. **This repository has measured it**: `tests/angles.rs` in this crate
+records a sine reference built with `mul_add` that differed between machines,
+passing the accuracy test on one platform and failing on another.
 
 Values are constructed from integers: `from_int`, `from_ratio` (how `9.81` is
 written without a float ever existing — `from_ratio(981, 100)`), and

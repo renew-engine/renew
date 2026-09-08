@@ -3,10 +3,26 @@
 //! **This file uses floating point deliberately**, and it is the only place in
 //! this crate's world that may. The table is a committed approximation of a
 //! transcendental function; the only honest way to state its error is against
-//! a reference, and `f64::sin` is the reference. Integration tests are their
-//! own crate, so the library's float ban does not reach here — which is the
-//! right boundary: the shipped code has no float, and the proof that its
-//! table is right does.
+//! a reference, and `f64::sin` is the reference. The right boundary is that
+//! the shipped code has no float and the proof that its table is right does.
+//!
+//! **The allowance on the one test that needs it is what makes that
+//! boundary explicit rather than accidental.** It used to be accidental: this file said the float ban did
+//! not reach here because an integration test is its own crate. That was true
+//! of the crate-level `deny`, and it is not true of the method ban, because
+//! `clippy.toml` is read per directory and applies to every target in it. So
+//! the exemption is now written down and carries its reason, which is the
+//! only form an exemption should take — a reader who deletes it has to delete
+//! the argument with it.
+//!
+//! **It is on the test rather than on the file, and that is not tidiness.**
+//! A file-level allow of `disallowed_methods` silences *every* entry in this
+//! crate's lint file — the clock, the filesystem, thread spawning — not the
+//! two float methods its reason names. Measured: with one in place,
+//! `Instant::now()` and `fs::read()` were added here and clippy reported
+//! neither. And it is `expect` rather than `allow`, so the day this file stops
+//! needing it, the compiler says so instead of leaving a permission nobody
+//! rereads.
 
 use proptest::prelude::*;
 use renew_fixed::{Angle, Fixed, Vec2};
@@ -76,6 +92,10 @@ proptest! {
 
     /// The accuracy claim, over the whole circle rather than a sample of it.
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "f64::sin and f64::cos are the reference this table is checked against; there is no other way to state a table's error, and nothing computed here reaches shipped code, let alone a digest"
+    )]
     fn sine_and_cosine_are_within_the_stated_error(bits in any::<u32>()) {
         let angle = Angle::from_bits(bits);
         let theta = radians(angle);
