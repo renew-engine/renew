@@ -2365,7 +2365,7 @@ mod tests {
         r#"{"workspace_root":"/w","packages":[{"name":"renew-diag","#,
         r#""manifest_path":"/w/crates/core/diag/Cargo.toml","dependencies":[],"#,
         r#""metadata":{"renew":{"purpose":"p","maturity":"bootstrap","core":true,"#,
-        r#""extension_points":[],"simulation":false}}}]}"#,
+        r#""extension_points":[],"simulation":false,"imported_floats":false}}}]}"#,
     );
 
     #[test]

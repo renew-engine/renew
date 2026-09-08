@@ -88,8 +88,10 @@ pub struct Meta {
     /// to `Fixed`, and most crates do neither.
     ///
     /// The distinction earns its keep because a number from somebody
-    /// else's exporter cannot be reproduced by rerunning this engine,
-    /// which is the whole of what I3 is protecting.
+    /// else's exporter cannot be reproduced by rerunning this engine —
+    /// and a simulation that cannot be reproduced from its inputs is not
+    /// a simulation this engine can replay, compare across machines, or
+    /// hold to a recorded digest.
     pub imported_floats: bool,
 }
 
@@ -624,9 +626,13 @@ fn float_closure_rules(shape: &CrateShape, shapes: &[CrateShape], findings: &mut
 /// Rule 10 — imported-float closure.
 ///
 /// **A float that came out of somebody else's file cannot be reproduced
-/// by rerunning this engine**, which is the whole of what I3 protects. So
-/// a crate promising determinism may not reach one, at any depth, through
-/// the edges it ships.
+/// by rerunning this engine.** Every other number a simulation holds can
+/// be: it is computed from the seed, the inputs and the code, so two runs
+/// agree and a digest means something. An imported coordinate is agreed
+/// on only for as long as the file is unchanged and every machine decoded
+/// it identically — which is a promise made by a tool this repository
+/// does not own. So a crate promising determinism may not reach one, at
+/// any depth, through the edges it ships.
 ///
 /// **This is not rule 9 again.** Rule 9 asks whether the crates in the
 /// closure *compute* with floats, and answers it from the deny of

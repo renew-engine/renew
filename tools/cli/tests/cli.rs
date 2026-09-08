@@ -548,6 +548,7 @@ maturity = \"wrong\"
             "core = false
 extension_points = []
 simulation = false
+imported_floats = false
 ",
         ),
     )
@@ -568,6 +569,7 @@ maturity = \"internal\"
             "core = false
 extension_points = []
 simulation = false
+imported_floats = false
 ",
         ),
     )
@@ -671,7 +673,7 @@ fn check_flags_a_workspace_with_broken_metadata() {
         concat!(
             "[package]\nname = \"bad\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n",
             "[package.metadata.renew]\npurpose = \"x\"\nmaturity = \"wrong\"\n",
-            "core = false\nextension_points = []\nsimulation = false\n",
+            "core = false\nextension_points = []\nsimulation = false\nimported_floats = false\n",
         ),
     )
     .expect("scratch member manifest");
