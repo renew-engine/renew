@@ -203,8 +203,9 @@ the kind of file that has an author. `examples/make_stl_corpus.rs` builds
 the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones and
-`examples/make_glb_corpus.rs` the 20 container ones; between them every
-committed seed is built here rather than found. **The blob's 25 seeds
+`examples/make_glb_corpus.rs` the 20 container ones and
+`examples/make_accessor_corpus.rs` the 21 accessor ones; between them
+every committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
 hardest**: an OBJ is what a person exports out of a modelling tool, so
@@ -247,6 +248,37 @@ that is not a multiple of four is a writer that forgot to pad.
 `Format::read` says exactly that. Until it existed a `.glb` fell through
 to the fallback and was refused as a truncated STL — a confident answer
 about the wrong format.
+
+## Accessors, and a bound that is not the obvious one
+
+`accessor::Accessor` is six numbers and two flags claiming that a
+sequence of typed values lives in a range of bytes: a component type, an
+element shape, a count, an offset, an optional stride, and whether
+integers are fractions of their own range. `view` borrows the range as
+attributes and `indices` borrows it as element addresses.
+
+**Nothing here knows where the numbers came from**, which is what makes
+the layer worth having on its own. An accessor over a container's binary
+chunk and one over a file loaded beside it are the same arithmetic, and
+neither needs a document parsed first — so the arithmetic can be fuzzed
+where every length is hostile and nothing has to be got past to reach it.
+
+**The bound is `offset + (count - 1) * stride + size`.** The last element
+needs its own size, not a whole stride. `count * stride` is larger
+exactly when the stride exceeds the element size — that is, whenever the
+data is interleaved — so the wrong expression **refuses files that are
+correct**, and only the interleaved ones. A suite with no interleaved
+fixture cannot tell the two apart at all.
+
+**Two entry points rather than one function with two answers.** A
+component type that cannot address anything, and one marked normalised
+where a fraction addresses nothing, are refused when `indices` is called.
+What is left of `None` means out of range and nothing else.
+
+Matrix shapes are absent. Their columns are padded to four-byte
+boundaries, so their element size is not the product of their parts, and
+they carry inverse bind matrices — which is skinning, which this reads
+nothing of. They are unrepresentable rather than accepted and mis-sized.
 
 ## Manifest
 

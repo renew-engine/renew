@@ -133,3 +133,10 @@ path = "fuzz_targets/glb_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "accessor_view"
+path = "fuzz_targets/accessor_view.rs"
+test = false
+doc = false
+bench = false

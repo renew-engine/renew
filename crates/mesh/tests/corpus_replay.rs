@@ -26,6 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use renew_mesh::accessor::Shape;
 use renew_mesh::{blob, glb, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
@@ -932,6 +933,224 @@ fn the_glb_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn glb_census() {
     let distinct: BTreeSet<Vec<u8>> = glb_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| glb_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+// ---------------------------------------------------------------------
+// The accessor layer.
+//
+// **The only corpus here whose input is not a file.** An accessor is a
+// byte region plus six parameters, so the seeds carry the parameters in
+// a nine-byte head; the encoding is
+// `tests/shared/accessor_seed.rs`, included below and by two other
+// targets, because three copies of one encoding is a defect waiting to
+// happen.
+// ---------------------------------------------------------------------
+
+#[path = "shared/accessor_seed.rs"]
+mod accessor_seed;
+
+/// The committed accessor corpus never shrinks below this many
+/// **distinct** inputs.
+const ACCESSOR_LOW_WATER: usize = 19;
+
+/// How many distinct outcomes the accessor seeds must still reach.
+///
+/// **Measured, not guessed** — `accessor_census` below prints it.
+const ACCESSOR_DISTINCT_OUTCOMES: usize = 10;
+
+/// Refusals a seed must provoke, each guarding something a count cannot.
+///
+/// * `OutOfRange` is the refusal this layer exists for: the count, the
+///   stride and the region are three claims, and it is the only one that
+///   compares them.
+/// * `StrideSmallerThanElement` is the disagreement that is not a bad
+///   value — a legal stride, too small for these elements — and the one
+///   most easily lost by checking the format's range and stopping.
+/// * `OffsetNotAligned` and `StrideNotAligned` are the two the format
+///   states outright, and the two a reader is most tempted to let pass
+///   because nothing downstream would notice.
+/// * `NormalizedIsMeaningless` is the flag with no reading, which a
+///   reader that simply divided would answer with a number instead.
+/// * `NotAnIndexType` and `NormalizedIndices` are the two the index
+///   entry point refuses and the attribute one does not. **They were
+///   unreachable until a flag bit was added to the head**: every seed
+///   called `view`, so half this layer's public surface had no seed at
+///   all and neither the corpus nor the fuzzer would ever have said so.
+const ACCESSOR_REQUIRED: [&str; 7] = [
+    "OutOfRange",
+    "StrideSmallerThanElement",
+    "OffsetNotAligned",
+    "StrideNotAligned",
+    "NormalizedIsMeaningless",
+    "NotAnIndexType",
+    "NormalizedIndices",
+];
+
+fn accessor_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/accessor_view")
+}
+
+fn accessor_corpus() -> Vec<Vec<u8>> {
+    let dir = accessor_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// Every committed seed answers, and every view borrows its own region.
+#[test]
+fn every_recorded_accessor_answers_and_stays_inside_its_region() {
+    for bytes in accessor_corpus() {
+        let Some(seed) = accessor_seed::decode(&bytes) else {
+            continue;
+        };
+        let Ok(accessor) = seed.accessor() else {
+            continue;
+        };
+        let Ok(view) = accessor.view(seed.region) else {
+            continue;
+        };
+        assert_eq!(view.len(), accessor.count);
+        // Recomputed from the accessor's own numbers rather than trusted
+        // from the reader, which is the point of asserting it here.
+        let last = accessor.byte_offset
+            + (accessor.count - 1) * accessor.stride()
+            + accessor.element_size();
+        assert!(
+            last <= seed.region.len(),
+            "a view that read reaches byte {last} of a {}-byte region",
+            seed.region.len()
+        );
+        for component in 0..accessor.shape.components() {
+            assert!(view.float(view.len() - 1, component).is_some());
+        }
+        assert!(view.float(view.len(), 0).is_none());
+    }
+}
+
+/// The accessor corpus keeps its strength.
+#[test]
+fn the_accessor_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = accessor_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= ACCESSOR_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {ACCESSOR_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct
+        .iter()
+        .map(|bytes| accessor_seed::outcome(bytes))
+        .collect();
+    assert!(
+        reached.len() >= ACCESSOR_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {ACCESSOR_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in ACCESSOR_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+
+    // **The pair that makes the bound testable at all.** One seed fits
+    // exactly by the expression that counts the last element's size, and
+    // one is a byte short. A corpus with only tightly packed seeds
+    // cannot tell that expression from `count * stride`, because for
+    // those two they are the same number.
+    let interleaved: Vec<&Vec<u8>> = distinct
+        .iter()
+        .filter(|bytes| {
+            accessor_seed::decode(bytes).is_some_and(|seed| {
+                seed.accessor()
+                    .is_ok_and(|accessor| accessor.stride() > accessor.element_size())
+            })
+        })
+        .collect();
+    assert!(
+        interleaved.len() >= 2,
+        "the corpus needs interleaved seeds on both sides of the bound, and holds {}",
+        interleaved.len()
+    );
+    assert!(
+        interleaved
+            .iter()
+            .any(|bytes| accessor_seed::outcome(bytes) == "Ok"),
+        "one of them must fit"
+    );
+    assert!(
+        interleaved
+            .iter()
+            .any(|bytes| accessor_seed::outcome(bytes) == "OutOfRange"),
+        "and one of them must not"
+    );
+}
+
+/// **The two halves of the shared encoding agree.**
+///
+/// `encode` is used only by the generator and `decode` by everything
+/// else, so nothing else in the tree would notice them drifting apart —
+/// the corpus would simply start meaning something other than what it
+/// was written to mean, and every gate above would stay green.
+#[test]
+fn the_seed_encoding_round_trips() {
+    let region = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let cases = [
+        (5126u32, Shape::Vec3, 3usize, 0usize, None, false),
+        (5121, Shape::Scalar, 1, 4, Some(16), true),
+        (5124, Shape::Vec4, 65535, 65535, Some(65535), true),
+        (5120, Shape::Vec2, 0, 0, Some(0), false),
+    ];
+    for (code, shape, count, byte_offset, byte_stride, normalized) in cases {
+        let seed = accessor_seed::Seed {
+            code,
+            shape,
+            count,
+            byte_offset,
+            byte_stride,
+            normalized,
+            as_indices: normalized,
+            region: &region,
+        };
+        let bytes = accessor_seed::encode(&seed);
+        let back = accessor_seed::decode(&bytes).expect("what encode writes, decode reads");
+        assert_eq!(back.code, code);
+        assert_eq!(back.shape, shape);
+        assert_eq!(back.count, count);
+        assert_eq!(back.byte_offset, byte_offset);
+        assert_eq!(back.byte_stride, byte_stride);
+        assert_eq!(back.normalized, normalized);
+        assert_eq!(
+            back.as_indices, normalized,
+            "the third flag bit survives too"
+        );
+        assert_eq!(back.region, &region[..]);
+    }
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn accessor_census() {
+    let distinct: BTreeSet<Vec<u8>> = accessor_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> =
+        distinct.iter().map(|b| accessor_seed::outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),
