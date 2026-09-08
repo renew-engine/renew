@@ -490,8 +490,8 @@ const MTL_LOW_WATER: usize = 13;
 /// this reader can make.
 ///
 /// **The slack here is one seed rather than the two the gates above
-/// take, and the reason is arithmetic.** Those readers reach eight and
-/// nine outcomes, where two is a quarter of the range; this one reaches
+/// take, and the reason is arithmetic.** Those readers reach between
+/// seven and ten outcomes, where two is under a third; this one reaches
 /// five, where two would be a forty-per-cent hole in a gate whose whole
 /// job is to notice holes. A reader with few answers needs a tighter
 /// floor, not the same one.
