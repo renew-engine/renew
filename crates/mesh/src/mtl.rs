@@ -159,6 +159,10 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Material>, MeshError> {
         // A property needs a material to belong to. Stating one before
         // any `newmtl` is a file whose first material is missing rather
         // than a value to attach to nothing.
+        // Which material a refusal names: the one being filled, as the
+        // file stores them. `NotFinite` reports a record, and here a
+        // record is a material.
+        let record = u32::try_from(library.len().saturating_sub(1)).unwrap_or(u32::MAX);
         let Some(material) = library.last_mut() else {
             return Err(MeshError::ExpectedKeyword {
                 expected: "newmtl",
@@ -168,21 +172,31 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Material>, MeshError> {
         };
 
         match keyword {
-            "Ka" => material.ambient = Some(colour(&mut words, "ambient", line)?),
-            "Kd" => material.diffuse = Some(colour(&mut words, "diffuse", line)?),
-            "Ks" => material.specular = Some(colour(&mut words, "specular", line)?),
-            "Ke" => material.emissive = Some(colour(&mut words, "emissive", line)?),
-            "Ns" => material.shininess = Some(scalar(&mut words, "shininess", line)?),
-            "d" => material.opacity = Some(scalar(&mut words, "opacity", line)?),
+            "Ka" => material.ambient = Some(colour(&mut words, "ambient", line, record)?),
+            "Kd" => material.diffuse = Some(colour(&mut words, "diffuse", line, record)?),
+            "Ks" => material.specular = Some(colour(&mut words, "specular", line, record)?),
+            "Ke" => material.emissive = Some(colour(&mut words, "emissive", line, record)?),
+            "Ns" => material.shininess = Some(scalar(&mut words, "shininess", line, record)?),
+            "d" => material.opacity = Some(scalar(&mut words, "opacity", line, record)?),
             // The reciprocal spelling. See this module's documentation
             // for why the last one written wins rather than the two
             // being reconciled.
-            "Tr" => material.opacity = Some(1.0 - scalar(&mut words, "opacity", line)?),
+            "Tr" => material.opacity = Some(1.0 - scalar(&mut words, "opacity", line, record)?),
             _ => {
                 if let Some(slot) = map_slot(keyword) {
                     // A map line may carry options before the file name
-                    // (`-s 1 1 1 wood.png`). The name is the last word,
-                    // which is the one thing every writer agrees on.
+                    // (`-s 1 1 1 wood.png`), so the name is the last
+                    // word rather than the second.
+                    //
+                    // **That is a heuristic and not a parse.** A line
+                    // whose options run to the end (`map_Kd -bm 0.2`)
+                    // has no file name in it, and this takes the option's
+                    // value for one. The alternative is to implement the
+                    // option grammar, which is per-tool and undocumented;
+                    // the cost of guessing here is a name that fails to
+                    // resolve, which the caller was going to have to
+                    // handle anyway, since this crate cannot tell it
+                    // whether any name resolves.
                     if let Some(name) = words.last() {
                         material.maps.push(TextureMap {
                             slot,
@@ -232,13 +246,14 @@ fn colour<'a>(
     words: &mut impl Iterator<Item = &'a str>,
     field: &'static str,
     line: u32,
+    record: u32,
 ) -> Result<[f32; 3], MeshError> {
-    let first = scalar_word(words.next(), field, line, 0)?;
+    let first = scalar_word(words.next(), field, line, record)?;
     let Some(second) = words.next() else {
         return Ok([first; 3]);
     };
-    let second = scalar_word(Some(second), field, line, 1)?;
-    let third = scalar_word(words.next(), field, line, 2)?;
+    let second = scalar_word(Some(second), field, line, record)?;
+    let third = scalar_word(words.next(), field, line, record)?;
     Ok([first, second, third])
 }
 
@@ -247,16 +262,22 @@ fn scalar<'a>(
     words: &mut impl Iterator<Item = &'a str>,
     field: &'static str,
     line: u32,
+    record: u32,
 ) -> Result<f32, MeshError> {
-    scalar_word(words.next(), field, line, 0)
+    scalar_word(words.next(), field, line, record)
 }
 
 /// Parse one word as a finite number, or say which way it was not one.
+/// `record` is which material the value belongs to, which is what
+/// [`MeshError::NotFinite`] reports. Not the component within a colour:
+/// a caller told "record 2" goes and looks at the third material, and
+/// naming the third component instead would send it to one that may not
+/// be there.
 fn scalar_word(
     word: Option<&str>,
     field: &'static str,
     line: u32,
-    at: usize,
+    record: u32,
 ) -> Result<f32, MeshError> {
     let word = word.ok_or(MeshError::NotANumber {
         found: String::new(),
@@ -269,7 +290,7 @@ fn scalar_word(
     if !value.is_finite() {
         return Err(MeshError::NotFinite {
             field,
-            index: u32::try_from(at).unwrap_or(u32::MAX),
+            index: record,
         });
     }
     Ok(value)

@@ -205,6 +205,30 @@ fn a_value_that_is_not_a_finite_number_is_refused() {
     );
 }
 
+/// **A refusal names the material it was in, not the component within a
+/// colour.**
+///
+/// `NotFinite` carries `index`, documented as the record as the file
+/// stores them and rendered as `record {index}`. For a library a record
+/// is a material, and the first version of this reader passed the colour
+/// component instead MM which named a material that need not exist.
+///
+/// Probed by passing the component index again: red.
+#[test]
+fn a_refusal_names_the_material_and_not_the_component() {
+    // The second material, and the THIRD component of its colour, so
+    // the two numbers cannot be confused for each other.
+    let library = "newmtl steel\nKd 1 1 1\nnewmtl broken\nKd 1 1 inf\n";
+    let MeshError::NotFinite { field, index } = refusal(library.as_bytes()) else {
+        panic!("an infinite colour is refused");
+    };
+    assert_eq!(field, "diffuse");
+    assert_eq!(
+        index, 1,
+        "the second material is record 1; the second component is not"
+    );
+}
+
 /// **A name declared twice is kept twice, in order.**
 ///
 /// The format's own rule is that a later definition wins, so the order

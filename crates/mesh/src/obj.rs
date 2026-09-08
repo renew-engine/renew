@@ -123,11 +123,27 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
             continue;
         };
         match keyword {
-            "v" => streams.positions.push(three(&mut words, "position", line)?),
-            "vn" => streams.normals.push(three(&mut words, "normal", line)?),
-            "vt" => streams
-                .texcoords
-                .push(two(&mut words, "texture coordinate", line)?),
+            // Each stream numbers its own records, and the record a
+            // refusal names is the one the file is on -- which is the
+            // length so far, before the push.
+            "v" => {
+                let record = record_of(streams.positions.len());
+                streams
+                    .positions
+                    .push(three(&mut words, "position", line, record)?);
+            }
+            "vn" => {
+                let record = record_of(streams.normals.len());
+                streams
+                    .normals
+                    .push(three(&mut words, "normal", line, record)?);
+            }
+            "vt" => {
+                let record = record_of(streams.texcoords.len());
+                streams
+                    .texcoords
+                    .push(two(&mut words, "texture coordinate", line, record)?);
+            }
             "f" => face(&mut words, line, &streams, &mut built)?,
             // Comments, groups, objects, smoothing, materials, curves,
             // and whatever else a writer put here.
@@ -286,14 +302,15 @@ fn three<'a>(
     words: &mut impl Iterator<Item = &'a str>,
     field: &'static str,
     line: u32,
+    record: u32,
 ) -> Result<[f32; 3], MeshError> {
     let mut out = [0.0; 3];
-    for (at, slot) in out.iter_mut().enumerate() {
+    for slot in &mut out {
         let word = words.next().ok_or(MeshError::NotANumber {
             found: String::new(),
             line,
         })?;
-        *slot = number(word, field, line, at)?;
+        *slot = number(word, field, line, record)?;
     }
     Ok(out)
 }
@@ -307,21 +324,28 @@ fn two<'a>(
     words: &mut impl Iterator<Item = &'a str>,
     field: &'static str,
     line: u32,
+    record: u32,
 ) -> Result<[f32; 2], MeshError> {
     let first = words.next().ok_or(MeshError::NotANumber {
         found: String::new(),
         line,
     })?;
-    let u = number(first, field, line, 0)?;
+    let u = number(first, field, line, record)?;
     let v = match words.next() {
-        Some(word) => number(word, field, line, 1)?,
+        Some(word) => number(word, field, line, record)?,
         None => 0.0,
     };
     Ok([u, v])
 }
 
 /// One float, parsed and checked for being a number at all.
-fn number(word: &str, field: &'static str, line: u32, at: usize) -> Result<f32, MeshError> {
+///
+/// `record` is which record of its stream the value belongs to, which is
+/// what [`MeshError::NotFinite`] reports. It is deliberately not the
+/// component within the record: a caller told "record 2" goes and looks
+/// at the third `v` line, and telling it the third *component* instead
+/// would send it to a record that may not exist.
+fn number(word: &str, field: &'static str, line: u32, record: u32) -> Result<f32, MeshError> {
     let value: f32 = word.parse().map_err(|_| MeshError::NotANumber {
         found: quoted(word),
         line,
@@ -329,10 +353,17 @@ fn number(word: &str, field: &'static str, line: u32, at: usize) -> Result<f32, 
     if !value.is_finite() {
         return Err(MeshError::NotFinite {
             field,
-            index: u32::try_from(at).unwrap_or(u32::MAX),
+            index: record,
         });
     }
     Ok(value)
+}
+
+/// Which record of a stream is being read, given how many it already
+/// holds. Saturating, because a file with four billion vertices has a
+/// bigger problem than an imprecise refusal.
+fn record_of(so_far: usize) -> u32 {
+    u32::try_from(so_far).unwrap_or(u32::MAX)
 }
 
 /// Read one face and fan it into triangles.

@@ -177,6 +177,43 @@ fn a_face_with_two_corners_is_refused() {
     assert_eq!(corners, 2);
 }
 
+/// **A refusal names the record it was in, not the component within it.**
+///
+/// `NotFinite` carries `index`, documented as the record, zero-based, as
+/// the file stores them, and rendered as `record {index}`. Nothing here
+/// asserted it, and the first version of this reader passed the
+/// *component* MM so a bad `z` on the first vertex reported "record 2",
+/// sending whoever read the message to a record that need not exist.
+///
+/// Probed by passing the component index again: red, on both halves.
+#[test]
+fn a_refusal_names_the_record_and_not_the_component() {
+    // Third vertex, third component: the record is 2 and the component
+    // is also 2, so the fixture uses a SECOND vertex to tell them apart.
+    let bad_second = "v 0 0 0\nv 1 0 inf\nv 0 1 0\nf 1 2 3\n";
+    let MeshError::NotFinite { field, index } = refusal(bad_second.as_bytes()) else {
+        panic!("an infinite coordinate is refused");
+    };
+    assert_eq!(field, "position");
+    assert_eq!(
+        index, 1,
+        "the second `v` line is record 1; its third component is not"
+    );
+
+    // Each stream counts its own records, so a bad normal names its
+    // position among the normals rather than among everything.
+    let bad_normal = "v 0 0 0
+vn 0 0 1
+vn 0 0 nan
+f 1 2 3
+";
+    let MeshError::NotFinite { field, index } = refusal(bad_normal.as_bytes()) else {
+        panic!("an infinite normal is refused");
+    };
+    assert_eq!(field, "normal");
+    assert_eq!(index, 1, "the second `vn`, counted among the normals");
+}
+
 /// **A file that declares no face declares no geometry.**
 ///
 /// Vertices alone are a point cloud, which is a legal thing to write and
