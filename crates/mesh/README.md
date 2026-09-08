@@ -1,8 +1,9 @@
 # renew-mesh
 
-Readers for the mesh files other tools write — STL, PLY and OBJ so far. Bytes in,
-validated geometry out, and nothing else: this crate never opens a file,
-never takes a path, and never reads a clock.
+Readers for the mesh files other tools write — STL, PLY and OBJ so far, plus the
+MTL material libraries an OBJ refers to. Bytes in, validated geometry
+out, and nothing else: this crate never opens a file, never takes a path,
+and never reads a clock.
 
 That last promise is why OBJ's `mtllib` is read as a name and not
 followed: a material library is a second file, and naming one is as far

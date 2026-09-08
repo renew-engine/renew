@@ -55,6 +55,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod error;
+pub mod mtl;
 pub mod obj;
 pub mod ply;
 pub mod stl;
