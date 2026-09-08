@@ -1244,11 +1244,16 @@ disallowed-methods = [
     { path = "std::fs::read", reason = "we also used to ban path = \"f32::mul_add\" here" },
 ]
 "#;
-        assert!(
-            !declared_paths(quoted).contains(&"f32::mul_add".to_string())
-                || declared_paths(quoted).len() == 2,
-            "prose that mentions a path does not declare it: {:?}",
-            declared_paths(quoted)
+        // Asserted exactly, because the hedged version this replaces
+        // (`does not contain it, OR there are two of them`) would have
+        // passed if the parser HAD captured the quoted path — accepting
+        // the one bug the case exists to catch. A disjunction written
+        // because the author was unsure what the code does is not a test,
+        // it is a note that the author was unsure.
+        assert_eq!(
+            declared_paths(quoted),
+            ["std::fs::read"],
+            "the escaped path inside the reason is prose, and only the real entry is declared"
         );
     }
 
