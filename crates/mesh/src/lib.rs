@@ -54,6 +54,7 @@
 // every engine crate carries at its root.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod blob;
 mod error;
 pub mod mtl;
 pub mod obj;
