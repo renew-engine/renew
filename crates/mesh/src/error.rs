@@ -342,7 +342,7 @@ mod tests {
                 count: 1,
             },
             MeshError::TooLarge {
-                field: "triangle count",
+                field: "element count",
                 value: 4_000_000_000,
             },
             MeshError::ExpectedKeyword {
@@ -379,7 +379,7 @@ mod tests {
             let numbers: Vec<&str> = match refusal {
                 MeshError::TooShortForHeader { .. } => vec!["84", "3"],
                 MeshError::CountMismatch { .. } => vec!["134", "90", "1"],
-                MeshError::TooLarge { .. } => vec!["triangle count", "4000000000"],
+                MeshError::TooLarge { .. } => vec!["element count", "4000000000"],
                 MeshError::ExpectedKeyword { .. } => vec!["facet", "wombat", "7"],
                 MeshError::NotANumber { .. } => vec!["1.0.0", "9"],
                 MeshError::NotFinite { .. } => vec!["position", "12"],

@@ -142,10 +142,20 @@ fn read_binary(bytes: &[u8]) -> Result<Mesh, MeshError> {
             count,
         });
     }
-    let body_len = usize::try_from(body).map_err(|_| MeshError::TooLarge {
-        field: "triangle count",
-        value: u64::from(count),
-    })?;
+    // `declared` equalled the file's own length on the line above, and
+    // `declared` is `body` plus the header, so `body` is
+    // `bytes.len() - LEAST_BINARY` — a number that came out of a `usize`
+    // and goes back into one.
+    //
+    // **There was a `TooLarge` refusal here for that conversion failing,
+    // and no input on any target could reach it.** The doc beside it
+    // argued the 32-bit case was "not hypothetical: a `u32` count times
+    // a fifty-byte record overflows a 32-bit `usize`" — which the length
+    // equality has already made impossible, because it bounded the
+    // product by the file before the conversion happens. It was the one
+    // variant this crate constructed and nothing could produce, in the
+    // commit whose message was about deleting exactly those.
+    let body_len = bytes.len() - LEAST_BINARY;
 
     // The length has already been shown to account for the file exactly,
     // so this reservation is bounded by the caller's own bytes: at most

@@ -47,9 +47,12 @@ const LOW_WATER: usize = 18;
 /// and no lower, because slack here is exactly how many of the reader's
 /// refusals may go unseeded without anyone noticing.
 ///
-/// The seventh, `TooLarge`, is reachable only where a `u32` count times
-/// fifty bytes overruns a `usize`, which is to say on a 32-bit target.
-/// No seed can reach it here and none pretends to.
+/// The seventh, `TooLarge`, this reader does not make at all. It once
+/// guarded the binary body's length conversion, on the argument that a
+/// `u32` count times fifty bytes overruns a 32-bit `usize` — which the
+/// length equality one line above it had already made impossible, by
+/// bounding that product against the file's own size before the
+/// conversion happens. The refusal is gone rather than unseeded.
 const DISTINCT_OUTCOMES: usize = 5;
 
 /// Refusals a seed must still provoke, each guarding something a count

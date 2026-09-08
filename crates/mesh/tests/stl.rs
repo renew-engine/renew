@@ -175,7 +175,7 @@ fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
         | MeshError::NotFinite { .. }
         | MeshError::NoGeometry => None,
         MeshError::TooLarge { .. } => Some(
-            "a ceiling this reader sets on nothing: the length equality has already bounded              every count against the file before any conversion happens",
+            "a ceiling this reader sets on nothing: the length equality has              already bounded every count against the file before any              conversion happens",
         ),
         MeshError::IndexOutOfRange { .. } => {
             Some("this format repeats every corner, so it has no index to be out of range")
