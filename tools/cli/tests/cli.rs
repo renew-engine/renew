@@ -2107,41 +2107,81 @@ const A_TRIANGLE_AS_STL: &str = "solid one\n\
                                  vertex 0 0 0\n vertex 1 0 0\n vertex 0 1 0\n\
                                  endloop\nendfacet\nendsolid one\n";
 
-/// `asset-import` end to end: the blob lands where `--out` says, and the
-/// reader that owns the format accepts it.
+/// `asset-import` end to end: the blob lands where `--out` says, the
+/// format is reported as what it is, and the reader that owns it accepts
+/// the result.
 ///
 /// **Every format is imported through the same call**, because the point
 /// of the arm is that a caller does not have to know which one it holds.
+///
+/// **Neither the model nor the blob is named after its format**, and
+/// that is deliberate rather than tidy. The first version of this test
+/// wrote its output to `{format}.msh` and then asserted the printed line
+/// contained `format` — but the printed line contains the output path,
+/// so the assertion was true whatever the tool had detected. Relabelling
+/// `ply` and `stl` in the source left all 61 tests in this file green.
+/// The names below share no substring with any format, and the format is
+/// asserted from the JSON where it is a field rather than a fragment.
 #[test]
 fn asset_import_writes_a_blob_the_reader_accepts() -> std::io::Result<()> {
     let directory = scratch_directory("asset-import")?;
     for (name, source, format) in [
-        ("model.obj", A_TRIANGLE_AS_OBJ, "obj"),
-        ("model.ply", A_TRIANGLE_AS_PLY, "ply"),
-        ("model.stl", A_TRIANGLE_AS_STL, "stl"),
+        ("first.dat", A_TRIANGLE_AS_OBJ, "obj"),
+        ("second.dat", A_TRIANGLE_AS_PLY, "ply"),
+        ("third.dat", A_TRIANGLE_AS_STL, "stl"),
     ] {
         let model = directory.join(name);
-        let blob = directory.join(format!("{format}.msh"));
+        let out = directory.join(format!("{name}.out"));
         fs::write(&model, source)?;
 
         let output = run(&[
+            "--json",
             "asset-import",
             "--from",
             &model.to_string_lossy(),
             "--out",
-            &blob.to_string_lossy(),
+            &out.to_string_lossy(),
         ])?;
         assert!(output.status.success(), "{format} must import: {output:?}");
-        let printed = String::from_utf8_lossy(&output.stdout);
+        let document = String::from_utf8_lossy(&output.stdout);
         assert!(
-            printed.contains("read 1 triangles") && printed.contains(format),
-            "the human line names the count and the format it detected: {printed:?}"
+            document.contains(&format!("\"format\":\"{format}\"")),
+            "detected as {format}, as a field and not as a fragment of a path: {document:?}"
         );
+        assert!(document.contains("\"triangles\":1"), "{document:?}");
 
-        let bytes = fs::read(&blob)?;
+        let bytes = fs::read(&out)?;
         let mesh = renew_mesh::blob::read(&bytes).expect("the blob must read back as a mesh");
         assert_eq!(mesh.triangles(), 1);
     }
+    Ok(())
+}
+
+/// **The human line names the count and the format too.**
+///
+/// Split from the loop above because it is a different claim about a
+/// different output, and because the prose line is the half a person
+/// reads.
+#[test]
+fn asset_import_prints_what_it_read_and_what_it_thought_it_was() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-prose")?;
+    let model = directory.join("first.dat");
+    let out = directory.join("first.out");
+    fs::write(&model, A_TRIANGLE_AS_PLY)?;
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &out.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "{output:?}");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("read 1 triangles") && printed.contains("of ply"),
+        "the line says the count and the format: {printed:?}"
+    );
     Ok(())
 }
 
@@ -2197,12 +2237,14 @@ fn asset_import_refuses_a_material_library_for_what_it_is() -> std::io::Result<(
     assert!(!output.status.success(), "a library is not geometry");
     let document = String::from_utf8_lossy(&output.stdout);
     assert!(
-        document.contains("\"refusal\":\"Unsupported\""),
-        "refused by variant name: {document:?}"
+        document.contains("\"refusal\":\"NotGeometry\""),
+        "refused by a name of this tool's own: no reader was asked, so none refused, \
+         and a script needs a verdict about a format told apart from one about a file: \
+         {document:?}"
     );
     assert!(
-        document.contains("material library"),
-        "and the sentence says which half of the export it is: {document:?}"
+        document.contains("\"format\":\"mtl\"") || document.contains("mtl file"),
+        "and it says which format it decided this was: {document:?}"
     );
     assert!(
         !blob.exists(),

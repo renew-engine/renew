@@ -475,13 +475,12 @@ fn run_asset_inspect(pack_path: &str, verify: bool, json_mode: bool) -> ExitCode
     }
 }
 
-/// `renew ui-compile` -- compile a text document into the binary blob.
 /// Read a model file into the canonical form a pack can store.
 ///
-/// The format is decided by the bytes rather than by the name: `looks_like`
-/// exists on the two readers whose formats can identify themselves, and
-/// STL is what is left, which is exactly the rule the STL reader states
-/// for its own two dialects.
+/// The format is decided by the bytes rather than by the name, and by
+/// `renew_mesh::format::detect` rather than by anything here: which
+/// reader owns which bytes is a fact about those formats, and a tool
+/// that decided it separately would be a second place to get it wrong.
 fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
     let started = Instant::now();
     let bytes = match std::fs::read(from) {
@@ -496,7 +495,24 @@ fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
         }
     };
 
-    let (format, read) = detect(&bytes);
+    let found = renew_mesh::format::detect(&bytes);
+    let format = found.name();
+    let Some(read) = found.read(&bytes) else {
+        // A material library is not a broken mesh, and saying so is this
+        // tool's judgement rather than a reader's refusal: no reader was
+        // asked, so none refused. `NotGeometry` is the CLI's own name,
+        // kept out of `MeshError` so a script can tell a verdict about a
+        // file from a verdict about its format.
+        return import_failure(
+            &format!(
+                "{from}: a {format} file describes surfaces rather than their shape, \
+                      and this reads geometry"
+            ),
+            Some("NotGeometry"),
+            json_mode,
+            started,
+        );
+    };
     let mesh = match read {
         Ok(mesh) => mesh,
         Err(refusal) => {
@@ -557,41 +573,6 @@ fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Which format these bytes are, and what reading them gave.
-///
-/// PLY and OBJ answer for themselves — one by a magic word, the other by
-/// the keywords only it uses. **STL is the fallback because it cannot
-/// answer**: the format has no magic number, so "these are not STL
-/// bytes" and "these are STL bytes cut short" are the same observation,
-/// and its own reader is built on that.
-///
-/// A material library is checked for before the fallback, because it
-/// would otherwise reach the STL reader and be refused as a truncated
-/// mesh — a true statement that sends its reader nowhere useful.
-fn detect(
-    bytes: &[u8],
-) -> (
-    &'static str,
-    Result<renew_mesh::Mesh, renew_mesh::MeshError>,
-) {
-    if renew_mesh::ply::looks_like(bytes) {
-        return ("ply", renew_mesh::ply::read(bytes));
-    }
-    if renew_mesh::obj::looks_like(bytes) {
-        return ("obj", renew_mesh::obj::read(bytes));
-    }
-    if renew_mesh::mtl::read(bytes).is_ok() {
-        return (
-            "mtl",
-            Err(renew_mesh::MeshError::Unsupported {
-                wanted: "geometry: this is a material library, which describes surfaces \
-                         rather than their shape",
-            }),
-        );
-    }
-    ("stl", renew_mesh::stl::read(bytes))
-}
-
 /// A refusal, in whichever form was asked for.
 ///
 /// The JSON carries the variant's name beside the sentence, because
@@ -617,6 +598,7 @@ fn import_failure(
     ExitCode::FAILURE
 }
 
+/// `renew ui-compile` -- compile a text document into the binary blob.
 fn run_ui_compile(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
     let started = Instant::now();
     let source = match std::fs::read_to_string(from) {

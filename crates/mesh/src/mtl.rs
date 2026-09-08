@@ -108,6 +108,41 @@ pub struct Material {
     pub maps: Vec<TextureMap>,
 }
 
+/// Whether these bytes look like a material library.
+///
+/// **A keyword scan, not a parse.** An earlier caller answered this
+/// question by running [`read`] and discarding the result, which cost a
+/// full parse of every file that was not something else — measured at
+/// twenty-three per cent of the time to import a text STL, and growing
+/// with the file. The question "is this an MTL" does not need the
+/// answer to "what is in it".
+///
+/// `newmtl` is what it looks for, because a library that declares no
+/// material is refused by [`read`] anyway, so a file without one is not
+/// a library this crate can use whatever else it contains.
+///
+/// Like every `looks_like` here this is a guess and says so: it answers
+/// from the opening of the file, and a library preceded by a very long
+/// comment banner answers no. [`read`] answers for every byte string
+/// either way.
+#[must_use]
+pub fn looks_like(bytes: &[u8]) -> bool {
+    let Ok(text) = core::str::from_utf8(bytes) else {
+        // A material library is text. Bytes that are not text are not
+        // one, and this is the cheap half of what `read` would say.
+        return false;
+    };
+    text.lines()
+        .take(SCANNED_LINES)
+        .any(|line| line.split_ascii_whitespace().next() == Some("newmtl"))
+}
+
+/// How far into a file `looks_like` reads before answering.
+///
+/// Far enough to clear the licence banners real exporters emit, and
+/// bounded so the question costs the same on a file of any size.
+const SCANNED_LINES: usize = 256;
+
 /// Read a material library.
 ///
 /// Materials come back in the order the file declares them. **A name may

@@ -56,6 +56,7 @@
 
 pub mod blob;
 mod error;
+pub mod format;
 pub mod mtl;
 pub mod obj;
 pub mod ply;
