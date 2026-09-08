@@ -583,11 +583,14 @@ fn mesh_fixture(
         for value in [0.0f32, 0.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
+        for value in [0.0f32, 0.0, 1.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
     }
     let mesh = device
         .create_mesh(&renew_rhi::MeshDesc::new(
             &vertices,
-            12 + 16 + 8,
+            builtin::MESH_STRIDE,
             &[0, 1, 2, 0, 2, 3],
         ))
         .map_err(|error| format!("mesh failed: {error}"))?;

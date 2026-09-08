@@ -326,16 +326,20 @@ fn mesh_fixture(
         for value in [0.0f32, 1.0, 0.0, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        // The texture coordinate the layout declares. These shaders do
-        // not consume it; the record must still be what the pipeline
-        // says it is.
+        // The texture coordinate and the normal the layout declares.
+        // These shaders consume neither; the record must still be what
+        // the pipeline says it is, because the fetch is bounded by the
+        // stride rather than by what the stage reads.
         for value in [0.0f32, 0.0] {
+            vertices.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in [0.0f32, 0.0, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
     }
     let mesh = device.create_mesh(&renew_rhi::MeshDesc::new(
         &vertices,
-        12 + 16 + 8,
+        builtin::MESH_STRIDE,
         &[0, 1, 2, 0, 2, 3],
     ))?;
     Ok((pipeline, mesh))
