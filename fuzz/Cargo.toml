@@ -126,3 +126,10 @@ path = "fuzz_targets/blob_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "glb_read"
+path = "fuzz_targets/glb_read.rs"
+test = false
+doc = false
+bench = false
