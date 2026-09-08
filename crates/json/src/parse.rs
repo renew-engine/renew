@@ -778,18 +778,22 @@ mod tests {
     /// malformed, which is rule five of `REFUSALS.md` inverted.
     ///
     /// Probed by deleting the `MAX_WORD_LEN` term from `word()`'s loop
-    /// condition: red, `found` comes back with all 100,000 letters.
+    /// condition: red, and the refusal comes back holding all hundred
+    /// thousand letters.
     #[test]
     fn a_run_of_letters_is_refused_without_quoting_all_of_it() {
-        let letters = "a".repeat(100_000);
-        let JsonErrorKind::BadLiteral { found } = refusal(&letters) else {
-            panic!("a run of letters should be refused as a bad literal");
-        };
-        assert!(
-            found.len() <= MAX_WORD_LEN,
-            "the refusal quoted {} letters of a {}-letter run; the message \n             a malformed input can make this reader build is bounded by \n             MAX_WORD_LEN ({MAX_WORD_LEN}) and nothing else",
-            found.len(),
-            letters.len()
+        // Stated as the exact refusal rather than as a bound on its
+        // length. The two claims cost the same to write and the exact
+        // one says more: the reader stops at the bound, and it stops
+        // *there* rather than anywhere at or before it.
+        assert_eq!(
+            refusal(&"a".repeat(100_000)),
+            JsonErrorKind::BadLiteral {
+                found: "a".repeat(MAX_WORD_LEN)
+            },
+            "a hundred thousand letters must cost a refusal quoting MAX_WORD_LEN of \
+             them; the size of the message a malformed input can make this reader \
+             build is bounded by that constant and by nothing else"
         );
     }
 
