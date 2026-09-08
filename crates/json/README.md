@@ -179,12 +179,26 @@ compile cleanly and pass every other test in the crate.
 
 ## A note on the tool's own reader
 
-The command-line tool carries a small JSON reader of its own, for reading
-the build system's output. It is not this crate and cannot be replaced by
-it in the same change: it is a tool crate that depends on engine crates,
-so an engine crate depending on it would invert the layering. Whether it
-should go on existing is a question for whoever owns that tool, not a
-thing to settle by deleting it here.
+The command-line tool carries a small JSON reader of its own, in
+`tools/cli/src/json.rs`, for reading the build system's output and
+emitting the tool's `--json`. It refuses with strings and has no fuzz
+target.
+
+**An earlier version of this section argued the tool could not adopt this
+crate because doing so would invert the layering. That argument was
+backwards.** The tool crate already depends on `renew-asset` and
+`renew-ui`; depending on `renew-json` is the same direction, and this
+crate depends on nothing at all, so there is no cycle to create. The
+layering is not what stands in the way.
+
+What actually stands in the way is that it is a behaviour change to a
+shipped tool — the two readers do not refuse the same inputs with the same
+messages — and that is a decision with an owner. The honest statement of
+the position is therefore the reverse of what was written: **the tool
+could adopt this crate, this crate currently has no production consumer,
+and those two facts are the same fact.** Whoever owns the tool should
+decide it on those terms rather than on a dependency argument that does
+not hold.
 
 ## Manifest
 

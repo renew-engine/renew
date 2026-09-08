@@ -46,6 +46,38 @@ const NOT_JSON_WORDS: [&str; 8] = [
     "null",
 ];
 
+/// The word bound must clear the longest word above, strictly.
+///
+/// Not a tidiness check. `word()` stops at `MAX_WORD_LEN` and returns what
+/// it consumed, so if the bound equalled a listed word's length, a longer
+/// run of letters would be truncated to exactly that word and reported as
+/// that word — `undefinedx` answering "undefined is a value in some other
+/// language" while naming a word the document does not contain. Strict
+/// inequality is what makes a match mean the input really ended there.
+///
+/// Checked here rather than in a test because it relates two constants and
+/// nothing about it needs to run.
+///
+/// Probed by setting the bound to 9, `undefined`'s own length: this stops
+/// the build. With the assertion relaxed to `>=` at that same bound,
+/// `undefinedx` answers `NonJsonLiteral { word: "undefined" }` — naming a
+/// word the document does not contain, which is the failure this rules out.
+const _: () = {
+    let mut longest = 0;
+    let mut at = 0;
+    while at < NOT_JSON_WORDS.len() {
+        let len = NOT_JSON_WORDS[at].len();
+        if len > longest {
+            longest = len;
+        }
+        at += 1;
+    }
+    assert!(
+        MAX_WORD_LEN > longest,
+        "MAX_WORD_LEN must strictly exceed the longest word in NOT_JSON_WORDS"
+    );
+};
+
 /// Check the whole slice as text, and refuse the two things that are
 /// wrong before a single value is looked at.
 ///
@@ -565,6 +597,7 @@ fn skip_digits(cursor: &mut Cursor<'_>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::parse::MAX_WORD_LEN;
     use crate::{Json, JsonErrorKind, Kind, MAX_DEPTH, MAX_NUMBER_LEN};
 
     /// The refusal a document gets, or a panic naming the document that
@@ -587,7 +620,7 @@ mod tests {
     /// **A document cut short says which piece went missing**, at every
     /// place the grammar can be waiting for one.
     ///
-    /// Eight places, eight prefixes. This is the test that stops
+    /// Nine places, nine prefixes. This is the test that stops
     /// `EndOfDocument` from becoming one message doing seven jobs badly:
     /// each `expected` is asserted by its own words, so a call site that
     /// starts passing another's string is a failure here rather than a
@@ -734,6 +767,36 @@ mod tests {
     /// Probed by replacing `infinity` in the list with a word nothing
     /// writes: `Infinity` answers `BadLiteral` instead, which tells a
     /// reader to go looking for a misspelt `true`.
+    /// A huge run of letters is refused in a message of bounded size.
+    ///
+    /// The other half of `MAX_WORD_LEN`'s reason for existing, and the
+    /// half a compile-time assertion cannot state: the bound has to be
+    /// applied, not merely declared. Without the length term in `word()`
+    /// the loop runs to the end of the letters and the refusal carries
+    /// every one of them, so a megabyte of `a` becomes a megabyte-long
+    /// error message — an allocation the input asked for by being
+    /// malformed, which is rule five of `REFUSALS.md` inverted.
+    ///
+    /// Probed by deleting the `MAX_WORD_LEN` term from `word()`'s loop
+    /// condition: red, and the refusal comes back holding all hundred
+    /// thousand letters.
+    #[test]
+    fn a_run_of_letters_is_refused_without_quoting_all_of_it() {
+        // Stated as the exact refusal rather than as a bound on its
+        // length. The two claims cost the same to write and the exact
+        // one says more: the reader stops at the bound, and it stops
+        // *there* rather than anywhere at or before it.
+        assert_eq!(
+            refusal(&"a".repeat(100_000)),
+            JsonErrorKind::BadLiteral {
+                found: "a".repeat(MAX_WORD_LEN)
+            },
+            "a hundred thousand letters must cost a refusal quoting MAX_WORD_LEN of \
+             them; the size of the message a malformed input can make this reader \
+             build is bounded by that constant and by nothing else"
+        );
+    }
+
     #[test]
     fn a_word_from_another_language_is_named_as_one() {
         for text in [
