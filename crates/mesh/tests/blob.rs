@@ -256,19 +256,91 @@ fn a_blob_declaring_no_corners_is_refused() {
     assert!(matches!(refusal(&bytes), MeshError::NoGeometry));
 }
 
-/// **A coordinate that is not finite is refused, naming its record.**
+/// **A value that is not finite is refused in EVERY array, naming its
+/// record.**
+///
+/// **This used to plant its infinity in a position and nowhere else**,
+/// and the gap was not theoretical: replacing the checked reads in
+/// `pairs` with raw ones MM so texture coordinates could come back as
+/// NaN MM left this file, the corpus gate and the property suite all
+/// green. The fuzz target could not have found it either, because its
+/// finiteness chain covered positions and corner normals and stopped
+/// there.
+///
+/// The offsets below are the four arrays of `furnished()`: 6 positions,
+/// 2 face normals, 6 corner normals, 6 coordinates, after a twenty-byte
+/// header.
+///
+/// Probed by unchecking each of the four reads in turn: red, each on its
+/// own array.
 #[test]
-fn a_coordinate_that_is_not_finite_is_refused() {
+fn a_value_that_is_not_finite_is_refused_in_every_array() {
+    for (at, field, what) in [
+        (20, "position", "the first position"),
+        (20 + 72, "normal", "the first face normal"),
+        (20 + 72 + 24, "normal", "the first corner normal"),
+        (
+            20 + 72 + 24 + 72,
+            "texture coordinate",
+            "the first coordinate",
+        ),
+    ] {
+        for poison in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let mut bytes = blob::write(&furnished());
+            bytes[at..at + 4].copy_from_slice(&poison.to_le_bytes());
+            let MeshError::NotFinite {
+                field: named,
+                index,
+            } = refusal(&bytes)
+            else {
+                panic!("{what} is {poison} and nothing downstream can bound it");
+            };
+            assert_eq!(named, field, "{what}");
+            assert_eq!(index, 0, "{what} is record 0 of its own array");
+        }
+    }
+
+    // And the record is still counted per array rather than per file.
     let mut bytes = blob::write(&furnished());
-    // The second position's first component, past the twenty-byte
-    // header and one twelve-byte vector.
-    let at = 20 + 12;
-    bytes[at..at + 4].copy_from_slice(&f32::INFINITY.to_le_bytes());
-    let MeshError::NotFinite { field, index } = refusal(&bytes) else {
+    let second_position = 20 + 12;
+    bytes[second_position..second_position + 4].copy_from_slice(&f32::INFINITY.to_le_bytes());
+    let MeshError::NotFinite { index, .. } = refusal(&bytes) else {
         panic!("an infinite coordinate bounds nothing");
     };
-    assert_eq!(field, "position");
     assert_eq!(index, 1, "the second position, counted as a record");
+}
+
+/// **A mesh whose arrays disagree with its corner count is a defect, and
+/// it asserts.**
+///
+/// Not a refusal: the lengths are what tell the reader where each array
+/// begins, so writing one produces a *different, well-formed* mesh
+/// rather than a broken file. One corner normal and six coordinates
+/// comes back as three of each, and nothing downstream can tell. The
+/// contract is on [`blob::write`] and D5 says a contract violation
+/// asserts.
+#[test]
+#[should_panic(expected = "a normal per corner or none")]
+fn writing_a_ragged_mesh_is_a_defect_not_a_refusal() {
+    let ragged = Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        corner_normals: vec![[9.0, 9.0, 9.0]],
+        corner_texcoords: vec![[0.1, 0.2]; 6],
+        ..Mesh::default()
+    };
+    let _ = blob::write(&ragged);
+}
+
+/// **An empty mesh is a defect too, for the same reason.**
+///
+/// `Mesh` derives `Default`, so `Mesh::default()` is a reachable public
+/// value, and writing it produced a twenty-byte blob that `read` then
+/// refused MM which made "what this crate wrote, this crate reads" false
+/// of the crate's own default.
+#[test]
+#[should_panic(expected = "whole triangles and at least one")]
+fn writing_an_empty_mesh_is_a_defect() {
+    let _ = blob::write(&Mesh::default());
 }
 
 /// **A corner count no file could supply is refused before it is
@@ -316,12 +388,19 @@ fn every_byte_string_gets_an_answer() {
         // Corrupt a handful of bytes, so the search stays near a blob
         // rather than wandering into noise that fails at the magic.
         for _ in 0..=next() % 6 {
-            let at = usize::try_from(next() % 64).unwrap_or(0) % bytes.len();
+            // **Modulo the length, not modulo 64.** The first version of
+            // this sweep took `next() % 64` and so never touched a byte
+            // past offset 63 MM which on this template is most of the
+            // positions and the whole of all three optional arrays.
+            // Every input it accepted was the template's own shape, so
+            // the three pairing assertions below only ever saw one
+            // configuration.
+            let at = usize::try_from(next() % 4096).unwrap_or(0) % bytes.len();
             bytes[at] = u8::try_from(next() % 256).unwrap_or(0);
         }
-        // And sometimes cut it short.
+        // And sometimes cut it short, anywhere.
         if next() % 4 == 0 {
-            let keep = usize::try_from(next() % 64).unwrap_or(0) % bytes.len();
+            let keep = usize::try_from(next() % 4096).unwrap_or(0) % bytes.len();
             bytes.truncate(keep);
         }
         let Ok(mesh) = blob::read(&bytes) else {

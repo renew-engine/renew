@@ -81,8 +81,64 @@ const VEC2: usize = 8;
 /// The output is a function of the mesh alone: the same mesh gives the
 /// same bytes on every target, which is what lets a blob be compared,
 /// cached and digested by whatever stores it.
+///
+/// # Contract
+///
+/// The mesh must hold the invariants [`Mesh`] documents and every reader
+/// here guarantees: whole triangles, at least one, each optional array
+/// empty or exactly its full length, every float finite, and a corner
+/// count inside the ceiling. **A mesh from any reader in this crate
+/// satisfies all five**; a mesh built by hand is the caller's to vouch
+/// for, which is what `Mesh`'s own documentation says.
+///
+/// **Violating it is a defect and asserts in a development build**
+/// rather than being handled, because there is no handling that helps.
+/// The lengths are what tell the reader where each array begins, so a
+/// mesh whose arrays disagree with its corner count does not fail to
+/// write MM it writes a *different, well-formed mesh*. One with a single
+/// corner normal and six texture coordinates comes back with three of
+/// each, silently, and nothing downstream can tell. A refusal would be
+/// kinder than that and an assertion is kinder still, because it fires
+/// where the mistake is rather than where it is noticed.
 #[must_use]
 pub fn write(mesh: &Mesh) -> Vec<u8> {
+    debug_assert!(
+        !mesh.positions.is_empty() && mesh.positions.len().is_multiple_of(3),
+        "a mesh is whole triangles and at least one: {} positions",
+        mesh.positions.len()
+    );
+    debug_assert!(
+        mesh.face_normals.is_empty() || mesh.face_normals.len() * 3 == mesh.positions.len(),
+        "a face normal per triangle or none: {} normals for {} positions",
+        mesh.face_normals.len(),
+        mesh.positions.len()
+    );
+    debug_assert!(
+        mesh.corner_normals.is_empty() || mesh.corner_normals.len() == mesh.positions.len(),
+        "a normal per corner or none: {} normals for {} corners",
+        mesh.corner_normals.len(),
+        mesh.positions.len()
+    );
+    debug_assert!(
+        mesh.corner_texcoords.is_empty() || mesh.corner_texcoords.len() == mesh.positions.len(),
+        "a coordinate per corner or none: {} coordinates for {} corners",
+        mesh.corner_texcoords.len(),
+        mesh.positions.len()
+    );
+    debug_assert!(
+        mesh.positions
+            .iter()
+            .chain(&mesh.face_normals)
+            .chain(&mesh.corner_normals)
+            .flatten()
+            .chain(mesh.corner_texcoords.iter().flatten())
+            .all(|value| value.is_finite()),
+        "every float in a mesh is finite, and a reader will refuse one that is not"
+    );
+    debug_assert!(
+        refuse_over_ceiling(0, mesh.positions.len()).is_ok(),
+        "a mesh past the ceiling writes a blob no reader here will take back"
+    );
     let mut present = 0;
     if !mesh.face_normals.is_empty() {
         present |= HAS_FACE_NORMALS;
@@ -94,6 +150,12 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
         present |= HAS_CORNER_TEXCOORDS;
     }
 
+    // The ceiling asserted above is far below `u32::MAX`, so this is
+    // exact for every mesh that satisfies the contract. Saturating is
+    // what a release build does with one that does not, and it is
+    // deliberately not silent: the count it writes will not match the
+    // body, so `read` refuses with `CountMismatch` rather than handing
+    // anybody a mesh that was never written.
     let corners = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
     let mut out = Vec::with_capacity(HEADER + mesh.positions.len() * VEC3);
     out.extend_from_slice(&MAGIC);
@@ -123,8 +185,9 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
 /// Returns the [`MeshError`] naming what the bytes got wrong: too short
 /// to hold a header, an opening that is not this format, a version or a
 /// flag this build does not implement, a corner count that is not whole
-/// triangles or that accounts for a different number of bytes than are
-/// present, a coordinate that is not finite, or no geometry at all.
+/// triangles, is past the ceiling, or accounts for a different number of
+/// bytes than are present, a coordinate that is not finite, or no
+/// geometry at all.
 pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
     if bytes.len() < HEADER {
         return Err(MeshError::TooShortForHeader {

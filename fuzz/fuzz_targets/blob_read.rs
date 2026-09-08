@@ -62,19 +62,39 @@ fuzz_target!(|data: &[u8]| {
         mesh.corner_texcoords.len(),
         mesh.positions.len()
     );
-    for value in mesh.positions.iter().chain(&mesh.corner_normals).flatten() {
+    // **All four arrays.** This chain covered positions and corner
+    // normals and stopped, so a reader that returned a NaN texture
+    // coordinate or face normal was invisible to the fuzzer as well as
+    // to the suite.
+    for value in mesh
+        .positions
+        .iter()
+        .chain(&mesh.face_normals)
+        .chain(&mesh.corner_normals)
+        .flatten()
+    {
         assert!(
             value.is_finite(),
             "a coordinate nothing downstream can bound reached a caller"
         );
     }
+    for value in mesh.corner_texcoords.iter().flatten() {
+        assert!(
+            value.is_finite(),
+            "a texture coordinate nothing downstream can bound reached a caller"
+        );
+    }
 
     // The canonical claim: what reads must write back to itself.
     //
-    // Not `write(read(x)) == x`, which is false for good reason — the
-    // input may carry trailing bytes or a header this reader normalises
-    // — but `write(read(x))` read again, which must give the same mesh
-    // and the same bytes.
+    // **`write(read(x)) == x` would in fact hold**, and the first draft
+    // of this comment claimed otherwise on two grounds that are both
+    // untrue of this reader: it refuses trailing bytes outright, and it
+    // normalises nothing — the version must be exactly 1 and an unknown
+    // flag is refused. The assertion is written in the round-trip form
+    // anyway, for uniformity with the targets beside it and because it
+    // is the form that stays true if the format ever does gain something
+    // it normalises.
     let again = blob::write(&mesh);
     let Ok(twice) = blob::read(&again) else {
         panic!("what this crate wrote, this crate must read");

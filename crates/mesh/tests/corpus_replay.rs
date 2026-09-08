@@ -642,11 +642,19 @@ const BLOB_DISTINCT_OUTCOMES: usize = 7;
 ///   unusable here, where the caller's next move is a newer build.
 /// * `TooLarge` is the four-byte corner count that sizes an allocation,
 ///   which is the one number in this format an attacker would reach for.
-const BLOB_REQUIRED: [&str; 4] = [
+const BLOB_REQUIRED: [&str; 6] = [
     "TooShortForHeader",
     "CountMismatch",
     "Unsupported",
     "TooLarge",
+    // **Added because they were missing and it showed.** With the two
+    // seeds that reach these gone, the floor still passed: deleting
+    // `nan-position`, `infinite-position` and `ragged-corners` left this
+    // gate green, and those are every seed exercising the finiteness
+    // check and every seed exercising the whole-triangles check. Every
+    // other corpus in this file names `NotFinite`; this one did not.
+    "NotFinite",
+    "NotAFace",
 ];
 
 fn blob_corpus_dir() -> PathBuf {

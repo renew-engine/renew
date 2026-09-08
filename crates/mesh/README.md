@@ -180,7 +180,7 @@ the kind of file that has an author. `examples/make_corpus.rs` builds the
 25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
-committed seed is built here rather than found. **The blob's 23 seeds
+committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
 hardest**: an OBJ is what a person exports out of a modelling tool, so

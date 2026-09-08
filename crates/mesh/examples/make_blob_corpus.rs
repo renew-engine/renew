@@ -161,6 +161,16 @@ fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     edit("nan-position", &|bytes| {
         bytes[20..24].copy_from_slice(&f32::NAN.to_le_bytes());
     });
+    // Past the positions, the face normals and the corner normals: the
+    // arrays a fuzzer reaches last and the suite reached not at all.
+    edit("nan-texcoord", &|bytes| {
+        let at = 20 + 72 + 24 + 72;
+        bytes[at..at + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+    });
+    edit("infinite-face-normal", &|bytes| {
+        let at = 20 + 72;
+        bytes[at..at + 4].copy_from_slice(&f32::NEG_INFINITY.to_le_bytes());
+    });
     // A four-byte count that would reserve a quarter of a gigabyte from
     // a twenty-four-byte file: the amplification the ceiling exists for.
     edit("enormous-count", &|bytes| {
