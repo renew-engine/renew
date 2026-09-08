@@ -18,9 +18,10 @@
 //!
 //! **STL is last because it cannot answer for itself.** The format has
 //! no magic number, so "these are not STL bytes" and "these are STL
-//! bytes cut short" are the same observation — which is why a
-//! `NotThisFormat` refusal was deleted from that reader for pretending
-//! to a distinction the format does not offer. Its own dispatch between
+//! bytes cut short" are the same observation — which is why the
+//! `NotThisFormat` refusal that PLY and the blob make has no STL
+//! counterpart, and why that reader's refusal census says so rather
+//! than leaving the gap to be noticed. Its own dispatch between
 //! its two dialects is arithmetic for the same reason. Putting it last
 //! makes it the fallback rather than a competitor, and means a truncated
 //! STL still reaches the reader whose refusals describe it.

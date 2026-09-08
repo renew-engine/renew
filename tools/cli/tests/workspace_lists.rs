@@ -26,13 +26,12 @@ fn workspace_root() -> PathBuf {
     guess.canonicalize().unwrap_or(guess)
 }
 
-/// Crates whose manifest declares a `sanitized` feature.
+/// The workspace's own packages and targets, as cargo computes them.
 ///
-/// Read from cargo rather than by scraping TOML: the feature table is
-/// exactly what cargo already computes, and a hand-rolled parser here
-/// would be a third copy of a fact, in a test whose whole subject is
-/// duplicated facts.
-fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
+/// Shared by the checks below rather than invoked once each, because a
+/// second copy of this would be the exact thing this file exists to
+/// catch — a fact maintained in two places.
+fn workspace_metadata(root: &Path) -> Result<Value, String> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(root)
@@ -45,7 +44,17 @@ fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
         ));
     }
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let document = json::parse(&text).map_err(|error| format!("metadata is not JSON: {error}"))?;
+    json::parse(&text).map_err(|error| format!("metadata is not JSON: {error}"))
+}
+
+/// Crates whose manifest declares a `sanitized` feature.
+///
+/// Read from cargo rather than by scraping TOML: the feature table is
+/// exactly what cargo already computes, and a hand-rolled parser here
+/// would be a third copy of a fact, in a test whose whole subject is
+/// duplicated facts.
+fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
+    let document = workspace_metadata(root)?;
     let packages = document
         .get("packages")
         .and_then(Value::as_array)
@@ -1538,6 +1547,88 @@ fn only_the_platform_socket_module_names_the_standard_network_types() {
     assert!(
         faults.is_empty(),
         "the socket belongs to one module and these reach around it:\n{}",
+        faults.join("\n")
+    );
+}
+/// Every example target in the workspace has a name no other package
+/// uses.
+///
+/// **Cargo names the output file from the target, not from the package.**
+/// An example called `make_corpus` in three crates is three compilations
+/// writing `target/<profile>/examples/make_corpus.exe`, and a workspace
+/// build runs them concurrently. Cargo warns about the collision and says
+/// it may become a hard error; before that, the symptom is a link step
+/// failing to open a file another link step is holding.
+///
+/// **That is not hypothetical.** `renew-json`, `renew-png` and
+/// `renew-mesh` each shipped a `make_corpus`, and a Windows CI run failed
+/// with `LNK1104: cannot open file 'make_corpus.exe'` on a tree that was
+/// otherwise fine. It was put down to a linker file lock and re-run
+/// green, which is the worst available outcome: the diagnosis was half
+/// right and the cause stayed in the tree. The corpus generators now
+/// carry their format in the name.
+///
+/// The check is over *every* example rather than that one name, because
+/// a corpus generator per format is the shape this repository keeps
+/// producing.
+#[test]
+fn no_two_packages_declare_an_example_of_the_same_name() {
+    let root = workspace_root();
+    let document = workspace_metadata(&root).unwrap_or_else(|error| panic!("{error}"));
+    let packages = document
+        .get("packages")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("cargo metadata carried no packages array"));
+
+    // (example name, declaring package), in metadata order.
+    let mut examples: Vec<(String, String)> = Vec::new();
+    for package in packages {
+        let Some(owner) = package.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(targets) = package.get("targets").and_then(Value::as_array) else {
+            continue;
+        };
+        for target in targets {
+            let is_example = target
+                .get("kind")
+                .and_then(Value::as_array)
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("example")));
+            if !is_example {
+                continue;
+            }
+            if let Some(name) = target.get("name").and_then(Value::as_str) {
+                examples.push((name.to_owned(), owner.to_owned()));
+            }
+        }
+    }
+
+    assert!(
+        !examples.is_empty(),
+        "no example targets found at all, so this check measured nothing"
+    );
+
+    let mut faults = Vec::new();
+    let mut reported: Vec<&str> = Vec::new();
+    for (name, _) in &examples {
+        if reported.contains(&name.as_str()) {
+            continue;
+        }
+        reported.push(name);
+        let sharers: Vec<&str> = examples
+            .iter()
+            .filter(|(other, _)| other == name)
+            .map(|(_, package)| package.as_str())
+            .collect();
+        if sharers.len() > 1 {
+            faults.push(format!("`{name}` in {}", sharers.join(", ")));
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "these example names are declared by more than one package, and cargo \
+         writes them all to one path:\n{}",
         faults.join("\n")
     );
 }

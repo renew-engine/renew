@@ -60,14 +60,24 @@ not a first line of defence, a deeper one.
 `corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
 `cargo fuzz cmin`. **Seven corpora start differently** — `png_decode`'s
-seeds are written by `cargo run -p renew-png --example make_corpus`,
-`json_parse`'s by `cargo run -p renew-json --example make_corpus`, and the
-five `renew-mesh` corpora by `cargo run -p renew-mesh --example
-make_corpus` (`stl_read`), `--example make_ply_corpus`, `--example
+seeds are written by `cargo run -p renew-png --example make_png_corpus`,
+`json_parse`'s by `cargo run -p renew-json --example make_json_corpus`,
+and the five `renew-mesh` corpora by `cargo run -p renew-mesh --example
+make_stl_corpus`, `--example make_ply_corpus`, `--example
 make_obj_corpus`, `--example make_mtl_corpus` and `--example
 make_blob_corpus`, each of
 which builds every byte it writes rather than copying a file from
-anywhere, so no licence question arrives with the starting seeds. For
+anywhere, so no licence question arrives with the starting seeds.
+
+**Every one of those names carries its format, and that is load-bearing
+rather than tidy.** Cargo writes an example to
+`target/<profile>/examples/<name>` from the target's own name, ignoring
+which package declared it, so three packages naming one example named one
+file. Building the workspace then had two link steps writing one path;
+on Windows the loser reported `LNK1104: cannot open file
+'make_corpus.exe'` and the run went red on a tree that was fine. Cargo
+warns about the collision and says it may become a hard error. A new
+generator gets the format in its name. For
 the mesh generators that is not only licensing: a mesh is the one format
 here whose sample files are *art*, and art has an author.
 

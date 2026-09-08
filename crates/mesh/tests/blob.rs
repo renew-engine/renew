@@ -240,7 +240,7 @@ fn the_magic_keeps_the_shape_the_other_formats_in_this_tree_use() {
 fn bytes_that_do_not_open_with_the_magic_are_refused() {
     let mut bytes = blob::write(&furnished());
     bytes[0] = b'X';
-    let MeshError::ExpectedKeyword { expected, .. } = refusal(&bytes) else {
+    let MeshError::NotThisFormat { expected } = refusal(&bytes) else {
         panic!("a blob opens with its magic");
     };
     assert_eq!(expected, "RENEWMS\\0");
@@ -515,10 +515,10 @@ fn every_byte_string_gets_an_answer() {
 fn blob_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
         // Reachable, and each is provoked by a byte string in this file.
-        MeshError::TooShortForHeader { .. }
+        MeshError::NotThisFormat { .. }
+        | MeshError::TooShortForHeader { .. }
         | MeshError::CountMismatch { .. }
         | MeshError::TooLarge { .. }
-        | MeshError::ExpectedKeyword { .. }
         | MeshError::NotFinite { .. }
         | MeshError::NotAFace { .. }
         | MeshError::Unsupported { .. }
@@ -526,6 +526,9 @@ fn blob_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
         MeshError::NotANumber { .. } => {
             Some("nothing here is text, so there is no word that failed to be a number")
         }
+        MeshError::ExpectedKeyword { .. } => Some(
+            "nothing here is text, so no word can be missing. The one place              this reader used to say it was about its magic, and that is now              `NotThisFormat` — which is the whole point of the new variant.",
+        ),
         MeshError::IndexOutOfRange { .. } | MeshError::IndexZero { .. } => {
             Some("this format is de-indexed: a corner is written out, never pointed at")
         }
@@ -552,7 +555,7 @@ fn the_census_and_the_bytes_agree() {
 
     let provocations: [(&str, Vec<u8>); 8] = [
         ("TooShortForHeader", MAGIC.to_vec()),
-        ("ExpectedKeyword", wrong_magic),
+        ("NotThisFormat", wrong_magic),
         ("Unsupported", later_version),
         ("NotAFace", short_face),
         ("NoGeometry", no_corners),
@@ -575,6 +578,11 @@ fn the_census_and_the_bytes_agree() {
     }
 
     for refusal in [
+        MeshError::ExpectedKeyword {
+            expected: "end_header",
+            found: String::new(),
+            line: 1,
+        },
         MeshError::NotANumber {
             found: String::new(),
             line: 1,

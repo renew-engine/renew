@@ -291,6 +291,18 @@ fn header(bytes: &[u8]) -> Result<(Vec<Element>, Encoding, usize), MeshError> {
     // bytes rather than by decoding the file: a body full of binary
     // floats is not text, and decoding the whole file to find where the
     // text stops would refuse every binary PLY there is.
+    // **The magic is asked first, and it used to be asked last.**
+    //
+    // `end_header` was searched for before anything established that
+    // these bytes were a PLY at all, so a file of another format was
+    // told its terminator was missing — a claim about a truncated PLY,
+    // made about a file that was never one. Worse, a genuinely truncated
+    // PLY produced the identical refusal, so two different faults were
+    // one message.
+    if !looks_like(bytes) {
+        return Err(MeshError::NotThisFormat { expected: "ply" });
+    }
+
     let end = header_end(bytes).ok_or(MeshError::ExpectedKeyword {
         expected: "end_header",
         found: String::new(),
@@ -323,7 +335,6 @@ fn header(bytes: &[u8]) -> Result<(Vec<Element>, Encoding, usize), MeshError> {
 fn parse_schema(text: &str) -> Result<(Vec<Element>, Encoding), MeshError> {
     let mut encoding = None;
     let mut elements: Vec<Element> = Vec::new();
-    let mut saw_magic = false;
 
     for (number, source) in text.lines().enumerate() {
         // One-based, as an editor counts, and carried into every refusal
@@ -334,11 +345,13 @@ fn parse_schema(text: &str) -> Result<(Vec<Element>, Encoding), MeshError> {
             continue;
         };
         match keyword {
-            "ply" => saw_magic = true,
-            // Comments and the obsolete `obj_info` carry anything at all
-            // to the end of their line, including bytes that would not
-            // parse as anything else.
-            "comment" | "obj_info" => {}
+            // **Three keywords that contribute nothing to the schema,
+            // and one body between them.** The magic word is here
+            // because `looks_like` has already established it above:
+            // the loop meets it again on line 1 with nothing left to do.
+            // The other two carry free text to the end of their line,
+            // which is by definition not schema.
+            "ply" | "comment" | "obj_info" => {}
             "format" => {
                 let word = words.next().unwrap_or("");
                 encoding = Some(match word {
@@ -418,13 +431,6 @@ fn parse_schema(text: &str) -> Result<(Vec<Element>, Encoding), MeshError> {
         }
     }
 
-    if !saw_magic {
-        return Err(MeshError::ExpectedKeyword {
-            expected: "ply",
-            found: String::new(),
-            line: 1,
-        });
-    }
     let encoding = encoding.ok_or(MeshError::ExpectedKeyword {
         expected: "format",
         found: String::new(),

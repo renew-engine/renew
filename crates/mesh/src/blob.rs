@@ -293,10 +293,8 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
         });
     }
     if bytes.get(..MAGIC.len()) != Some(&MAGIC[..]) {
-        return Err(MeshError::ExpectedKeyword {
+        return Err(MeshError::NotThisFormat {
             expected: "RENEWMS\\0",
-            found: String::new(),
-            line: 1,
         });
     }
 

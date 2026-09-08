@@ -168,6 +168,9 @@ endsolid x",
 fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
         // Reachable, and each is provoked by a file in this suite.
+        MeshError::NotThisFormat { .. } => Some(
+            "this format has no magic at all: a binary STL opens with eighty bytes of whatever its exporter wrote, which is exactly why detection falls back to STL rather than dispatching to it",
+        ),
         MeshError::TooShortForHeader { .. }
         | MeshError::CountMismatch { .. }
         | MeshError::ExpectedKeyword { .. }

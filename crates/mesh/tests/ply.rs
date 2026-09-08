@@ -275,12 +275,16 @@ fn a_header_asking_for_more_than_it_can_hold_is_refused() {
 /// The header's own grammar is checked, and each refusal says where.
 #[test]
 fn a_header_that_is_not_one_is_refused_by_line() {
+    // A file that opens correctly and then says something the header
+    // grammar has no place for. **Its first line has to be `ply`**: a
+    // file opening with anything else is not this format at all, and is
+    // refused before the grammar is ever consulted.
     assert_eq!(
-        refusal(b"not a ply at all\nend_header\n"),
+        refusal(b"ply\nnot a header line\nend_header\n"),
         MeshError::ExpectedKeyword {
             expected: "ply, format, comment, element, property or end_header",
             found: "not".to_owned(),
-            line: 1
+            line: 2
         }
     );
     assert_eq!(
@@ -798,30 +802,53 @@ fn a_header_declaring_more_elements_than_the_schema_holds_is_refused() {
     );
 }
 
-/// **A header without the magic word is refused, even when it ends
-/// properly.**
+/// **A header without the magic word is not this format, and is
+/// refused as that rather than as a broken PLY.**
 ///
-/// The header is located by its terminator rather than its opening,
-/// because a binary body is not text and the opening cannot be trusted
-/// to be where the search starts. So a file can reach the schema parser
-/// having never said `ply`, and the parser is what has to notice.
+/// The header *end* is still found by its terminator, because a binary
+/// body is not text and a scan for `end_header` cannot be replaced by
+/// counting lines. But that scan used to run first, so a file of another
+/// format was told its `end_header` was missing — a claim about a
+/// truncated PLY, made about a file that had never been one.
 ///
 /// Probed by deleting the check: red, a file that never claims to be a
 /// PLY is read as one.
 #[test]
 fn a_header_that_never_says_ply_is_refused_by_name() {
     let anonymous = "format ascii 1.0\nelement vertex 0\nend_header\n";
-    let MeshError::ExpectedKeyword {
-        expected,
-        found,
-        line,
-    } = refusal(anonymous.as_bytes())
-    else {
-        panic!("a file that never says `ply` is refused for that");
+    let MeshError::NotThisFormat { expected } = refusal(anonymous.as_bytes()) else {
+        panic!("a file that never says `ply` is not this format");
     };
     assert_eq!(expected, "ply");
-    assert!(found.is_empty(), "nothing stood in for it: `{found}`");
-    assert_eq!(line, 1, "the word belongs on the first line");
+}
+
+/// **A foreign file and a truncated PLY are two faults, and they now get
+/// two refusals.**
+///
+/// They used to get a byte-identical one — `ExpectedKeyword` naming
+/// `end_header` on line 1 — because the terminator was searched for
+/// before anything established the format. That was worse than a generic
+/// failure: it was specific and wrong, and it sent whoever read it
+/// hunting for corruption in a perfectly good file of another kind.
+///
+/// This is the test the old ordering could not have passed, and no test
+/// in this suite asked for it, which is why the ordering survived three
+/// rows of work on this reader.
+#[test]
+fn a_foreign_file_and_a_truncated_ply_do_not_share_a_refusal() {
+    let foreign = refusal(b"MZ\x90\x00\x03\x00 this is a program, not a model");
+    let truncated = refusal(b"ply\nformat ascii 1.0\nelement vertex 1\n");
+
+    assert_eq!(foreign, MeshError::NotThisFormat { expected: "ply" });
+    assert_eq!(
+        truncated,
+        MeshError::ExpectedKeyword {
+            expected: "end_header",
+            found: String::new(),
+            line: 1
+        }
+    );
+    assert_ne!(foreign, truncated, "two faults, two answers");
 }
 
 /// **A file whose schema is complete and whose faces are absent has no
@@ -939,7 +966,8 @@ fn crowded_schema() -> String {
 fn ply_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
         // Reachable, and each is provoked by a file in this suite.
-        MeshError::CountMismatch { .. }
+        MeshError::NotThisFormat { .. }
+        | MeshError::CountMismatch { .. }
         | MeshError::ExpectedKeyword { .. }
         | MeshError::NotANumber { .. }
         | MeshError::NotFinite { .. }
@@ -988,6 +1016,10 @@ end_header
     let provoked = [
         // A header whose first word is not the magic one.
         refusal(b"not a ply at all\nend_header\n"),
+        // A file that is a PLY and then stops making sense. Nothing
+        // above reaches the grammar refusal any more, now that a foreign
+        // file is turned away before the grammar runs.
+        refusal(b"ply\nformat ebcdic 1.0\nend_header\n"),
         // A vertex element and no face element: geometry this reader
         // has no way to use.
         refusal(
@@ -1025,6 +1057,7 @@ end_header
 
     for name in [
         "CountMismatch",
+        "NotThisFormat",
         "ExpectedKeyword",
         "NotANumber",
         "NotFinite",

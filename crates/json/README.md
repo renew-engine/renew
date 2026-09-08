@@ -160,7 +160,7 @@ mixture was widened, because uniform random bytes essentially never parse
 and the walk over an accepted document was never being reached.
 
 **The reader is fuzzed, and the corpus is generated rather than
-collected.** `cargo run -p renew-json --example make_corpus` builds every
+collected.** `cargo run -p renew-json --example make_json_corpus` builds every
 seed, so the corpus carries no licence question. Between them the
 thirty-eight seeds reach twenty-six different answers — every refusal the
 parse can make, plus `Ok`. `tests/corpus_replay.rs` replays them on the
