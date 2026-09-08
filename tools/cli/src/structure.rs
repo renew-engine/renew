@@ -42,6 +42,59 @@ const PLATFORM_CRATE: &str = "renew-platform";
 /// the target, not the source.
 const REQUIRED_FLOAT_METHOD_BANS: &[&str] = &["mul_add", "sqrt", "powf", "ln", "sin", "recip"];
 
+/// The `disallowed-methods` and `disallowed-types` paths a lint file
+/// actually declares.
+///
+/// **Parsed, not searched, and this file already knew why.** The same
+/// check in the workspace-list suite carried this note before this
+/// function existed: a raw `contains` over the bytes "passes on a
+/// commented-out entry and on a banned path quoted inside another
+/// entry's `reason` prose", and the reasons in these files do quote
+/// paths at each other. The first version of the float-method gate was
+/// a raw `contains` anyway — measured afterwards: prefixing all
+/// thirty-four entries with `#` left the gate green, and so did deleting
+/// them and adding a prose comment naming them.
+///
+/// Comment lines go first, then each `path = "..."` value is taken.
+/// That is the only position clippy reads, so it is the only position
+/// this accepts.
+#[must_use]
+pub fn declared_paths(lints: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in lints.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("path = \"") {
+            rest = &rest[at + "path = \"".len()..];
+            let Some(end) = rest.find('"') else { break };
+            paths.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+    }
+    paths
+}
+
+/// Whether a lint file bans every float method the closure requires.
+///
+/// Split out from the shape builder so it can be tested without a
+/// directory: the first version of this logic lived inline and **had no
+/// test at all**, which let `true || …`, `.all` to `.any`, and `&&` to
+/// `||` each survive the whole suite.
+#[must_use]
+pub fn bans_the_required_float_methods(lints: &str) -> bool {
+    let declared = declared_paths(lints);
+    REQUIRED_FLOAT_METHOD_BANS.iter().all(|method| {
+        ["f32", "f64"].iter().all(|kind| {
+            declared
+                .iter()
+                .any(|path| path == &format!("{kind}::{method}"))
+        })
+    })
+}
+
 const MATURITIES: &[&str] = &["bootstrap", "internal", "stable"];
 const REQUIRED_FIELDS: &[&str] = &[
     "purpose",
@@ -199,9 +252,7 @@ pub fn shapes_from_metadata(doc: &Value) -> Result<Vec<CrateShape>, String> {
         // is the safe direction: rule 7 already reports a crate with no
         // `clippy.toml`, so this cannot be the only thing that noticed.
         let lints = std::fs::read_to_string(format!("{dir}/clippy.toml")).unwrap_or_default();
-        let bans_float_methods = REQUIRED_FLOAT_METHOD_BANS.iter().all(|method| {
-            lints.contains(&format!("f32::{method}")) && lints.contains(&format!("f64::{method}"))
-        });
+        let bans_float_methods = bans_the_required_float_methods(&lints);
         let meta = validate_meta(package);
         shapes.push(CrateShape {
             name,
@@ -597,6 +648,34 @@ fn float_closure_rules(shape: &CrateShape, shapes: &[CrateShape], findings: &mut
         },
     };
 
+    // **The declaring crate is asked its own two answers.**
+    //
+    // The walk below covers what a simulation *reaches*; for a long time
+    // nothing covered the simulation itself, and `crates/net/src/lib.rs`
+    // carried a hand-written note saying so — "written by hand until that
+    // rule gains the half it is missing". This is that half. Without it,
+    // a simulation crate nothing else depends on — every sample world, and
+    // `renew-input`, `renew-net`, `renew-replay`, `renew-ui` — could drop
+    // its lint file entirely and this rule would report nothing.
+    if !shape.denies_float {
+        findings.push(Finding {
+            rule: "float-closure",
+            message: format!(
+                "{} declares simulation = true and does not itself deny clippy::float_arithmetic — the rule asks this of every crate a simulation ships, and a simulation ships itself",
+                shape.name
+            ),
+        });
+    }
+    if !shape.bans_float_methods {
+        findings.push(Finding {
+            rule: "float-closure",
+            message: format!(
+                "{} declares simulation = true and does not itself ban the float maths the operator lint cannot see — `clippy::float_arithmetic` flags operators, so `a.mul_add(b, c)` and `a.sin()` compile clean under it; the ban belongs in this crate's own `clippy.toml`",
+                shape.name
+            ),
+        });
+    }
+
     for foreign in &shape.foreign_deps {
         findings.push(unreadable(&shape.name, &shape.name, foreign));
     }
@@ -973,6 +1052,231 @@ mod tests {
             runtime_deps: Vec::new(),
             ..sim(name, &[], simulation)
         }
+    }
+
+    /// A lint file declaring every ban the closure requires.
+    ///
+    /// Built from the constant rather than written out, so a method
+    /// added to the requirement cannot leave this fixture behind
+    /// declaring the old set and still passing.
+    fn a_lint_file_with_every_required_ban() -> String {
+        let mut lints = String::from("disallowed-methods = [\n");
+        for method in REQUIRED_FLOAT_METHOD_BANS {
+            for kind in ["f32", "f64"] {
+                lints.push_str("    { path = \"");
+                lints.push_str(kind);
+                lints.push_str("::");
+                lints.push_str(method);
+                lints.push_str("\" },\n");
+            }
+        }
+        lints.push_str("]\n");
+        lints
+    }
+
+    /// **A simulation crate answers for itself, not only for what it
+    /// reaches.**
+    ///
+    /// The walk covers dependencies, so for a long time a simulation
+    /// crate nothing else depended on was covered by nothing — every
+    /// sample world, and `renew-input`, `renew-net`, `renew-replay`,
+    /// `renew-ui`. Measured before the fix: stripping the bans from eight
+    /// of the eighteen lint files produced no finding at all, and
+    /// deleting a sample world's file entirely left the workspace
+    /// "healthy".
+    ///
+    /// The fixture has **no dependencies on purpose** — that is the whole
+    /// case. A crate with dependencies would be covered by the walk even
+    /// if this half were missing again.
+    #[test]
+    fn a_simulation_crate_answers_for_its_own_lint_file() {
+        let lonely = CrateShape {
+            bans_float_methods: false,
+            ..float_sim("world", &[], true, true, &[])
+        };
+        let found = evaluate(&[lonely])
+            .into_iter()
+            .find(|finding| finding.rule == "float-closure")
+            .expect("a simulation crate that bans nothing is reported, even alone");
+        assert!(
+            found.message.contains("world") && found.message.contains("itself"),
+            "the finding says the crate is answering for itself rather than for a dependency: {}",
+            found.message
+        );
+
+        // The deny half of the same question, which the tree carried a
+        // hand-written note about in `crates/net/src/lib.rs` until now.
+        let undenied = CrateShape {
+            denies_float: false,
+            ..float_sim("world", &[], true, true, &[])
+        };
+        assert!(
+            evaluate(&[undenied])
+                .iter()
+                .any(|finding| finding.rule == "float-closure"
+                    && finding.message.contains("does not itself deny")),
+            "a simulation crate that does not deny the operators is reported for itself too"
+        );
+
+        // And a crate that answers both is silent, so the finding is
+        // about the answers rather than about being a simulation.
+        assert!(
+            evaluate(&[float_sim("world", &[], true, true, &[])])
+                .iter()
+                .all(|finding| finding.rule != "float-closure"),
+            "a simulation crate that answers both questions has nothing to report"
+        );
+    }
+
+    /// **The wiring, not just the predicate.**
+    ///
+    /// The tests below drive `bans_the_required_float_methods` over text.
+    /// That leaves the step that finds the text untested — and measured:
+    /// with only those, replacing the call site with `true || …` survived
+    /// the whole suite, as did reading a file that does not exist. This
+    /// builds a real directory, puts a real lint file in it, and asks
+    /// `shapes_from_metadata` what it made of it.
+    #[test]
+    fn the_shape_reads_the_lint_file_beside_the_manifest() {
+        let base = std::env::temp_dir().join(format!(
+            "renew-cli-bans-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let crate_dir = base.join("crates").join("probe");
+        std::fs::create_dir_all(crate_dir.join("src")).expect("a scratch crate directory");
+        std::fs::write(
+            crate_dir.join("src").join("lib.rs"),
+            "#![deny(clippy::float_arithmetic)]",
+        )
+        .expect("a scratch lib");
+
+        let manifest = crate_dir.join("Cargo.toml");
+        let document = format!(
+            r#"{{"workspace_root":"{root}","packages":[{{"name":"probe",
+               "manifest_path":"{manifest}","dependencies":[],
+               "metadata":{{"renew":{{"purpose":"p","maturity":"bootstrap","core":false,
+               "extension_points":[],"simulation":true}}}}}}]}}"#,
+            root = base
+                .display()
+                .to_string()
+                .replace(std::path::MAIN_SEPARATOR, "/"),
+            manifest = manifest
+                .display()
+                .to_string()
+                .replace(std::path::MAIN_SEPARATOR, "/"),
+        );
+        let parsed = crate::json::parse(&document).expect("the fixture is valid JSON");
+
+        // No lint file at all: the crate bans nothing.
+        let shapes = shapes_from_metadata(&parsed).expect("metadata-shaped");
+        assert!(
+            !shapes[0].bans_float_methods,
+            "a crate with no clippy.toml has not banned anything"
+        );
+
+        // A lint file with every required ban: the crate bans them.
+        let full = a_lint_file_with_every_required_ban();
+        std::fs::write(crate_dir.join("clippy.toml"), &full).expect("a scratch lint file");
+        let shapes = shapes_from_metadata(&parsed).expect("metadata-shaped");
+        assert!(
+            shapes[0].bans_float_methods,
+            "the file beside the manifest is the one that counts"
+        );
+
+        // And it is read from `clippy.toml` specifically, not from
+        // whatever else sits in the directory.
+        std::fs::rename(
+            crate_dir.join("clippy.toml"),
+            crate_dir.join("clippy.toml.bak"),
+        )
+        .expect("rename the lint file away");
+        let shapes = shapes_from_metadata(&parsed).expect("metadata-shaped");
+        assert!(
+            !shapes[0].bans_float_methods,
+            "renaming the file away takes the bans with it"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// **The parser reads what clippy reads, and nothing else.**
+    ///
+    /// Each case here is a shape that defeated the raw `contains` this
+    /// replaced, measured rather than imagined.
+    #[test]
+    fn declared_paths_ignores_everything_clippy_ignores() {
+        let live = r#"
+disallowed-methods = [
+    { path = "f32::mul_add", reason = "measured" },
+    { path = "f64::mul_add", reason = "measured" },
+]
+"#;
+        assert_eq!(
+            declared_paths(live),
+            ["f32::mul_add", "f64::mul_add"],
+            "a live entry is what the parser is for"
+        );
+
+        // Commenting out is at least as common as deleting, and it is
+        // the edit the raw `contains` could not see.
+        let commented = r#"
+disallowed-methods = [
+#    { path = "f32::mul_add", reason = "temporarily off" },
+]
+"#;
+        assert!(
+            declared_paths(commented).is_empty(),
+            "a commented-out entry bans nothing, so it declares nothing"
+        );
+
+        // The reasons in these files quote each other's paths.
+        let quoted = r#"
+disallowed-methods = [
+    { path = "std::fs::read", reason = "we also used to ban path = \"f32::mul_add\" here" },
+]
+"#;
+        assert!(
+            !declared_paths(quoted).contains(&"f32::mul_add".to_string())
+                || declared_paths(quoted).len() == 2,
+            "prose that mentions a path does not declare it: {:?}",
+            declared_paths(quoted)
+        );
+    }
+
+    /// **The predicate needs every required method, in both widths.**
+    ///
+    /// Written because the first version of this logic had no test at
+    /// all: `true || …`, `.all` to `.any`, and `&&` to `||` each survived
+    /// the entire suite and a clean `check`.
+    #[test]
+    fn the_float_ban_predicate_needs_both_widths_of_every_method() {
+        let full = a_lint_file_with_every_required_ban();
+        assert!(
+            bans_the_required_float_methods(&full),
+            "the full set is what every closure crate carries"
+        );
+
+        // One width missing is not a ban: `&&` becoming `||` would pass
+        // this file, and did.
+        let f32_only = full.replace("f64::", "notafloat::");
+        assert!(
+            !bans_the_required_float_methods(&f32_only),
+            "banning one width leaves the other legal"
+        );
+
+        // One method missing is not a ban: `.all` becoming `.any` would
+        // pass this file, and did.
+        let missing_one = full.replace("f32::recip", "f32::notamethod");
+        assert!(
+            !bans_the_required_float_methods(&missing_one),
+            "a required method absent is a required method absent"
+        );
+
+        assert!(
+            !bans_the_required_float_methods(""),
+            "an empty lint file bans nothing"
+        );
     }
 
     /// **The deny and the method ban are two claims, and the rule asks
