@@ -203,8 +203,9 @@ in `refusal` as well as the sentence in `stderr`**, because a message is
 for a person and a name is for a program: the sentences are meant to
 improve, and a script keying on one breaks when they do.
 
-There is no `import` subcommand. A real importer needs an image or audio
-decoder, and one that only copied bytes would be worse than its absence.
+`asset-import` reads meshes and nothing else. There is no image or
+audio import, because a real one needs a decoder for each and one that
+only copied bytes would be worse than its absence.
 
 ## The module inventory
 
@@ -336,8 +337,9 @@ documented here, below. The short version:
   (the path written); `asset-inspect --json` adds, on success or a
   failed verification, `verified` (whether verification ran), a
   `mismatched` array of names, and an `entries` array of
-  `{name, hash, bytes}`. On the error path both asset subcommands carry
-  only an empty `entries` array with the reason in `stderr`.
+  `{name, hash, bytes}`. On the error path those two carry only an
+  empty `entries` array with the reason in `stderr`; `asset-import`
+  carries the refusal's name instead, for the reason given above.
   `ui-compile --json` adds an `errors` array and, on success, `nodes`,
   `bytes`, and `out`.
 - `coverage --json` adds `measured_files` and `exempt_lines` counts, an

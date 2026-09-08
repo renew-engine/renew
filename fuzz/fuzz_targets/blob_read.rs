@@ -1,7 +1,7 @@
 //! The canonical mesh blob, against bytes nobody wrote on purpose.
 //!
-//! **This is the only reader in the tree whose format the tree also
-//! writes**, and that changes what is worth fuzzing. The four format
+//! **This is the only mesh reader whose format this tree also writes**,
+//! and that changes what is worth fuzzing. The four other mesh
 //! readers have to survive files other people's tools produced; this one
 //! has to survive a file *nobody* produced — a blob that has been
 //! truncated in transit, edited in place, or fabricated whole by someone

@@ -1,6 +1,6 @@
 //! Write the blob reader's seed corpus.
 //!
-//! **These seeds are the only ones in the tree that need no licensing
+//! **These seeds are the only mesh seeds that need no licensing
 //! argument at all**, because the format is this repository's own and
 //! every byte of it comes out of `blob::write`. The other four
 //! generators build their inputs by hand to avoid borrowing somebody's

@@ -31,7 +31,28 @@ surface to one function per format, fuzzable with no filesystem at all.
 The lints in `clippy.toml` are the tripwire: the path types and the
 whole-file reads are refused at lint time, not by convention.
 
-## What a reader promises
+## Contract
+
+- **No file is ever opened.** Readers take bytes and the writer returns
+  them: no path, no handle, no clock. The caller that reads a file owns
+  the file and owns the bound on reading it, which is what lets one
+  reader serve a file on disk, a member of an archive and a slice out of
+  the middle of something larger.
+- **No input is trusted, and nothing is repaired.** Every refusal names
+  its place, and no reader guesses at what a malformed file meant.
+- **A ceiling on geometry, not on files.** A reader refuses a model past
+  `MAX_GEOMETRY_BYTES` of positions rather than trying to hold it. That
+  is a bound on what this crate will allocate from a header's say-so; it
+  is not a bound on how large a file the caller should have read, which
+  the caller sets and this crate cannot see.
+- **`blob::write` and `blob::read` are inverses**, for every mesh the
+  reader can produce, and the fuzz target asserts it on every accepted
+  input. No other format here is written by this repository, so no other
+  can make the claim.
+
+The three subsections below say what that means format by format.
+
+### What a reader promises
 
 Every reader here answers, one way or the other, for every byte string
 it can be handed. It does not panic, it does not read past what it was
@@ -43,7 +64,7 @@ not produce, exported by a tool it does not own, and "this STL is
 malformed" sends that caller to a hex editor for what the reader already
 knew.
 
-## What a reader does not promise
+### What a reader does not promise
 
 **That the geometry is good, only that it is geometry.** Degenerate
 triangles, inconsistent winding, a surface that is not closed — all of
@@ -166,7 +187,9 @@ and for OBJ and MTL every line is — and each asserts the invariants its
 own return type carries. `tests/corpus_replay.rs` replays all five
 committed corpora on stable, on every merge, with a floor on the number
 of distinct inputs and on the number of distinct answers they reach, plus
-four refusals named individually per format. **The blob's replay checks
+refusals named individually per format: four for each of the four
+readers of somebody else's files, and six for the blob, which can be
+held to more because every byte it accepts was written here. **The blob's replay checks
 something the others cannot**: that every seed which reads writes itself
 back to the same bytes, which is a claim only a format this crate also
 writes can make. **MTL's outcome floor takes
@@ -177,7 +200,7 @@ refusals, so the usual margin would be a hole rather than a margin.
 repository would be a dependency with a licence, and a directory of them
 would be a dependency nobody recorded — and a mesh, unlike a datagram, is
 the kind of file that has an author. `examples/make_corpus.rs` builds the
-25 STL seeds, `examples/make_ply_corpus.rs` the 23 PLY ones,
+25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
 committed seed is built here rather than found. **The blob's 25 seeds

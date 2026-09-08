@@ -1,7 +1,8 @@
-//! Readers for the mesh files other tools write.
+//! Readers for the mesh files other tools write, and a writer for the
+//! one this repository owns.
 //!
-//! **Bytes in, validated geometry out, and nothing else.** This crate
-//! never opens a file, never takes a path and never reads a clock. A
+//! **Bytes in, validated geometry out, and bytes back out again.** This
+//! crate never opens a file, never takes a path and never reads a clock. A
 //! caller that reads a file owns the file and owns the bound on reading
 //! it; what arrives here is a byte string, which is what lets the same
 //! reader serve a file on disk, a member of an archive, and a chunk

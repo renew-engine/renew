@@ -180,8 +180,9 @@ pub struct Invocation {
     /// subcommand can be in play, and two would let a caller construct an
     /// invocation naming both.
     pub trace: Option<String>,
-    /// Both asset subcommands (parse enforces, and requires): the pack
-    /// file to write, or to read.
+    /// `asset-pack` and `asset-inspect` (parse enforces, and requires):
+    /// the pack file to write, or to read. `asset-import` writes through
+    /// `--out` instead, because what it writes is not a pack.
     pub pack: Option<String>,
     /// `asset-pack`, `ui-compile` and `asset-import` (parse enforces,
     /// and requires): the directory whose files become the pack's

@@ -93,7 +93,7 @@ those two, a consumer reads `status` plus the payload, because their verdict liv
 On every other subcommand that carries `failures` at all — the rollout table below marks
 which; `doctor`, `asset-inspect`, `asset-pack`, `asset-import`, `ui-compile` and `help` never
 do, and of those
-only `doctor` and `asset-inspect` ever report `status` `failed` (the other three are `ok` or
+only `doctor` and `asset-inspect` ever report `status` `failed` (the other four are `ok` or
 `error`) — the array carries both kinds: the reasons a run could not deliver a verdict
 (refusals, aborts) *and* delivered reds (`step-failed`, the two determinism verdicts). It is
 `status` that tells those apart — `error` for the former, `failed` for the latter — never the

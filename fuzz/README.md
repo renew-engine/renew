@@ -5,9 +5,9 @@ not write: the asset pack reader, the input-trace codec, the WAV reader,
 the UI document reader, the UI text grammar, the datagram reader, the
 PNG decoder, the JSON reader, the three mesh readers STL, PLY and OBJ,
 the MTL material libraries an OBJ refers to, and the canonical mesh blob
-— which is the one format in this list the engine writes as well as
-reads, and so the one whose target can assert that reading and writing
-are inverses. Eight of them go further than the rest: bytes that read as a UI document are also
+— which is the one *mesh* format in this list the engine writes as
+well as reads, and so the one whose target can assert that reading and
+writing are inverses. Nine of them go further than the rest: bytes that read as a UI document are also
 instantiated as a tree, because validation claims instantiation never
 needs to re-check; text that compiles is read back through the
 runtime reader, because the compiler claims it only mints what that
@@ -67,12 +67,12 @@ make_corpus` (`stl_read`), `--example make_ply_corpus`, `--example
 make_obj_corpus`, `--example make_mtl_corpus` and `--example
 make_blob_corpus`, each of
 which builds every byte it writes rather than copying a file from
-anywhere, so no licence question arrives with the starting seeds. For the
-mesh pair that is not only licensing: a mesh is the one format here whose
-sample files are *art*, and art has an author.
+anywhere, so no licence question arrives with the starting seeds. For
+the mesh generators that is not only licensing: a mesh is the one format
+here whose sample files are *art*, and art has an author.
 
 **What is *not* gated is which of those seeds survive, and that is
-deliberate.** Neither generator runs in CI, and no test compares the
+deliberate.** None of the generators runs in CI, and no test compares the
 committed directory against what a generator would produce today —
 because `cargo fuzz cmin` renames what it keeps to a content hash and
 drops what adds no coverage, so a check that demanded seed-for-seed
