@@ -120,7 +120,7 @@ writes them.
 collected.** Everything above is about the encoder — the half this crate
 writes. The half that reads a file somebody else wrote is checked by
 `png_decode`, whose seeds are built by `cargo run -p renew-png --example
-make_corpus`: every input is first-party, so the corpus carries no
+make_png_corpus`: every input is first-party, so the corpus carries no
 licence question. All but one are written by that program, and the
 exception is the subject of the next paragraph. `tests/corpus_replay.rs`
 replays them on the stable toolchain at every merge, and asserts two

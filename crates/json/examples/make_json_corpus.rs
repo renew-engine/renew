@@ -24,7 +24,7 @@
 //! Run when the corpus needs regenerating:
 //!
 //! ```text
-//! cargo run -p renew-json --example make_corpus
+//! cargo run -p renew-json --example make_json_corpus
 //! ```
 //!
 //! Existing files are left alone. The fuzzer adds its own finds to this

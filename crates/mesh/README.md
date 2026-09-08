@@ -199,8 +199,8 @@ refusals, so the usual margin would be a hole rather than a margin.
 **Every fixture is generated.** A model downloaded from a sample
 repository would be a dependency with a licence, and a directory of them
 would be a dependency nobody recorded — and a mesh, unlike a datagram, is
-the kind of file that has an author. `examples/make_corpus.rs` builds the
-25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
+the kind of file that has an author. `examples/make_stl_corpus.rs` builds
+the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
 committed seed is built here rather than found. **The blob's 25 seeds
