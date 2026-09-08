@@ -1,10 +1,10 @@
 # renew-mesh
 
 Readers for the mesh files other tools write — STL, PLY and OBJ so far, plus the
-MTL material libraries an OBJ refers to, and a canonical blob for keeping
-what was read without parsing the original again. Bytes in, validated geometry
-out, and nothing else: this crate never opens a file, never takes a path,
-and never reads a clock.
+MTL material libraries an OBJ refers to, the binary glTF container, and a
+canonical blob for keeping what was read without parsing the original again.
+Bytes in, validated geometry out, and nothing else: this crate never opens a
+file, never takes a path, and never reads a clock.
 
 That last promise is why OBJ's `mtllib` is read as a name and not
 followed: a material library is a second file, and naming one is as far
@@ -202,12 +202,51 @@ would be a dependency nobody recorded — and a mesh, unlike a datagram, is
 the kind of file that has an author. `examples/make_stl_corpus.rs` builds
 the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
-`examples/make_mtl_corpus.rs` the 21 MTL ones; between them every
+`examples/make_mtl_corpus.rs` the 21 MTL ones and
+`examples/make_glb_corpus.rs` the 20 container ones; between them every
 committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
 hardest**: an OBJ is what a person exports out of a modelling tool, so
 the obvious way to get one is to take somebody's model.
+
+## The binary glTF container, and the rule that reads backwards
+
+`glb::read` validates the framing of a `.glb` — a twelve-byte header and a
+chain of chunks — and hands back the JSON chunk's bytes and the binary
+chunk's bytes, borrowed, **parsing neither**. Everything that gives those
+bytes meaning is a layer above, and the split is what lets the arithmetic
+be fuzzed on its own, where every length in the file is hostile and none
+of them has been read yet.
+
+It has its own refusal type. `GlbError` is separate from `MeshError`
+because a container fault and a geometry fault send a caller to different
+places, and because folding eleven container-shaped variants into the
+geometry enum would put an arm reading "not a container" in five readers'
+refusal censuses.
+
+**One rule here is the opposite of what every other reader in this crate
+does, and it is the specification's requirement rather than leniency.**
+The blob refuses a presence bit outside its vocabulary, on the argument
+that guessing at an unknown construct means reading arrays at the wrong
+offsets. The container specification says a client *must ignore* chunks
+with unknown types, so that extensions can add their own. So this reader
+**skips a chunk type it does not know and refuses a version it does
+not**: a version is a claim about the whole file, and a chunk type is a
+claim the format has promised is skippable. Skipping is safe only because
+the chunk's own length is validated first — an unknown chunk is stepped
+over, never read.
+
+Two smaller consequences of reading the specification rather than
+assuming: an **empty binary chunk is legal** (a container *should* omit
+one, not *must*), so `Some(&[])` and `None` are different answers; and a
+chunk's padding is counted **inside** its declared length, so a length
+that is not a multiple of four is a writer that forgot to pad.
+
+`Format::Glb` is detected but not yet read for geometry, and
+`Format::read` says exactly that. Until it existed a `.glb` fell through
+to the fallback and was refused as a truncated STL — a confident answer
+about the wrong format.
 
 ## Manifest
 

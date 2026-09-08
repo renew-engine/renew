@@ -40,7 +40,7 @@
 //! reader accepts is a change this module's own tests see.
 
 use crate::error::MeshError;
-use crate::{Mesh, blob, mtl, obj, ply, stl};
+use crate::{Mesh, blob, glb, mtl, obj, ply, stl};
 
 /// A format this crate can identify.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +55,14 @@ pub enum Format {
     Ply,
     /// This crate's own canonical form.
     Blob,
+    /// The binary glTF container.
+    ///
+    /// Identified here and **not yet read for geometry**. That is worth
+    /// the arm on its own: until this existed, a binary glTF fell
+    /// through to the fallback and was refused as a truncated STL, which
+    /// is a confident answer about the wrong format — the same defect
+    /// the PLY magic check was tightened to cure.
+    Glb,
 }
 
 impl Format {
@@ -70,6 +78,7 @@ impl Format {
             Self::Stl => "stl",
             Self::Ply => "ply",
             Self::Blob => "blob",
+            Self::Glb => "glb",
         }
     }
 
@@ -94,6 +103,26 @@ impl Format {
             Self::Stl => Some(stl::read(bytes)),
             Self::Ply => Some(ply::read(bytes)),
             Self::Blob => Some(blob::read(bytes)),
+            // **The same answer whatever the container says, and that is
+            // deliberate.** There is no reader here for the geometry
+            // inside a binary glTF, which is true of a well-formed one
+            // and a corrupt one alike, so validating the framing first
+            // would only let this arm report a fault it is not in a
+            // position to do anything about.
+            //
+            // The first draft did validate, and returned "not this
+            // format" when the framing was wrong — about a file whose
+            // magic had just matched, which is how it reached this arm.
+            // A caller that wants the container's own refusals, with the
+            // chunk and the numbers, calls `glb::read`, which is where
+            // they live.
+            //
+            // `Unsupported` is the refusal for a file this crate cannot
+            // turn into geometry though nothing is wrong with it, which
+            // is exactly the case until a glTF reader exists.
+            Self::Glb => Some(Err(MeshError::Unsupported {
+                wanted: "a reader for the geometry inside a binary glTF",
+            })),
             Self::Mtl => None,
         }
     }
@@ -110,6 +139,12 @@ impl Format {
 pub fn detect(bytes: &[u8]) -> Format {
     if bytes.starts_with(&blob::MAGIC) {
         return Format::Blob;
+    }
+    // Two whole magic numbers, four bytes each and eight, that cannot
+    // collide: `RENEWMS\0` and `glTF`. The order between them is free,
+    // and both come before anything decided by a keyword.
+    if glb::looks_like(bytes) {
+        return Format::Glb;
     }
     if ply::looks_like(bytes) {
         return Format::Ply;

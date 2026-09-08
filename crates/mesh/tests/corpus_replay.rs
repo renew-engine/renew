@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{blob, mtl, obj, ply, stl};
+use renew_mesh::{blob, glb, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -71,8 +71,13 @@ const DISTINCT_OUTCOMES: usize = 5;
 ///   between a refusal and a model that draws nowhere.
 /// * `NoGeometry` is what separates "this file is empty" from "this file
 ///   was truncated to its header", which are different bugs upstream.
-/// * `NotThisFormat` is the answer for bytes that are neither dialect,
-///   and the only seed here that is not valid UTF-8.
+/// * `CountMismatch` is the answer for bytes that are neither dialect,
+///   and the only seed here that is not valid UTF-8. **This bullet named
+///   `NotThisFormat` until somebody checked**, which is a refusal this
+///   reader cannot make: STL has no magic, so "not this format" and "cut
+///   short" are one observation, and the count is what it can honestly
+///   report. The array below always said `CountMismatch`; only the prose
+///   was wrong, which is the kind of drift that survives a green suite.
 /// * `NotANumber` is where this reader's number grammar and the standard
 ///   library's `parse` meet, and the refusal most easily lost by
 ///   delegating one to the other.
@@ -760,6 +765,173 @@ fn the_blob_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn blob_census() {
     let distinct: BTreeSet<Vec<u8>> = blob_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| blob_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+// ---------------------------------------------------------------------
+// The binary glTF container.
+//
+// **The only corpus here whose reader parses nothing.** These seeds
+// exercise arithmetic: a total length, then a chain of chunk lengths
+// each of which decides where the next chunk header is read from. A
+// single wrong number does not produce one bad slice, it moves the
+// cursor, so the seeds that matter are the ones where the chain is
+// plausible for one more link than it should be.
+// ---------------------------------------------------------------------
+
+/// The committed container corpus never shrinks below this many
+/// **distinct** inputs.
+const GLB_LOW_WATER: usize = 18;
+
+/// How many distinct outcomes the container seeds must still reach.
+///
+/// **Measured, not guessed** — `glb_census` below prints it. The floor
+/// sits below the measured number so the fuzzer's own minimisation has
+/// room, and the specific guards that must survive are named separately
+/// underneath, because a count alone cannot notice *which* one went.
+const GLB_DISTINCT_OUTCOMES: usize = 10;
+
+/// Refusals a container seed must provoke, each guarding something a
+/// count cannot.
+///
+/// * `SizeMismatch` is the equality that bounds everything after it. It
+///   is what makes every chunk length below safe to trust against the
+///   file, and a reader that relaxed it to "at least" would accept a
+///   second payload hidden after the first.
+/// * `ChunkOverruns` and `ChunkHeaderTruncated` are the two halves of
+///   the chain going wrong — a chunk claiming more than remains, and a
+///   chunk header that does not fit in what is left. Different faults,
+///   and a corpus that reached only one would leave the other unseeded.
+/// * `ChunkNotAligned` guards the rule that keeps the chain walkable at
+///   all: the padding is inside the length, so a length that is not a
+///   multiple of four is a writer that skipped it.
+/// * `FirstChunkNotJson` is the ordering rule the format is built on,
+///   and the one whose deletion would be least visible — a reader that
+///   hunted for the JSON chunk anywhere would pass every other seed
+///   here.
+const GLB_REQUIRED: [&str; 5] = [
+    "SizeMismatch",
+    "ChunkOverruns",
+    "ChunkHeaderTruncated",
+    "ChunkNotAligned",
+    "FirstChunkNotJson",
+];
+
+fn glb_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/glb_read")
+}
+
+fn glb_corpus() -> Vec<Vec<u8>> {
+    let dir = glb_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the container reader, as a name.
+fn glb_outcome(bytes: &[u8]) -> &'static str {
+    match glb::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => refusal.name(),
+    }
+}
+
+/// Every committed container answers, and what comes back borrows the
+/// bytes that went in.
+///
+/// **The borrow is the claim worth replaying**, because it is the one a
+/// caller relies on and the one no refusal would reveal: a container
+/// that read but handed back a slice reaching past what it validated
+/// would look exactly like a container that read.
+#[test]
+fn every_recorded_container_answers_and_borrows_its_input() {
+    for bytes in glb_corpus() {
+        let Ok(container) = glb::read(&bytes) else {
+            continue;
+        };
+        let base = bytes.as_ptr() as usize;
+        let inside = |part: &[u8]| {
+            let start = part.as_ptr() as usize;
+            start >= base && start.saturating_add(part.len()) <= base.saturating_add(bytes.len())
+        };
+        assert!(inside(container.json), "the JSON chunk borrows the input");
+        assert_eq!(container.json.len() % 4, 0, "a chunk is whole words");
+        if let Some(binary) = container.binary {
+            assert!(inside(binary), "the binary chunk borrows the input");
+            assert_eq!(binary.len() % 4, 0, "a chunk is whole words");
+        }
+    }
+}
+
+/// The container corpus keeps its strength.
+#[test]
+fn the_glb_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = glb_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= GLB_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {GLB_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|bytes| glb_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= GLB_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {GLB_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in GLB_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+
+    // **A seed for each of the two rules that read backwards from every
+    // other reader here.** Both are `Ok`, so the distinct-outcome floor
+    // cannot notice either going missing: deleting the seed that carries
+    // an unknown chunk type would leave this gate green while the skip
+    // it exists to protect went unexercised.
+    let readable: Vec<&Vec<u8>> = distinct
+        .iter()
+        .filter(|bytes| glb::read(bytes).is_ok())
+        .collect();
+    assert!(
+        readable.len() >= 5,
+        "the corpus needs containers that read, or the search starts nowhere"
+    );
+    assert!(
+        readable
+            .iter()
+            .any(|bytes| glb::read(bytes).is_ok_and(|c| c.binary == Some(&[][..]))),
+        "no seed carries an empty binary chunk, which the format permits and this reader \
+         must not fold into `None`"
+    );
+    assert!(
+        readable.iter().any(|bytes| bytes.len() > 60),
+        "no seed carries a chunk past the second, which is where an unknown type is skipped"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn glb_census() {
+    let distinct: BTreeSet<Vec<u8>> = glb_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| glb_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),

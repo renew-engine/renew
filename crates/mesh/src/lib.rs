@@ -58,6 +58,7 @@
 pub mod blob;
 mod error;
 pub mod format;
+pub mod glb;
 pub mod mtl;
 pub mod obj;
 pub mod ply;
@@ -135,6 +136,7 @@ pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), Mesh
 }
 
 pub use error::MeshError;
+pub use glb::{Container, GlbError};
 
 /// Triangles read out of a file, in the order the file stored them.
 ///
