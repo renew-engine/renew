@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{MeshError, stl};
+use renew_mesh::{MeshError, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -119,6 +119,17 @@ fn outcome(bytes: &[u8]) -> &'static str {
             MeshError::NotANumber { .. } => "NotANumber",
             MeshError::NotFinite { .. } => "NotFinite",
             MeshError::NoGeometry => "NoGeometry",
+            // The three the indexed reader adds. **Unreachable from an
+            // STL and named here anyway**, because the enum is closed
+            // and this match has no wildcard: adding them stopped this
+            // file compiling until somebody decided what they mean to
+            // this reader, which is the whole benefit of the enum being
+            // closed. STL repeats every corner, so there is no index to
+            // be out of range; it has no face element to be short of
+            // corners; and it has no schema to be unsupported.
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
         },
     }
 }
@@ -210,6 +221,138 @@ fn census() {
     for bytes in &distinct {
         reached.insert(outcome(bytes));
     }
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The PLY corpus, held to the same claims by the same shape of gate.
+// ---------------------------------------------------------------------
+
+/// The committed PLY corpus never shrinks below this many **distinct**
+/// inputs. Distinct by content, for the reason above.
+const PLY_LOW_WATER: usize = 16;
+
+/// How many distinct outcomes the PLY seeds must still reach.
+///
+/// **Measured, not guessed** — the census below prints it. The floor
+/// sits two under what the committed seeds reach, so `cargo fuzz cmin`
+/// has room to minimise and no more, because slack here is exactly how
+/// many of the reader's refusals may go unseeded unnoticed.
+const PLY_DISTINCT_OUTCOMES: usize = 8;
+
+/// Refusals a PLY seed must provoke, each guarding something a count
+/// cannot.
+///
+/// * `IndexOutOfRange` is **the refusal this format adds over STL** —
+///   the one that separates a mesh from a read past a buffer, and the
+///   one no soup format can even have.
+/// * `Unsupported` is what separates a valid file this reader cannot use
+///   from a malformed one; the caller's next move differs.
+/// * `NotFinite` stops a coordinate nothing downstream can bound
+///   reaching a vertex buffer.
+/// * `TooLarge` is the ceiling on a header's own arithmetic, which is
+///   the number an attacker writes.
+const PLY_REQUIRED: [&str; 4] = ["IndexOutOfRange", "Unsupported", "NotFinite", "TooLarge"];
+
+fn ply_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/ply_read")
+}
+
+fn ply_corpus() -> Vec<Vec<u8>> {
+    let dir = ply_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the PLY reader, as a name.
+///
+/// Matched on the enum with no wildcard, so a refusal added later stops
+/// this file compiling until somebody decides whether a seed reaches it.
+fn ply_outcome(bytes: &[u8]) -> &'static str {
+    match ply::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => match refusal {
+            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+            MeshError::CountMismatch { .. } => "CountMismatch",
+            MeshError::TooLarge { .. } => "TooLarge",
+            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+            MeshError::NotANumber { .. } => "NotANumber",
+            MeshError::NotFinite { .. } => "NotFinite",
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
+            MeshError::NoGeometry => "NoGeometry",
+        },
+    }
+}
+
+/// Every committed PLY input answers, one way or the other.
+#[test]
+fn every_recorded_ply_input_answers() {
+    for bytes in ply_corpus() {
+        let _ = ply::looks_like(&bytes);
+        if let Ok(mesh) = ply::read(&bytes) {
+            assert_eq!(mesh.positions.len() % 3, 0);
+            assert!(!mesh.is_empty());
+            assert!(mesh.normals.is_empty());
+            for value in mesh.positions.iter().flatten() {
+                assert!(value.is_finite());
+            }
+            let _ = mesh.winding_disagreements();
+        }
+    }
+}
+
+/// The PLY corpus keeps its strength.
+#[test]
+fn the_ply_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = ply_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= PLY_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {PLY_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|bytes| ply_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= PLY_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {PLY_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in PLY_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+    assert!(
+        distinct.iter().filter(|b| ply::read(b).is_ok()).count() >= 3,
+        "all three encodings should have a seed that reads, or the corpus tests refusal alone"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn ply_census() {
+    let distinct: BTreeSet<Vec<u8>> = ply_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| ply_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),

@@ -98,3 +98,10 @@ path = "fuzz_targets/stl_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ply_read"
+path = "fuzz_targets/ply_read.rs"
+test = false
+doc = false
+bench = false

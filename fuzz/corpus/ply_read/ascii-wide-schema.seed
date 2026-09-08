@@ -1,0 +1,20 @@
+ply
+format ascii 1.0
+element vertex 4
+property uchar red
+property float x
+property double confidence
+property float y
+property float nx
+property float z
+property uchar alpha
+element face 2
+property list uchar int vertex_indices
+property uchar flags
+end_header
+255 0 0.5 0 0.0 0 128
+255 1 0.5 0 0.0 0 128
+255 1 0.5 1 0.0 0 128
+255 0 0.5 1 0.0 0 128
+3 0 1 2 7
+3 0 2 3 7

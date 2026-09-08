@@ -117,6 +117,51 @@ pub enum MeshError {
         index: u32,
     },
 
+    /// A face naming a vertex the file does not contain.
+    ///
+    /// **The refusal an indexed format needs and a soup format cannot
+    /// have.** STL repeats every corner, so there is no index to be
+    /// wrong; PLY numbers its vertices and its faces point at them, and
+    /// a number one past the end is the difference between a mesh and a
+    /// read past the end of a buffer. Carries the face as well as the
+    /// index, because a file with one bad face and a file whose whole
+    /// index base is off by one are different problems.
+    IndexOutOfRange {
+        /// The vertex number the face asked for.
+        index: u64,
+        /// How many vertices the file actually declared.
+        count: usize,
+        /// Which face asked, zero-based, as the file stores them.
+        face: u32,
+    },
+
+    /// A face with too few corners to be a surface.
+    ///
+    /// Two corners is a line and one is a point; neither covers any
+    /// area, and a reader that silently dropped them would be deciding
+    /// that a file which says it has forty faces really has thirty-nine.
+    NotAFace {
+        /// Which face, zero-based.
+        face: u32,
+        /// How many corners it named.
+        corners: usize,
+    },
+
+    /// The file does not describe something this reader can turn into
+    /// geometry, though it is well-formed.
+    ///
+    /// **Separate from a malformed file, because the caller's next move
+    /// differs.** A PLY holding only a point cloud, or vertices with no
+    /// `x` property, is a valid PLY that this reader cannot use; the
+    /// answer is to convert it or to read it with something else, not to
+    /// re-export it. Names what was looked for so the caller can tell
+    /// which.
+    Unsupported {
+        /// What the reader needed and did not find, in the file's own
+        /// vocabulary, so it can be searched for.
+        wanted: &'static str,
+    },
+
     /// A file that declares no geometry at all.
     ///
     /// **A refusal rather than an empty mesh**, and the distinction is
@@ -161,6 +206,18 @@ impl fmt::Display for MeshError {
                 f,
                 "record {index}: the {field} is not a finite number, and a mesh carrying one is a \
                  mesh nothing downstream can bound"
+            ),
+            Self::IndexOutOfRange { index, count, face } => write!(
+                f,
+                "face {face} names vertex {index} and the file declares {count}"
+            ),
+            Self::NotAFace { face, corners } => write!(
+                f,
+                "face {face} names {corners} corners, and a surface needs three"
+            ),
+            Self::Unsupported { wanted } => write!(
+                f,
+                "this file is well-formed and this reader cannot use it: no `{wanted}`"
             ),
             Self::NoGeometry => write!(
                 f,
@@ -260,6 +317,16 @@ mod tests {
                 field: "position",
                 index: 12,
             },
+            MeshError::IndexOutOfRange {
+                index: 7,
+                count: 4,
+                face: 1,
+            },
+            MeshError::NotAFace {
+                face: 2,
+                corners: 2,
+            },
+            MeshError::Unsupported { wanted: "vertex" },
             MeshError::NoGeometry,
         ];
 
@@ -275,6 +342,9 @@ mod tests {
                 MeshError::ExpectedKeyword { .. } => vec!["facet", "wombat", "7"],
                 MeshError::NotANumber { .. } => vec!["1.0.0", "9"],
                 MeshError::NotFinite { .. } => vec!["position", "12"],
+                MeshError::IndexOutOfRange { .. } => vec!["7", "4", "1"],
+                MeshError::NotAFace { .. } => vec!["2", "2"],
+                MeshError::Unsupported { .. } => vec!["vertex"],
                 MeshError::NoGeometry => vec!["no geometry"],
             };
             for number in numbers {

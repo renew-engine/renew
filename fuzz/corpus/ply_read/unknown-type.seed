@@ -1,0 +1,5 @@
+ply
+format ascii 1.0
+element vertex 1
+property quadruple x
+end_header

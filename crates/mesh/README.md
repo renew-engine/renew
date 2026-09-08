@@ -1,6 +1,6 @@
 # renew-mesh
 
-Readers for the mesh files other tools write. Bytes in, validated
+Readers for the mesh files other tools write — STL and PLY so far. Bytes in, validated
 geometry out, and nothing else: this crate never opens a file, never
 takes a path, and never reads a clock.
 
@@ -86,6 +86,44 @@ the two.
   agreed meaning: some tools write zero, some a colour in one of two
   incompatible packings, some uninitialised memory. Reading it would
   mean choosing one of those.
+
+## PLY, and what a self-describing format costs
+
+A PLY opens with an ASCII header that is a **schema**: elements, how
+many rows each has, what columns those rows carry and how wide each
+column is. The body is rows against it, in ASCII or in binary of either
+byte order. That is what makes the format worth reading — a file
+describes its own layout, so a reader that follows the header reads
+files nobody anticipated — and it is what makes it worth being careful
+about, because every one of those numbers is written by whoever wrote
+the file and they multiply into an offset.
+
+So the ceilings are on the header rather than on the body: a bound on
+how many elements and properties a schema may declare, and on how many
+corners a face may name. Without them a twenty-byte header asks for four
+billion of either. The binary cursor bounds-checks every read as it
+takes it and never computes an offset ahead.
+
+Coordinates are found **by name**, not by position, and everything else
+in the file costs its own width in bytes and nothing more. Colours,
+confidence values, per-vertex normals and elements this reader has never
+heard of are skipped rather than parsed. Files from scanners look like
+that; files from modellers do not; a reader that assumed column order
+would work on half the PLY files in the world.
+
+`IndexOutOfRange` is **the refusal this format adds over STL**, and it
+is the one that matters: STL repeats every corner, so it has no index to
+be wrong, while PLY numbers its vertices and a face pointing one past
+the end is the difference between a mesh and a read past a buffer.
+
+PLY does have a magic word, so `ply::looks_like` can say "not mine"
+where the STL reader cannot.
+
+Faces with more than three corners are fanned from the first, which is
+correct for a convex polygon and wrong for a concave one. Real files are
+overwhelmingly triangles and quads, both convex; anything more general
+needs an ear-clipping pass and a decision about self-intersecting faces,
+which is more than a reader should make alone.
 
 ## Testing
 
