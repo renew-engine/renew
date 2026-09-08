@@ -6,7 +6,11 @@ never takes a path, and never reads a clock.
 
 That last promise is why OBJ's `mtllib` is read as a name and not
 followed: a material library is a second file, and naming one is as far
-as a reader that cannot open anything is able to go.
+as a reader that cannot open anything is able to go. `obj::materials`
+hands those names back, as an entry point of its own rather than a
+second return value from `obj::read` — the two questions have different
+callers, and one of them wants to know what a file depends on before
+deciding whether to load it at all.
 
 ```rust
 use renew_mesh::stl;

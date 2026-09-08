@@ -32,6 +32,24 @@ fuzz_target!(|data: &[u8]| {
     // it is a public function and a caller may hand it anything.
     let _ = obj::looks_like(data);
 
+    // A second public entry point taking the same untrusted bytes. It
+    // answers for every one of them too, and what it returns is bounded
+    // by what it was given: every name is a run copied out of the input,
+    // so a file cannot ask for more memory than it spends.
+    if let Ok(found) = obj::materials(data) {
+        let returned: usize = found
+            .libraries
+            .iter()
+            .chain(&found.used)
+            .map(String::len)
+            .sum();
+        assert!(
+            returned <= data.len(),
+            "{returned} bytes of names came out of {} bytes of file",
+            data.len()
+        );
+    }
+
     let Ok(mesh) = obj::read(data) else {
         // A refusal is an answer. Which refusal is the suite's business
         // beside the crate; that the call returned at all is this

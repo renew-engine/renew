@@ -350,6 +350,122 @@ fn every_byte_string_gets_an_answer() {
     }
 }
 
+/// **The material names come back in the order the file wrote them,
+/// deduplicated, and the geometry is not needed to get them.**
+///
+/// Probed by sorting the output: red, a later `mtllib` overriding an
+/// earlier one loses the ordering the format gives that meaning.
+#[test]
+fn the_material_names_come_back_in_the_order_the_file_wrote_them() {
+    let scene = "mtllib second.mtl\n\
+                 mtllib first.mtl third.mtl\n\
+                 mtllib second.mtl\n\
+                 usemtl steel\n\
+                 v 0 0 0\nv 1 0 0\nv 0 1 0\n\
+                 f 1 2 3\n\
+                 usemtl brass\n\
+                 usemtl steel\n\
+                 f 1 2 3\n";
+    let found = obj::materials(scene.as_bytes()).expect("an ordinary export");
+    assert_eq!(
+        found.libraries,
+        vec!["second.mtl", "first.mtl", "third.mtl"],
+        "one `mtllib` line may name several, the order says which wins, and a library named twice is one library"
+    );
+    assert_eq!(
+        found.used,
+        vec!["steel", "brass"],
+        "`steel` is used twice and named once"
+    );
+}
+
+/// **A file with no materials names none, which is an answer.**
+///
+/// Not a refusal: most OBJ files in the world carry no material at all,
+/// and a caller asking what a file needs is entitled to be told
+/// "nothing".
+#[test]
+fn a_file_with_no_materials_names_none() {
+    let bare = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    let found = obj::materials(bare.as_bytes()).expect("naming nothing is legal");
+    assert!(found.libraries.is_empty());
+    assert!(found.used.is_empty());
+}
+
+/// **A bare `usemtl` names nothing rather than an empty string.**
+///
+/// It is how a writer says "no material from here on", and an empty name
+/// in the list would be a lookup nothing could ever match.
+#[test]
+fn a_usemtl_with_no_name_contributes_nothing() {
+    let cleared = "usemtl steel\nusemtl\nusemtl brass\n";
+    let found = obj::materials(cleared.as_bytes()).expect("a bare `usemtl` is legal");
+    assert_eq!(found.used, vec!["steel", "brass"]);
+}
+
+/// **The material list is readable from a file whose geometry is not.**
+///
+/// This is the whole reason it is a separate entry point: deciding
+/// whether to load a file should not require parsing it. A file with a
+/// broken face still says what it depends on.
+///
+/// Probed by having `materials` call `read` first: red, a file that
+/// cannot be turned into triangles stops being able to say what it
+/// wanted.
+#[test]
+fn the_materials_of_a_file_that_cannot_be_read_are_still_readable() {
+    let broken = "mtllib scene.mtl\nusemtl steel\nv 0 0 0\nf 1 2 9\n";
+    assert!(
+        matches!(
+            refusal(broken.as_bytes()),
+            MeshError::IndexOutOfRange { .. }
+        ),
+        "the geometry really is broken"
+    );
+    let found = obj::materials(broken.as_bytes()).expect("and the dependencies are still named");
+    assert_eq!(found.libraries, vec!["scene.mtl"]);
+    assert_eq!(found.used, vec!["steel"]);
+}
+
+/// **Bytes that are not text are refused here too.**
+#[test]
+fn materials_of_something_that_is_not_text_are_refused() {
+    let mut bytes = b"mtllib scene.mtl\n".to_vec();
+    bytes.extend_from_slice(&[0xFF, 0xFE]);
+    let Err(MeshError::ExpectedKeyword { expected, .. }) = obj::materials(&bytes) else {
+        panic!("a file that is not text is not this format");
+    };
+    assert_eq!(expected, "text");
+}
+
+/// **What comes back is bounded by what went in.**
+///
+/// The documented reason there is no ceiling on the name list: every
+/// name is bytes copied out of the input, so a file cannot ask for more
+/// memory than it spends. This walks a file that is nothing but distinct
+/// material names and checks the claim rather than trusting it.
+#[test]
+fn the_names_returned_never_outweigh_the_file_they_came_from() {
+    let mut source = String::new();
+    for index in 0..500 {
+        source.push_str("usemtl m");
+        source.push_str(&index.to_string());
+        source.push('\n');
+    }
+    let found = obj::materials(source.as_bytes()).expect("names and nothing else");
+    assert_eq!(
+        found.used.len(),
+        500,
+        "each name is distinct and each is kept"
+    );
+    let returned: usize = found.used.iter().map(String::len).sum();
+    assert!(
+        returned < source.len(),
+        "the names returned ({returned} bytes) came out of the file ({} bytes)",
+        source.len()
+    );
+}
+
 /// **Every refusal this reader can make is reachable, and each by a file
 /// in this suite; every one it cannot make says why.**
 ///

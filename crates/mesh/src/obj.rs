@@ -49,12 +49,13 @@
 //! crate documentation for why that is a promise rather than an
 //! omission.
 //!
-//! **The names are not returned anywhere yet.** When they are, it will be
-//! through an entry point of their own rather than as a second return
-//! value here: a caller that wants triangles should not have to receive
-//! a list of filenames it has no intention of resolving, and a caller
-//! that wants the material list should not have to parse the geometry to
-//! get it.
+//! **The names come back from [`materials`], an entry point of its own.**
+//! Not a second return value here: a caller that wants triangles should
+//! not have to receive a list of filenames it has no intention of
+//! resolving, and a caller that wants the material list should not have
+//! to parse the geometry to get it.
+
+use std::collections::BTreeSet;
 
 use crate::error::{MeshError, quoted};
 use crate::{Mesh, refuse_over_ceiling};
@@ -145,6 +146,96 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
         corner_normals: built.corner_normals,
         corner_texcoords: built.corner_texcoords,
     })
+}
+
+/// The material references an OBJ makes, without its geometry.
+///
+/// Names exactly as the file wrote them. Resolving a library name to a
+/// file is the caller's job and cannot be this crate's: see [`materials`]
+/// for why that is a promise rather than a gap.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Materials {
+    /// The library files the OBJ asks for, in first-appearance order.
+    ///
+    /// One `mtllib` line may name several, and the format says a later
+    /// definition wins over an earlier one — which is why the order is
+    /// kept rather than sorted.
+    pub libraries: Vec<String>,
+    /// The material names the file applies to its faces, in
+    /// first-appearance order.
+    ///
+    /// **Which faces use which is not here.** That is a fact about the
+    /// geometry, and a caller asking only "what does this file need"
+    /// should not have to read the geometry to be told.
+    pub used: Vec<String>,
+}
+
+/// Read the material names an OBJ refers to, without reading its
+/// geometry.
+///
+/// **An entry point of its own, rather than a second return value from
+/// [`read`].** The two questions have different callers: one wants
+/// triangles and has no interest in a list of filenames it will not
+/// resolve, and the other wants to know what a file depends on before
+/// deciding whether to load it at all. Answering both from one call
+/// would make each pay for the other.
+///
+/// **This crate cannot follow a `mtllib` and does not pretend to.** A
+/// material library is a second file; a reader that never opens one can
+/// only hand back the name. That is the same promise the crate makes
+/// everywhere else, and here it is visible in the return type.
+///
+/// # On bounds
+///
+/// There is no ceiling on how many names come back, and that is
+/// deliberate rather than an oversight. Every name is a run of bytes
+/// copied out of the input, so the total returned is bounded by the
+/// input's own length: a file cannot ask for more memory than it spends.
+/// The ceilings elsewhere in this crate exist where a small number in a
+/// file multiplies into a large allocation, and nothing here multiplies.
+///
+/// # Errors
+///
+/// Returns [`MeshError::ExpectedKeyword`] when the bytes are not text.
+/// Nothing else: a file naming no materials names none, which is an
+/// answer rather than a refusal, and a library this crate cannot open is
+/// not a library this crate can complain about.
+pub fn materials(bytes: &[u8]) -> Result<Materials, MeshError> {
+    let text = core::str::from_utf8(bytes).map_err(|_| MeshError::ExpectedKeyword {
+        expected: "text",
+        found: String::new(),
+        line: 1,
+    })?;
+
+    let mut found = Materials::default();
+    let mut seen_libraries = BTreeSet::new();
+    let mut seen_used = BTreeSet::new();
+
+    for source in text.lines() {
+        let mut words = source.split_ascii_whitespace();
+        match words.next() {
+            // A `mtllib` line may name several libraries at once.
+            Some("mtllib") => {
+                for name in words {
+                    if seen_libraries.insert(name.to_owned()) {
+                        found.libraries.push(name.to_owned());
+                    }
+                }
+            }
+            // `usemtl` names one. A bare `usemtl` with nothing after it
+            // is how a writer says "no material from here on", which
+            // names nothing and so contributes nothing.
+            Some("usemtl") => {
+                if let Some(name) = words.next()
+                    && seen_used.insert(name.to_owned())
+                {
+                    found.used.push(name.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(found)
 }
 
 /// The three indexed streams a file declares, in declaration order.

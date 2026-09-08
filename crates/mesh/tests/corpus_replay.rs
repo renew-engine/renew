@@ -445,6 +445,8 @@ fn obj_outcome(bytes: &[u8]) -> &'static str {
 fn every_recorded_obj_input_answers() {
     for bytes in obj_corpus() {
         let _ = obj::looks_like(&bytes);
+        // The other public entry point, asked of the same bytes.
+        let _ = obj::materials(&bytes);
         if let Ok(mesh) = obj::read(&bytes) {
             assert_eq!(mesh.positions.len() % 3, 0);
             assert!(!mesh.is_empty());
