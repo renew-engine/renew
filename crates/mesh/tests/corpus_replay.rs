@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use renew_mesh::{MeshError, obj, ply, stl};
+use renew_mesh::{MeshError, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -507,6 +507,162 @@ fn the_obj_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn obj_census() {
     let distinct: BTreeSet<Vec<u8>> = obj_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| obj_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The MTL corpus, held to the same claims by the same shape of gate.
+// ---------------------------------------------------------------------
+
+/// The committed MTL corpus never shrinks below this many **distinct**
+/// inputs. Distinct by content, for the reason above.
+const MTL_LOW_WATER: usize = 13;
+
+/// How many distinct outcomes the MTL seeds must still reach.
+///
+/// **Measured, not guessed** — `mtl_census` below prints it, and the
+/// committed seeds reach five: `Ok` and every one of the four refusals
+/// this reader can make.
+///
+/// **The slack here is one seed rather than the two the gates above
+/// take, and the reason is arithmetic.** Those readers reach eight and
+/// nine outcomes, where two is a quarter of the range; this one reaches
+/// five, where two would be a forty-per-cent hole in a gate whose whole
+/// job is to notice holes. A reader with few answers needs a tighter
+/// floor, not the same one.
+const MTL_DISTINCT_OUTCOMES: usize = 4;
+
+/// Refusals an MTL seed must provoke.
+///
+/// This reader has only four it can make at all, which is itself the
+/// point: a material library indexes nothing, declares no counts and
+/// multiplies nothing, so the ways it can be wrong are few and each one
+/// carries weight.
+///
+/// * `ExpectedKeyword` is the property stated before any `newmtl` — a
+///   file whose first material is missing rather than a value with
+///   nowhere to go. It is also what bytes that are not text get.
+/// * `Unsupported` is the library that declares no material: well-formed
+///   and unusable, where the caller's next move is to find the right
+///   file rather than re-export this one.
+/// * `NotFinite` stops a factor nothing downstream can bound reaching a
+///   renderer.
+/// * `NotANumber` is the one a mutator finds by accident and the one
+///   that would otherwise be a silent zero.
+const MTL_REQUIRED: [&str; 4] = ["ExpectedKeyword", "Unsupported", "NotFinite", "NotANumber"];
+
+fn mtl_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/mtl_read")
+}
+
+fn mtl_corpus() -> Vec<Vec<u8>> {
+    let dir = mtl_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a byte string gets from the MTL reader, as a name.
+///
+/// Matched on the enum with no wildcard, so a refusal added later stops
+/// this file compiling until somebody decides whether a seed reaches it.
+fn mtl_outcome(bytes: &[u8]) -> &'static str {
+    match mtl::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => match refusal {
+            MeshError::TooShortForHeader { .. } => "TooShortForHeader",
+            MeshError::CountMismatch { .. } => "CountMismatch",
+            MeshError::TooLarge { .. } => "TooLarge",
+            MeshError::ExpectedKeyword { .. } => "ExpectedKeyword",
+            MeshError::NotANumber { .. } => "NotANumber",
+            MeshError::NotFinite { .. } => "NotFinite",
+            MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
+            MeshError::NotAFace { .. } => "NotAFace",
+            MeshError::Unsupported { .. } => "Unsupported",
+            MeshError::NoGeometry => "NoGeometry",
+        },
+    }
+}
+
+/// Every committed MTL input answers, and every library that comes back
+/// holds what its type promises.
+#[test]
+fn every_recorded_mtl_input_answers() {
+    for bytes in mtl_corpus() {
+        if let Ok(library) = mtl::read(&bytes) {
+            assert!(!library.is_empty());
+            for material in &library {
+                for colour in [
+                    material.ambient,
+                    material.diffuse,
+                    material.specular,
+                    material.emissive,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for value in colour {
+                        assert!(value.is_finite());
+                    }
+                }
+                for value in [material.shininess, material.opacity].into_iter().flatten() {
+                    assert!(value.is_finite());
+                }
+            }
+        }
+    }
+}
+
+/// The MTL corpus keeps its strength.
+#[test]
+fn the_mtl_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = mtl_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= MTL_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {MTL_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|bytes| mtl_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= MTL_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {MTL_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in MTL_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a guard nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+    assert!(
+        distinct.iter().filter(|b| mtl::read(b).is_ok()).count() >= 6,
+        "the corpus needs files that read, or it tests refusal alone"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn mtl_census() {
+    let distinct: BTreeSet<Vec<u8>> = mtl_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| mtl_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),

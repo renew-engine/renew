@@ -112,3 +112,10 @@ path = "fuzz_targets/obj_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mtl_read"
+path = "fuzz_targets/mtl_read.rs"
+test = false
+doc = false
+bench = false

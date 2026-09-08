@@ -1,0 +1,6 @@
+newmtl a
+Kd 1 0 0
+newmtl b
+Kd 0 1 0
+newmtl c
+Kd 0 0 1

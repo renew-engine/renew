@@ -8,7 +8,7 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Eleven readers in this tree already take bytes nobody here wrote. Their
+Twelve readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one.
 
@@ -60,8 +60,17 @@ is dead code that reads like safety.
 | STL | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `stl_read` | 18 |
 | PLY | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `ply_read` | 16 |
 | OBJ | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `obj_read` | 16 |
+| MTL | `MeshError` | `crates/mesh/src/error.rs` | 4 of the 11 | `mtl_read` | 13 |
 
-**The three mesh readers share one error type, and each names in a test
+**The MTL row is the shortest in this table, and that is the honest
+number rather than a gap.** A material library indexes nothing, declares
+no counts and multiplies nothing, so four refusals is the whole of what
+can go wrong in it, and its census writes a sentence for each of the
+seven it cannot reach. **A reader with few answers needs a tighter
+corpus floor, not the same one**, which is why its gate takes one seed of
+slack where the others take two.
+
+**The four mesh readers share one error type, and each names in a test
 which variants it cannot reach** — STL has no index to be out of range,
 PLY has no keyword to be missing, OBJ has no header to be too short for
 — so the shared type costs no reader the ability to say its own list is
