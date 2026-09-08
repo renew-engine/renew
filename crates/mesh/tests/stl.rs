@@ -180,6 +180,9 @@ fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
         MeshError::IndexOutOfRange { .. } => {
             Some("this format repeats every corner, so it has no index to be out of range")
         }
+        MeshError::IndexZero { .. } => {
+            Some("this format repeats every corner, so it has no index to be zero")
+        }
         MeshError::NotAFace { .. } => {
             Some("this format has no face element whose corner count could be short")
         }

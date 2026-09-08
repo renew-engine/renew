@@ -131,6 +131,7 @@ fn outcome(bytes: &[u8]) -> &'static str {
             // be out of range; it has no face element to be short of
             // corners; and it has no schema to be unsupported.
             MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
             MeshError::NotAFace { .. } => "NotAFace",
             MeshError::Unsupported { .. } => "Unsupported",
         },
@@ -296,6 +297,7 @@ fn ply_outcome(bytes: &[u8]) -> &'static str {
             MeshError::NotANumber { .. } => "NotANumber",
             MeshError::NotFinite { .. } => "NotFinite",
             MeshError::IndexOutOfRange { .. } => "IndexOutOfRange",
+            MeshError::IndexZero { .. } => "IndexZero",
             MeshError::NotAFace { .. } => "NotAFace",
             MeshError::Unsupported { .. } => "Unsupported",
             MeshError::NoGeometry => "NoGeometry",

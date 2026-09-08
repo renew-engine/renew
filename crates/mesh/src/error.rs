@@ -138,12 +138,31 @@ pub enum MeshError {
     /// index, because a file with one bad face and a file whose whole
     /// index base is off by one are different problems.
     IndexOutOfRange {
-        /// The vertex number the face asked for.
-        index: u64,
+        /// The vertex number the face asked for, as the file spelled it.
+        ///
+        /// **Signed, because one of these formats has signed indices.**
+        /// OBJ lets a face count backwards from what has been declared
+        /// so far, so `-5` in a file with three vertices is a real thing
+        /// a writer emits and a caller needs to see spelled the way the
+        /// file spelled it. Reporting its magnitude would send someone
+        /// looking for a fifth vertex that was never the subject.
+        index: i64,
         /// How many vertices the file actually declared.
         count: usize,
         /// Which face asked, zero-based, as the file stores them.
         face: u32,
+    },
+
+    /// An index of zero where the format numbers from one.
+    ///
+    /// **Separate from an index out of range, because it is usually a
+    /// different bug.** Out of range is a writer that computed the wrong
+    /// number; zero is very often a field nobody filled in, a default
+    /// that escaped, or a base that was never added. Telling them apart
+    /// points at different code.
+    IndexZero {
+        /// Which line asked, one-based, as an editor counts.
+        line: u32,
     },
 
     /// A face with too few corners to be a surface.
@@ -221,6 +240,10 @@ impl fmt::Display for MeshError {
             Self::IndexOutOfRange { index, count, face } => write!(
                 f,
                 "face {face} names vertex {index} and the file declares {count}"
+            ),
+            Self::IndexZero { line } => write!(
+                f,
+                "line {line} names vertex 0, and this format numbers its vertices from one"
             ),
             Self::NotAFace { face, corners } => write!(
                 f,
@@ -363,6 +386,7 @@ mod tests {
                 count: 4,
                 face: 1,
             },
+            MeshError::IndexZero { line: 11 },
             MeshError::NotAFace {
                 face: 2,
                 corners: 2,
@@ -384,6 +408,7 @@ mod tests {
                 MeshError::NotANumber { .. } => vec!["1.0.0", "9"],
                 MeshError::NotFinite { .. } => vec!["position", "12"],
                 MeshError::IndexOutOfRange { .. } => vec!["7", "4", "1"],
+                MeshError::IndexZero { .. } => vec!["11", "0"],
                 MeshError::NotAFace { .. } => vec!["2", "2"],
                 MeshError::Unsupported { .. } => vec!["vertex"],
                 MeshError::NoGeometry => vec!["no geometry"],

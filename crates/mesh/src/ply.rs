@@ -58,6 +58,7 @@
 
 use crate::Mesh;
 use crate::error::{MeshError, quoted};
+use crate::refuse_over_ceiling;
 
 /// How the body after the header is written.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -527,58 +528,6 @@ fn face_list(element: &Element) -> Result<usize, MeshError> {
         })
 }
 
-/// The most geometry this reader will build out of one file, in bytes.
-///
-/// **A policy ceiling, not a representation limit, and the two are not
-/// the same refusal.** A representation limit is reached only after the
-/// allocation has been attempted; this one is a refusal that costs
-/// nothing. It is the same reasoning the image decoder gives for its own
-/// two hundred and fifty-six megabytes, and this is the same number, for
-/// the same reason: far past any model a game loads and far short of
-/// anything that hurts.
-///
-/// **The ceilings on the factors were not enough, which is the whole
-/// point of this one.** `MAX_FACE_CORNERS` bounds a single face and
-/// `refuse_impossible_count` bounds a row count against the bytes that
-/// could supply it $M and neither bounds their product. A fan turns a
-/// face of `n` corners into `(n - 2) * 3` positions, so a file of a
-/// megabyte, every byte of it legitimate, built fifty-eight megabytes of
-/// geometry. Linear in the input and therefore inside the letter of the
-/// rule that a refused input costs no more than its own length buys; and
-/// a caller adopting the image decoder's own file bound would still have
-/// been handed twelve gigabytes from one mesh. Amplification is the
-/// danger, not allocation.
-const MAX_GEOMETRY_BYTES: usize = 256 << 20;
-
-/// How many positions that ceiling allows.
-const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
-
-/// Refuse before the geometry arrives rather than after it.
-///
-/// `have` is what has been emitted, `adding` what the next face would
-/// add. The sum is what the ceiling is on: a cap on one face's corners
-/// and a cap on the row count bound neither their product, which is the
-/// whole reason this exists.
-///
-/// **Split out of the loop so it can be proved without allocating the
-/// quarter-gigabyte it exists to prevent.** Reaching the branch in place
-/// takes a thirty-megabyte input that first emits every position under
-/// the ceiling; the arithmetic is the same either way, and the test that
-/// pins it is beside the constant rather than inside a fixture nobody
-/// would run twice.
-fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), MeshError> {
-    let total = have.saturating_add(adding);
-    if total > MAX_POSITIONS {
-        return Err(MeshError::TooLarge {
-            field: "total geometry",
-            // Reported in bytes, which is the unit the ceiling is
-            // written in and the one a caller can act on.
-            value: (total.saturating_mul(core::mem::size_of::<[f32; 3]>())) as u64,
-        });
-    }
-    Ok(())
-}
-
 /// Turn vertices and faces into triangles.
 ///
 /// The one place the two halves meet, so the index check that separates
@@ -598,7 +547,10 @@ fn assemble(vertices: &[[f32; 3]], faces: &[Vec<u64>]) -> Result<Mesh, MeshError
             let at = usize::try_from(*corner).unwrap_or(usize::MAX);
             if at >= vertices.len() {
                 return Err(MeshError::IndexOutOfRange {
-                    index: *corner,
+                    // PLY's indices are unsigned; the refusal is shared
+                    // with a format whose are not, and every value this
+                    // reader can produce fits.
+                    index: i64::try_from(*corner).unwrap_or(i64::MAX),
                     count: vertices.len(),
                     face,
                 });
@@ -897,42 +849,5 @@ impl Cursor<'_> {
             ])),
             Scalar::F64 => f64::from_le_bytes(buffer),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_POSITIONS, MeshError, refuse_over_ceiling};
-
-    /// **The ceiling is on the product, and it refuses at the boundary
-    /// rather than past it.**
-    ///
-    /// Probed by deleting the check: red, the over-ceiling case is
-    /// accepted. Probed by widening `>` to `>=`: red, the exactly-full
-    /// case is refused when it fits.
-    #[test]
-    fn the_geometry_ceiling_counts_what_is_there_and_what_is_coming() {
-        refuse_over_ceiling(MAX_POSITIONS - 3, 3)
-            .expect("a mesh that exactly fills the ceiling is not over it");
-
-        // Compared whole rather than destructured: a `let ... else`
-        // panic is a line only a failing run reaches, and this test is
-        // measured like the code beside it.
-        assert_eq!(
-            refuse_over_ceiling(MAX_POSITIONS - 3, 6),
-            Err(MeshError::TooLarge {
-                field: "total geometry",
-                // Bytes, not positions: the unit the ceiling is written
-                // in and the one a caller can act on.
-                value: (MAX_POSITIONS + 3) as u64 * 12,
-            }),
-            "three positions past the ceiling is over it, and it says so by name"
-        );
-
-        // Neither factor alone reaches it, which is the case a ceiling
-        // on the factors would miss.
-        refuse_over_ceiling(MAX_POSITIONS - 1, 1).expect("still inside");
-        refuse_over_ceiling(usize::MAX, 1)
-            .expect_err("the sum saturates rather than wrapping under the ceiling");
     }
 }
