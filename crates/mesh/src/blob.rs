@@ -89,8 +89,27 @@ pub const MAGIC: [u8; 8] = *b"RENEWMS\0";
 /// back on and costs nothing.
 const VERSION: u32 = 1;
 
+/// Bytes one header field occupies. All three are `u32`.
+const WORD: usize = 4;
+
+/// Where the version sits: straight after the magic.
+const OFF_VERSION: usize = MAGIC.len();
+/// Where the corner count sits.
+const OFF_CORNERS: usize = OFF_VERSION + WORD;
+/// Where the presence bits sit.
+const OFF_PRESENT: usize = OFF_CORNERS + WORD;
+
 /// Magic, version, corner count and the presence bits.
-const HEADER: usize = 20;
+///
+/// **A running sum rather than a literal**, and the reader slices at the
+/// names rather than at numbers. This was `20` with the fields read at
+/// `8`, `12` and `16` written out three times: four constants that have
+/// to agree, expressed so that nothing makes them, and the peer format
+/// in `crates/asset/src/layout.rs` had already learned to do it the
+/// other way. A field inserted or widened here now moves everything
+/// after it by construction, and the test below asserts the arithmetic
+/// rather than leaving two files to be edited together.
+const HEADER: usize = OFF_PRESENT + WORD;
 
 /// A face normal is stated for the whole triangle.
 const HAS_FACE_NORMALS: u32 = 1 << 0;
@@ -281,13 +300,13 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
         });
     }
 
-    let version = u32_at(bytes, 8);
+    let version = u32_at(bytes, OFF_VERSION);
     if version != VERSION {
         return Err(MeshError::Unsupported {
             wanted: "a blob of version 1",
         });
     }
-    let present = u32_at(bytes, 16);
+    let present = u32_at(bytes, OFF_PRESENT);
     if present & !KNOWN_FLAGS != 0 {
         // A bit outside this version's vocabulary is a blob a later
         // build wrote, which is well-formed and unusable here rather
@@ -297,7 +316,7 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
         });
     }
 
-    let corners = usize::try_from(u32_at(bytes, 12)).unwrap_or(usize::MAX);
+    let corners = usize::try_from(u32_at(bytes, OFF_CORNERS)).unwrap_or(usize::MAX);
     if corners == 0 {
         return Err(MeshError::NoGeometry);
     }
@@ -437,4 +456,36 @@ fn pairs(
         *at += VEC2;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEADER, MAGIC, OFF_CORNERS, OFF_PRESENT, OFF_VERSION, WORD};
+
+    /// The header offsets are the running sum of the field widths.
+    ///
+    /// Written as arithmetic rather than as repeated literals, because
+    /// constants of this kind get edited one at a time. The peer format
+    /// carries the same test for the same reason.
+    #[test]
+    fn the_header_offsets_follow_the_field_widths() {
+        assert_eq!(OFF_VERSION, MAGIC.len());
+        assert_eq!(OFF_CORNERS, OFF_VERSION + WORD);
+        assert_eq!(OFF_PRESENT, OFF_CORNERS + WORD);
+        assert_eq!(HEADER, OFF_PRESENT + WORD);
+    }
+
+    /// **And the arithmetic still has to come out where the format is.**
+    ///
+    /// The check above says the offsets are consistent with each other,
+    /// which a header of any size would satisfy. This one says which
+    /// header: twenty bytes, the number already written into every
+    /// committed blob and every seed. Deriving the offsets made them
+    /// safe to change, and that is exactly why the total now needs
+    /// pinning — an accidental change would otherwise be silent here and
+    /// loud only in a file nobody can read.
+    #[test]
+    fn the_header_is_the_twenty_bytes_the_format_says_it_is() {
+        assert_eq!(HEADER, 20);
+    }
 }
