@@ -523,6 +523,11 @@ fn blob_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
         | MeshError::NotAFace { .. }
         | MeshError::Unsupported { .. }
         | MeshError::NoGeometry => None,
+        MeshError::StreamLengthMismatch { .. } => Some(
+            "the optional arrays are flagged rather than counted, so their
+            lengths are derived from the corner count rather than declared
+            beside it",
+        ),
         MeshError::NotANumber { .. } => {
             Some("nothing here is text, so there is no word that failed to be a number")
         }

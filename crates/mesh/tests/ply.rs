@@ -965,6 +965,9 @@ fn crowded_schema() -> String {
 /// a failure prints why this format was thought unable to get here.
 fn ply_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::StreamLengthMismatch { .. } => Some(
+            "a schema names one element per stream and the count comes from that element,\n             so two streams cannot claim different lengths for the same vertices",
+        ),
         // Reachable, and each is provoked by a file in this suite.
         MeshError::NotThisFormat { .. }
         | MeshError::CountMismatch { .. }

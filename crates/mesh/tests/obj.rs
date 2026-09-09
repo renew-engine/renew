@@ -563,6 +563,9 @@ fn the_names_returned_never_outweigh_the_file_they_came_from() {
 /// the STL reader that no input on any target could produce.
 fn obj_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::StreamLengthMismatch { .. } => Some(
+            "each face names its own attribute indices, so a normal this file does not have\n             is an index out of range rather than a stream that came up short",
+        ),
         MeshError::NotThisFormat { .. } => Some(
             "this format has no signature to fail: a file is offered to this reader by detection rather than claiming to be one, and a line it cannot read is refused as a bad line rather than as somebody else's format",
         ),
