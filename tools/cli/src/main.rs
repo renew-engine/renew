@@ -66,6 +66,7 @@ fn run(invocation: &Invocation) -> ExitCode {
         Command::AssetImport => run_asset_import(
             invocation.from.as_deref().unwrap_or_default(),
             invocation.out.as_deref().unwrap_or_default(),
+            invocation.images.as_deref(),
             invocation.json,
         ),
         // Parsing guarantees both paths, as it does for the pack.
@@ -514,7 +515,215 @@ fn names_one_file(from: &Path, out: &Path) -> bool {
         .is_ok_and(|resolved| resolved.join(name) == source)
 }
 
-fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
+/// A refusal on its way out of the image-writing helpers.
+///
+/// **Carried rather than emitted**, because the helpers do not know
+/// whether the caller asked for JSON and the one place that does is
+/// already written.
+struct ImportFailure {
+    message: String,
+    refusal: Option<&'static str>,
+}
+
+/// The file extension a media type implies, if this tool can name one.
+///
+/// **The one judgement this command makes about a media type**, and it
+/// is a judgement about a *name*, not about the bytes: nothing here
+/// decodes anything, and a type this returns `None` for may be perfectly
+/// readable by something else. The reader below reports a type without
+/// weighing it, and that stays true -- this weighs it only because a
+/// file on disk has to be called something, and calling a JPEG `.png`
+/// would be this tool inventing a fact the document never stated.
+///
+/// The two named are the two the format's own schema names. A third is
+/// added the day a document carries one and a caller needs the file.
+fn extension_for(media_type: &str) -> Option<&'static str> {
+    // Compared without case, as the reader compares a buffer's: a media
+    // type is not case sensitive, and two parts of one tool should not
+    // disagree about that.
+    if media_type.eq_ignore_ascii_case("image/png") {
+        Some("png")
+    } else if media_type.eq_ignore_ascii_case("image/jpeg") {
+        Some("jpg")
+    } else {
+        None
+    }
+}
+
+/// Write each image into `directory`, and answer with the paths written.
+///
+/// **Named by index, not by the document's name for them.** An image's
+/// `name` is whatever the file said and may be empty, repeated, or a
+/// path -- and a tool that turned it into a filename would be letting a
+/// document choose where bytes land on disk. The index is the document's
+/// own address for the image, so a caller reading the JSON can match a
+/// material's texture reference to a file without guessing.
+fn write_images(
+    images: &[renew_mesh::gltf::Image<'static>],
+    directory: &str,
+) -> Result<Vec<String>, ImportFailure> {
+    let root = Path::new(directory);
+    // The flag names a destination for a set of files whose size the
+    // caller cannot know in advance, so making it is part of honouring
+    // it -- unlike `--out`, which names one file whose parent the
+    // caller already chose.
+    if let Err(error) = std::fs::create_dir_all(root) {
+        return Err(ImportFailure {
+            message: format!("cannot create {directory}: {error}"),
+            refusal: None,
+        });
+    }
+
+    let mut written = Vec::with_capacity(images.len());
+    for (index, image) in images.iter().enumerate() {
+        // **Refused before anything is written.** A run that wrote four
+        // images and then stopped at the fifth would leave the caller
+        // deciding which half of a directory to trust; the loop is short
+        // enough that checking as it goes still fails on the first one.
+        let Some(stated) = image.media_type.as_deref() else {
+            return Err(ImportFailure {
+                message: format!(
+                    "image {index} states no media type, so this cannot name a file for it"
+                ),
+                refusal: Some("UnknownMediaType"),
+            });
+        };
+        let Some(extension) = extension_for(stated) else {
+            return Err(ImportFailure {
+                message: format!(
+                    "image {index} is `{stated}`, and this cannot name a file for that -- \
+                     the bytes may be fine, the name is the problem"
+                ),
+                refusal: Some("UnknownMediaType"),
+            });
+        };
+
+        let path = root.join(format!("image-{index}.{extension}"));
+        if let Err(error) = std::fs::write(&path, &*image.bytes) {
+            return Err(ImportFailure {
+                message: format!("cannot write {}: {error}", path.display()),
+                refusal: None,
+            });
+        }
+        written.push(path.display().to_string());
+    }
+    Ok(written)
+}
+
+/// One material, in the vocabulary the format states it in.
+///
+/// **Every member, including the ones that are defaults.** A reader of
+/// this JSON cannot tell a document that said nothing from one that said
+/// the default, and the difference does not matter to a caller choosing
+/// a shader -- but a missing key would make them write the defaults
+/// themselves, in a second place, from a specification they would have
+/// to go and read.
+fn material_json(material: &renew_mesh::pbr::Material) -> Value {
+    // **The record's f32 widened, not reformatted.** Every one of these
+    // came out of a document as a decimal and went into an `f32`; going
+    // back out through `f64` is the only widening that adds no digits
+    // the file did not have.
+    let number = |value: f32| Value::Float(f64::from(value));
+    let numbers =
+        |values: &[f32]| Value::Array(values.iter().copied().map(number).collect::<Vec<_>>());
+
+    let mut fields = vec![
+        (
+            "name".to_string(),
+            material
+                .name
+                .as_ref()
+                .map_or(Value::Null, |name| Value::String(name.clone())),
+        ),
+        ("base_color".to_string(), numbers(&material.base_color)),
+        ("metallic".to_string(), number(material.metallic)),
+        ("roughness".to_string(), number(material.roughness)),
+        ("emissive".to_string(), numbers(&material.emissive)),
+        (
+            "double_sided".to_string(),
+            Value::Bool(material.double_sided),
+        ),
+    ];
+    // **The mode and its cutoff travel together**, because the format
+    // makes the cutoff meaningless without the mode and refuses one
+    // written beside no mode at all.
+    let (mode, cutoff) = match material.alpha {
+        renew_mesh::pbr::Alpha::Opaque => ("OPAQUE", Value::Null),
+        renew_mesh::pbr::Alpha::Mask { cutoff } => ("MASK", number(cutoff)),
+        renew_mesh::pbr::Alpha::Blend => ("BLEND", Value::Null),
+    };
+    fields.push(("alpha_mode".to_string(), Value::String(mode.to_string())));
+    fields.push(("alpha_cutoff".to_string(), cutoff));
+    fields.push((
+        "textures".to_string(),
+        Value::Array(
+            [
+                ("base_color", material.base_color_map),
+                ("metallic_roughness", material.metallic_roughness_map),
+                ("normal", material.normal_map.map(|map| map.map)),
+                ("occlusion", material.occlusion_map.map(|map| map.map)),
+                ("emissive", material.emissive_map),
+            ]
+            .into_iter()
+            .filter_map(|(role, reference)| {
+                // **Only the maps the document named.** A null per absent
+                // role would make five keys that are almost always null,
+                // and a caller looking for what a material references
+                // would filter them right back out.
+                reference.map(|reference| {
+                    Value::Object(vec![
+                        ("role".to_string(), Value::String(role.to_string())),
+                        (
+                            "texture".to_string(),
+                            Value::Number(i64::from(reference.texture)),
+                        ),
+                        (
+                            "uv_set".to_string(),
+                            Value::Number(i64::from(reference.uv_set)),
+                        ),
+                    ])
+                })
+            })
+            .collect(),
+        ),
+    ));
+    Value::Object(fields)
+}
+
+/// One image, as what it is rather than as its bytes.
+///
+/// The bytes themselves are never put in the envelope: they are a
+/// texture, the JSON is a report, and base64 in a status line would make
+/// a megabyte of output nobody reads.
+fn image_json(image: &renew_mesh::gltf::Image<'static>) -> Value {
+    Value::Object(vec![
+        (
+            "name".to_string(),
+            image
+                .name
+                .as_ref()
+                .map_or(Value::Null, |name| Value::String(name.clone())),
+        ),
+        (
+            "media_type".to_string(),
+            image
+                .media_type
+                .as_ref()
+                .map_or(Value::Null, |stated| Value::String(stated.clone())),
+        ),
+        (
+            "bytes".to_string(),
+            Value::Number(i64::try_from(image.bytes.len()).unwrap_or(i64::MAX)),
+        ),
+    ])
+}
+
+fn run_asset_import(
+    from: &str,
+    out_path: &str,
+    images_dir: Option<&str>,
+    json_mode: bool,
+) -> ExitCode {
     let started = Instant::now();
 
     // **Checked before the file is opened, because reading first is what
@@ -577,6 +786,29 @@ fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
         }
     };
 
+    // **What the document says beyond its shape**, read from the same
+    // bytes before they are dropped. Only glTF states materials in this
+    // vocabulary and only glTF carries its images inside itself, so
+    // every other format answers with two empty tables rather than with
+    // a refusal -- a caller asking what an STL's textures are is not
+    // making a mistake, it is getting the true answer.
+    let tables = match found {
+        renew_mesh::format::Format::Gltf | renew_mesh::format::Format::Glb => {
+            match renew_mesh::gltf::tables(&bytes) {
+                Ok(tables) => tables,
+                Err(refusal) => {
+                    return import_failure(
+                        &format!("{from}: {refusal}"),
+                        Some(refusal.name()),
+                        json_mode,
+                        started,
+                    );
+                }
+            }
+        }
+        _ => renew_mesh::gltf::Tables::default(),
+    };
+
     // The file is not read again after this, and it can be as large as
     // the model: holding it across the write was a quarter of this
     // command's peak for nothing.
@@ -594,38 +826,119 @@ fn run_asset_import(from: &str, out_path: &str, json_mode: bool) -> ExitCode {
         );
     }
 
-    let triangles = i64::try_from(mesh.triangles()).unwrap_or(i64::MAX);
-    let size = i64::try_from(blob.len()).unwrap_or(i64::MAX);
-    if json_mode {
+    // **Written after the blob, and only where the caller said.** The
+    // flag is the asking; without it the images are still counted, so a
+    // caller learns there are some before deciding where they go.
+    let written = match images_dir {
+        None => Vec::new(),
+        Some(directory) => match write_images(&tables.images, directory) {
+            Ok(written) => written,
+            Err(failure) => {
+                return import_failure(&failure.message, failure.refusal, json_mode, started);
+            }
+        },
+    };
+
+    report_import(&Import {
+        mesh: &mesh,
+        tables: &tables,
+        written: &written,
+        format,
+        out_path,
+        blob_bytes: blob.len(),
+        json_mode,
+        started,
+    })
+}
+
+/// Everything one successful import has to say for itself.
+///
+/// **A record rather than eight parameters**, which is what the list had
+/// grown to: three of them were paths or flags of the same type, and a
+/// caller swapping two would have compiled.
+struct Import<'a> {
+    mesh: &'a renew_mesh::Mesh,
+    tables: &'a renew_mesh::gltf::Tables,
+    written: &'a [String],
+    format: &'a str,
+    out_path: &'a str,
+    blob_bytes: usize,
+    json_mode: bool,
+    started: Instant,
+}
+
+/// Say what was imported, in whichever form was asked for.
+///
+/// Split from the import itself because reading a model and describing
+/// one are different jobs, and the description is the half that grows
+/// every time the reader below learns a new table.
+fn report_import(report: &Import<'_>) -> ExitCode {
+    let triangles = i64::try_from(report.mesh.triangles()).unwrap_or(i64::MAX);
+    let size = i64::try_from(report.blob_bytes).unwrap_or(i64::MAX);
+    let (format, out_path) = (report.format, report.out_path);
+    if report.json_mode {
         // `envelope_base` puts `schema_version` first already, which is
         // what D11 asks of a public JSON surface. A second one here
         // would be a duplicate key in the object, and a reader taking
         // whichever it met first would be right by luck.
-        let mut fields = envelope_base("asset-import", "ok", 0, started, "");
-        fields.push(("format".to_string(), Value::String(format.to_string())));
+        let mut fields = envelope_base("asset-import", "ok", 0, report.started, "");
+        fields.push((
+            "format".to_string(),
+            Value::String(report.format.to_string()),
+        ));
         fields.push(("triangles".to_string(), Value::Number(triangles)));
         // Which optional streams survived the read, so a caller can tell
         // a lit mesh from a bare one without opening the blob.
         fields.push((
             "face_normals".to_string(),
-            Value::Bool(!mesh.face_normals.is_empty()),
+            Value::Bool(!report.mesh.face_normals.is_empty()),
         ));
         fields.push((
             "corner_normals".to_string(),
-            Value::Bool(!mesh.corner_normals.is_empty()),
+            Value::Bool(!report.mesh.corner_normals.is_empty()),
         ));
         fields.push((
             "corner_texcoords".to_string(),
-            Value::Bool(!mesh.corner_texcoords.is_empty()),
+            Value::Bool(!report.mesh.corner_texcoords.is_empty()),
         ));
         fields.push(("bytes".to_string(), Value::Number(size)));
-        fields.push(("out".to_string(), Value::String(out_path.to_string())));
+        fields.push((
+            "out".to_string(),
+            Value::String(report.out_path.to_string()),
+        ));
+        // **Reported whether or not any were written**, which is the
+        // point of counting them separately from writing them.
+        fields.push((
+            "materials".to_string(),
+            Value::Array(report.tables.materials.iter().map(material_json).collect()),
+        ));
+        fields.push((
+            "images".to_string(),
+            Value::Array(report.tables.images.iter().map(image_json).collect()),
+        ));
+        fields.push((
+            "images_written".to_string(),
+            Value::Array(
+                report
+                    .written
+                    .iter()
+                    .map(|path| Value::String(path.clone()))
+                    .collect(),
+            ),
+        ));
         fields.push(("refusal".to_string(), Value::Null));
         emit_stdout_line(&Value::Object(fields).render());
     } else {
         emit_stdout(&format!(
             "read {triangles} triangles of {format} into {out_path} ({size} bytes)\n"
         ));
+        let (materials, images) = (report.tables.materials.len(), report.tables.images.len());
+        if materials > 0 || images > 0 {
+            emit_stdout(&format!("  {materials} materials, {images} images\n"));
+        }
+        for path in report.written {
+            emit_stdout(&format!("  wrote {path}\n"));
+        }
     }
     ExitCode::SUCCESS
 }

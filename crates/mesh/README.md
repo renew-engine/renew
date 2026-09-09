@@ -372,14 +372,29 @@ between them would be answering a question the document did not settle.
 A `uri` is a payload this reader decodes or a second file it will not
 open — the same pair of answers a buffer's `uri` gets.
 
-**One name for the bytes, not two.** An image may state its type in
-`mimeType`, in its payload's URI, or in both; the format requires one
-beside a view, because a view carries bytes and nothing about them. When
-both are present and differ, the document is refused rather than the
-contradiction being handed on — the same trade the payload decoder
-makes when it refuses a resource two texts could spell. An absent type is
-not a disagreement: a URI may omit one, and that is the document having
-said nothing rather than having said something else.
+**`mimeType` is the document's answer when it gives one.** An image may
+state its type beside itself, in its payload's URI, or in both; the
+format requires one beside a view, because a view carries bytes and
+nothing about them. The two are never compared. The format relates
+neither to the other — its rule is that a payload's media type match its
+*content*, which nothing here can check because nothing here decodes —
+so refusing a disagreement would refuse conformant documents, and a PNG
+carried as `application/octet-stream` is ordinary. The one the format
+makes mandatory wins, and the payload's is what is left when there is no
+other.
+
+**An empty statement is an absence, on both sides.** A payload may carry
+no type, and `mimeType` may be written `""` because the schema ends in a
+permissive string. Both are a document saying nothing about its bytes,
+so both read as none — the reported type is never an empty string, which
+is a value every caller would have to know to treat as absent.
+
+`gltf::tables` reads the materials and the images together from either
+shape of the asset, doing the container dispatch that `gltf::read` does
+for geometry. Its images own their bytes, because the parsed document
+lives inside the call and nothing pointing into it can be handed back; a
+caller that wants to avoid that copy holds the parse itself and calls
+`gltf::images`.
 
 ## `data:` URIs, and why a decoder is strict about spelling
 

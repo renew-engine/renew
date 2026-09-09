@@ -1117,6 +1117,65 @@ fn an_image_that_states_no_type_anywhere_reports_none() {
     assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
 }
 
+/// **The tables read from either shape of the same asset.**
+///
+/// The whole reason this entry point exists: a caller would otherwise
+/// write the container dispatch itself, and the two places that already
+/// had it written each got it wrong in a different way.
+#[test]
+fn the_tables_read_from_a_document_and_from_a_container() {
+    let text = r#"{"asset":{"version":"2.0"},
+"materials":[{"name":"brass","metallicFactor":1.0,"roughnessFactor":0.25}],
+"images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]}"#;
+
+    let alone = gltf::tables(text.as_bytes()).expect("a document on its own");
+    assert_eq!(alone.materials.len(), 1);
+    assert_eq!(alone.materials[0].name.as_deref(), Some("brass"));
+    assert_eq!(alone.images.len(), 1);
+    assert_eq!(alone.images[0].name.as_deref(), Some("grain"));
+    assert_eq!(&*alone.images[0].bytes, &[1, 2, 3, 4]);
+
+    // The same document wrapped, which the layers below cannot tell
+    // apart and this one must.
+    let wrapped = gltf::tables(&container(text, &[])).expect("the same document, wrapped");
+    assert_eq!(wrapped, alone);
+}
+
+/// **An image out of a container's chunk owns its bytes afterwards.**
+///
+/// It is borrowed while the document is alive and this hands it back
+/// after the document is gone, so the copy is the whole point rather
+/// than an inefficiency: without it the value could not be returned at
+/// all.
+#[test]
+fn an_image_stored_in_a_chunk_survives_the_document() {
+    let text = r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":[{"bufferView":0,"mimeType":"image/png"}]}"#;
+
+    let read = gltf::tables(&container(text, &[9, 8, 7, 6])).expect("one image, from the chunk");
+    assert_eq!(read.images.len(), 1);
+    assert_eq!(&*read.images[0].bytes, &[9, 8, 7, 6]);
+    assert_eq!(read.images[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// A document with neither table has neither, which is not a refusal.
+#[test]
+fn a_document_with_no_tables_has_none() {
+    let read = gltf::tables(br#"{"asset":{"version":"2.0"}}"#).expect("nothing is not a refusal");
+    assert_eq!(read, gltf::Tables::default());
+}
+
+/// **A refusal from either table is the whole call's refusal**, named by
+/// the layer that made it rather than by this one.
+#[test]
+fn a_table_that_refuses_refuses_the_call() {
+    let refused = gltf::tables(br#"{"asset":{"version":"2.0"},"images":[{"uri":"grain.png"}]}"#)
+        .expect_err("a second file is not opened");
+    assert_eq!(refused, GltfError::ExternalResource);
+}
+
 /// **A URI spelled with escapes is the URI it spells.**
 ///
 /// JSON lets a document write `/` as `\/`, and a `data:` payload is

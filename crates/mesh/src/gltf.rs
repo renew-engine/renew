@@ -878,6 +878,77 @@ pub fn images<'s>(root: Value<'_>, source: &'s Source<'_>) -> Result<Vec<Image<'
     Ok(out)
 }
 
+impl Image<'_> {
+    /// Take ownership of the bytes, so the image outlives the document.
+    ///
+    /// **The only way out of the borrow, and it is a copy where the
+    /// bytes came from a buffer.** An image read from a `bufferView`
+    /// borrows the document's own memory; a caller that wants to hold
+    /// it after the document is dropped -- to write it to a file, say --
+    /// has to pay for that once. An image decoded from a payload already
+    /// owns its bytes and pays nothing.
+    #[must_use]
+    pub fn into_owned(self) -> Image<'static> {
+        Image {
+            name: self.name,
+            media_type: self.media_type,
+            bytes: Cow::Owned(self.bytes.into_owned()),
+        }
+    }
+}
+
+/// What a document says beyond its geometry.
+///
+/// **Two tables that travel together because one caller wants both.**
+/// A tool reporting what it imported needs the materials and the images
+/// at once, and the alternative -- asking for each separately -- makes
+/// the caller build the container dispatch and the buffer table twice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tables {
+    /// Every material, in the vocabulary the format states them in.
+    pub materials: Vec<Material>,
+    /// Every image, holding its own bytes.
+    pub images: Vec<Image<'static>>,
+}
+
+/// Read what a document says beyond its geometry, in either shape.
+///
+/// **The sibling of [`read`], and it exists for the same reason.** A
+/// binary glTF wraps its document in a container beside a chunk; a
+/// `.gltf` is that document on its own. Every caller of these tables
+/// would otherwise write that dispatch itself -- and the two that
+/// already exist got it wrong in different ways before this function
+/// did it once.
+///
+/// **The images own their bytes**, which a borrowed form could not: the
+/// parsed document lives inside this call and cannot be handed back
+/// beside things that point into it. A caller that wants to avoid the
+/// copy has [`images`] and can hold the parse itself.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the layer that refused and carrying its
+/// numbers.
+pub fn tables(bytes: &[u8]) -> Result<Tables, GltfError> {
+    let (document, chunk) = if glb::looks_like(bytes) {
+        let container = glb::read(bytes).map_err(GltfError::Container)?;
+        (container.json, container.binary)
+    } else {
+        (bytes, None)
+    };
+
+    let json = parse(document)?;
+    let root = json.root();
+    let source = Source::of(root, chunk)?;
+    Ok(Tables {
+        materials: materials(root)?,
+        images: images(root, &source)?
+            .into_iter()
+            .map(Image::into_owned)
+            .collect(),
+    })
+}
+
 /// Read the document's materials, in the vocabulary glTF states them.
 ///
 /// A material object has no required members, so an empty one is legal
