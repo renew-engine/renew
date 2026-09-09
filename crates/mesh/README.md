@@ -321,7 +321,7 @@ chunk to offer and the other has none.
 
 **Its refusals name the layer that failed**, not just the fault: a
 `GltfError` says whether the container, the document, a buffer, an
-embedded payload, an accessor or the geometry objected, and the inner refusal's own numbers are one call away
+embedded payload, an accessor, a material or the geometry objected, and the inner refusal's own numbers are one call away
 through the value. A caller that only wants geometry can go
 through `format::detect` and then `Format::read`, which wraps the same
 answer in `MeshError`.

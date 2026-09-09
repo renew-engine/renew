@@ -1,4 +1,4 @@
-{"asset":{"version":"2.0"},"materials":[{"name":"brushed",
+{"asset":{"version":"2.0"},"textures":[{},{},{},{},{}],"materials":[{"name":"brushed",
                 "pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1],
                 "metallicFactor":0.75,"roughnessFactor":0.25,
                 "baseColorTexture":{"index":0,"texCoord":1},

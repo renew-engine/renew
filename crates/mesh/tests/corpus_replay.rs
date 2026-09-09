@@ -1381,12 +1381,26 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
         "the corpus holds {with_materials} seeds carrying a material, and the table is reached \
          only by asking for it"
     );
-    assert!(
-        distinct.iter().any(|bytes| {
-            gltf::parse(bytes).is_ok_and(|json| gltf::materials(json.root()).is_err())
-        }),
-        "no seed provokes the material layer's own refusals"
-    );
+    // **Each refusal by name, not one of them.** A floor asking only
+    // that *some* seed is refused is met by any one of the three, so two
+    // could be deleted and the corpus would still pass while covering a
+    // third of what it was recorded for.
+    let material_refusals: BTreeSet<&'static str> = distinct
+        .iter()
+        .filter_map(|bytes| {
+            gltf::parse(bytes)
+                .ok()
+                .and_then(|json| gltf::materials(json.root()).err())
+                .map(|refusal| refusal.name())
+        })
+        .collect();
+    for required in ["FactorOutOfRange", "UnknownAlphaMode", "MissingField"] {
+        assert!(
+            material_refusals.contains(required),
+            "no committed seed provokes the material layer's `{required}`. Reached: \
+             {material_refusals:?}"
+        );
+    }
 }
 
 #[test]

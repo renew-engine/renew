@@ -93,6 +93,21 @@ pub mod stl;
 /// danger, not allocation.
 pub(crate) const MAX_GEOMETRY_BYTES: usize = 256 << 20;
 
+/// How many materials one file may build.
+///
+/// **The same policy ceiling, applied to the other thing a document can
+/// make this crate allocate.** `MAX_GEOMETRY_BYTES` exists because a
+/// megabyte of legitimate input built fifty-eight megabytes of geometry,
+/// and the rule it states is general: amplification is the danger, not
+/// allocation. A material table amplifies harder than geometry does —
+/// a two-byte array element with no members at all is a whole material,
+/// every field of it a default — so a document a fraction of the
+/// geometry ceiling's size could pass it without this.
+///
+/// Expressed as a count rather than a byte total because a material is a
+/// fixed size and a count is what the reader has to hand when it decides.
+pub(crate) const MAX_MATERIALS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<pbr::Material>();
+
 /// How many positions that ceiling allows.
 pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
 
@@ -145,7 +160,12 @@ pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 pub use data_uri::{DataUri, DataUriError};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
-pub use pbr::{Alpha, Material, NormalTexture, OcclusionTexture, TextureRef};
+// **`Material` is deliberately not re-exported here.** Two vocabularies
+// carry that name in this crate -- `pbr::Material` and `mtl::Material` --
+// and hoisting either to the crate root would make it the default
+// spelling of a word the two formats do not share a meaning for. The
+// module path is the disambiguation, and it is a short one.
+pub use pbr::{Alpha, NormalTexture, OcclusionTexture, TextureRef};
 pub use primitive::{Mode, Primitive};
 
 /// Triangles read out of a file, in the order the file stored them.

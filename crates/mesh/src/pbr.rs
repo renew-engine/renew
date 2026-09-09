@@ -6,8 +6,14 @@
 //! vocabulary — ambient, diffuse, specular, a specular exponent — because
 //! that is what the format stores, and [`crate::mtl::Material`] holds it.
 //! A glTF material is metallic-roughness: a base colour, how metallic the
-//! surface is, how rough, and a set of maps that modulate those. The two
-//! describe surfaces in genuinely different terms.
+//! surface is, how rough, and a set of maps that modulate those.
+//!
+//! **Parts of the two do line up.** An emissive colour is an emissive
+//! colour in both, and a diffuse colour and a base colour are the same
+//! quantity under two names. It is the specular half that has no
+//! non-heuristic mapping — and a conversion carrying only the members
+//! that do correspond would quietly drop the rest, which is worse than
+//! not converting.
 //!
 //! # Why they are not merged, and never converted
 //!
@@ -44,9 +50,15 @@
 //!
 //! glTF's ranges are not a convention. The schema states `minimum` and
 //! `maximum` on the factors, so a value outside them is a document that
-//! does not conform, and the reader says so and names the member. The two
-//! readers differ because the two formats differ, not because they
-//! disagree about clamping.
+//! does not conform, and the reader says so and names the member —
+//! including the alpha cutoff, which is bounded below whatever the mode
+//! does with it. The two readers differ because the two formats differ,
+//! not because they disagree about clamping.
+//!
+//! **The check happens at the document's own width.** A number a hair
+//! past the bound narrows to exactly the bound, so a reader that
+//! converted first and checked afterwards would clamp while saying it
+//! refuses.
 
 /// Which texture a map names, and which coordinate set it reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,9 +67,19 @@ pub struct TextureRef {
     ///
     /// **Required**, unlike almost everything else here: a map that names
     /// no texture is not a map.
-    pub texture: usize,
+    ///
+    /// A `u32` because that is what the format's own id type is, and
+    /// because five of these live in every material — widening them
+    /// to a pointer would make the size of a material depend on the
+    /// target, which is a dependency this crate keeps out of its counts.
+    ///
+    /// **Bounded, not resolved.** This crate does not read the `textures`
+    /// table, so the number is checked against that table's length and no
+    /// further: it is known to name a row that exists, and nothing here
+    /// can say what is in it.
+    pub texture: u32,
     /// Which `TEXCOORD_n` attribute to read it with. Zero by default.
-    pub uv_set: usize,
+    pub uv_set: u32,
 }
 
 /// A normal map, and how far it leans.
@@ -83,9 +105,11 @@ pub struct OcclusionTexture {
 /// How a material's alpha is meant to be read.
 ///
 /// **Three answers, and the cutoff belongs to exactly one of them.** A
-/// material that is not masked has no cutoff — the format carries the
-/// number regardless, and putting it on the variant that uses it is what
-/// stops a caller reading a threshold that means nothing.
+/// material that is not masked has no cutoff. The format lets a document
+/// state the number under any mode it declares and requires two of the
+/// three to ignore it — and forbids it outright when no mode is named
+/// at all. Putting it on the variant that uses it is what stops a caller
+/// reading a threshold that means nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Alpha {
     /// The default: the alpha channel is ignored and the surface is

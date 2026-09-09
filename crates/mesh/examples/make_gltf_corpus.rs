@@ -258,7 +258,6 @@ fn document_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
-/// One container per refusal, each wrong in exactly one way.
 /// Documents carrying materials, which the geometry path never reads.
 ///
 /// **A material table is reached only by asking for it**, so a corpus of
@@ -266,6 +265,21 @@ fn document_seeds() -> Vec<(String, Vec<u8>)> {
 /// factors, their stated ranges, the alpha modes, the maps — attacked
 /// by nothing. These carry one, in the shapes that decide the answer.
 fn material_seeds() -> Vec<(String, Vec<u8>)> {
+    // A document whose material names textures has to have them: the
+    // reader bounds every index by the table it points at, and a seed
+    // that named one out of thin air would be exercising that refusal
+    // rather than the material read it is named for.
+    let with_textures = |materials: &str| {
+        SIMPLEST
+            .replace(
+                r#""asset":{"version":"2.0"}"#,
+                &format!(
+                    r#""asset":{{"version":"2.0"}},"textures":[{{}},{{}},{{}},{{}},{{}}],"materials":{materials}"#
+                ),
+            )
+            .into_bytes()
+    };
+
     let with = |materials: &str| {
         SIMPLEST
             .replace(
@@ -281,7 +295,7 @@ fn material_seeds() -> Vec<(String, Vec<u8>)> {
         // Every member the format states, so the whole read is walked.
         (
             "material-whole".to_owned(),
-            with(
+            with_textures(
                 r#"[{"name":"brushed",
                 "pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1],
                 "metallicFactor":0.75,"roughnessFactor":0.25,
@@ -318,6 +332,7 @@ fn material_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
+/// One container per refusal, each wrong in exactly one way.
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
     wrong_magic[0] = b'X';

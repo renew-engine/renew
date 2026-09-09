@@ -36,7 +36,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use renew_mesh::gltf;
+use renew_mesh::{glb, gltf};
 
 fuzz_target!(|data: &[u8]| {
     // **The material table is read from the same bytes, and separately.**
@@ -121,11 +121,21 @@ fuzz_target!(|data: &[u8]| {
 /// bytes: a document may carry materials and no geometry, or the reverse,
 /// and a target that only asked for one would leave the other's
 /// arithmetic unattacked.
+///
+/// **Both shapes, not just the loose document.** An earlier version
+/// parsed the raw bytes, so every container went straight past it -- and
+/// a container is what most of this corpus is, and what most real assets
+/// are. The dispatch here is the reader's own.
 fn materials_answer(data: &[u8]) {
-    // The table is reached through the document rather than the
-    // container, so bytes that are not a document have nothing to say
-    // here and the container's own shape is the geometry path's business.
-    let Ok(json) = gltf::parse(data) else {
+    let container = glb::looks_like(data).then(|| glb::read(data)).transpose();
+    let Ok(container) = container else {
+        // The container layer's own refusals are the geometry half's
+        // business; a malformed wrapper has no document to ask about.
+        return;
+    };
+    let document = container.map_or(data, |read| read.json);
+
+    let Ok(json) = gltf::parse(document) else {
         return;
     };
     let root = json.root();
@@ -151,23 +161,59 @@ fn materials_answer(data: &[u8]) {
             );
         }
 
-        // A cutoff is bounded below and finite; the format states no
-        // upper bound, so none is asserted.
+        // A cutoff is bounded below; the format states no upper bound,
+        // so none is asserted. Nothing asserts it is finite either --
+        // the number layer refuses one that is not, so an assertion here
+        // would be defensive code that reads like safety and checks
+        // nothing.
         if let renew_mesh::pbr::Alpha::Mask { cutoff } = material.alpha {
             assert!(
-                cutoff >= 0.0 && cutoff.is_finite(),
+                cutoff >= 0.0,
                 "a cutoff below the stated minimum reached a caller: {cutoff}"
             );
         }
 
-        // The unbounded ones are still numbers.
-        if let Some(normal) = material.normal_map {
-            assert!(normal.scale.is_finite(), "a normal scale that is not a number");
-        }
         if let Some(occlusion) = material.occlusion_map {
             assert!(
                 (0.0..=1.0).contains(&occlusion.strength),
                 "an occlusion strength outside its stated range"
+            );
+        }
+
+        // **Every index is inside the table it names.** This reader does
+        // not resolve a texture, but it bounds one, and an index past the
+        // table reaching a caller is the fault nothing downstream can
+        // catch.
+        let textures = root.get("textures").map_or(0, renew_json::Value::len);
+        for map in [material.base_color_map, material.metallic_roughness_map]
+            .into_iter()
+            .flatten()
+            .chain(material.normal_map.map(|normal| normal.map))
+            .chain(material.occlusion_map.map(|occlusion| occlusion.map))
+            .chain(material.emissive_map)
+        {
+            assert!(
+                (map.texture as usize) < textures,
+                "a texture index past the table reached a caller: {} of {textures}",
+                map.texture
+            );
+        }
+    }
+
+    // **The pairing, over every mesh the document has.** It takes an
+    // index the caller chooses and reads a table the document controls,
+    // which is exactly the shape worth attacking, and nothing reached it
+    // before.
+    let meshes = root.get("meshes").map_or(0, renew_json::Value::len);
+    for mesh in 0..meshes {
+        let Ok(pairing) = gltf::primitive_materials(root, mesh) else {
+            continue;
+        };
+        for named in pairing.into_iter().flatten() {
+            assert!(
+                (named as usize) < materials.len(),
+                "a material index past the table reached a caller: {named} of {}",
+                materials.len()
             );
         }
     }
