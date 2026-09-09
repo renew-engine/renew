@@ -567,7 +567,7 @@ fn write_images(
     // directory to trust: four files written, the fifth refused, and a
     // blob on disk beside them. The names are two literals and an index,
     // so the pass costs nothing.
-    let mut names = Vec::with_capacity(images.len());
+    let mut ready: Vec<(String, &[u8])> = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let Some(stated) = image.media_type.as_deref() else {
             return Err(ImportFailure {
@@ -586,13 +586,21 @@ fn write_images(
                 refusal: Some("UnknownMediaType"),
             });
         };
-        names.push(format!("image-{index}.{extension}"));
+        // **Present because the caller asked for them.**
+        // `ImageBytes::Kept` is what puts bytes here and it is chosen by
+        // the same flag that reaches this function, so this is a
+        // narrowing rather than a question -- and written as one, since
+        // an arm for the case that cannot arise is an arm nothing can
+        // ever run.
+        if let Some(bytes) = image.bytes.as_deref() {
+            ready.push((format!("image-{index}.{extension}"), bytes));
+        }
     }
 
     // **Nothing at all when there is nothing**, not even the directory.
     // A model with no images should leave no trace of having been asked
     // for them, which is the same rule the absent flag obeys.
-    if names.is_empty() {
+    if ready.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -608,19 +616,8 @@ fn write_images(
         });
     }
 
-    let mut written = Vec::with_capacity(names.len());
-    for (name, image) in names.iter().zip(images) {
-        // **Asked for and therefore present.** `ImageBytes::Kept` is
-        // what puts them here, and it is chosen by the same flag that
-        // reaches this function -- so an absence would be a caller
-        // asking for files without asking for bytes, which is a mistake
-        // in this file rather than anything a document can cause.
-        let Some(bytes) = image.bytes.as_deref() else {
-            return Err(ImportFailure {
-                message: format!("image {name} was measured rather than read"),
-                refusal: None,
-            });
-        };
+    let mut written = Vec::with_capacity(ready.len());
+    for (name, bytes) in &ready {
         let path = root.join(name);
         if let Err(error) = std::fs::write(&path, bytes) {
             return Err(ImportFailure {

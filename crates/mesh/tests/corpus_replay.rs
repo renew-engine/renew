@@ -1209,7 +1209,7 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 41;
+const GLTF_LOW_WATER: usize = 42;
 
 /// How many distinct outcomes the glTF seeds must still reach.
 ///
