@@ -326,19 +326,24 @@ mod tests {
             .normal_matrix()
             .expect("a scale is invertible")
             .transform_vector(normal);
+        // **Computed into a name rather than called inside the message.**
+        // A method call in a format argument runs only when the assert
+        // fails, which makes it a line nothing executes on a green run;
+        // the rest of this file captures variables inline for the same
+        // reason.
+        let kept = moved_tangent.dot(correct);
         assert!(
-            moved_tangent.dot(correct).abs() < 1e-5,
-            "the normal matrix keeps them perpendicular: {}",
-            moved_tangent.dot(correct)
+            kept.abs() < 1e-5,
+            "the normal matrix keeps them perpendicular: {kept}"
         );
 
         // And the thing a reader does when it forgets: transforming the
         // normal as though it were a direction.
         let wrong = squash.transform_vector(normal);
+        let tilted = moved_tangent.dot(wrong);
         assert!(
-            moved_tangent.dot(wrong).abs() > 1.0,
-            "transforming a normal as a direction tilts it the wrong way: {}",
-            moved_tangent.dot(wrong)
+            tilted.abs() > 1.0,
+            "transforming a normal as a direction tilts it the wrong way: {tilted}"
         );
     }
 

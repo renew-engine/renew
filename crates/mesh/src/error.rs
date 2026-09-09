@@ -532,6 +532,25 @@ mod tests {
         // change that writes the new arm below.
         assert_eq!(all.len(), 14, "a variant is missing an instance here");
 
+        // **Every variant is asked its name here, and that is a fix for
+        // a gap that has now appeared three times.** A refusal added to
+        // this list got its message checked and its `name` arm executed
+        // by nothing, so the coverage gate named that arm on three
+        // separate occasions and three separate call sites were patched
+        // to ask. Asking once, here, covers every variant that will ever
+        // be added — and a refusal a caller cannot key on is half a
+        // refusal, so the census is the right place for the question.
+        let mut named: Vec<&'static str> = Vec::new();
+        for refusal in &all {
+            let name = refusal.name();
+            assert!(!name.is_empty(), "{refusal:?} has no name");
+            assert!(
+                !named.contains(&name),
+                "`{name}` is the name of two different refusals"
+            );
+            named.push(name);
+        }
+
         for refusal in &all {
             let shown = refusal.to_string();
             assert!(!shown.is_empty(), "{refusal:?} says nothing");
