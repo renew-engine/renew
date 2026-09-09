@@ -108,6 +108,7 @@ fn container(document: &str, binary: &[u8]) -> Vec<u8> {
 const SIMPLEST: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36}],
 "bufferViews":[{"byteLength":36}]}"#;
 
 /// Everything named: normals, coordinates and an index stream.
@@ -119,6 +120,7 @@ const EVERYTHING: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
 {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
 {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],
+"buffers":[{"byteLength":102}],
 "bufferViews":[
 {"byteOffset":0,"byteLength":36},{"byteOffset":36,"byteLength":36},
 {"byteOffset":72,"byteLength":24},{"byteOffset":96,"byteLength":6}]}"#;
@@ -227,7 +229,10 @@ fn refused_seeds() -> Vec<(String, Vec<u8>)> {
         (
             "second-buffer".to_owned(),
             container(
-                &SIMPLEST.replace(r#"{"byteLength":36}"#, r#"{"buffer":1,"byteLength":36}"#),
+                &SIMPLEST.replace(
+                    r#""buffers":[{"byteLength":36}]"#,
+                    r#""buffers":[{"byteLength":36},{"byteLength":36}]"#,
+                ),
                 &triangle(),
             ),
         ),
