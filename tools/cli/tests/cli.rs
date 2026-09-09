@@ -2107,6 +2107,667 @@ const A_TRIANGLE_AS_STL: &str = "solid one\n\
                                  vertex 0 0 0\n vertex 1 0 0\n vertex 0 1 0\n\
                                  endloop\nendfacet\nendsolid one\n";
 
+/// A glTF document with one triangle and whatever tables are asked for.
+///
+/// The same triangle every fixture here uses, so a test that is about a
+/// material or an image is not also about geometry.
+fn document_with(tables: &str) -> Vec<u8> {
+    format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],
+"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}}],
+"buffers":[{{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}}],
+"bufferViews":[{{"buffer":0,"byteLength":36}}]{tables}}}"#
+    )
+    .into_bytes()
+}
+
+/// **A refusal part-way through leaves no half-written directory.**
+///
+/// Every name is settled before the first byte is written, so a document
+/// whose third image cannot be named writes none of the first two. The
+/// old shape checked and wrote in one pass, which left a caller deciding
+/// which half of a directory to trust.
+#[test]
+fn asset_import_writes_no_image_if_any_cannot_be_named() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-all-or-none")?;
+    let model = directory.join("scene.gltf");
+    let textures = directory.join("textures");
+    fs::write(
+        &model,
+        document_with(
+            r#","images":[{"uri":"data:image/png;base64,AQIDBA=="},
+{"uri":"data:image/jpeg;base64,BQYHCA=="},{"uri":"data:image/tiff;base64,CQoLDA=="}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &textures.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "the third cannot be named");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("image 2 is `image/tiff`"),
+        "and it says which one"
+    );
+    assert!(
+        !textures.exists(),
+        "the two that could be named are not written either, and the \
+         directory they would have gone in is not made"
+    );
+    Ok(())
+}
+
+/// **A texture's source is reported, because a material names a texture
+/// and a texture names an image.**
+///
+/// Without the middle table a caller holding a material's reference and
+/// a directory of files has to guess, and the guess is wrong whenever a
+/// texture's index is not its image's.
+#[test]
+fn asset_import_reports_which_image_each_texture_draws_from() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-textures")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(
+            r#","textures":[{"source":1}],
+"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}},
+"normalTexture":{"index":0,"scale":3.5},"occlusionTexture":{"index":0,"strength":0.25}}],
+"images":[{"uri":"data:image/jpeg;base64,BQYHCA=="},
+{"uri":"data:image/png;base64,AQIDBA=="}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "it imports: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let reported = String::from_utf8_lossy(&output.stdout);
+    validate_json(reported.trim()).expect("one valid document");
+
+    // Texture 0 draws from image 1, so a caller pairing them by index
+    // alone would reach for the wrong file.
+    assert!(
+        reported.contains("\"textures\":[1]"),
+        "the join is reported: {reported:?}"
+    );
+    // **The two members a default cannot supply once a document states
+    // them**, which the material report used to drop.
+    assert!(
+        reported.contains("\"scale\":3.5"),
+        "a normal map's scale survives: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"strength\":0.25"),
+        "and an occlusion map's strength: {reported:?}"
+    );
+    Ok(())
+}
+
+/// `--images` with an empty path names the working directory, and is
+/// refused rather than scattering a model's textures into it.
+#[test]
+fn an_empty_images_path_is_refused() -> std::io::Result<()> {
+    let output = run(&[
+        "asset-import",
+        "--from",
+        "m.gltf",
+        "--out",
+        "m.msh",
+        "--images",
+        "",
+    ])?;
+    assert!(!output.status.success(), "an empty path is not a directory");
+    let said = String::from_utf8_lossy(&output.stderr);
+    // Same trap as the rule above: the usage block always names the
+    // flag, so only the sentence proves the guard ran.
+    assert!(
+        said.contains("`--images` needs a value"),
+        "the caller hears why, not just the usage text: {said:?}"
+    );
+    Ok(())
+}
+
+/// **An image that states no type at all is refused for saying nothing**,
+/// which is the other half of `UnknownMediaType`.
+///
+/// The first half is a type this tool cannot name. This is a document
+/// that named none: `data:;base64,` is a payload with an empty media
+/// type, and the reader reports the absence rather than inventing RFC
+/// 2397's default.
+#[test]
+fn asset_import_refuses_an_image_that_names_no_type() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-untyped")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(r#","images":[{"uri":"data:;base64,AQIDBA=="}]"#),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &directory.join("textures").to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "nothing said is not a name");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("\"refusal\":\"UnknownMediaType\"")
+            && reported.contains("states no media type"),
+        "and the sentence says which half it is: {reported:?}"
+    );
+    Ok(())
+}
+
+/// **A table that will not read does not take the geometry with it.**
+///
+/// The commonest glTF in the world keeps its textures in files beside
+/// itself. This reader will not open a second file, which is a fact
+/// about the textures and says nothing about whether the geometry is
+/// sound -- so the model imports, and the envelope says why it is
+/// reporting no tables rather than leaving an absence to be read as an
+/// emptiness.
+#[test]
+fn a_table_that_will_not_read_does_not_stop_the_import() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-table-refusal")?;
+    let model = directory.join("scene.gltf");
+    let blob = directory.join("out.msh");
+    fs::write(&model, document_with(r#","images":[{"uri":"grain.png"}]"#))?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "the geometry is embedded and sound: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(blob.exists(), "and the blob it was asked for is written");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("\"name\":\"Gltf\"")
+            && reported.contains("keeps a resource somewhere else")
+            && reported.contains("\"materials\":null"),
+        "with the reason said rather than an empty table implied: {reported:?}"
+    );
+
+    // **Asking for the images makes it fatal**, because then the caller
+    // asked for the thing that cannot be delivered.
+    let asked = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+        "--images",
+        &directory.join("textures").to_string_lossy(),
+    ])?;
+    assert!(!asked.status.success(), "there are no images to write");
+    assert!(
+        String::from_utf8_lossy(&asked.stdout).contains("\"refusal\":\"Gltf\""),
+        "named the way this tool names every reader refusal"
+    );
+
+    // **And the prose arm says it too.** Two output modes are two pieces
+    // of code, and a caller who does not pass `--json` is entitled to
+    // learn that the tables were not read rather than to see nothing.
+    let spoken = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(spoken.status.success(), "it imports without --json too");
+    assert!(
+        String::from_utf8_lossy(&spoken.stdout).contains("its materials and images were not read"),
+        "and says why it is reporting none"
+    );
+    Ok(())
+}
+
+/// **A destination that cannot be made is reported as itself**, not as a
+/// refusal about the model.
+#[test]
+fn asset_import_says_when_it_cannot_make_the_directory() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-blocked-dir")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(r#","images":[{"uri":"data:image/png;base64,AQIDBA=="}]"#),
+    )?;
+    // A file where the directory would go, so making it cannot succeed.
+    let blocked = directory.join("textures");
+    fs::write(&blocked, b"not a directory")?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &blocked.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "there is a file in the way");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("cannot create"),
+        "and it says so as a filesystem problem: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"refusal\":null"),
+        "with no refusal name, because no reader refused: {reported:?}"
+    );
+    Ok(())
+}
+
+/// **A file that cannot be written is reported as itself too.**
+#[test]
+fn asset_import_says_when_it_cannot_write_an_image() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-blocked-file")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(r#","images":[{"uri":"data:image/png;base64,AQIDBA=="}]"#),
+    )?;
+    // A directory where the first image's file would go.
+    let textures = directory.join("textures");
+    fs::create_dir_all(textures.join("image-0.png"))?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &textures.to_string_lossy(),
+    ])?;
+    assert!(
+        !output.status.success(),
+        "that name is taken by a directory"
+    );
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("cannot write") && reported.contains("image-0.png"),
+        "naming the file it could not write: {reported:?}"
+    );
+    Ok(())
+}
+
+/// **All three alpha modes are reported as the format spells them**, and
+/// the cutoff is null for the two that do not have one.
+#[test]
+fn asset_import_reports_every_alpha_mode() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-alpha")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(
+            r#","materials":[{"name":"plain"},{"name":"cut","alphaMode":"MASK","alphaCutoff":0.25},
+{"name":"glass","alphaMode":"BLEND"}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "three materials import");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    validate_json(reported.trim()).expect("one valid document");
+    for mode in ["OPAQUE", "MASK", "BLEND"] {
+        assert!(
+            reported.contains(&format!("\"alpha_mode\":\"{mode}\"")),
+            "{mode} is reported: {reported:?}"
+        );
+    }
+    assert_eq!(
+        reported.matches("\"alpha_cutoff\":null").count(),
+        2,
+        "and only the masked one carries a cutoff: {reported:?}"
+    );
+    Ok(())
+}
+
+/// **The human-readable form says the same things the JSON does.**
+///
+/// Two output modes are two pieces of code, and a tool whose prose arm
+/// was never run would ship a panic to whoever did not pass `--json`.
+#[test]
+fn asset_import_says_what_it_wrote_in_prose_too() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-prose-tables")?;
+    let model = directory.join("scene.gltf");
+    let textures = directory.join("textures");
+    fs::write(
+        &model,
+        document_with(
+            r#","materials":[{"name":"brass"}],"images":[{"uri":"data:image/png;base64,AQIDBA=="}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &textures.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "it imports without --json too");
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.contains("1 materials, 1 images"),
+        "the counts are said: {said:?}"
+    );
+    assert!(
+        said.contains("wrote") && said.contains("image-0.png"),
+        "and so is each file: {said:?}"
+    );
+    Ok(())
+}
+
+/// A glTF document carrying one material and two images.
+///
+/// Written here rather than borrowed, as every fixture in this tranche
+/// is. The two payloads are four bytes each: `AQIDBA==` and `BQYHCA==`.
+fn textured_document() -> &'static [u8] {
+    br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+"bufferViews":[{"buffer":0,"byteLength":36}],
+"textures":[{"source":0}],
+"materials":[{"name":"brass","pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1.0],
+"metallicFactor":1.0,"roughnessFactor":0.25,"baseColorTexture":{"index":0}},
+"emissiveFactor":[0.0,0.0,0.25],"alphaMode":"MASK","alphaCutoff":0.75,"doubleSided":true}],
+"images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="},
+{"uri":"data:image/jpeg;base64,BQYHCA=="}]}"#
+}
+
+/// **Materials and images are reported whether or not they are written.**
+///
+/// The count is the half a caller needs to decide anything: without it
+/// they would have to ask for the files in order to learn there are any.
+#[test]
+fn asset_import_reports_the_tables_without_writing_them() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-tables")?;
+    let model = directory.join("scene.gltf");
+    let blob = directory.join("out.msh");
+    fs::write(&model, textured_document())?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(output.status.success(), "a textured document imports");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    validate_json(reported.trim()).expect("one valid document");
+
+    assert!(
+        reported.contains("\"name\":\"brass\""),
+        "the material is named as the document named it: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"alpha_mode\":\"MASK\"") && reported.contains("\"alpha_cutoff\":0.75"),
+        "the mode and its cutoff travel together: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"role\":\"base_color\""),
+        "and the map it references is named by role: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"media_type\":\"image/png\"")
+            && reported.contains("\"media_type\":\"image/jpeg\""),
+        "both images are reported with the types the document stated: {reported:?}"
+    );
+
+    // **The whole payload, by value.** Asserting on a hand-picked
+    // substring leaves every number free: a report that swapped metallic
+    // for roughness, negated `double_sided`, relabelled every texture
+    // role, or said a four-byte image was zero bytes long would pass a
+    // test that only looked for a name. So the material and the images
+    // are compared as written, in full.
+    let material = concat!(
+        r#"{"name":"brass","base_color":[0.5,0.25,0.125,1.0],"metallic":1.0,"#,
+        r#""roughness":0.25,"emissive":[0.0,0.0,0.25],"double_sided":true,"#,
+        r#""alpha_mode":"MASK","alpha_cutoff":0.75,"#,
+        r#""textures":[{"role":"base_color","texture":0,"uv_set":0}]}"#
+    );
+    assert!(
+        reported.contains(material),
+        "the material reads back exactly as the document stated it: {reported:?}"
+    );
+    let carried = concat!(
+        r#""images":[{"name":"grain","media_type":"image/png","bytes":4},"#,
+        r#"{"name":null,"media_type":"image/jpeg","bytes":4}]"#
+    );
+    assert!(
+        reported.contains(carried),
+        "and so do both images, names and lengths included: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"images_written\":[]"),
+        "and none were written, because none were asked for: {reported:?}"
+    );
+
+    // **The claim the whole flag rests on.** Nothing but the blob.
+    let mut left: Vec<String> = fs::read_dir(&directory)?
+        .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+        .collect();
+    left.sort();
+    assert_eq!(left, ["out.msh", "scene.gltf"], "no file nobody asked for");
+    Ok(())
+}
+
+/// **`--images` writes them, named by index and typed by media type.**
+#[test]
+fn asset_import_writes_images_where_it_is_told() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-images")?;
+    let model = directory.join("scene.gltf");
+    let blob = directory.join("out.msh");
+    let textures = directory.join("textures");
+    fs::write(&model, textured_document())?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+        "--images",
+        &textures.to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "the images are written: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // The directory is made, because the flag asked for a destination
+    // whose size the caller could not know.
+    let mut written: Vec<String> = fs::read_dir(&textures)?
+        .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        ["image-0.png", "image-1.jpg"],
+        "named by the document's own address for them, typed by what it said they are"
+    );
+    assert_eq!(fs::read(textures.join("image-0.png"))?, [1, 2, 3, 4]);
+    assert_eq!(fs::read(textures.join("image-1.jpg"))?, [5, 6, 7, 8]);
+    Ok(())
+}
+
+/// **A media type this tool cannot name a file for is refused, and the
+/// refusal says the name is the problem rather than the bytes.**
+#[test]
+fn asset_import_refuses_to_invent_a_file_extension() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-unnameable")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+"bufferViews":[{"buffer":0,"byteLength":36}],
+"images":[{"uri":"data:image/tiff;base64,AQIDBA=="}]}"#,
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &directory.join("textures").to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "it cannot name that file");
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("\"refusal\":\"UnknownMediaType\""),
+        "named for a program: {reported:?}"
+    );
+    assert!(
+        reported.contains("the bytes may be fine, the name is the problem"),
+        "and said for a person: {reported:?}"
+    );
+
+    // **The same document imports without the flag.** The type is
+    // reported and not judged until something has to name a file.
+    let allowed = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+    ])?;
+    assert!(
+        allowed.status.success(),
+        "a type nobody has to name is not a refusal: {}",
+        String::from_utf8_lossy(&allowed.stdout)
+    );
+    Ok(())
+}
+
+/// **A format that states none of this answers `null`, not `[]`.**
+///
+/// Asking an STL for its textures is a fair question, and the true
+/// answer is not "it has none" -- OBJ carries materials in Wavefront's
+/// model, which this arm does not convert into, so an empty array would
+/// be saying something false about the file. `null` says the question
+/// was not answered here.
+#[test]
+fn asset_import_reports_no_tables_for_a_format_without_them() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-untextured")?;
+    let model = directory.join("model.stl");
+    // One binary-STL triangle: an 80-byte header, a count, and one facet.
+    let mut stl = vec![0_u8; 80];
+    stl.extend_from_slice(&1_u32.to_le_bytes());
+    for value in [
+        0.0_f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    ] {
+        stl.extend_from_slice(&value.to_le_bytes());
+    }
+    stl.extend_from_slice(&0_u16.to_le_bytes());
+    fs::write(&model, &stl)?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &directory.join("textures").to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "an STL with no images is not a broken STL: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("\"materials\":null") && reported.contains("\"images\":null"),
+        "not answered here, rather than answered as none: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"tables_refusal\":null"),
+        "and nothing refused -- the format simply does not state them: {reported:?}"
+    );
+    // **The directory is not made for a model with no images**, which is
+    // the same rule the absent flag obeys.
+    assert!(
+        !directory.join("textures").exists(),
+        "no directory nobody had a use for"
+    );
+    Ok(())
+}
+
+/// `--images` belongs to `asset-import` and to nothing else.
+#[test]
+fn images_is_refused_on_another_subcommand() -> std::io::Result<()> {
+    let output = run(&["asset-pack", "--images", "textures"])?;
+    assert!(!output.status.success(), "it is not that command's flag");
+    let said = String::from_utf8_lossy(&output.stderr);
+    // **Not `contains("--images")`.** Every parse error prints the usage
+    // block, and the usage block lists `--images`, so that assertion
+    // passes however the guard behaves -- which is a test that cannot
+    // fail. The sentence naming the unexpected argument is the thing
+    // this rule actually produces.
+    assert!(
+        said.contains("unexpected argument `--images`"),
+        "the caller hears about the flag they typed, not the usage text: {said:?}"
+    );
+    Ok(())
+}
+
 /// `asset-import` end to end: the blob lands where `--out` says, the
 /// format is reported as what it is, and the reader that owns it accepts
 /// the result.

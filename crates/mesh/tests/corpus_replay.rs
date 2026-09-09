@@ -1209,7 +1209,7 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 41;
+const GLTF_LOW_WATER: usize = 42;
 
 /// How many distinct outcomes the glTF seeds must still reach.
 ///
@@ -1315,11 +1315,24 @@ fn the_image_layer_is_exercised(distinct: &BTreeSet<Vec<u8>>) {
     let (mut from_view, mut from_payload) = (0_usize, 0_usize);
     let mut reached: BTreeSet<&'static str> = BTreeSet::new();
     for bytes in distinct {
-        let Ok(json) = gltf::parse(bytes) else {
+        // **Either shape, which this gate used to get wrong.** A
+        // container's bytes are not JSON, so parsing them directly
+        // failed and the seed was skipped -- silently, which is the
+        // worst way for a gate to miss something. Every `.glb` in the
+        // corpus went past this check without being looked at.
+        let (document, chunk) = if glb::looks_like(bytes) {
+            match glb::read(bytes) {
+                Ok(container) => (container.json, container.binary),
+                Err(_) => continue,
+            }
+        } else {
+            (&bytes[..], None)
+        };
+        let Ok(json) = gltf::parse(document) else {
             continue;
         };
         let root = json.root();
-        let Ok(source) = gltf::Source::of(root, None) else {
+        let Ok(source) = gltf::Source::of(root, chunk) else {
             continue;
         };
         match gltf::images(root, &source) {

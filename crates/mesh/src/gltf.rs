@@ -132,12 +132,16 @@ pub enum GltfError {
         count: usize,
     },
 
-    /// A buffer this reader will not go and get.
+    /// A resource this reader will not go and get: a buffer, or an image.
     ///
     /// Refused rather than ignored: a document whose geometry lives in a
     /// second file describes a model this cannot assemble, and returning
     /// what it *can* assemble would be returning half a model without
-    /// saying so.
+    /// saying so. The same holds for an image, which is why the two
+    /// share a refusal -- but **the caller's answer differs**, because a
+    /// missing texture leaves a whole model where a missing buffer
+    /// leaves none, so a caller that only wanted geometry is entitled to
+    /// carry on past this one.
     ExternalResource,
 
     /// A payload embedded in the document that will not decode.
@@ -316,7 +320,7 @@ impl core::fmt::Display for GltfError {
             } => write!(f, "`{table}[{index}]` of a table holding {count}"),
             Self::ExternalResource => write!(
                 f,
-                "this document keeps its geometry somewhere else, and this reader takes bytes"
+                "this document keeps a resource somewhere else, and this reader takes bytes"
             ),
             Self::Payload(refusal) => write!(f, "an embedded payload will not decode: {refusal}"),
             Self::BufferWithoutSource { buffer } => write!(
@@ -704,11 +708,13 @@ pub struct Image<'a> {
     /// document's answer, and the URI's is what is left when it gives
     /// none.
     ///
-    /// **`None` is the document having said nothing**, which is not the
-    /// same as `Some("")` — a URI may carry an empty media type, and
-    /// the decoder below reports that rather than applying RFC 2397's
-    /// default, so that a caller needing an explicit type can see there
-    /// was none.
+    /// **`None` is the document having said nothing, whichever side said
+    /// it.** A `mimeType` written `""` and a payload carrying no type at
+    /// all both normalise to `None`, so this is never `Some("")` — a
+    /// value every caller would otherwise have to know to treat as
+    /// absent. The decoder below reports a payload's missing type as an
+    /// empty string rather than applying RFC 2397's default, and this is
+    /// where that becomes an absence.
     ///
     /// **Reported, never judged.** Which types are readable is a fact
     /// about what the caller is doing with the bytes, and this layer
@@ -873,6 +879,178 @@ pub fn images<'s>(root: Value<'_>, source: &'s Source<'_>) -> Result<Vec<Image<'
             },
             media_type,
             bytes,
+        });
+    }
+    Ok(out)
+}
+
+/// What a document says beyond its geometry.
+///
+/// **Two tables that travel together because one caller wants both.**
+/// A tool reporting what it imported needs the materials and the images
+/// at once, and the alternative -- asking for each separately -- makes
+/// the caller build the container dispatch and the buffer table twice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tables {
+    /// Every material, in the vocabulary the format states them in.
+    pub materials: Vec<Material>,
+    /// Which image each texture draws its bytes from, where it says.
+    ///
+    /// **The step between a material and an image, which is a step.** A
+    /// material names a *texture*, and a texture names a *source* — so a
+    /// caller holding a material's `TextureRef` and a list of images
+    /// cannot pair them without this. `source` is optional in the
+    /// format, because an extension may supply the image instead, and a
+    /// texture that names none reads as `None` rather than as zero.
+    pub textures: Vec<Option<u32>>,
+    /// Every image the document carries.
+    pub images: Vec<Stored>,
+}
+
+/// An image a caller can hold after the document is gone.
+///
+/// **Separate from [`Image`] because owning is a different thing from
+/// borrowing, not a mode of it.** An `Image` points into the document
+/// that produced it and costs nothing; this outlives that document, and
+/// for an image stored in a `bufferView` that means a copy. Making it a
+/// second type rather than a flag on the first keeps the cost where a
+/// reader can see it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stored {
+    /// What the document called it, if it called it anything.
+    pub name: Option<String>,
+    /// The media type the document states for these bytes, if it states
+    /// one. See [`Image::media_type`] for how the two possible
+    /// statements are reconciled.
+    pub media_type: Option<String>,
+    /// How long the image is, whether or not its bytes were kept.
+    ///
+    /// **The length is free and the bytes are not.** A caller reporting
+    /// what a model carries wants this and nothing else, so it is stated
+    /// separately rather than being read off a `bytes` that may not be
+    /// there.
+    pub len: usize,
+    /// The bytes, when [`ImageBytes::Kept`] asked for them.
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// Whether a caller wants an image's bytes or only the fact of it.
+///
+/// **A copy is the only way out of the borrow, so it has to be asked
+/// for.** An image read from a `bufferView` points into the document,
+/// and a `Tables` outlives the parse that produced it -- so keeping the
+/// bytes means copying them. A caller reporting what a model carries
+/// needs the name, the type and the length, and none of those need the
+/// bytes; a caller writing files needs all of it.
+///
+/// Stated at the call site rather than inferred, because the cost is
+/// the whole cost of the call: on a four-megabyte texture the copy
+/// measured at 99% of the time and 99.9% of the bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageBytes {
+    /// Copy them, because they are going somewhere.
+    Kept,
+    /// Report the length and drop them.
+    Counted,
+}
+
+/// Read what a document says beyond its geometry, in either shape.
+///
+/// **The sibling of [`read`], and it exists for the same reason.** A
+/// binary glTF wraps its document in a container beside a chunk; a
+/// `.gltf` is that document on its own, and a caller that wants the
+/// tables out of either without holding the parse would otherwise write
+/// that dispatch itself.
+///
+/// It does not replace [`images`] for a caller that can hold the parse:
+/// the images here own their bytes, so which source each came from is
+/// no longer visible in the value.
+///
+/// **The images own their bytes**, which a borrowed form could not: the
+/// parsed document lives inside this call and cannot be handed back
+/// beside things that point into it. A caller that wants to avoid the
+/// copy has [`images`] and can hold the parse itself.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the layer that refused and carrying its
+/// numbers.
+pub fn tables(bytes: &[u8], wanted: ImageBytes) -> Result<Tables, GltfError> {
+    let (document, chunk) = if glb::looks_like(bytes) {
+        let container = glb::read(bytes).map_err(GltfError::Container)?;
+        (container.json, container.binary)
+    } else {
+        (bytes, None)
+    };
+
+    let json = parse(document)?;
+    let root = json.root();
+    let source = Source::of(root, chunk)?;
+    // **Owning the bytes is the one thing here that can amplify**, and
+    // it is bounded by the same ceiling geometry and materials answer
+    // to. An image from a `bufferView` borrows until this line; a
+    // document that points a thousand images at one shared megabyte
+    // costs two bytes an entry to write and a gigabyte to hold, which
+    // is the shape the rest of this crate already refuses.
+    let mut held = 0_usize;
+    let mut owned = Vec::new();
+    for image in images(root, &source)? {
+        let len = image.bytes.len();
+        let bytes = match wanted {
+            ImageBytes::Counted => None,
+            ImageBytes::Kept => {
+                // **The one line here that can amplify, and the ceiling
+                // it answers to.** Nothing says two images must name two
+                // views: a document may point a thousand of them at one
+                // shared megabyte, paying about thirty bytes an entry to
+                // do it. Measured before this existed, that reached
+                // nearly three thousand times the input and grew as its
+                // square.
+                crate::refuse_over_image_ceiling(held, len).map_err(GltfError::Geometry)?;
+                held += len;
+                Some(image.bytes.into_owned())
+            }
+        };
+        owned.push(Stored {
+            name: image.name,
+            media_type: image.media_type,
+            len,
+            bytes,
+        });
+    }
+
+    Ok(Tables {
+        materials: materials(root)?,
+        textures: textures(root)?,
+        images: owned,
+    })
+}
+
+/// Which image each texture draws its bytes from.
+///
+/// **Only `source`, because that is the only member anything here can
+/// follow.** A texture also names a sampler, and a sampler is filtering
+/// and wrapping — facts for whoever draws with it, and nothing this
+/// crate has a home for yet.
+///
+/// # Errors
+///
+/// A [`GltfError`]: `Document` for a table or an entry of the wrong
+/// kind, or a `source` that is not a number.
+pub fn textures(root: Value<'_>) -> Result<Vec<Option<u32>>, GltfError> {
+    let Some(table) = root.get("textures") else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for entry in table.elements().map_err(GltfError::Document)? {
+        // An object, for the reason every other table checks: every
+        // member of a number answers absent, so a texture written `5`
+        // would read as one naming no source.
+        entry.entries().map_err(GltfError::Document)?;
+        out.push(match entry.get("source") {
+            None => None,
+            Some(source) => Some(source.as_u32()?),
         });
     }
     Ok(out)

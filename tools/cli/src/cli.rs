@@ -191,6 +191,16 @@ pub struct Invocation {
     /// `ui-compile` and `asset-import` (parse enforces, and requires):
     /// where the compiled document, or the canonical mesh, is written.
     pub out: Option<String>,
+    /// `asset-import` only (parse enforces): the directory an imported
+    /// model's images are written into.
+    ///
+    /// **Absent means none are written.** A model can carry its textures
+    /// inside itself, and a command that scattered them beside the blob
+    /// because the input happened to hold some would be writing files
+    /// nobody asked for. The flag is the asking, and without it the
+    /// images are still counted and reported -- so a caller can find out
+    /// there are any before deciding where they go.
+    pub images: Option<String>,
     /// `asset-inspect` only (parse enforces): also check every payload
     /// against its recorded digest. Off by default because it reads every
     /// byte, where listing reads only the table.
@@ -353,6 +363,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut pack: Option<String> = None;
     let mut from: Option<String> = None;
     let mut out: Option<String> = None;
+    let mut images: Option<String> = None;
     let mut verify = false;
     let mut compare: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
@@ -444,6 +455,10 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--out"))?;
                 out = Some(path.clone());
             }
+            "--images" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--images"))?;
+                images = Some(path.clone());
+            }
             "--from" => {
                 let path = rest.next().ok_or(ParseError::MissingValue("--from"))?;
                 from = Some(path.clone());
@@ -490,6 +505,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         pack.as_deref(),
         from.as_deref(),
         out.as_deref(),
+        images.as_deref(),
         verify,
     )?;
     check_determinism_mode(command, emit.as_deref(), &compare, target.as_deref())?;
@@ -506,6 +522,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             pack,
             from,
             out,
+            images,
             verify,
             compare,
             emit,
@@ -605,6 +622,7 @@ fn check_file_combination(
     pack: Option<&str>,
     from: Option<&str>,
     out: Option<&str>,
+    images: Option<&str>,
     verify: bool,
 ) -> Result<(), ParseError> {
     let is_pack = command == Some(Command::AssetPack);
@@ -625,6 +643,16 @@ fn check_file_combination(
     }
     if verify && !is_inspect {
         return Err(ParseError::UnexpectedArgument("--verify".to_string()));
+    }
+    if images.is_some() && !is_import {
+        return Err(ParseError::UnexpectedArgument("--images".to_string()));
+    }
+    // **An empty path is the working directory**, and `create_dir_all("")`
+    // succeeds, so `--images ""` would quietly scatter a model's textures
+    // wherever the process happens to be standing. Refused where the
+    // other path rules live rather than deep in the writer.
+    if images.is_some_and(str::is_empty) {
+        return Err(ParseError::MissingValue("--images"));
     }
 
     // Then what each subcommand cannot work without. Both paths are the
@@ -793,6 +821,8 @@ pub fn usage() -> String {
         "                    the model file to read\n",
         "  --out <path>      (ui-compile, asset-import; required) where the\n",
         "                    compiled document, or the canonical mesh, is written\n",
+        "  --images <path>   (asset-import only) write the model's own images into\n",
+        "                    this directory; without it they are counted, not written\n",
         "  --verify          (asset-inspect only) check each entry against its digest\n",
         "  --emit <path>     (determinism only) write this target's digests here\n",
         "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
@@ -846,6 +876,7 @@ mod tests {
             pack: None,
             from: None,
             out: None,
+            images: None,
             verify: false,
             compare: Vec::new(),
             emit: None,

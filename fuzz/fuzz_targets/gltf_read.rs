@@ -49,6 +49,16 @@ fuzz_target!(|data: &[u8]| {
     // trust is likeliest to be.
     tables_answer(data);
 
+    // **The owning entry point, from the raw bytes, doing its own
+    // dispatch.** Everything above holds a parse and borrows out of it;
+    // `tables` is what a caller uses when it cannot, and it is the only
+    // path that *copies* an image. That copy is what a document can
+    // amplify -- nothing says two images may not name one buffer view,
+    // so a thousand entries can point at one megabyte and the bytes come
+    // back a thousand times over. The fuzzer's own memory limit is what
+    // catches that, and it can only catch it if something calls this.
+    owned_tables_answer(data);
+
     let Ok(mesh) = gltf::read(data) else {
         // A refusal is an answer. Which refusal is the suite's business
         // beside the crate; that the call returned at all is this
@@ -255,4 +265,62 @@ fn tables_answer(data: &[u8]) {
     // Reading twice answers the same, as everywhere else here.
     let again = gltf::materials(root).expect("what read once reads again");
     assert_eq!(again, materials, "the same bytes read to the same materials");
+}
+
+/// Read the owning tables, and hold them to the borrowing ones.
+///
+/// Separate from the block above because it starts from bytes rather
+/// than from a parse: it repeats the container dispatch on purpose, so
+/// that the dispatch itself is attacked and not merely the readers
+/// underneath it.
+fn owned_tables_answer(data: &[u8]) {
+    let Ok(counted) = gltf::tables(data, gltf::ImageBytes::Counted) else {
+        // A refusal is an answer, as everywhere else in this target.
+        return;
+    };
+
+    // **Counting states the length without holding the bytes**, which is
+    // the whole point of the distinction: a caller reporting what a
+    // model carries pays nothing for images it will never write.
+    for image in &counted.images {
+        assert!(
+            image.bytes.is_none(),
+            "an image was counted and its bytes were kept anyway"
+        );
+    }
+
+    let Ok(kept) = gltf::tables(data, gltf::ImageBytes::Kept) else {
+        // Keeping can refuse where counting does not: the copy answers to
+        // a ceiling and the count does not need to.
+        return;
+    };
+
+    assert_eq!(
+        kept.materials, counted.materials,
+        "the same bytes read to the same materials"
+    );
+    assert_eq!(
+        kept.textures, counted.textures,
+        "and to the same texture table"
+    );
+    assert_eq!(
+        kept.images.len(),
+        counted.images.len(),
+        "and to the same number of images"
+    );
+    for (kept, counted) in kept.images.iter().zip(&counted.images) {
+        assert_eq!(kept.name, counted.name);
+        assert_eq!(kept.media_type, counted.media_type);
+        // **The length is the same whether or not the bytes were kept**,
+        // which is what lets a report be built from the cheap half.
+        assert_eq!(
+            kept.len, counted.len,
+            "one image measured two different lengths"
+        );
+        assert_eq!(
+            kept.bytes.as_ref().map(Vec::len),
+            Some(kept.len),
+            "an image kept a different number of bytes than it measured"
+        );
+    }
 }

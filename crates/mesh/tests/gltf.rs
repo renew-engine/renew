@@ -1117,6 +1117,171 @@ fn an_image_that_states_no_type_anywhere_reports_none() {
     assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
 }
 
+/// **A texture says which image it draws from, and that is a step.**
+///
+/// A material names a texture and a texture names a source, so the two
+/// indices are not the same number and a caller pairing them directly
+/// is wrong whenever they differ. This is the table that joins them.
+#[test]
+fn a_texture_names_the_image_it_draws_from() {
+    let json = document(r#"{ "textures": [{ "source": 2 }, { "sampler": 0 }, { "source": 0 }] }"#);
+    let read = gltf::textures(json.root()).expect("three textures");
+    assert_eq!(read, [Some(2), None, Some(0)]);
+}
+
+/// **A texture with no source is `None`, not zero.**
+///
+/// The format leaves `source` optional because an extension may supply
+/// the image instead. Defaulting it to zero would point every such
+/// texture at whichever image happened to be first.
+#[test]
+fn a_texture_without_a_source_is_not_texture_zero() {
+    let json = document(r#"{ "textures": [{}] }"#);
+    assert_eq!(gltf::textures(json.root()).expect("one texture"), [None]);
+}
+
+/// A document with no texture table has none, which is not a refusal.
+#[test]
+fn a_document_with_no_textures_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(gltf::textures(json.root()).expect("no textures").is_empty());
+}
+
+/// **A texture is an object**, and one that is not is refused for that
+/// rather than read as naming no source.
+#[test]
+fn a_texture_that_is_not_an_object_is_refused() {
+    let json = document(r#"{ "textures": [5] }"#);
+    assert_eq!(
+        gltf::textures(json.root())
+            .expect_err("a number is not a texture")
+            .name(),
+        "Document"
+    );
+
+    let source = document(r#"{ "textures": [{ "source": "first" }] }"#);
+    assert_eq!(
+        gltf::textures(source.root())
+            .expect_err("a name is not an index")
+            .name(),
+        "Document"
+    );
+}
+
+/// **The tables read from either shape of the same asset.**
+///
+/// The whole reason this entry point exists: a caller would otherwise
+/// write the container dispatch itself, and the two places that already
+/// had it written each got it wrong in a different way.
+#[test]
+fn the_tables_read_from_a_document_and_from_a_container() {
+    let text = r#"{"asset":{"version":"2.0"},
+"materials":[{"name":"brass","metallicFactor":1.0,"roughnessFactor":0.25}],
+"textures":[{"source":0}],
+"images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]}"#;
+
+    let alone =
+        gltf::tables(text.as_bytes(), gltf::ImageBytes::Kept).expect("a document on its own");
+    assert_eq!(alone.materials.len(), 1);
+    assert_eq!(alone.materials[0].name.as_deref(), Some("brass"));
+    assert_eq!(alone.textures, [Some(0)]);
+    assert_eq!(alone.images.len(), 1);
+    assert_eq!(alone.images[0].name.as_deref(), Some("grain"));
+    assert_eq!(alone.images[0].bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
+
+    // The same document wrapped, which the layers below cannot tell
+    // apart and this one must.
+    let wrapped = gltf::tables(&container(text, &[]), gltf::ImageBytes::Kept)
+        .expect("the same document, wrapped");
+    assert_eq!(wrapped, alone);
+}
+
+/// **An image out of a container's chunk owns its bytes afterwards.**
+///
+/// It is borrowed while the document is alive and this hands it back
+/// after the document is gone, so the copy is the whole point rather
+/// than an inefficiency: without it the value could not be returned at
+/// all.
+#[test]
+fn an_image_stored_in_a_chunk_survives_the_document() {
+    let text = r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":[{"bufferView":0,"mimeType":"image/png"}]}"#;
+
+    let read = gltf::tables(&container(text, &[9, 8, 7, 6]), gltf::ImageBytes::Kept)
+        .expect("one image, from the chunk");
+    assert_eq!(read.images.len(), 1);
+    assert_eq!(read.images[0].bytes.as_deref(), Some(&[9, 8, 7, 6][..]));
+    assert_eq!(read.images[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **Many images may name one view, and asking for their bytes copies
+/// each one.**
+///
+/// Nothing in the format says two images must name two views. A
+/// document that points a thousand of them at one shared region pays
+/// about thirty bytes an entry to write and a gigabyte to hold, which
+/// measured at nearly three thousand times the input and grew as its
+/// square. Counting them instead costs nothing, and that is what a
+/// caller reporting a model wants.
+#[test]
+fn images_that_share_one_view_are_counted_without_being_copied() {
+    let mut aliased = String::from(
+        r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":["#,
+    );
+    for index in 0..64 {
+        if index > 0 {
+            aliased.push(',');
+        }
+        aliased.push_str(r#"{"bufferView":0,"mimeType":"image/png"}"#);
+    }
+    aliased.push_str("]}");
+    let packed = container(&aliased, &[1, 2, 3, 4]);
+
+    let counted = gltf::tables(&packed, gltf::ImageBytes::Counted).expect("counted");
+    assert_eq!(counted.images.len(), 64);
+    for image in &counted.images {
+        // **The length is known and the bytes are not held.** A caller
+        // reporting what a model carries needs exactly this much.
+        assert_eq!(image.len, 4);
+        assert_eq!(image.bytes, None);
+    }
+
+    let kept = gltf::tables(&packed, gltf::ImageBytes::Kept).expect("kept");
+    for image in &kept.images {
+        assert_eq!(image.bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
+    }
+    // The two answer the same about everything but the bytes.
+    assert_eq!(
+        counted.images.iter().map(|image| image.len).sum::<usize>(),
+        kept.images.iter().map(|image| image.len).sum::<usize>()
+    );
+}
+
+/// A document with neither table has neither, which is not a refusal.
+#[test]
+fn a_document_with_no_tables_has_none() {
+    let read = gltf::tables(br#"{"asset":{"version":"2.0"}}"#, gltf::ImageBytes::Kept)
+        .expect("nothing is not a refusal");
+    assert_eq!(read, gltf::Tables::default());
+}
+
+/// **A refusal from either table is the whole call's refusal**, named by
+/// the layer that made it rather than by this one.
+#[test]
+fn a_table_that_refuses_refuses_the_call() {
+    let refused = gltf::tables(
+        br#"{"asset":{"version":"2.0"},"images":[{"uri":"grain.png"}]}"#,
+        gltf::ImageBytes::Kept,
+    )
+    .expect_err("a second file is not opened");
+    assert_eq!(refused, GltfError::ExternalResource);
+}
+
 /// **A URI spelled with escapes is the URI it spells.**
 ///
 /// JSON lets a document write `/` as `\/`, and a `data:` payload is

@@ -408,6 +408,19 @@ fn image_seeds() -> Vec<(String, Vec<u8>)> {
             "image-payload-broken".to_owned(),
             with(r#"[{"uri":"data:image/png;base64,AQID!A=="}]"#),
         ),
+        // **Several images over one view, which is the shape that
+        // amplifies.** Nothing in the format says two images may not
+        // name the same region, so the entries are cheap to write and
+        // each one costs a copy to hold. Kept as a seed because the
+        // arithmetic it provokes is not reachable from any other shape
+        // here.
+        (
+            "image-shared-view".to_owned(),
+            stored(
+                r#"[{"bufferView":0,"mimeType":"image/png"},{"bufferView":0,"mimeType":"image/png"},
+{"bufferView":0,"mimeType":"image/jpeg"},{"bufferView":0,"mimeType":"image/png"}]"#,
+            ),
+        ),
         // A second file, which this crate will not open.
         (
             "image-names-a-file".to_owned(),
