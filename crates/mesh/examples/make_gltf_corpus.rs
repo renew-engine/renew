@@ -1,4 +1,4 @@
-//! Write the binary glTF reader's seed corpus.
+//! Write the glTF reader's seed corpus, in both shapes it reads.
 //!
 //! **Every byte here is built by this program**, document and geometry
 //! alike. A container wraps somebody's model, so a downloaded one would
@@ -109,7 +109,7 @@ const SIMPLEST: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
 "buffers":[{"byteLength":36}],
-"bufferViews":[{"byteLength":36}]}"#;
+"bufferViews":[{"buffer":0,"byteLength":36}]}"#;
 
 /// Everything named: normals, coordinates and an index stream.
 const EVERYTHING: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
@@ -122,8 +122,8 @@ const EVERYTHING: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],
 "buffers":[{"byteLength":102}],
 "bufferViews":[
-{"byteOffset":0,"byteLength":36},{"byteOffset":36,"byteLength":36},
-{"byteOffset":72,"byteLength":24},{"byteOffset":96,"byteLength":6}]}"#;
+{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},
+{"buffer":0,"byteOffset":72,"byteLength":24},{"buffer":0,"byteOffset":96,"byteLength":6}]}"#;
 
 /// Containers that read, so the search has somewhere to mutate *from*.
 fn readable_seeds() -> Vec<(String, Vec<u8>)> {
@@ -179,10 +179,9 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
-/// One container per refusal, each wrong in exactly one way.
 /// Canonical base64, so a document can carry its own geometry.
 ///
-/// The same encoder four other targets share, included rather than
+/// The same encoder six other targets share, included rather than
 /// copied: a seed that embeds a payload has to spell it, and a payload
 /// spelled by hand is a fixture that stops meaning what its name says.
 #[path = "../tests/shared/base64_encode.rs"]
@@ -241,9 +240,25 @@ fn document_seeds() -> Vec<(String, Vec<u8>)> {
                 .replace("application/octet-stream", "image/png")
                 .into_bytes(),
         ),
+        // A payload that will not decode, which reaches the decoder's own
+        // refusals through the document -- five layers of wrapping, and
+        // nothing exercised it until this seed.
+        (
+            "document-payload-will-not-decode".to_owned(),
+            embedded.replace("base64,", "base64,!!").into_bytes(),
+        ),
+        // A buffer declaring more than its payload holds, which is the
+        // document and its own bytes disagreeing.
+        (
+            "document-buffer-too-short".to_owned(),
+            embedded
+                .replace(r#""byteLength":36"#, r#""byteLength":600"#)
+                .into_bytes(),
+        ),
     ]
 }
 
+/// One container per refusal, each wrong in exactly one way.
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
     wrong_magic[0] = b'X';
@@ -363,7 +378,16 @@ fn main() -> ExitCode {
         .chain(refused_seeds())
         .chain(document_seeds())
     {
-        let path = dir.join(format!("{name}.glb"));
+        // **The extension follows the bytes.** Half these seeds are
+        // documents rather than containers, and `.glb` means container
+        // everywhere else in this tree; deriving it from the magic keeps
+        // the two from drifting apart as seeds are added.
+        let shape = if bytes.starts_with(b"glTF") {
+            "glb"
+        } else {
+            "gltf"
+        };
+        let path = dir.join(format!("{name}.{shape}"));
         if path.exists() {
             kept += 1;
             continue;

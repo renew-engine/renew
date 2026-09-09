@@ -69,9 +69,11 @@ pub enum Format {
     Blob,
     /// A glTF document, on its own rather than in a container.
     ///
-    /// The self-contained form of the same asset: the geometry travels
-    /// as payloads embedded in the document instead of as a chunk
-    /// beside it. Both forms read through the same layers.
+    /// Its geometry travels as payloads embedded in the document, or in
+    /// files beside it that this crate does not open -- **this arm is
+    /// the format, not the self-contained subset of it**, so a document
+    /// naming a second file is detected here and refused by the reader
+    /// rather than being detected as something else.
     Gltf,
 
     /// The binary glTF container.

@@ -1207,16 +1207,16 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 24;
+const GLTF_LOW_WATER: usize = 26;
 
-/// How many distinct outcomes the container seeds must still reach.
+/// How many distinct outcomes the glTF seeds must still reach.
 ///
 /// **Measured, not guessed** — `gltf_census` below prints it. The outer
 /// vocabulary is what is counted: a caller keys on which *layer* refused,
 /// and the inner refusal's own name is one call away through the value.
-const GLTF_DISTINCT_OUTCOMES: usize = 11;
+const GLTF_DISTINCT_OUTCOMES: usize = 13;
 
-/// Refusals a container seed must provoke.
+/// Refusals a glTF seed must provoke.
 ///
 /// * `Container` and `Document` are the two framing layers, and a corpus
 ///   reaching neither would be exercising the reader with nothing but
@@ -1225,11 +1225,14 @@ const GLTF_DISTINCT_OUTCOMES: usize = 11;
 ///   a view past its buffer — and the layer a wrong bound would show in.
 /// * `Geometry` is everything the assembly and placement layers refuse,
 ///   reached here through six layers of document rather than directly.
-/// * The buffer layer's own three are here because a document that
-///   carries its geometry rather than sitting beside a chunk is the
-///   whole second shape of this format, and a corpus of containers
-///   alone never enters it.
-const GLTF_REQUIRED: [&str; 7] = [
+/// * **All six the buffer layer can produce are here.** A document
+///   carrying its own geometry rather than sitting beside a chunk is
+///   half of this format, and a corpus of containers alone never enters
+///   it -- so the list names every refusal that half can reach rather
+///   than the three that happened to have seeds. `ExternalResource` is
+///   not new: it moved down a layer, from the view table to the buffer
+///   that view points at.
+const GLTF_REQUIRED: [&str; 10] = [
     "Container",
     "Document",
     "Accessor",
@@ -1237,6 +1240,9 @@ const GLTF_REQUIRED: [&str; 7] = [
     "NoBinaryChunk",
     "ExternalResource",
     "WrongMediaType",
+    "Payload",
+    "BufferTooShort",
+    "BufferWithoutSource",
 ];
 
 fn gltf_corpus_dir() -> PathBuf {
@@ -1347,6 +1353,16 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
             .iter()
             .any(|bytes| gltf::read(bytes).is_ok_and(|mesh| mesh.triangles() > 1)),
         "no seed joins two primitives, so the concatenation path is unexercised"
+    );
+
+    // **A document that reads, not only a container that does.** The
+    // whole second shape of this format is a file with no container
+    // around it, and the corpus held exactly one seed of that shape that
+    // succeeded -- deletable without any floor here noticing.
+    assert!(
+        readable.iter().any(|bytes| !bytes.starts_with(b"glTF")),
+        "every seed that reads is a container, so the shape that carries its own geometry is \
+         exercised by nothing"
     );
 }
 

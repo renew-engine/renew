@@ -15,18 +15,19 @@
 //! hand-edited or truncated document**, and it has one refusal here that
 //! carries the table, the index and how many rows there were.
 //!
-//! # What is refused rather than fetched
+//! # What is decoded, and what is refused rather than fetched
 //!
-//! A buffer may name a `uri`, which is a second file or an embedded
-//! payload. **This reader refuses both by name.** Reading a second file
-//! would mean opening one, which this crate does not do and says so
-//! everywhere else; decoding an embedded one needs [`crate::data_uri`],
-//! which this reader does not yet call. Neither is a silent limitation:
-//! a document that wants either is refused, so the caller knows to
-//! convert the file rather than wondering what it got.
+//! A buffer may name a `uri`, and the two things that can be are treated
+//! differently. **A `data:` URI is decoded in place** through
+//! [`crate::data_uri`], which is how a document that travels as one file
+//! carries its geometry. **Anything else names a second file**, and
+//! opening one is not something this crate does -- so it is refused by
+//! name, and the caller knows to convert the file rather than wondering
+//! what it got.
 //!
-//! The one buffer this reads is the container's own binary chunk, which
-//! is how a self-contained binary glTF stores its geometry.
+//! A buffer with no `uri` at all is the container's own binary chunk,
+//! and only the first buffer may be: the specification leaves any other
+//! sourceless buffer undefined, and undefined is refused here.
 
 use renew_json::{Json, JsonError, Value};
 use renew_math::{Mat4, Quat, Vec3, Vec4};
@@ -62,6 +63,23 @@ const OCTET_STREAM: &str = "application/octet-stream";
 /// produced here once already.
 #[must_use]
 pub fn looks_like(bytes: &[u8]) -> bool {
+    // **Bounded before it is thorough.** The parse below reads the whole
+    // input, and every other arm of the dispatch this feeds is
+    // deliberately bounded and says so -- so without this line a fifty
+    // megabyte OBJ pays a full scan to be told it is not JSON, and pays
+    // it before the cheap check that would have recognised it.
+    //
+    // The two answers are the same. A document's root is an object, so
+    // when the first byte that is not whitespace is not `{`, either the
+    // parse fails or the root is not an object, and asking a non-object
+    // for a member answers `None` either way.
+    let Some(first) = bytes.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return false;
+    };
+    if bytes.get(first) != Some(&b'{') {
+        return false;
+    }
+
     Json::parse(bytes).is_ok_and(|json| {
         json.root()
             .get("asset")
@@ -72,7 +90,7 @@ pub fn looks_like(bytes: &[u8]) -> bool {
 
 /// Every way a document can fail to describe geometry this can read.
 ///
-/// **Four of these carry another layer's refusal**, and that is the
+/// **Five of these carry another layer's refusal**, and that is the
 /// point of the type: a caller wants to know whether the container was
 /// malformed, the JSON was, an accessor's arithmetic was, or the
 /// geometry was — because those send them to four different places.
@@ -328,7 +346,11 @@ fn entry<'a>(
             count: 0,
         });
     };
-    table.index(index).ok_or(GltfError::NoSuchEntry {
+    // **`ok_or_else`, not `ok_or`.** `Value::len` counts the table's
+    // children, so building the refusal eagerly counts every row of
+    // every table on every *successful* lookup -- which is the larger
+    // half of what made reading a table quadratic.
+    table.index(index).ok_or_else(|| GltfError::NoSuchEntry {
         table: name,
         index,
         count: table.len(),
@@ -346,15 +368,23 @@ pub fn buffer_views(root: Value<'_>) -> Result<Vec<(usize, BufferView)>, GltfErr
         // the caller finds out when it asks for a primitive.
         return Ok(Vec::new());
     };
-    let mut out = Vec::with_capacity(table.len());
-    for index in 0..table.len() {
-        let view = entry(Some(table), "bufferViews", index)?;
-
-        // **The buffer travels beside the view.** A document may hold
-        // several, and which one a view points at is as much a part of
-        // the view as its offset -- the table below is read the same way
-        // `accessors` is, each row carrying the index it points at.
-        let buffer = number_or(view, "buffer", 0)? as usize;
+    // **One pass, not one walk per row.** A `Value`'s index restarts
+    // from the head of the array, and its own documentation says a layer
+    // that wants a table it will hit thousands of times should build one
+    // in a single pass. This is that layer, and this is that pass.
+    let mut out = Vec::new();
+    for view in table.elements().map_err(GltfError::Document)? {
+        // **Required, and with no default of its own.** `byteOffset` may
+        // be absent and mean zero because the format says so; `buffer`
+        // may not. Defaulting it was harmless while every buffer but the
+        // first was refused -- absent and zero named the same bytes --
+        // and became a wrong answer the moment a second buffer could be
+        // read, because a view naming none would silently be handed the
+        // first one's.
+        //
+        // The buffer travels beside the view from here, the way an
+        // accessor already carries the view it reads through.
+        let buffer = required(view, "buffer")?.as_u32()? as usize;
 
         let byte_length = required(view, "byteLength")?.as_u32()?;
         out.push((
@@ -383,16 +413,19 @@ pub fn buffer_views(root: Value<'_>) -> Result<Vec<(usize, BufferView)>, GltfErr
 ///
 /// The specification is explicit that a resource **may be longer** than
 /// the buffer that names it, and that only the range from zero to
-/// `byteLength` is referenced. That is not a technicality: the
-/// container pads its binary chunk to a four-byte boundary, so the chunk
-/// is *routinely* longer than the buffer inside it. Cutting here is what
-/// stops a view reaching past the buffer into that padding and being
-/// handed bytes the document never claimed.
+/// `byteLength` is referenced. That is not a technicality: the container
+/// pads its binary chunk to a four-byte boundary, so the chunk is longer
+/// than the buffer inside it **whenever that buffer's length is not a
+/// multiple of four** -- which the corpus's fully furnished document
+/// happens to be, at a hundred and two bytes in a hundred-and-four-byte
+/// chunk. Cutting here is what stops a view reaching past the buffer
+/// into that padding and being handed bytes the document never claimed.
 ///
 /// # Errors
 ///
-/// A [`GltfError`] naming which buffer, and what about it: no source, no
-/// chunk to be, a media type a buffer may not declare, a payload that
+/// A [`GltfError`] naming what was wrong: a source this crate will not
+/// fetch, or -- naming the buffer as well -- no source at all, no chunk
+/// for it to be, a media type a buffer may not declare, a payload that
 /// will not decode, or a resource shorter than the length declared for
 /// it.
 pub fn buffers<'a>(
@@ -405,9 +438,8 @@ pub fn buffers<'a>(
         return Ok(Vec::new());
     };
 
-    let mut out: Vec<Cow<'a, [u8]>> = Vec::with_capacity(table.len());
-    for index in 0..table.len() {
-        let buffer = entry(Some(table), "buffers", index)?;
+    let mut out: Vec<Cow<'a, [u8]>> = Vec::new();
+    for (index, buffer) in table.elements().map_err(GltfError::Document)?.enumerate() {
         let declared = required(buffer, "byteLength")?.as_u32()? as usize;
 
         let resource: Cow<'a, [u8]> = match buffer.get("uri") {
@@ -428,7 +460,15 @@ pub fn buffers<'a>(
                     return Err(GltfError::ExternalResource);
                 }
                 let payload = data_uri::read(&text).map_err(GltfError::Payload)?;
-                if payload.media_type != GLTF_BUFFER && payload.media_type != OCTET_STREAM {
+                // **Compared without case.** RFC 2045 says a media type is
+                // not case sensitive, and the decoder one file over
+                // already forgives the marker's case under its own rule
+                // that a difference which cannot change an output byte is
+                // not a difference. Two readers of one URI should not
+                // disagree about that.
+                if !payload.media_type.eq_ignore_ascii_case(GLTF_BUFFER)
+                    && !payload.media_type.eq_ignore_ascii_case(OCTET_STREAM)
+                {
                     return Err(GltfError::WrongMediaType {
                         found: payload.media_type.into(),
                     });
@@ -524,14 +564,6 @@ fn row<T: Copy>(table: &[T], name: &'static str, index: usize) -> Result<T, Gltf
     })
 }
 
-/// Resolve an accessor index into the bytes it addresses.
-///
-/// **This is the one place the stride crosses from a view to an
-/// accessor**, and it is a function rather than three call sites for
-/// that reason: the format puts `byteStride` on the view because
-/// interleaved attributes share it, and the arithmetic wants it on the
-/// accessor. A reader that copied it at each attribute would have three
-/// chances to forget.
 /// Everything a primitive needs in order to find its bytes.
 ///
 /// The three tables are always read together and always in the same
@@ -731,7 +763,7 @@ fn mesh_at(
     Ok(())
 }
 
-/// Read a whole binary glTF into one mesh.
+/// Read a whole binary glTF, or a document on its own, into one mesh.
 ///
 /// # The walk cannot hang, by construction
 ///

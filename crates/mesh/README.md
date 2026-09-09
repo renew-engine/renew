@@ -1,7 +1,8 @@
 # renew-mesh
 
 Readers for the mesh files other tools write — STL, PLY and OBJ so far, plus the
-MTL material libraries an OBJ refers to, the binary glTF container, and a
+MTL material libraries an OBJ refers to, the binary glTF container and the glTF documents that travel on their
+own, and a
 canonical blob for keeping what was read without parsing the original again.
 Bytes in, validated geometry out, and nothing else: this crate never opens a
 file, never takes a path, and never reads a clock.
@@ -205,7 +206,7 @@ the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_mtl_corpus.rs` the 21 MTL ones and
 `examples/make_glb_corpus.rs` the 20 container ones and
 `examples/make_accessor_corpus.rs` the 21 accessor ones and
-`examples/make_gltf_corpus.rs` the 19 whole-container ones; between them
+`examples/make_gltf_corpus.rs` the 26 document-and-container ones; between them
 every committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
@@ -283,7 +284,8 @@ nothing of. They are unrepresentable rather than accepted and mis-sized.
 
 ## The document, which is where the indices are
 
-`gltf::read` takes the bytes of a binary glTF and returns geometry. It is
+`gltf::read` takes the bytes of a binary glTF, or of a document on
+its own, and returns geometry. It is
 the only layer here that knows the format has a document at all: the
 container hands back two byte strings and parses neither, the accessor
 layer is arithmetic over a range, and this is where the numbers that
@@ -314,11 +316,12 @@ Cutting is what stops a view reaching past the buffer into that padding.
 glTF wraps its document in a container beside a chunk of geometry; a
 `.gltf` is that document on its own, carrying its geometry as embedded
 payloads. `read` takes either, choosing on the four-byte magic, and
-everything below that line is identical.
+everything below the container layer is identical -- one shape has a
+chunk to offer and the other has none.
 
 **Its refusals name the layer that failed**, not just the fault: a
-`GltfError` says whether the container, the document, an accessor or the
-geometry objected, and the inner refusal's own numbers are one call away
+`GltfError` says whether the container, the document, a buffer, an
+embedded payload, an accessor or the geometry objected, and the inner refusal's own numbers are one call away
 through the value. A caller that only wants geometry can go
 through `format::detect` and then `Format::read`, which wraps the same
 answer in `MeshError`.

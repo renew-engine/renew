@@ -65,7 +65,7 @@ is dead code that reads like safety.
 | Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 8 of the 15 | `blob_read` | 16 |
 | glTF container | `GlbError` | `crates/mesh/src/glb.rs` | 11 | `glb_read` | 18 |
 | Accessor | `AccessorError` | `crates/mesh/src/accessor.rs` | 14 | `accessor_view` | 26 |
-| glTF document | `GltfError` | `crates/mesh/src/gltf.rs` | 14 | `gltf_read` | 24 |
+| glTF document | `GltfError` | `crates/mesh/src/gltf.rs` | 14 | `gltf_read` | 26 |
 | Data URI | `DataUriError` | `crates/mesh/src/data_uri.rs` | 7 | `data_uri_read` | 41 |
 
 **The MTL row is the shortest in this table, and that is the honest
@@ -92,8 +92,8 @@ of what the five mesh readers do, and the reason is that they are layers
 rather than formats: a container fault, a document fault and an accessor
 fault send a caller to three different places, and folding them together
 would put "not a container" in every other reader's census. The document
-reader's type wraps the other two — along with the JSON reader's and
-the geometry vocabulary's — so a caller that wants one answer gets
+reader's type wraps the other two — along with the JSON reader's, the
+data URI reader's and the geometry vocabulary's — so a caller that wants one answer gets
 the layer's name and the inner refusal's own numbers one call away.
 
 **The fourth is now the bottom of that stack.** The data URI reader

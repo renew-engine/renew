@@ -173,30 +173,6 @@ fn a_file_that_says_nothing_an_obj_says_is_declined() {
     );
 }
 
-/// **The name is what a machine keys on, and every format has a
-/// distinct one.**
-///
-/// This census listed five formats while the type had six. Nothing
-/// failed, because a list written by hand agrees with itself: the sixth
-/// was simply never asked its name, and the assertion about which names
-/// exist was true of the five that were.
-///
-/// **So the list is no longer only a list.** The match below has no
-/// wildcard, which means a seventh format stops this file compiling
-/// until somebody says what it is called — the same trick the refusal
-/// censuses use, and the same reason: a vocabulary check that can be
-/// out of date is not a check.
-///
-/// **What that does and does not guarantee, precisely.** A new variant
-/// cannot be added without touching this file, and it cannot be given a
-/// name here without saying which. It *can* still be left out of the
-/// array below, in which case it is never asked its name at run time —
-/// the compiler forces the arm, not the membership. Closing that last
-/// gap needs a count derived from the type, which stable Rust does not
-/// offer without a derive, and a derive is a dependency. The residual
-/// hole is one line wide and is written down here rather than left for
-/// somebody to find, which is the same bargain the MTL census makes
-/// when it writes a sentence per unreachable variant.
 /// **A document is detected by what the format requires, not by a
 /// prefix.**
 ///
@@ -239,6 +215,30 @@ fn json_that_is_not_a_document_is_not_claimed() {
     }
 }
 
+/// **The name is what a machine keys on, and every format has a
+/// distinct one.**
+///
+/// This census listed five formats while the type had six. Nothing
+/// failed, because a list written by hand agrees with itself: the sixth
+/// was simply never asked its name, and the assertion about which names
+/// exist was true of the five that were.
+///
+/// **So the list is no longer only a list.** The match below has no
+/// wildcard, which means an eighth format stops this file compiling
+/// until somebody says what it is called — the same trick the refusal
+/// censuses use, and the same reason: a vocabulary check that can be
+/// out of date is not a check.
+///
+/// **What that does and does not guarantee, precisely.** A new variant
+/// cannot be added without touching this file, and it cannot be given a
+/// name here without saying which. It *can* still be left out of the
+/// array below, in which case it is never asked its name at run time —
+/// the compiler forces the arm, not the membership. Closing that last
+/// gap needs a count derived from the type, which stable Rust does not
+/// offer without a derive, and a derive is a dependency. The residual
+/// hole is one line wide and is written down here rather than left for
+/// somebody to find, which is the same bargain the MTL census makes
+/// when it writes a sentence per unreachable variant.
 #[test]
 fn every_format_has_its_own_stable_name() {
     let all = [

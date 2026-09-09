@@ -12,7 +12,7 @@
 use renew_mesh::accessor::{Component, Shape};
 use renew_mesh::gltf::{self, GltfError};
 
-// The encoder the seeds and the URI suite share, included the way four
+// The encoder the seeds and the URI suite share, included the way six
 // other targets include it: a document that embeds its geometry has to
 // spell it, and spelling it by hand in a fixture is how a fixture stops
 // meaning what its name says.
@@ -69,7 +69,7 @@ fn absent_optional_members_take_the_formats_defaults() {
     let json = document(
         r#"{
           "buffers": [{ "byteLength": 12 }],
-          "bufferViews": [{ "byteLength": 12 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 12 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3" }]
         }"#,
     );
@@ -87,7 +87,7 @@ fn absent_optional_members_take_the_formats_defaults() {
 fn a_stride_is_read_from_the_view() {
     let json = document(
         r#"{ "buffers": [{ "byteLength": 96 }],
-          "bufferViews": [{ "byteLength": 96, "byteStride": 32 }] }"#,
+          "bufferViews": [{"buffer": 0, "byteLength": 96, "byteStride": 32 }] }"#,
     );
     let views = gltf::buffer_views(json.root()).expect("one view");
     assert_eq!(views[0].1.byte_stride, Some(32));
@@ -112,7 +112,7 @@ fn a_document_with_no_tables_reads_as_empty() {
 /// **A required member that is not there is named.**
 #[test]
 fn a_missing_required_member_is_named() {
-    let json = document(r#"{ "bufferViews": [{ "byteOffset": 4 }] }"#);
+    let json = document(r#"{ "bufferViews": [{"buffer": 0, "byteOffset": 4 }] }"#);
     assert_eq!(
         gltf::buffer_views(json.root()).expect_err("a view must say how long it is"),
         GltfError::MissingField { path: "byteLength" }
@@ -355,7 +355,7 @@ fn an_escaped_shape_name_is_the_shape_it_spells() {
 /// arrives wrapped.
 #[test]
 fn a_member_of_the_wrong_type_is_the_documents_refusal() {
-    let json = document(r#"{ "bufferViews": [{ "byteLength": "long" }] }"#);
+    let json = document(r#"{ "bufferViews": [{"buffer": 0, "byteLength": "long" }] }"#);
     let refused = gltf::buffer_views(json.root()).expect_err("a length is a number");
     assert_eq!(
         refused.name(),
@@ -391,7 +391,7 @@ fn a_member_of_the_wrong_type_is_refused_wherever_it_is_read() {
     let attribute = document(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{
             "attributes": { "POSITION": 0, "NORMAL": "one" }
@@ -442,7 +442,7 @@ fn an_optional_attribute_or_a_scene_past_its_table_is_refused() {
     let json = document(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{
             "attributes": { "POSITION": 0, "NORMAL": 9 }
@@ -600,7 +600,7 @@ fn a_document_on_its_own_reads_its_embedded_geometry() {
           "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}}],
           "buffers":[{{"byteLength":36,
             "uri":"data:application/octet-stream;base64,{payload}"}}],
-          "bufferViews":[{{"byteLength":36}}]}}"#
+          "bufferViews":[{{"buffer":0,"byteLength":36}}]}}"#
     );
 
     let mesh = gltf::read(text.as_bytes()).expect("a document that carries its own geometry");
@@ -617,6 +617,196 @@ fn a_document_on_its_own_reads_its_embedded_geometry() {
     assert_eq!(wrapped.triangles(), mesh.triangles());
 }
 
+/// **A view reads the buffer it names, and not the first one.**
+///
+/// This is what the whole table is for, and until this test nothing
+/// asserted it: every fixture and every seed pointed its views at buffer
+/// zero, so a reader that dropped the index and always used the first
+/// buffer would have passed the entire suite. It nearly was that reader
+/// -- `buffer` was being defaulted to zero, which is a member the format
+/// requires and gives no default.
+#[test]
+fn a_view_reads_the_buffer_it_names() {
+    // Two buffers whose contents cannot be confused: one triangle at the
+    // origin, one shifted a long way along x.
+    let near = base64_encode::encode(&three_positions());
+    let far = base64_encode::encode(&{
+        let mut bytes = Vec::new();
+        for corner in [100.0_f32, 101.0, 102.0] {
+            for value in [corner, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    });
+
+    let text = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],
+          "nodes":[{{"mesh":0}}],
+          "meshes":[{{"primitives":[
+            {{"attributes":{{"POSITION":0}}}},
+            {{"attributes":{{"POSITION":1}}}}]}}],
+          "accessors":[
+            {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
+            {{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}}],
+          "buffers":[
+            {{"byteLength":36,"uri":"data:application/octet-stream;base64,{near}"}},
+            {{"byteLength":36,"uri":"data:application/octet-stream;base64,{far}"}}],
+          "bufferViews":[
+            {{"buffer":0,"byteLength":36}},
+            {{"buffer":1,"byteLength":36}}]}}"#
+    );
+
+    let mesh = gltf::read(text.as_bytes()).expect("two buffers, two primitives");
+    assert_eq!(mesh.triangles(), 2);
+
+    // The second primitive's corners came out of the second buffer, so
+    // they are the far ones. A reader ignoring the index would give six
+    // corners at the origin.
+    let far_corners = mesh.positions.iter().filter(|p| p[0] >= 100.0).count();
+    assert_eq!(
+        far_corners, 3,
+        "three corners must come from buffer 1: {:?}",
+        mesh.positions
+    );
+}
+
+/// **A view naming a buffer the document does not have.**
+#[test]
+fn a_view_naming_a_buffer_that_is_not_there_is_refused() {
+    let text = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+      "nodes":[{"mesh":0}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+      "buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}],
+      "bufferViews":[{"buffer":7,"byteLength":36}]}"#;
+    let refused = gltf::read(text.as_bytes()).expect_err("there is no buffer 7");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "buffers",
+            index: 7,
+            count: 1,
+        }
+    );
+}
+
+/// **A view with no `buffer` at all is refused rather than defaulted.**
+///
+/// The format requires the member and gives it no default, unlike
+/// `byteOffset` beside it. Inventing one would hand a view the first
+/// buffer's bytes whenever a document forgot to say.
+#[test]
+fn a_view_that_names_no_buffer_is_refused() {
+    let json = document(r#"{ "bufferViews": [{ "byteLength": 36 }] }"#);
+    assert_eq!(
+        gltf::buffer_views(json.root()).expect_err("`buffer` is required"),
+        GltfError::MissingField { path: "buffer" }
+    );
+}
+
+/// **An embedded payload longer than its buffer is cut too.**
+///
+/// The chunk path had a test for this and the payload path did not: every
+/// data-URI fixture happened to decode to exactly `byteLength`, so the
+/// owned half of the cut was never taken with anything to remove.
+#[test]
+fn an_embedded_payload_longer_than_its_buffer_is_cut() {
+    // `AQIDBAUGBwg=` is eight bytes; the buffer declares four.
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:application/octet-stream;base64,AQIDBAUGBwg="
+        }] }"#,
+    );
+    let read = gltf::buffers(json.root(), None).expect("an embedded buffer");
+    assert_eq!(
+        &*read[0],
+        &[1, 2, 3, 4],
+        "the tail is not part of the buffer"
+    );
+}
+
+/// **A media type is compared without case, as the format's own URIs
+/// permit.**
+#[test]
+fn a_media_type_is_read_without_regard_to_case() {
+    for spelling in [
+        "application/octet-stream",
+        "Application/Octet-Stream",
+        "APPLICATION/OCTET-STREAM",
+        "application/gltf-buffer",
+        "application/GLTF-Buffer",
+    ] {
+        let text = format!(
+            r#"{{ "buffers": [{{ "byteLength": 4,
+               "uri": "data:{spelling};base64,AQIDBA==" }}] }}"#
+        );
+        let json = document(&text);
+        assert!(
+            gltf::buffers(json.root(), None).is_ok(),
+            "`{spelling}` is one of the two types a buffer may declare"
+        );
+    }
+}
+
+/// **A document with views and no buffers table is refused.**
+///
+/// It used to read: every view was assumed to point into the container's
+/// chunk, so the table could be absent and nothing noticed. A view's
+/// `buffer` indexes that table, so a document without one is not a
+/// document, and this pins the answer rather than leaving the change
+/// visible only as a fixture edit.
+#[test]
+fn a_document_with_views_and_no_buffers_is_refused() {
+    let packed = container(
+        r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+          "nodes":[{"mesh":0}],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "bufferViews":[{"buffer":0,"byteLength":36}]}"#,
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&packed).expect_err("no buffers table"),
+        GltfError::NoSuchEntry {
+            table: "buffers",
+            index: 0,
+            count: 0,
+        }
+    );
+}
+
+/// **The document detector, asked directly.**
+///
+/// Every other detector in this crate has a test of its own; this one was
+/// reachable only through `detect`, which answers on the container magic
+/// first -- so its answer for anything opening with `glTF` was observed
+/// by nothing.
+#[test]
+fn the_document_detector_answers_for_itself() {
+    assert!(gltf::looks_like(br#"{"asset":{"version":"2.0"}}"#));
+    assert!(
+        gltf::looks_like(b"  \n\t {\"asset\":{\"version\":\"2.0\"}}"),
+        "leading whitespace is not a reason to decline"
+    );
+    assert!(!gltf::looks_like(b""));
+    assert!(!gltf::looks_like(b"   "));
+    assert!(
+        !gltf::looks_like(br#"glTF {"asset":{"version":"2.0"}}"#),
+        "a container is not a document, whatever follows its magic"
+    );
+    assert!(
+        !gltf::looks_like(br#"[{"asset":{"version":"2.0"}}]"#),
+        "a document's root is an object"
+    );
+    assert!(!gltf::looks_like(
+        b"# a comment
+v 0 0 0
+"
+    ));
+}
+
 /// **A document with no container and a buffer wanting one is refused.**
 ///
 /// This is the ordinary way to meet `NoBinaryChunk`: a `.gltf` saved
@@ -628,7 +818,7 @@ fn a_document_on_its_own_whose_buffer_wants_a_chunk_is_refused() {
       "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
       "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
       "buffers":[{"byteLength":36}],
-      "bufferViews":[{"byteLength":36}]}"#;
+      "bufferViews":[{"buffer":0,"byteLength":36}]}"#;
     assert_eq!(
         gltf::read(text.as_bytes()).expect_err("no container, no chunk"),
         GltfError::NoBinaryChunk
@@ -646,11 +836,11 @@ fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
 /// The census and the documents agree, and every refusal says something.
 #[test]
 fn the_census_and_the_documents_agree() {
-    let bad_type = document(r#"{ "bufferViews": [{ "byteLength": "long" }] }"#);
+    let bad_type = document(r#"{ "bufferViews": [{"buffer": 0, "byteLength": "long" }] }"#);
     let unknown = document(
         r#"{ "accessors": [{ "bufferView": 0, "componentType": 5124, "count": 1, "type": "VEC3" }] }"#,
     );
-    let missing = document(r#"{ "bufferViews": [{ "byteOffset": 4 }] }"#);
+    let missing = document(r#"{ "bufferViews": [{"buffer": 0, "byteOffset": 4 }] }"#);
     let elsewhere = document(r#"{ "buffers": [{ "byteLength": 12, "uri": "geometry.bin" }] }"#);
     let sparse = document(
         r#"{ "accessors": [{
@@ -677,7 +867,7 @@ fn the_census_and_the_documents_agree() {
     let past_a_table = document(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
         }"#,
@@ -798,7 +988,7 @@ fn a_document_naming_one_triangle_produces_one() {
     let mesh = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -824,7 +1014,7 @@ fn a_primitive_with_no_mode_is_triangles() {
     let with = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "mode": 4, "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -834,7 +1024,7 @@ fn a_primitive_with_no_mode_is_triangles() {
     let without = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -855,7 +1045,7 @@ fn a_mode_this_reader_does_not_draw_is_a_geometry_refusal() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "mode": 5, "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -894,7 +1084,7 @@ fn the_stride_crosses_from_the_view_to_the_accessor() {
     let mesh = assemble(
         r#"{
           "buffers": [{ "byteLength": 60 }],
-          "bufferViews": [{ "byteLength": 60, "byteStride": 24 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 60, "byteStride": 24 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -930,10 +1120,10 @@ fn the_optional_streams_are_read_when_named() {
         r#"{
           "buffers": [{ "byteLength": 102 }],
           "bufferViews": [
-            { "byteLength": 36, "byteOffset": 0 },
-            { "byteLength": 36, "byteOffset": 36 },
-            { "byteLength": 24, "byteOffset": 72 },
-            { "byteLength": 6, "byteOffset": 96 }
+            {"buffer": 0, "byteLength": 36, "byteOffset": 0 },
+            {"buffer": 0, "byteLength": 36, "byteOffset": 36 },
+            {"buffer": 0, "byteLength": 24, "byteOffset": 72 },
+            {"buffer": 0, "byteLength": 6, "byteOffset": 96 }
           ],
           "accessors": [
             { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
@@ -966,7 +1156,7 @@ fn an_index_past_a_table_names_all_three() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
         }"#,
@@ -987,7 +1177,7 @@ fn an_index_past_a_table_names_all_three() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -1023,7 +1213,7 @@ fn a_primitive_with_no_positions_is_refused() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "NORMAL": 0 } }] }]
         }"#,
@@ -1040,7 +1230,7 @@ fn an_accessor_past_the_chunk_is_an_accessor_refusal() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 99, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -1062,7 +1252,7 @@ fn a_view_past_its_buffer_is_refused() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteOffset": 24, "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteOffset": 24, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -1082,7 +1272,7 @@ fn a_buffer_longer_than_its_chunk_is_refused() {
     let refused = assemble(
         r#"{
           "buffers": [{ "byteLength": 60 }],
-          "bufferViews": [{ "byteOffset": 24, "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteOffset": 24, "byteLength": 36 }],
           "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
           "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
         }"#,
@@ -1148,7 +1338,7 @@ const ONE_NODE: &str = r#"{
   "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
   "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
   "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }]
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }]
 }"#;
 
 /// **A container reads end to end.**
@@ -1269,7 +1459,7 @@ fn a_document_with_no_scenes_is_refused() {
       "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
       "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
       "buffers": [{ "byteLength": 36 }],
-          "bufferViews": [{ "byteLength": 36 }]
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }]
     }"#;
     assert_eq!(
         gltf::read(&container(json, &three_positions())).expect_err("no scene places anything"),
@@ -1362,8 +1552,8 @@ fn a_flattening_transform_over_normals_is_a_geometry_refusal() {
       ],
       "buffers": [{ "byteLength": 72 }],
           "bufferViews": [
-        { "byteLength": 36, "byteOffset": 0 },
-        { "byteLength": 36, "byteOffset": 36 }
+        {"buffer": 0, "byteLength": 36, "byteOffset": 0 },
+        {"buffer": 0, "byteLength": 36, "byteOffset": 36 }
       ]
     }"#;
     let refused = gltf::read(&container(json, &binary)).expect_err("no inverse to transpose");
