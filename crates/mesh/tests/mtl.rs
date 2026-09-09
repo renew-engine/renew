@@ -339,6 +339,9 @@ fn every_byte_string_gets_an_answer() {
 /// until somebody decides which it is.
 fn mtl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::TransformNotInvertible => {
+            Some("a material library carries no geometry to place anywhere")
+        }
         MeshError::StreamLengthMismatch { .. } => Some(
             "a material library carries no vertex streams at all, so it has nothing for two\n             of them to disagree about",
         ),

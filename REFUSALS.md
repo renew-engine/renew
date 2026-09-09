@@ -860,10 +860,15 @@ it is easy to forget: nothing in the file is wrong.
 **Nearest thing here.** `PackError::TooLarge { field, value }`, for a
 value that cannot be represented on this target. **Nothing in this tree
 refuses a coordinate for being outside the engine's number range**, and
-`crates/mesh` cannot: it has no dependencies at all, so it never converts
-anything to `Fixed` and has no bound to check against. The refusal this
-entry asks for belongs to whatever converts an imported model into
-simulation state, which does not exist yet.
+`crates/mesh` cannot: nothing it depends on publishes a fixed-point
+type, so it never converts anything to `Fixed` and has no bound to check
+against. The refusal this entry asks for belongs to whatever converts an
+imported model into simulation state, which does not exist yet.
+
+*This paragraph read "it has no dependencies at all" until that stopped
+being true. The conclusion survived the reason, which is the good case;
+the sentence is corrected in the change that made it false rather than
+left for somebody to find and have to work out which half had moved.*
 
 *This entry briefly claimed `MeshError::TooLarge` implemented it. That
 variant is a **policy ceiling**, refusing counts a reader will not hold —

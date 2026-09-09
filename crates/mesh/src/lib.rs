@@ -62,6 +62,7 @@ pub mod format;
 pub mod glb;
 pub mod mtl;
 pub mod obj;
+pub mod place;
 pub mod ply;
 pub mod primitive;
 pub mod stl;
