@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use renew_mesh::accessor::Shape;
-use renew_mesh::{blob, glb, gltf, mtl, obj, ply, stl};
+use renew_mesh::{blob, data_uri, glb, gltf, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -1343,6 +1343,158 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
 fn gltf_census() {
     let distinct: BTreeSet<Vec<u8>> = gltf_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> = distinct.iter().map(|b| gltf_outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+/// How many distinct `data:` URIs the corpus must still hold.
+const DATA_URI_LOW_WATER: usize = 38;
+
+/// How many distinct outcomes those seeds must still reach.
+///
+/// **Measured, not guessed** — `data_uri_census` below prints it. Eight
+/// is every refusal this reader has plus success, which is the whole
+/// vocabulary: unusually, nothing here is unreachable, because one reader
+/// owns the enum and every variant has a seed.
+const DATA_URI_DISTINCT_OUTCOMES: usize = 8;
+
+/// Every refusal, each of which a seed must provoke.
+///
+/// The list is the enum. That is affordable here and not elsewhere: the
+/// five geometry readers share one error type, so each of them names what
+/// it cannot reach, while this reader can reach all of its own.
+const DATA_URI_REQUIRED: [&str; 7] = [
+    "NotADataUri",
+    "NoPayload",
+    "NotBase64",
+    "BadDigit",
+    "NotWholeGroups",
+    "BadPadding",
+    "NonCanonical",
+];
+
+// The encoder is the one the seeds were written with, shared rather than
+// copied, so this gate cannot drift from the generator that fed it.
+#[path = "shared/base64_encode.rs"]
+mod base64_encode;
+
+fn data_uri_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/data_uri_read")
+}
+
+fn data_uri_corpus() -> Vec<Vec<u8>> {
+    let dir = data_uri_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a seed gets, as the name of the refusal or `Ok`.
+///
+/// Bytes become text the way the fuzz target does it, so a seed replays
+/// here exactly as it is mutated there.
+fn data_uri_outcome(bytes: &[u8]) -> &'static str {
+    match data_uri::read(&String::from_utf8_lossy(bytes)) {
+        Ok(_) => "Ok",
+        Err(refusal) => refusal.name(),
+    }
+}
+
+/// **Every committed URI answers, and everything it accepts re-encodes to
+/// itself.**
+///
+/// The second half is the claim that matters. A decoder that quietly
+/// tolerated whitespace, a missing pad, or a stray bit in the final group
+/// would still return bytes — and those bytes would re-encode to
+/// something other than the text it was given, which is what this catches
+/// and a "did it crash" replay would not.
+#[test]
+fn every_recorded_uri_answers_and_re_encodes_to_itself() {
+    for bytes in data_uri_corpus() {
+        let text = String::from_utf8_lossy(&bytes);
+        let Ok(read) = data_uri::read(&text) else {
+            continue;
+        };
+        let payload = &text[text.find(',').expect("a URI that read has a comma") + 1..];
+        assert_eq!(
+            base64_encode::encode(&read.bytes),
+            payload,
+            "{text} decoded to bytes that spell something else"
+        );
+    }
+}
+
+/// The URI corpus keeps its strength.
+#[test]
+fn the_data_uri_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = data_uri_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= DATA_URI_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {DATA_URI_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> = distinct
+        .iter()
+        .map(|bytes| data_uri_outcome(bytes))
+        .collect();
+    assert!(
+        reached.len() >= DATA_URI_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {DATA_URI_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in DATA_URI_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a refusal nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+
+    // **Seeds that decode, in every padding state.** A corpus of nothing
+    // but refusals would leave the bit assembly and the canonical check
+    // reachable only by luck, and those are the parts where a wrong
+    // answer is silent rather than loud.
+    let readable: Vec<&Vec<u8>> = distinct
+        .iter()
+        .filter(|bytes| data_uri_outcome(bytes) == "Ok")
+        .collect();
+    assert!(
+        readable.len() >= 15,
+        "the corpus needs URIs that decode, and holds {}",
+        readable.len()
+    );
+    for pads in 0..=2_usize {
+        assert!(
+            readable.iter().any(|bytes| {
+                let text = String::from_utf8_lossy(bytes);
+                text.bytes().filter(|&byte| byte == b'=').count() == pads && !text.ends_with(',')
+            }),
+            "no seed that decodes has {pads} padding characters, and the three cases run \
+             different arithmetic"
+        );
+    }
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn data_uri_census() {
+    let distinct: BTreeSet<Vec<u8>> = data_uri_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| data_uri_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),

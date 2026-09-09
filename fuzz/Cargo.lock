@@ -121,8 +121,16 @@ name = "renew-json"
 version = "0.1.1"
 
 [[package]]
+name = "renew-math"
+version = "0.1.1"
+
+[[package]]
 name = "renew-mesh"
 version = "0.1.1"
+dependencies = [
+ "renew-json",
+ "renew-math",
+]
 
 [[package]]
 name = "renew-net"
