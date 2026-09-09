@@ -1,11 +1,14 @@
-//! Write the committed import golden: a source model, and what this
-//! crate reads it to.
+//! Write the committed import golden: a source model, the bytes this
+//! crate reads it to, and the sidecar that describes both.
 //!
 //! **The model is generated here rather than borrowed**, like every
 //! other fixture beside this crate. Borrowed art carries a licence and a
-//! provenance question, and neither belongs in a regression guard.
+//! provenance question, and neither belongs in a regression guard. Its
+//! definition lives in `tests/shared/import_golden_source.rs`, shared
+//! with the gate that reads it -- so the gate can hold the committed
+//! file to the same code this one writes from.
 //!
-//! Run it to regenerate both files after a deliberate change to the
+//! Run it to regenerate all three files after a deliberate change to the
 //! reader or to the canonical form:
 //!
 //! ```text
@@ -15,10 +18,10 @@
 //! **Regenerating is the whole refresh ritual**, which is the difference
 //! between this golden and a rendered one. An image golden needs a
 //! pinned adapter and a workflow that uploads candidates, because no two
-//! machines rasterize alike. These bytes are little-endian `f32` copied
-//! out of a document with no arithmetic on the way, so any machine that
-//! can run this example produces the same file -- and a diff after
-//! running it is a real change to what this crate reads, every time.
+//! machines rasterize alike. Every operand here is a small dyadic
+//! rational and the format converts endianness explicitly, so any
+//! machine that can run this example produces the same files -- and a
+//! diff after running it is a real change to what this crate reads.
 
 // A generator writes files; that is its whole job.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
@@ -29,134 +32,79 @@ use std::path::PathBuf;
 
 use renew_mesh::{blob, format};
 
+#[path = "../tests/shared/import_golden_source.rs"]
+mod import_golden_source;
+
 /// Where the committed golden lives, beside the tests that read it.
 fn goldens() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens")
 }
 
-/// The source model, spelled out.
+/// The sidecar, written from the bytes rather than beside them.
 ///
-/// **One document that reaches every layer this crate has learned.** A
-/// golden over a bare triangle would pin the geometry path and nothing
-/// else, and the whole point of committing bytes is to notice a change
-/// nobody meant -- so this carries, deliberately:
-///
-/// * **Two primitives in one mesh**, so the appending path runs and the
-///   second primitive's indices have to be shifted by the first's vertex
-///   count. That shift is arithmetic, and arithmetic is what a golden
-///   catches.
-/// * **A node with a transform**, so positions arrive somewhere other
-///   than where the accessor put them.
-/// * **Per-corner normals and texture coordinates**, so the optional
-///   streams are present and the blob's `present` bitfield is not zero.
-/// * **Indices**, so the index path runs rather than the implicit one.
-/// * **A material and an image**, which change no geometry at all and
-///   therefore change none of these bytes -- they are here so that the
-///   document exercises the tables while the golden proves they stay out
-///   of the canonical form.
-///
-/// The buffer carries its own bytes as a payload, so the file stands
-/// alone: no container, no second file, nothing outside itself.
-fn source() -> String {
-    // Two triangles' worth of positions, normals and texture
-    // coordinates, then six indices -- laid out as the accessors below
-    // describe them, and encoded once as one buffer.
-    let mut buffer: Vec<u8> = Vec::new();
-
-    // POSITION, six vertices: a unit triangle in z = 0, and a second
-    // one displaced in z so the two are not coplanar.
-    for value in [
-        0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.5, 1.0, 0.0, 0.5, 0.0, 1.0, 0.5,
-    ] {
-        buffer.extend_from_slice(&value.to_le_bytes());
-    }
-    // NORMAL, one per vertex: +z for the first triangle, -z for the
-    // second, so the two are told apart by more than position.
-    for value in [
-        0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, //
-        0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0,
-    ] {
-        buffer.extend_from_slice(&value.to_le_bytes());
-    }
-    // TEXCOORD_0, one per vertex.
-    for value in [
-        0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, //
-        0.25, 0.25, 0.75, 0.25, 0.25, 0.75,
-    ] {
-        buffer.extend_from_slice(&value.to_le_bytes());
-    }
-    // Two index triples, one per primitive, each numbered from its own
-    // primitive's first vertex -- which is what makes the appending
-    // shift observable.
-    for value in [0_u16, 1, 2, 0, 1, 2] {
-        buffer.extend_from_slice(&value.to_le_bytes());
-    }
-
-    let payload = base64(&buffer);
+/// **It carries a digest of the blob**, as the rendered goldens'
+/// sidecars do, and for the same reason: a sidecar nothing binds to its
+/// artifact describes whatever the artifact used to be. Writing it here
+/// rather than by hand is what keeps the binding true.
+fn provenance(document: &str, blob_bytes: &[u8]) -> String {
     format!(
-        r#"{{"asset":{{"version":"2.0"}},
-"scene":0,
-"scenes":[{{"nodes":[0]}}],
-"nodes":[{{"mesh":0,"translation":[2.0,0.5,-1.0]}}],
-"meshes":[{{"primitives":[
-{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"indices":3,"material":0}},
-{{"attributes":{{"POSITION":4,"NORMAL":5,"TEXCOORD_0":6}},"indices":7,"material":0}}]}}],
-"accessors":[
-{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
-{{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}},
-{{"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"}},
-{{"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}},
-{{"bufferView":0,"byteOffset":36,"componentType":5126,"count":3,"type":"VEC3"}},
-{{"bufferView":1,"byteOffset":36,"componentType":5126,"count":3,"type":"VEC3"}},
-{{"bufferView":2,"byteOffset":24,"componentType":5126,"count":3,"type":"VEC2"}},
-{{"bufferView":3,"byteOffset":6,"componentType":5123,"count":3,"type":"SCALAR"}}],
-"bufferViews":[
-{{"buffer":0,"byteOffset":0,"byteLength":72}},
-{{"buffer":0,"byteOffset":72,"byteLength":72}},
-{{"buffer":0,"byteOffset":144,"byteLength":48}},
-{{"buffer":0,"byteOffset":192,"byteLength":12}}],
-"buffers":[{{"byteLength":{length},"uri":"data:application/octet-stream;base64,{payload}"}}],
-"textures":[{{"source":0}}],
-"materials":[{{"name":"panel","pbrMetallicRoughness":{{
-"baseColorFactor":[0.5,0.25,0.125,1.0],"metallicFactor":0.75,"roughnessFactor":0.5,
-"baseColorTexture":{{"index":0}}}},"emissiveFactor":[0.0,0.125,0.25],"doubleSided":true}}],
-"images":[{{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}}]}}"#,
-        length = buffer.len(),
-        payload = payload,
+        "panel.gltf \u{2014} a glTF 2.0 document, generated, carrying its own buffer as a\n\
+         base64 payload so it stands alone: no container, no second file. {document} bytes.\n\
+         \n\
+         panel.msh \u{2014} this crate's canonical form, as `blob::write` produces it from\n\
+         `format::detect(panel.gltf).read(..)`. {blob} bytes.\n\
+         fnv1a-64 of panel.msh: {digest:#018x}\n\
+         \n\
+         all three files written by: crates/mesh/examples/make_import_golden.rs\n\
+         the document itself is defined in: crates/mesh/tests/shared/import_golden_source.rs\n\
+         refresh with: cargo run -p renew-mesh --example make_import_golden\n\
+         \n\
+         what the source reaches, deliberately:\n\
+         \x20 two primitives in one mesh, so `place::append` runs and each primitive's\n\
+         \x20 corners are resolved against its own accessors before being concatenated\n\
+         \x20 a node with a translation, so positions arrive somewhere other than\n\
+         \x20 where the accessor put them, and the placement path runs\n\
+         \x20 indices, so the indexed path runs rather than the implicit one\n\
+         \x20 per-corner normals and texture coordinates - the two optional streams a\n\
+         \x20 glTF document can carry - so the blob's `present` bitfield is not zero\n\
+         \x20 a material, a texture and an image, which change no geometry: they are\n\
+         \x20 here so the golden proves they stay out of the canonical form\n\
+         \n\
+         what it does not reach: per-face normals (no glTF states them), the binary\n\
+         container, the implicit unindexed path, byte strides, sparse accessors, and\n\
+         component types other than 5126 and 5123.\n\
+         \n\
+         comparison: exact, and legitimate for THIS document rather than for the path\n\
+         in general. Its accessors are all componentType 5126, so each coordinate is\n\
+         copied out with from_le_bytes and never converted or normalised; the node\n\
+         states a translation only, so the composed matrix and its inverse-transpose\n\
+         are exact; and every coordinate in the source is a small dyadic rational\n\
+         whose product with that matrix rounds to itself. The placement path does\n\
+         multiply and add - see crates/mesh/tests/place.rs, which compares within a\n\
+         tolerance for exactly that reason - and this fixture is chosen so that it\n\
+         need not. What the comparison pins is that a reader which began to\n\
+         normalise, average or reorder would move a byte.\n\
+         \n\
+         endianness: the blob is little-endian on every target, not native -\n\
+         `blob::write` writes to_le_bytes and the reader takes from_le_bytes - so\n\
+         these bytes are the same on a machine of either endianness.\n\
+         \n\
+         refresh ritual: none needed. Unlike a rendered golden, where no two adapters\n\
+         rasterize alike and candidates are uploaded from a pinned lane and adopted by\n\
+         hand, any machine that runs the generator reproduces these files. The gate\n\
+         checks that the committed source still matches the code above, so a\n\
+         regeneration that was never committed is a failure rather than a surprise.\n",
+        document = document.len(),
+        blob = blob_bytes.len(),
+        digest = import_golden_source::fnv1a_64(blob_bytes),
     )
-}
-
-/// Base64, standard alphabet with padding.
-///
-/// Written here rather than reached for: this crate's own decoder is
-/// what the golden is partly testing, and a generator that shared it
-/// could encode a mistake the decoder makes and call the pair agreement.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for group in bytes.chunks(3) {
-        let mut packed = 0_u32;
-        for (index, byte) in group.iter().enumerate() {
-            packed |= u32::from(*byte) << (16 - 8 * index);
-        }
-        for index in 0..4 {
-            if index <= group.len() {
-                let digit = (packed >> (18 - 6 * index)) & 0x3f;
-                out.push(char::from(ALPHABET[digit as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 fn main() {
     let directory = goldens();
     std::fs::create_dir_all(&directory).expect("the goldens directory is writable");
 
-    let document = source();
+    let document = import_golden_source::source();
     let model = directory.join("panel.gltf");
     std::fs::write(&model, document.as_bytes()).expect("the source model is writable");
 
@@ -174,12 +122,16 @@ fn main() {
     let blob_path = directory.join("panel.msh");
     std::fs::write(&blob_path, &bytes).expect("the blob is writable");
 
+    let sidecar = directory.join("panel.provenance.txt");
+    std::fs::write(&sidecar, provenance(&document, &bytes)).expect("the sidecar is writable");
+
     println!(
-        "wrote {} ({} bytes) and {} ({} bytes): {} triangles, {} positions",
+        "wrote {} ({} bytes), {} ({} bytes) and {}: {} triangles, {} positions",
         model.display(),
         document.len(),
         blob_path.display(),
         bytes.len(),
+        sidecar.display(),
         mesh.triangles(),
         mesh.positions.len(),
     );

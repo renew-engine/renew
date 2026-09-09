@@ -15,10 +15,13 @@ use renew_mesh::{Mesh, MeshError, place};
 
 /// Compare coordinates by value, within the tolerance a transform earns.
 ///
-/// **Not by bits here, unlike the assembly suite**: placement multiplies
-/// and adds, so the result is the arithmetic's, not the file's, and an
-/// exact comparison would be asserting something about rounding rather
-/// than about the transform.
+/// **Not by bits here, unlike the assembly suite and the import
+/// golden**: those compare fixtures whose operands make the arithmetic
+/// exact, and this suite deliberately uses a non-uniform scale and a
+/// rotation, where it is not. Placement multiplies and adds, so the
+/// result is the arithmetic's rather than the file's, and an exact
+/// comparison would be asserting something about rounding rather than
+/// about the transform.
 fn near(got: [f32; 3], want: [f32; 3], what: &str) {
     for (index, (left, right)) in got.iter().zip(&want).enumerate() {
         assert!(

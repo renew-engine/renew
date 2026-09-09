@@ -174,33 +174,41 @@ the material it belongs to, two reciprocal spellings of one factor, a
 map line whose options run past its file name. `tests/properties.rs` round-trips generated meshes through both
 STL spellings and asserts that every byte string gets an answer.
 
-**`tests/golden.rs` is the one gate that asks what a reader answered
-rather than whether it answered.** Every other test beside this crate is
-about refusals, round trips and inputs nobody wrote on purpose — and all
-of them are nearly blind to a reader that answers confidently and
-wrongly. A document whose second primitive is dropped, or whose node
-transform is not applied, or whose texture coordinates are shifted by one
-vertex, answers perfectly well.
+**`tests/golden.rs` pins the whole path in one artifact.** The value
+assertions in `tests/gltf.rs` each hold one layer to a fixture written
+in the same file; this holds every layer at once to bytes that were
+*committed*, so a change no single assertion covers still moves a byte.
+What it catches that the corpus gates cannot is a reader that answers
+confidently and wrongly: a document coming back with its second
+primitive dropped, or its texture coordinates attributed to the wrong
+corners, answers perfectly well.
 
 So one generated model sits in `tests/goldens/` beside the exact bytes it
-reads to, and the comparison is byte for byte. The model is built to
-reach every layer at once: two primitives in one mesh so the appending
-arithmetic runs, a node transform so positions move, indices, per-corner
-normals and texture coordinates, and a material, a texture and an image —
-those last three because they change no geometry, so the golden also
-proves they stay out of the canonical form.
+reads to. It reaches every layer of the document path this golden is
+about: two primitives in one mesh so the appending path runs and each
+primitive's corners resolve against its own accessors, a node transform
+so positions move, indices, and the two optional streams a glTF document
+can carry. It also states a material, a texture and an image, which
+change no geometry — so the golden proves they stay out of the canonical
+form.
 
-**Exact comparison is legitimate here**, and the provenance file says
-why: the canonical form is little-endian `f32` and `u32` copied out of
-the document with no arithmetic beyond the transform the document itself
-states. Nothing rounds, nothing reorders, and no platform spells an
-`f32` differently in memory. That is the claim the comparison pins, and
-the day it stops being true is the day this gate earns its keep.
+**Exact comparison is legitimate for that document rather than for the
+path in general**, and the provenance file says exactly why: its
+accessors are all `componentType: 5126`, so coordinates are copied out
+with `from_le_bytes` and never converted; its node states a translation
+only; and every coordinate is a small dyadic rational whose product with
+that matrix rounds to itself. The placement path does multiply and add —
+`tests/place.rs` uses a tolerance for that reason — and this fixture is
+chosen so it need not. The bytes travel between machines because
+`blob::write` converts endianness explicitly, not because memory layout
+is universal.
 
 Refreshing it is one command — `cargo run -p renew-mesh --example
 make_import_golden` — because unlike a rendered golden, where no two
 adapters rasterize alike and candidates have to be adopted from a pinned
-lane, any machine reproduces these bytes.
+lane, any machine reproduces these files. **And that is checked**: the
+gate holds the committed source to the code that describes it, so a
+regeneration nobody committed fails rather than surprises.
 
 **Each reader's census is a test, not a comment.** All five suites map
 every `MeshError` variant to either a file in the suite that provokes it

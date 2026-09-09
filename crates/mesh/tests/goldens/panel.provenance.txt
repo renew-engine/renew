@@ -1,34 +1,46 @@
-panel.gltf - a glTF 2.0 document, generated, carrying its own buffer as a
-base64 payload so it stands alone: no container, no second file.
+panel.gltf — a glTF 2.0 document, generated, carrying its own buffer as a
+base64 payload so it stands alone: no container, no second file. 2046 bytes.
 
-panel.msh - this crate's canonical form, as `blob::write` produces it from
-`format::detect(panel.gltf).read(..)`.
+panel.msh — this crate's canonical form, as `blob::write` produces it from
+`format::detect(panel.gltf).read(..)`. 308 bytes.
+fnv1a-64 of panel.msh: 0xfb501a24ba23b667
 
-written by: crates/mesh/examples/make_import_golden.rs
+all three files written by: crates/mesh/examples/make_import_golden.rs
+the document itself is defined in: crates/mesh/tests/shared/import_golden_source.rs
 refresh with: cargo run -p renew-mesh --example make_import_golden
 
 what the source reaches, deliberately:
-  two primitives in one mesh, so the appending path runs and the second
-  primitive's indices are shifted by the first's vertex count
+  two primitives in one mesh, so `place::append` runs and each primitive's
+  corners are resolved against its own accessors before being concatenated
   a node with a translation, so positions arrive somewhere other than
-  where the accessor put them
+  where the accessor put them, and the placement path runs
   indices, so the indexed path runs rather than the implicit one
-  per-corner normals and texture coordinates, so the optional streams
-  are present and the blob's `present` bitfield is not zero
-  a material, a texture and an image, which change no geometry - they
-  are here so the document exercises those tables while the golden
-  proves they stay out of the canonical form
+  per-corner normals and texture coordinates - the two optional streams a
+  glTF document can carry - so the blob's `present` bitfield is not zero
+  a material, a texture and an image, which change no geometry: they are
+  here so the golden proves they stay out of the canonical form
 
-comparison: exact, and legitimate because the canonical form is
-little-endian f32 and u32 copied out of the document, with no arithmetic
-on a coordinate beyond the node transform the document itself states.
-No rounding to differ over, no iteration order that reaches the bytes,
-no platform difference in how an f32 sits in memory. That claim is what
-the comparison pins: the day a reader starts normalising, averaging or
-reordering is the day this file fails, which is the point of it.
+what it does not reach: per-face normals (no glTF states them), the binary
+container, the implicit unindexed path, byte strides, sparse accessors, and
+component types other than 5126 and 5123.
 
-refresh ritual: none needed. Unlike a rendered golden - where no two
-adapters rasterize alike, so candidates are uploaded from a pinned lane
-and adopted by hand - any machine that runs the generator produces these
-two files byte for byte. A diff after running it is a real change to
-what this crate reads.
+comparison: exact, and legitimate for THIS document rather than for the path
+in general. Its accessors are all componentType 5126, so each coordinate is
+copied out with from_le_bytes and never converted or normalised; the node
+states a translation only, so the composed matrix and its inverse-transpose
+are exact; and every coordinate in the source is a small dyadic rational
+whose product with that matrix rounds to itself. The placement path does
+multiply and add - see crates/mesh/tests/place.rs, which compares within a
+tolerance for exactly that reason - and this fixture is chosen so that it
+need not. What the comparison pins is that a reader which began to
+normalise, average or reorder would move a byte.
+
+endianness: the blob is little-endian on every target, not native -
+`blob::write` writes to_le_bytes and the reader takes from_le_bytes - so
+these bytes are the same on a machine of either endianness.
+
+refresh ritual: none needed. Unlike a rendered golden, where no two adapters
+rasterize alike and candidates are uploaded from a pinned lane and adopted by
+hand, any machine that runs the generator reproduces these files. The gate
+checks that the committed source still matches the code above, so a
+regeneration that was never committed is a failure rather than a surprise.
