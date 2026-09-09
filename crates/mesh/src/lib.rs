@@ -64,6 +64,7 @@ pub mod glb;
 pub mod gltf;
 pub mod mtl;
 pub mod obj;
+pub mod pbr;
 pub mod place;
 pub mod ply;
 pub mod primitive;
@@ -92,6 +93,21 @@ pub mod stl;
 /// danger, not allocation.
 pub(crate) const MAX_GEOMETRY_BYTES: usize = 256 << 20;
 
+/// How many materials one file may build.
+///
+/// **The same policy ceiling, applied to the other thing a document can
+/// make this crate allocate.** `MAX_GEOMETRY_BYTES` exists because a
+/// megabyte of legitimate input built fifty-eight megabytes of geometry,
+/// and the rule it states is general: amplification is the danger, not
+/// allocation. A material table amplifies harder than geometry does —
+/// a two-byte array element with no members at all is a whole material,
+/// every field of it a default — so a document a fraction of the
+/// geometry ceiling's size could pass it without this.
+///
+/// Expressed as a count rather than a byte total because a material is a
+/// fixed size and a count is what the reader has to hand when it decides.
+pub(crate) const MAX_MATERIALS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<pbr::Material>();
+
 /// How many positions that ceiling allows.
 pub(crate) const MAX_POSITIONS: usize = MAX_GEOMETRY_BYTES / core::mem::size_of::<[f32; 3]>();
 
@@ -113,6 +129,23 @@ const _: () = {
          costs, on the narrowest target this engine builds for"
     );
 };
+
+/// Refuse before the next material is built rather than after it.
+///
+/// **The same shape as the geometry ceiling beside it, and separate for
+/// the same reason it is a function at all**: the boundary is worth a
+/// test, and a table of a million materials is not something a test can
+/// build. A caller checks before it pushes, so the count that reaches
+/// here is what has been built and not what a document claimed.
+pub(crate) fn refuse_over_material_ceiling(have: usize) -> Result<(), MeshError> {
+    if have >= MAX_MATERIALS {
+        return Err(MeshError::TooLarge {
+            field: "materials",
+            value: MAX_MATERIALS as u64,
+        });
+    }
+    Ok(())
+}
 
 /// Refuse before the geometry arrives rather than after it.
 ///
@@ -144,6 +177,12 @@ pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 pub use data_uri::{DataUri, DataUriError};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
+// **`Material` is deliberately not re-exported here.** Two vocabularies
+// carry that name in this crate -- `pbr::Material` and `mtl::Material` --
+// and hoisting either to the crate root would make it the default
+// spelling of a word the two formats do not share a meaning for. The
+// module path is the disambiguation, and it is a short one.
+pub use pbr::{Alpha, NormalTexture, OcclusionTexture, TextureRef};
 pub use primitive::{Mode, Primitive};
 
 /// Triangles read out of a file, in the order the file stored them.
@@ -447,7 +486,31 @@ mod tests {
 
 #[cfg(test)]
 mod ceiling_tests {
-    use super::{MAX_POSITIONS, MeshError, refuse_over_ceiling};
+    use super::{
+        MAX_MATERIALS, MAX_POSITIONS, MeshError, refuse_over_ceiling, refuse_over_material_ceiling,
+    };
+
+    /// **The material ceiling refuses at the boundary rather than past
+    /// it**, and it is the amplification rule applied to the other thing
+    /// a document can make this crate allocate.
+    ///
+    /// Probed by deleting the check: red, a table past the ceiling is
+    /// accepted. Probed by loosening `>=` to `>`: red, the table that
+    /// exactly fills the ceiling is allowed one more.
+    #[test]
+    fn the_material_ceiling_refuses_the_row_that_would_pass_it() {
+        refuse_over_material_ceiling(MAX_MATERIALS - 1)
+            .expect("the last row the ceiling allows is not over it");
+
+        assert_eq!(
+            refuse_over_material_ceiling(MAX_MATERIALS),
+            Err(MeshError::TooLarge {
+                field: "materials",
+                value: MAX_MATERIALS as u64,
+            }),
+            "the row after the last one is over the ceiling, and it says so by name"
+        );
+    }
 
     /// **The ceiling is on the product, and it refuses at the boundary
     /// rather than past it.**

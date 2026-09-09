@@ -38,6 +38,7 @@ use crate::accessor::{Accessor, AccessorError, BufferView, Component, Indices, S
 use crate::data_uri::{self, DataUriError};
 use crate::error::MeshError;
 use crate::glb::GlbError;
+use crate::pbr::{Alpha, Material, NormalTexture, OcclusionTexture, TextureRef};
 use crate::primitive::{self, Mode, Primitive};
 use crate::{Mesh, glb, place};
 
@@ -185,6 +186,40 @@ pub enum GltfError {
         available: usize,
     },
 
+    /// A material factor outside the range the format states for it.
+    ///
+    /// **The member is named and the value is not carried**, which is a
+    /// trade rather than an oversight: a factor is a float, this
+    /// vocabulary is compared for equality, and a float would cost every
+    /// refusal in it that property — including the geometry ones,
+    /// which have no materials in them at all. The message says the value
+    /// left its range; **the member is what says which range that was**,
+    /// because they differ -- the factors are bounded at both ends and
+    /// the alpha cutoff only below.
+    ///
+    /// Refused rather than clamped, unlike the material library's
+    /// specular exponent, and the two differ because the formats do: that
+    /// range is a convention files exceed, this one is stated by the
+    /// schema.
+    FactorOutOfRange {
+        /// Which member, spelled as the document spells it.
+        field: &'static str,
+    },
+
+    /// An alpha mode this format does not define.
+    ///
+    /// **Its own refusal rather than [`Unsupported`](Self::Unsupported),
+    /// because that one would say something false.** `Unsupported` means
+    /// the construct is in the format and not in this reader, and tells
+    /// a caller to convert the file; an alpha mode the format does not
+    /// define is the other way round — the reader knows the member,
+    /// the document's value is not one of the three, and the fix is a
+    /// repair rather than a conversion.
+    UnknownAlphaMode {
+        /// What the document spelled, so the message can show it.
+        found: Box<str>,
+    },
+
     /// A node that is its own ancestor, or that two parents claim.
     ///
     /// **The one refusal here whose absence is a hang rather than a
@@ -239,6 +274,8 @@ impl GltfError {
             Self::NoBinaryChunk => "NoBinaryChunk",
             Self::WrongMediaType { .. } => "WrongMediaType",
             Self::BufferTooShort { .. } => "BufferTooShort",
+            Self::FactorOutOfRange { .. } => "FactorOutOfRange",
+            Self::UnknownAlphaMode { .. } => "UnknownAlphaMode",
             Self::NodeCycle { .. } => "NodeCycle",
             Self::Unsupported { .. } => "Unsupported",
         }
@@ -285,6 +322,13 @@ impl core::fmt::Display for GltfError {
                 f,
                 "buffer {buffer} declares {declared} bytes and its resource holds {available}"
             ),
+            Self::UnknownAlphaMode { found } => write!(
+                f,
+                "`{found}` is not one of the three alpha modes this format defines"
+            ),
+            Self::FactorOutOfRange { field } => {
+                write!(f, "`{field}` is outside the range the format states for it")
+            }
             Self::NodeCycle { node } => write!(
                 f,
                 "node {node} is reached twice, and this hierarchy is a tree"
@@ -490,6 +534,294 @@ pub fn buffers<'a>(
             Cow::Owned(mut bytes) => {
                 bytes.truncate(declared);
                 Cow::Owned(bytes)
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// A number the format bounds, checked at the width the document wrote
+/// it in.
+///
+/// **Narrowing first would clamp where this crate promises to refuse.**
+/// A `f64` one unit in the last place above the bound narrows to exactly
+/// the bound in `f32`, so a check after the conversion cannot see it: the
+/// document's value is out of range and the caller is handed the limit
+/// with no word said. Checked wide, then narrowed.
+fn bounded(
+    object: Value<'_>,
+    key: &'static str,
+    default: f32,
+    low: f64,
+    high: f64,
+) -> Result<f32, GltfError> {
+    let Some(value) = object.get(key) else {
+        return Ok(default);
+    };
+    let found = value.as_f64()?;
+    if !(low..=high).contains(&found) {
+        return Err(GltfError::FactorOutOfRange { field: key });
+    }
+    // The layer below refuses a number that is not finite, so anything
+    // that reaches here narrows to a real value.
+    Ok(value.as_f32()?)
+}
+
+/// A factor in `0..=1`, which is the range the schema states for all of
+/// them.
+fn factor(object: Value<'_>, key: &'static str, default: f32) -> Result<f32, GltfError> {
+    bounded(object, key, default, 0.0, 1.0)
+}
+
+/// A fixed-length array of factors, each inside the stated range.
+///
+/// **The length is exact, not a minimum.** The schema states `minItems`
+/// and `maxItems` as the same number, so a longer array is a document
+/// that does not conform — and reading the first few and dropping the
+/// rest would hide whatever the tail said, including a value the reader
+/// would have refused.
+fn factors<const N: usize>(
+    object: Value<'_>,
+    key: &'static str,
+    default: [f32; N],
+) -> Result<[f32; N], GltfError> {
+    let Some(array) = object.get(key) else {
+        return Ok(default);
+    };
+    let found = array.elements().map_err(GltfError::Document)?;
+    let mut out = default;
+    let mut seen = 0;
+    for value in found {
+        let Some(slot) = out.get_mut(seen) else {
+            return Err(GltfError::FactorOutOfRange { field: key });
+        };
+        let wide = value.as_f64()?;
+        if !(0.0..=1.0).contains(&wide) {
+            return Err(GltfError::FactorOutOfRange { field: key });
+        }
+        *slot = value.as_f32()?;
+        seen += 1;
+    }
+    if seen != N {
+        return Err(GltfError::FactorOutOfRange { field: key });
+    }
+    Ok(out)
+}
+
+/// One texture reference: which texture, and which coordinate set.
+///
+/// **The index is not resolved here.** This reader does not read the
+/// `textures` table, so the number is checked against the table's length
+/// and no further — which is the most that can be said about it
+/// without a reader for what it points at.
+fn texture_ref(
+    root: Value<'_>,
+    object: Value<'_>,
+    key: &str,
+) -> Result<Option<TextureRef>, GltfError> {
+    let Some(info) = object.get(key) else {
+        return Ok(None);
+    };
+    Ok(Some(named(root, info)?))
+}
+
+/// The same, for an info object the caller already holds.
+fn named(root: Value<'_>, info: Value<'_>) -> Result<TextureRef, GltfError> {
+    info.entries().map_err(GltfError::Document)?;
+
+    // **`index` is required on every one of these.** The normal and
+    // occlusion kinds inherit it rather than restating it, which is a
+    // schema arrangement and not a licence to leave it out.
+    let texture = required(info, "index")?.as_u32()?;
+    let rows = root.get("textures").map_or(0, Value::len);
+    if texture as usize >= rows {
+        return Err(GltfError::NoSuchEntry {
+            table: "textures",
+            index: texture as usize,
+            count: rows,
+        });
+    }
+
+    Ok(TextureRef {
+        texture,
+        uv_set: number_or(info, "texCoord", 0)?,
+    })
+}
+
+/// Read the document's materials, in the vocabulary glTF states them.
+///
+/// A material object has no required members, so an empty one is legal
+/// and means every default — which is why this reads defaults rather
+/// than refusing absence. It must still *be* an object: a number where a
+/// material belongs is not a material that said nothing.
+///
+/// # Errors
+///
+/// A [`GltfError`]: `Document` when the table, a material, its shading
+/// half or a map is the wrong kind; `MissingField` when a map names no
+/// texture; `NoSuchEntry` when it names one the document does not have;
+/// `UnknownAlphaMode` for a mode the format does not define;
+/// `FactorOutOfRange` for a factor outside the range stated for it or a
+/// colour with the wrong number of components; and `Geometry` carrying
+/// [`MeshError::TooLarge`] when the table is past this reader's ceiling.
+pub fn materials(root: Value<'_>) -> Result<Vec<Material>, GltfError> {
+    let Some(table) = root.get("materials") else {
+        return Ok(Vec::new());
+    };
+
+    // Sized from what was parsed, not from a number the document
+    // declared -- a material is a wide row and doubling into it
+    // copies twice the table before it settles.
+    let mut out = Vec::with_capacity(table.len());
+    for entry in table.elements().map_err(GltfError::Document)? {
+        // **A material is an object.** `Value::get` answers `None` for
+        // every member of a number, a string or an array, so a table of
+        // those would read as a table of materials that each said
+        // nothing -- and this reader's own rule would then hand back a
+        // full default material for a document that described none.
+        entry.entries().map_err(GltfError::Document)?;
+
+        // **The ceiling this crate's amplification rule asks for.** A
+        // two-byte array element is a whole material, so a document far
+        // under the geometry ceiling can ask for more than it.
+        crate::refuse_over_material_ceiling(out.len()).map_err(GltfError::Geometry)?;
+
+        // **Read whatever the mode, kept only where it means something.**
+        // The schema bounds the cutoff whether or not the mode uses it,
+        // and forbids it outright when no mode is named -- so validating
+        // it inside the masked arm alone would let two non-conformant
+        // shapes through.
+        let cutoff = bounded(entry, "alphaCutoff", 0.5, 0.0, f64::INFINITY)?;
+        let alpha = match entry.get("alphaMode") {
+            None => {
+                if entry.get("alphaCutoff").is_some() {
+                    return Err(GltfError::FactorOutOfRange {
+                        field: "alphaCutoff",
+                    });
+                }
+                Alpha::Opaque
+            }
+            Some(mode) => {
+                // **Compared without building a string.** The text layer
+                // answers `eq_str` against the document's own bytes,
+                // escapes and all; decoding first would allocate a
+                // `String` per material to compare three constants and
+                // throw it away.
+                let spelled = mode.as_str()?;
+                if spelled.eq_str("OPAQUE") {
+                    Alpha::Opaque
+                } else if spelled.eq_str("BLEND") {
+                    Alpha::Blend
+                } else if spelled.eq_str("MASK") {
+                    Alpha::Mask { cutoff }
+                } else {
+                    // Decoded only on the path that reports it.
+                    return Err(GltfError::UnknownAlphaMode {
+                        found: spelled.decode().into(),
+                    });
+                }
+            }
+        };
+
+        let normal = entry.get("normalTexture");
+        let occlusion = entry.get("occlusionTexture");
+
+        let mut material = Material {
+            name: match entry.get("name") {
+                None => None,
+                Some(value) => Some(value.as_str()?.decode()),
+            },
+            emissive: factors(entry, "emissiveFactor", [0.0; 3])?,
+            alpha,
+            double_sided: match entry.get("doubleSided") {
+                None => false,
+                Some(value) => value.as_bool()?,
+            },
+            // **Fetched once each.** A member lookup walks the whole
+            // object, so asking for the same one twice -- as reading the
+            // map and then its scale off it separately would -- pays for
+            // the walk twice per material.
+            normal_map: match normal {
+                None => None,
+                Some(info) => Some(NormalTexture {
+                    map: named(root, info)?,
+                    // Unbounded: the schema states no range for it.
+                    scale: match info.get("scale") {
+                        None => 1.0,
+                        Some(value) => value.as_f32()?,
+                    },
+                }),
+            },
+            occlusion_map: match occlusion {
+                None => None,
+                Some(info) => Some(OcclusionTexture {
+                    map: named(root, info)?,
+                    strength: factor(info, "strength", 1.0)?,
+                }),
+            },
+            emissive_map: texture_ref(root, entry, "emissiveTexture")?,
+            ..Material::default()
+        };
+
+        // **The shading half, when there is one, and it must be an
+        // object too.** Absent, every member of it keeps the default the
+        // type already carries -- which is why this is one branch rather
+        // than a guard repeated per member.
+        if let Some(shading) = entry.get("pbrMetallicRoughness") {
+            shading.entries().map_err(GltfError::Document)?;
+            material.base_color = factors(shading, "baseColorFactor", [1.0; 4])?;
+            material.metallic = factor(shading, "metallicFactor", 1.0)?;
+            material.roughness = factor(shading, "roughnessFactor", 1.0)?;
+            material.base_color_map = texture_ref(root, shading, "baseColorTexture")?;
+            material.metallic_roughness_map =
+                texture_ref(root, shading, "metallicRoughnessTexture")?;
+        }
+
+        out.push(material);
+    }
+    Ok(out)
+}
+
+/// Which material each primitive of one mesh names.
+///
+/// **Reported rather than stored.** A [`Mesh`] carries geometry and has
+/// nowhere to put a material index; giving it one would change the
+/// canonical form, its version question and everything that reads it, for
+/// a value nothing in this engine can yet use. A caller that wants the
+/// pairing asks for it here.
+///
+/// **Every primitive in one pass**, rather than one lookup per
+/// primitive. An index into a document array walks that array from its
+/// head, so asking per primitive -- which is what a caller pairing a mesh
+/// with its surfaces does -- costs the square of the count. This is the
+/// same shape `buffer_views` and `accessors` are read in, for the same
+/// reason.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the table an index missed, the member that was
+/// the wrong type, or the material the document does not have.
+pub fn primitive_materials(root: Value<'_>, mesh: usize) -> Result<Vec<Option<u32>>, GltfError> {
+    let row = entry(root.get("meshes"), "meshes", mesh)?;
+    let Some(primitives) = row.get("primitives") else {
+        return Ok(Vec::new());
+    };
+    let rows = root.get("materials").map_or(0, Value::len);
+
+    let mut out = Vec::new();
+    for found in primitives.elements().map_err(GltfError::Document)? {
+        out.push(match found.get("material") {
+            None => None,
+            Some(value) => {
+                let named = value.as_u32()?;
+                if named as usize >= rows {
+                    return Err(GltfError::NoSuchEntry {
+                        table: "materials",
+                        index: named as usize,
+                        count: rows,
+                    });
+                }
+                Some(named)
             }
         });
     }

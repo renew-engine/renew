@@ -11,6 +11,7 @@
 
 use renew_mesh::accessor::{Component, Shape};
 use renew_mesh::gltf::{self, GltfError};
+use renew_mesh::pbr::{Alpha, Material, TextureRef};
 
 // The encoder the seeds and the URI suite share, included the way six
 // other targets include it: a document that embeds its geometry has to
@@ -521,11 +522,14 @@ fn gltf_cannot_reach(refusal: &GltfError) -> Option<&'static str> {
         | GltfError::BufferWithoutSource { .. }
         | GltfError::NoBinaryChunk
         | GltfError::WrongMediaType { .. }
-        | GltfError::BufferTooShort { .. } => None,
+        | GltfError::BufferTooShort { .. }
+        | GltfError::FactorOutOfRange { .. }
+        | GltfError::UnknownAlphaMode { .. } => None,
     }
 }
 
-/// The buffer layer's refusals, each provoked by a document.
+/// The refusals split out of the census below, each provoked by a
+/// document: the buffer layer's five, and the material layer's two.
 ///
 /// Split out of the census below rather than listed inside it: five
 /// refusals arrived at once when a document learned to read more than
@@ -568,6 +572,18 @@ fn buffer_provocations() -> Vec<(&'static str, GltfError)> {
                 Some(&[1, 2, 3, 4]),
             )
             .expect_err("four bytes are not sixteen"),
+        ),
+        (
+            "UnknownAlphaMode",
+            gltf::materials(document(r#"{ "materials": [{ "alphaMode": "DITHER" }] }"#).root())
+                .expect_err("there are three modes"),
+        ),
+        (
+            "FactorOutOfRange",
+            gltf::materials(
+                document(r#"{ "materials": [{ "emissiveFactor": [0.0, 0.0, 4.0] }] }"#).root(),
+            )
+            .expect_err("four is outside zero to one"),
         ),
         (
             "Payload",
@@ -833,6 +849,505 @@ fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
     assert_eq!(refused.name(), "Document");
 }
 
+// ---------------------------------------------------------------------
+// Materials.
+//
+// The vocabulary is glTF's own, and every member of it has a default, so
+// most of what follows is about what a document that says nothing means.
+
+/// **An empty material is every default, because the format says so.**
+///
+/// A material object has no required members at all. A reader that
+/// refused one would be refusing a conformant document, and a reader that
+/// invented values would be reporting a material nobody wrote -- the
+/// defaults are the format's, which is what makes returning them honest.
+#[test]
+fn a_material_that_says_nothing_is_every_default() {
+    let json = document(r#"{ "materials": [{}] }"#);
+    let read = gltf::materials(json.root()).expect("an empty material is a material");
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0], Material::default());
+}
+
+/// A document with no material table has no materials, which is not a
+/// refusal.
+#[test]
+fn a_document_with_no_materials_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(
+        gltf::materials(json.root())
+            .expect("no materials")
+            .is_empty()
+    );
+}
+
+/// **Every member the format states, read into the vocabulary it states
+/// them in.**
+#[expect(
+    clippy::float_cmp,
+    reason = "the claim is that the document's own numbers came back unchanged, and no arithmetic happens between the file and the assertion, so equality with what the file says is exactly what must hold; a tolerance would pass a reader that rounded a factor or read the wrong member"
+)]
+#[test]
+fn a_material_reads_every_member_the_format_states() {
+    let json = document(
+        r#"{
+          "textures": [{}, {}, {}, {}, {}, {}, {}, {}],
+          "materials": [{
+          "name": "brushed",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [0.5, 0.25, 0.125, 1.0],
+            "metallicFactor": 0.75,
+            "roughnessFactor": 0.25,
+            "baseColorTexture": { "index": 3, "texCoord": 1 },
+            "metallicRoughnessTexture": { "index": 4 }
+          },
+          "normalTexture": { "index": 5, "scale": 2.5 },
+          "occlusionTexture": { "index": 6, "strength": 0.5 },
+          "emissiveTexture": { "index": 7 },
+          "emissiveFactor": [0.1, 0.2, 0.3],
+          "alphaMode": "MASK",
+          "alphaCutoff": 0.25,
+          "doubleSided": true
+        }] }"#,
+    );
+    let read = gltf::materials(json.root()).expect("a full material");
+    let material = &read[0];
+
+    assert_eq!(material.name.as_deref(), Some("brushed"));
+    assert_eq!(material.base_color, [0.5, 0.25, 0.125, 1.0]);
+    assert_eq!(material.metallic, 0.75);
+    assert_eq!(material.roughness, 0.25);
+    assert_eq!(material.emissive, [0.1, 0.2, 0.3]);
+    assert_eq!(material.alpha, Alpha::Mask { cutoff: 0.25 });
+    assert!(material.double_sided);
+
+    assert_eq!(
+        material.base_color_map,
+        Some(TextureRef {
+            texture: 3,
+            uv_set: 1
+        })
+    );
+    assert_eq!(
+        material.metallic_roughness_map,
+        Some(TextureRef {
+            texture: 4,
+            uv_set: 0
+        }),
+        "an absent texCoord is the first set, which is the format's default"
+    );
+    let normal = material.normal_map.expect("a normal map");
+    assert_eq!(normal.map.texture, 5);
+    assert_eq!(normal.scale, 2.5, "and its scale is unbounded");
+    let occlusion = material.occlusion_map.expect("an occlusion map");
+    assert_eq!(occlusion.map.texture, 6);
+    assert_eq!(occlusion.strength, 0.5);
+    assert_eq!(
+        material.emissive_map,
+        Some(TextureRef {
+            texture: 7,
+            uv_set: 0
+        })
+    );
+}
+
+/// **A cutoff reaches the caller only on the mode that uses one.**
+#[test]
+fn only_a_masked_material_carries_its_cutoff() {
+    for (mode, expected) in [
+        (r#""alphaMode": "OPAQUE","#, Alpha::Opaque),
+        (r#""alphaMode": "BLEND","#, Alpha::Blend),
+    ] {
+        // The cutoff is written in both cases and reported in neither.
+        // A third row without any mode used to sit here and read clean;
+        // the format forbids that document, and the test above now says
+        // so instead.
+        let text = format!(r#"{{ "materials": [{{ {mode} "alphaCutoff": 0.75 }}] }}"#);
+        let json = document(&text);
+        let read = gltf::materials(json.root()).expect("a material");
+        assert_eq!(read[0].alpha, expected, "{mode}");
+    }
+
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK" }] }"#);
+    let read = gltf::materials(json.root()).expect("a masked material");
+    assert_eq!(
+        read[0].alpha,
+        Alpha::Mask { cutoff: 0.5 },
+        "an absent cutoff is a half, which is the format's default"
+    );
+}
+
+/// An alpha mode this format does not have is refused by name.
+/// **An alpha mode the format does not define is its own refusal, and
+/// it carries what was spelled.**
+///
+/// Not `Unsupported`, which means the construct is in the format and not
+/// in this reader and tells a caller to convert the file. This is the
+/// other way round: the reader knows the member, the document's value is
+/// not one of the three, and the fix is a repair.
+#[test]
+fn an_alpha_mode_the_format_does_not_have_is_refused() {
+    let json = document(r#"{ "materials": [{ "alphaMode": "DITHER" }] }"#);
+    let refused = gltf::materials(json.root()).expect_err("there are three modes");
+    assert_eq!(
+        refused,
+        GltfError::UnknownAlphaMode {
+            found: "DITHER".into()
+        }
+    );
+    assert!(
+        refused.to_string().contains("DITHER"),
+        "the message shows what the document spelled: {refused}"
+    );
+}
+
+/// **A material that is not an object is refused rather than defaulted.**
+///
+/// Every member of a number, a string or an array answers absent, so a
+/// reader that only asked for members would hand back a full default
+/// material for a document that described none at all.
+#[test]
+fn a_material_that_is_not_an_object_is_refused() {
+    for text in [
+        r#"{ "materials": [5] }"#,
+        r#"{ "materials": ["a material"] }"#,
+        r#"{ "materials": [null] }"#,
+        r#"{ "materials": [[]] }"#,
+        r#"{ "materials": [true] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root())
+                .expect_err("a material is an object")
+                .name(),
+            "Document",
+            "{text}"
+        );
+    }
+}
+
+/// **The shading half is asked for its kind, not merely its presence.**
+///
+/// A wrong-typed `pbrMetallicRoughness` answers absent to every member,
+/// so testing presence alone would read it as a material that simply
+/// said nothing -- and would hide a factor sitting one wrapper deep that
+/// the reader would otherwise have refused.
+#[test]
+fn a_shading_half_that_is_not_an_object_is_refused() {
+    for text in [
+        r#"{ "materials": [{ "pbrMetallicRoughness": 5 }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": "x" }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": null }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": [{ "metallicFactor": 5 }] }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root())
+                .expect_err("the shading half is an object")
+                .name(),
+            "Document",
+            "{text}"
+        );
+    }
+}
+
+/// **A factor one step past its bound is refused, not snapped onto it.**
+///
+/// The document's number is wider than the one this reader keeps, so a
+/// value a hair above the maximum narrows to exactly the maximum. Checked
+/// at the document's own width, that value is what it is: out of range.
+/// Checked after narrowing, it would be silently clamped -- which is the
+/// behaviour this crate's prose promises it does not have.
+#[test]
+fn a_factor_a_hair_past_its_bound_is_refused_rather_than_snapped() {
+    let json = document(
+        r#"{ "materials": [{ "pbrMetallicRoughness": {
+          "metallicFactor": 1.0000000000001 } }] }"#,
+    );
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("wider than an f32 can see"),
+        GltfError::FactorOutOfRange {
+            field: "metallicFactor"
+        }
+    );
+
+    // And the bounds themselves are inside the range, both ends.
+    for value in ["0.0", "1.0", "-0.0"] {
+        let text = format!(
+            r#"{{ "materials": [{{ "pbrMetallicRoughness": {{
+              "metallicFactor": {value} }} }}] }}"#
+        );
+        let json = document(&text);
+        assert!(
+            gltf::materials(json.root()).is_ok(),
+            "{value} is inside the stated range"
+        );
+    }
+}
+
+/// **A colour is exactly as long as the format states.**
+///
+/// Reading the first few and dropping the rest would hide whatever the
+/// tail said, including a component the reader would have refused.
+#[test]
+fn a_colour_of_the_wrong_length_is_refused() {
+    for (member, text) in [
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [0.1, 0.2, 0.3, 0.4, 9.0] } }] }"#,
+        ),
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [0.1, 0.2, 0.3] } }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.1, 0.2, 0.3, 9.0] }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.1, 0.2] }] }"#,
+        ),
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("the length is exact"),
+            GltfError::FactorOutOfRange { field: member },
+            "{text}"
+        );
+    }
+}
+
+/// **A cutoff is checked whatever the mode, and may not appear without
+/// one.**
+///
+/// The schema bounds it unconditionally and states that it must not be
+/// present when no mode is -- so validating it inside the masked arm
+/// alone would let two non-conformant shapes through.
+#[test]
+fn a_cutoff_is_checked_whatever_the_mode_names() {
+    for text in [
+        r#"{ "materials": [{ "alphaMode": "BLEND", "alphaCutoff": -5.0 }] }"#,
+        r#"{ "materials": [{ "alphaMode": "OPAQUE", "alphaCutoff": -5.0 }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("the minimum is not conditional"),
+            GltfError::FactorOutOfRange {
+                field: "alphaCutoff"
+            },
+            "{text}"
+        );
+    }
+
+    // And a cutoff with no mode at all is a document the format forbids.
+    let json = document(r#"{ "materials": [{ "alphaCutoff": 0.75 }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("a cutoff needs a mode"),
+        GltfError::FactorOutOfRange {
+            field: "alphaCutoff"
+        }
+    );
+}
+
+/// **A map that states no scale or strength takes the format's
+/// default.**
+///
+/// The whole-material fixture states both, so the branch that supplies
+/// the default was reached by nothing -- and a default that drifted
+/// would be a value this crate invented with nothing to say so.
+#[expect(
+    clippy::float_cmp,
+    reason = "these are the format's stated defaults, written as literals in both places and reached without arithmetic; a tolerance would let a default drift onto a neighbouring value and still pass, which is the one thing this test exists to prevent"
+)]
+#[test]
+fn a_map_that_states_no_scale_or_strength_takes_the_default() {
+    let json = document(
+        r#"{ "textures": [{}], "materials": [{
+          "normalTexture": { "index": 0 },
+          "occlusionTexture": { "index": 0 }
+        }] }"#,
+    );
+    let read = gltf::materials(json.root()).expect("two maps");
+    let normal = read[0].normal_map.expect("a normal map");
+    let occlusion = read[0].occlusion_map.expect("an occlusion map");
+    assert_eq!(normal.scale, 1.0, "an absent scale is one");
+    assert_eq!(occlusion.strength, 1.0, "an absent strength is one");
+}
+
+/// **A mesh with no primitives pairs with nothing**, which is not a
+/// refusal: the format allows the member to be absent and a mesh that
+/// draws nothing names no material.
+#[test]
+fn a_mesh_with_no_primitives_pairs_with_nothing() {
+    let json = document(r#"{ "meshes": [{ "name": "empty" }] }"#);
+    assert!(
+        gltf::primitive_materials(json.root(), 0)
+            .expect("a mesh that draws nothing")
+            .is_empty()
+    );
+}
+
+/// **A map naming a texture the document does not have is refused.**
+///
+/// The index is not resolved here -- this reader does not read the
+/// texture table -- but it is bounded by it, which is the most that can
+/// be said without a reader for what it points at, and more than passing
+/// the number through.
+#[test]
+fn a_map_naming_a_texture_that_is_not_there_is_refused() {
+    let json =
+        document(r#"{ "textures": [{}], "materials": [{ "emissiveTexture": { "index": 4 } }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("there is one texture"),
+        GltfError::NoSuchEntry {
+            table: "textures",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
+/// **A factor outside the range the schema states is refused, and the
+/// refusal names the member.**
+///
+/// Refused rather than clamped: clamping would report a material the
+/// document does not contain. The material library's specular exponent
+/// *is* left unclamped, and the two differ because that range is a
+/// convention files exceed while this one is stated by the schema.
+#[test]
+fn a_factor_outside_its_stated_range_is_refused_naming_it() {
+    for (member, text) in [
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [1.5, 0.0, 0.0, 1.0] } }] }"#,
+        ),
+        (
+            "metallicFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "metallicFactor": -0.5 } }] }"#,
+        ),
+        (
+            "roughnessFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "roughnessFactor": 2.0 } }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.0, 0.0, 4.0] }] }"#,
+        ),
+        (
+            "strength",
+            r#"{ "textures": [{}], "materials": [{ "occlusionTexture": {
+              "index": 0, "strength": 3.0 } }] }"#,
+        ),
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("outside the stated range"),
+            GltfError::FactorOutOfRange { field: member },
+            "{member}"
+        );
+    }
+}
+
+/// **A cutoff is bounded below and not above**, which is what the schema
+/// states and not a guess about what a renderer wants.
+#[test]
+fn a_cutoff_is_bounded_below_and_not_above() {
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK", "alphaCutoff": 4.0 }] }"#);
+    let read = gltf::materials(json.root()).expect("no upper bound is stated");
+    assert_eq!(read[0].alpha, Alpha::Mask { cutoff: 4.0 });
+
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK", "alphaCutoff": -1.0 }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("a minimum is stated"),
+        GltfError::FactorOutOfRange {
+            field: "alphaCutoff"
+        }
+    );
+}
+
+/// **A map that names no texture is not a map.**
+///
+/// `index` is the one required member of a texture reference, and the
+/// normal and occlusion kinds inherit the requirement rather than
+/// restating it -- which is a schema arrangement, not a licence to leave
+/// it out.
+#[test]
+fn a_map_that_names_no_texture_is_refused() {
+    for text in [
+        r#"{ "textures": [{}], "materials": [{ "pbrMetallicRoughness": {
+          "baseColorTexture": { "texCoord": 1 } } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "normalTexture": { "scale": 1.0 } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "occlusionTexture": { "strength": 1.0 } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "emissiveTexture": {} }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("a map names a texture"),
+            GltfError::MissingField { path: "index" },
+            "{text}"
+        );
+    }
+}
+
+/// **A primitive's material is reported, not stored.**
+///
+/// Geometry and the surface it wears are two facts, and the canonical
+/// form carries one of them. A caller that wants the pairing asks for it;
+/// putting the index into the geometry would change the stored form for a
+/// value nothing here can yet use.
+#[test]
+fn a_primitives_material_is_reported_by_index() {
+    let json = document(
+        r#"{ "materials": [{}, {}, {}], "meshes": [{ "primitives": [
+          { "attributes": { "POSITION": 0 }, "material": 2 },
+          { "attributes": { "POSITION": 0 } }
+        ] }] }"#,
+    );
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 0).expect("one mesh"),
+        vec![Some(2), None],
+        "the second names no material, which is the default material"
+    );
+
+    // A mesh the document does not have.
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 4).expect_err("there is one mesh"),
+        GltfError::NoSuchEntry {
+            table: "meshes",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
+/// **A primitive naming a material the document does not have is
+/// refused.**
+///
+/// Every other index into a table in this reader is bounded by it, and
+/// the module's own documentation calls a number naming a row that is
+/// not there the commonest thing wrong with a hand-edited document.
+#[test]
+fn a_primitive_naming_a_material_that_is_not_there_is_refused() {
+    let json = document(
+        r#"{ "materials": [{}], "meshes": [{ "primitives": [
+          { "attributes": { "POSITION": 0 }, "material": 7 } ] }] }"#,
+    );
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 0).expect_err("there is one material"),
+        GltfError::NoSuchEntry {
+            table: "materials",
+            index: 7,
+            count: 1,
+        }
+    );
+}
+
 /// The census and the documents agree, and every refusal says something.
 #[test]
 fn the_census_and_the_documents_agree() {
@@ -936,7 +1451,7 @@ fn the_census_and_the_documents_agree() {
         assert!(!named.contains(name), "`{name}` is provoked twice");
         named.push(name);
     }
-    assert_eq!(named.len(), 14, "one provocation per refusal");
+    assert_eq!(named.len(), 16, "one provocation per refusal");
 }
 
 // ---------------------------------------------------------------------

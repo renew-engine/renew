@@ -258,6 +258,80 @@ fn document_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
+/// Documents carrying materials, which the geometry path never reads.
+///
+/// **A material table is reached only by asking for it**, so a corpus of
+/// documents that carry none leaves that layer's arithmetic — the
+/// factors, their stated ranges, the alpha modes, the maps — attacked
+/// by nothing. These carry one, in the shapes that decide the answer.
+fn material_seeds() -> Vec<(String, Vec<u8>)> {
+    // A document whose material names textures has to have them: the
+    // reader bounds every index by the table it points at, and a seed
+    // that named one out of thin air would be exercising that refusal
+    // rather than the material read it is named for.
+    let with_textures = |materials: &str| {
+        SIMPLEST
+            .replace(
+                r#""asset":{"version":"2.0"}"#,
+                &format!(
+                    r#""asset":{{"version":"2.0"}},"textures":[{{}},{{}},{{}},{{}},{{}}],"materials":{materials}"#
+                ),
+            )
+            .into_bytes()
+    };
+
+    let with = |materials: &str| {
+        SIMPLEST
+            .replace(
+                r#""asset":{"version":"2.0"}"#,
+                &format!(r#""asset":{{"version":"2.0"}},"materials":{materials}"#),
+            )
+            .into_bytes()
+    };
+
+    vec![
+        // The empty material, which is legal and means every default.
+        ("material-empty".to_owned(), with("[{}]")),
+        // Every member the format states, so the whole read is walked.
+        (
+            "material-whole".to_owned(),
+            with_textures(
+                r#"[{"name":"brushed",
+                "pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1],
+                "metallicFactor":0.75,"roughnessFactor":0.25,
+                "baseColorTexture":{"index":0,"texCoord":1},
+                "metallicRoughnessTexture":{"index":1}},
+                "normalTexture":{"index":2,"scale":2.5},
+                "occlusionTexture":{"index":3,"strength":0.5},
+                "emissiveTexture":{"index":4},"emissiveFactor":[0.1,0.2,0.3],
+                "alphaMode":"MASK","alphaCutoff":0.25,"doubleSided":true}]"#,
+            ),
+        ),
+        // The two alpha modes that carry no cutoff, so the arm that
+        // reads one is entered from every state.
+        (
+            "material-blended".to_owned(),
+            with(r#"[{"alphaMode":"BLEND","alphaCutoff":0.75}]"#),
+        ),
+        // A factor outside the range the schema states, which is the
+        // refusal this layer exists to make.
+        (
+            "material-factor-out-of-range".to_owned(),
+            with(r#"[{"emissiveFactor":[0,0,4]}]"#),
+        ),
+        // An alpha mode the format does not have.
+        (
+            "material-unknown-alpha-mode".to_owned(),
+            with(r#"[{"alphaMode":"DITHER"}]"#),
+        ),
+        // A map naming no texture, which is not a map.
+        (
+            "material-map-without-texture".to_owned(),
+            with(r#"[{"emissiveTexture":{"texCoord":0}}]"#),
+        ),
+    ]
+}
+
 /// One container per refusal, each wrong in exactly one way.
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
@@ -377,6 +451,7 @@ fn main() -> ExitCode {
         .into_iter()
         .chain(refused_seeds())
         .chain(document_seeds())
+        .chain(material_seeds())
     {
         // **The extension follows the bytes.** Half these seeds are
         // documents rather than containers, and `.glb` means container

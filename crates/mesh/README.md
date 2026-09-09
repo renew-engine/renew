@@ -321,7 +321,7 @@ chunk to offer and the other has none.
 
 **Its refusals name the layer that failed**, not just the fault: a
 `GltfError` says whether the container, the document, a buffer, an
-embedded payload, an accessor or the geometry objected, and the inner refusal's own numbers are one call away
+embedded payload, an accessor, a material or the geometry objected, and the inner refusal's own numbers are one call away
 through the value. A caller that only wants geometry can go
 through `format::detect` and then `Format::read`, which wraps the same
 answer in `MeshError`.
@@ -329,6 +329,34 @@ answer in `MeshError`.
 The scene walk is an explicit stack with a visited mark checked before
 children are pushed, so a document whose nodes point at each other is a
 refusal rather than a walk that never ends.
+
+## Two material vocabularies, and why they are not one
+
+`mtl::Material` holds the Phong vocabulary a material library carries —
+ambient, diffuse, specular, a specular exponent. `pbr::Material` holds the
+metallic-roughness vocabulary a glTF document carries — a base colour,
+how metallic the surface is, how rough, and the maps that modulate those.
+
+**They are not two spellings of one thing, and nothing here converts
+between them.** Every mapping in circulation is a heuristic: there is no
+specular exponent that *is* a roughness, only a formula somebody found
+acceptable for their renderer. Applying one would hand back a material no
+file contained, which is what this crate declines to do everywhere else.
+A caller that wants one model out of both converts where the conversion
+can be seen.
+
+**A glTF material has no required members**, so an empty one is legal and
+means every default — and the defaults are the format's, not this
+crate's convenience. **A factor outside the range the schema states is
+refused rather than clamped**, which is the opposite of what the material
+library does with its specular exponent, and the two differ because the
+formats do: that range is a convention files exceed, this one is stated
+by the schema.
+
+A primitive's material is **reported rather than stored**. Geometry and
+the surface it wears are two facts, and the canonical form carries one of
+them; `gltf::primitive_material` answers for the pairing without changing
+what a mesh is.
 
 ## `data:` URIs, and why a decoder is strict about spelling
 

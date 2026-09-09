@@ -36,9 +36,18 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use renew_mesh::gltf;
+use renew_mesh::{glb, gltf};
 
 fuzz_target!(|data: &[u8]| {
+    // **The material table is read from the same bytes, and separately.**
+    // `read` builds geometry and never looks at a material, so a document
+    // that reaches this target exercises that table only if something
+    // asks for it. Asking here costs one parse and covers a layer the
+    // geometry path cannot reach at all -- including for the inputs that
+    // are refused below, which is where a table this reader must not
+    // trust is likeliest to be.
+    materials_answer(data);
+
     let Ok(mesh) = gltf::read(data) else {
         // A refusal is an answer. Which refusal is the suite's business
         // beside the crate; that the call returned at all is this
@@ -105,3 +114,111 @@ fuzz_target!(|data: &[u8]| {
     let again = gltf::read(data).expect("what read once reads again");
     assert_eq!(again, mesh, "the same bytes read to the same geometry");
 });
+
+/// Read the material table, and hold it to what the format states.
+///
+/// Separate from the geometry above because the two share only their
+/// bytes: a document may carry materials and no geometry, or the reverse,
+/// and a target that only asked for one would leave the other's
+/// arithmetic unattacked.
+///
+/// **Both shapes, not just the loose document.** An earlier version
+/// parsed the raw bytes, so every container went straight past it -- and
+/// a container is what most of this corpus is, and what most real assets
+/// are. The dispatch here is the reader's own.
+fn materials_answer(data: &[u8]) {
+    let container = glb::looks_like(data).then(|| glb::read(data)).transpose();
+    let Ok(container) = container else {
+        // The container layer's own refusals are the geometry half's
+        // business; a malformed wrapper has no document to ask about.
+        return;
+    };
+    let document = container.map_or(data, |read| read.json);
+
+    let Ok(json) = gltf::parse(document) else {
+        return;
+    };
+    let root = json.root();
+
+    let Ok(materials) = gltf::materials(root) else {
+        return;
+    };
+
+    for material in &materials {
+        // **Every factor the format bounds, still inside its bound.** A
+        // reader that let one through would be handing a renderer a
+        // multiplier the document was refused for stating.
+        for component in material
+            .base_color
+            .iter()
+            .chain(&material.emissive)
+            .chain(core::slice::from_ref(&material.metallic))
+            .chain(core::slice::from_ref(&material.roughness))
+        {
+            assert!(
+                (0.0..=1.0).contains(component),
+                "a factor outside the range the format states reached a caller: {component}"
+            );
+        }
+
+        // A cutoff is bounded below; the format states no upper bound,
+        // so none is asserted. Nothing asserts it is finite either --
+        // the number layer refuses one that is not, so an assertion here
+        // would be defensive code that reads like safety and checks
+        // nothing.
+        if let renew_mesh::pbr::Alpha::Mask { cutoff } = material.alpha {
+            assert!(
+                cutoff >= 0.0,
+                "a cutoff below the stated minimum reached a caller: {cutoff}"
+            );
+        }
+
+        if let Some(occlusion) = material.occlusion_map {
+            assert!(
+                (0.0..=1.0).contains(&occlusion.strength),
+                "an occlusion strength outside its stated range"
+            );
+        }
+
+        // **Every index is inside the table it names.** This reader does
+        // not resolve a texture, but it bounds one, and an index past the
+        // table reaching a caller is the fault nothing downstream can
+        // catch.
+        let textures = root.get("textures").map_or(0, renew_json::Value::len);
+        for map in [material.base_color_map, material.metallic_roughness_map]
+            .into_iter()
+            .flatten()
+            .chain(material.normal_map.map(|normal| normal.map))
+            .chain(material.occlusion_map.map(|occlusion| occlusion.map))
+            .chain(material.emissive_map)
+        {
+            assert!(
+                (map.texture as usize) < textures,
+                "a texture index past the table reached a caller: {} of {textures}",
+                map.texture
+            );
+        }
+    }
+
+    // **The pairing, over every mesh the document has.** It takes an
+    // index the caller chooses and reads a table the document controls,
+    // which is exactly the shape worth attacking, and nothing reached it
+    // before.
+    let meshes = root.get("meshes").map_or(0, renew_json::Value::len);
+    for mesh in 0..meshes {
+        let Ok(pairing) = gltf::primitive_materials(root, mesh) else {
+            continue;
+        };
+        for named in pairing.into_iter().flatten() {
+            assert!(
+                (named as usize) < materials.len(),
+                "a material index past the table reached a caller: {named} of {}",
+                materials.len()
+            );
+        }
+    }
+
+    // Reading twice answers the same, as everywhere else here.
+    let again = gltf::materials(root).expect("what read once reads again");
+    assert_eq!(again, materials, "the same bytes read to the same materials");
+}
