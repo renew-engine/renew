@@ -1362,6 +1362,67 @@ fn parenthesised_rule_citation(line: &str) -> Option<String> {
 /// rule scanners read only prose; a bare letter-and-number, for the
 /// reason [`parenthesised_rule_citation`] gives; and any phrasing that
 /// avoids the literal needles, including a different case of one.
+/// Every fuzz target the workspace builds, in declaration order.
+fn fuzz_targets(root: &Path) -> Result<Vec<String>, String> {
+    let manifest = std::fs::read_to_string(root.join("fuzz/Cargo.toml"))
+        .map_err(|error| format!("fuzz/Cargo.toml is unreadable: {error}"))?;
+
+    // A target is a `[[bin]]` section, and the package's own `name` is
+    // not one -- so sections are counted rather than every `name = `
+    // line, which would pick up the package and call it a target.
+    let mut names = Vec::new();
+    let mut in_bin = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_bin = line == "[[bin]]";
+            continue;
+        }
+        if !in_bin {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name = ") {
+            names.push(rest.trim_matches('"').to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err("no fuzz targets found, which cannot be right".to_owned());
+    }
+    Ok(names)
+}
+
+/// **Every fuzz target has an entry in the refusal catalogue.**
+///
+/// The catalogue is written to be implemented against: a reader is built
+/// by going down its list and answering every entry. That only works
+/// while the list describes the readers that exist — and a table of
+/// readers is exactly the kind of document that drifts, because nothing
+/// fails when a row is missing.
+///
+/// Three readers went in with fuzz targets and corpora and no row here
+/// before this check existed, which is the whole argument for it. A
+/// target is the right thing to key on: it is declared once, in one file,
+/// by the same change that adds the reader.
+#[test]
+fn every_fuzz_target_has_an_entry_in_the_refusal_catalogue() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let catalogue = std::fs::read_to_string(root.join("REFUSALS.md"))
+        .expect("the catalogue is part of the tree");
+
+    let missing: Vec<&String> = targets
+        .iter()
+        .filter(|target| !catalogue.contains(target.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these fuzz targets have no entry in REFUSALS.md: {missing:?}. A reader worth attacking \
+         is worth describing: add its row to the table of readers, with its error type, how many \
+         refusals it has and its corpus floor."
+    );
+}
+
 #[test]
 fn no_source_cites_material_this_repository_does_not_contain() {
     let root = workspace_root();

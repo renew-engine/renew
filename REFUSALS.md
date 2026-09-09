@@ -8,16 +8,16 @@ and answer it — because a parser tested only on the files it can already
 read is exactly the failure that fuzzing exists to catch, and it passes
 its own suite the whole time.
 
-Thirteen readers in this tree already take bytes nobody here wrote. Their
+Seventeen readers in this tree already take bytes nobody here wrote. Their
 refusals are the worked examples throughout, so what follows describes the
 house pattern rather than inventing one.
 
 **The second half was written before any reader here took geometry, and
-four of the thirteen now do** — the STL, PLY, OBJ and blob readers in `crates/mesh`, built
+five of the seventeen now do** — the STL, PLY, OBJ, blob and glTF readers in `crates/mesh`, built
 against this list rather than against the handful of files that happened
 to be on somebody's disk, which is what the list was for. Where an entry
 below says there is no local precedent, check `crates/mesh` first: its
-eleven `MeshError` variants answer "not this format at all", "too short
+fifteen `MeshError` variants answer "not this format at all", "too short
 to hold its own header", "a declared count the bytes present cannot
 supply", "a value outside the format's own domain", "zero where zero
 has no meaning" (entry 12, which OBJ's one-based indices are exactly),
@@ -57,17 +57,21 @@ is dead code that reads like safety.
 | JSON | `JsonErrorKind` | `crates/json/src/error.rs` | 29 | `json_parse` | 30 |
 | Deflate, inside PNG | `InflateError` | `crates/png/src/inflate.rs` | 7 | `png_decode` | — |
 | Mesh descriptor | `TargetError::Creation` | `crates/rhi/src/vk/mesh.rs` | 8, as strings | none | none |
-| STL | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `stl_read` | 18 |
-| PLY | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `ply_read` | 16 |
-| OBJ | `MeshError` | `crates/mesh/src/error.rs` | 11, shared | `obj_read` | 16 |
-| MTL | `MeshError` | `crates/mesh/src/error.rs` | 4 of the 11 | `mtl_read` | 13 |
-| Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 8 of the 11 | `blob_read` | 16 |
+| STL | `MeshError` | `crates/mesh/src/error.rs` | 10 of the 15 | `stl_read` | 18 |
+| PLY | `MeshError` | `crates/mesh/src/error.rs` | 11 of the 15 | `ply_read` | 16 |
+| OBJ | `MeshError` | `crates/mesh/src/error.rs` | 9 of the 15 | `obj_read` | 16 |
+| MTL | `MeshError` | `crates/mesh/src/error.rs` | 5 of the 15 | `mtl_read` | 13 |
+| Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 10 of the 15 | `blob_read` | 16 |
+| glTF container | `GlbError` | `crates/mesh/src/glb.rs` | 11 | `glb_read` | 18 |
+| Accessor | `AccessorError` | `crates/mesh/src/accessor.rs` | 14 | `accessor_view` | 26 |
+| glTF document | `GltfError` | `crates/mesh/src/gltf.rs` | 9 | `gltf_read` | 18 |
+| Data URI | `DataUriError` | `crates/mesh/src/data_uri.rs` | 7 | `data_uri_read` | 38 |
 
 **The MTL row is the shortest in this table, and that is the honest
 number rather than a gap.** A material library indexes nothing, declares
-no counts and multiplies nothing, so four refusals is the whole of what
+no counts and multiplies nothing, so five refusals is the whole of what
 can go wrong in it, and its census writes a sentence for each of the
-seven it cannot reach. **A reader with few answers needs a tighter
+ten it cannot reach. **A reader with few answers needs a tighter
 corpus floor, not the same one**, which is why its gate takes one seed of
 slack where the others take two.
 
@@ -80,6 +84,23 @@ complete. **That census is what forced `IndexZero` into existence and
 what deleted a refusal from the STL reader that no input could produce**:
 it demands a sentence per variant per reader, and a sentence that cannot
 be written truthfully is a finding.
+
+**The four newest rows read one format between them, and each has its
+own error type rather than a share of one.** That is the opposite of what
+the five mesh readers do, and the reason is that they are layers rather
+than formats: a container fault, a document fault, an accessor fault and
+a payload fault send a caller to four different places, and folding them
+together would put "not a container" in every other reader's census. The
+document reader's type carries the other three, so a caller that wants
+one answer gets the layer's name and the inner refusal's own numbers one
+call away.
+
+**The data URI row has the highest corpus floor and the smallest error
+type**, which is not a contradiction: its seeds are short, so a corpus
+that covers every rule is cheap, and a rule it stopped covering would be
+invisible in a smaller one. It is also the only reader here whose census
+lists nothing as unreachable — one reader owns the type, and every
+variant has a seed.
 
 The mesh-descriptor row is the one to read before writing an importer
 that touches the GPU. Its refusals are formatted strings rather than
@@ -717,6 +738,17 @@ effect.
 `PoolNotCanonical { expected, found }`, `UnsetSizeBits` and
 `UnsetPatchBits`, `TraceErrorKind::DuplicateHeaderKey`,
 `HeaderFieldOutOfOrder`, `HeaderAfterEvents` and `ByteOrderMark`.
+
+**The base64 decoder is the newest instance, and it is the one that shows
+the category is not about file formats.** `QQ==` and `QR==` decode to the
+same single byte: the last four bits of the second character reach no
+output byte, so an encoder writes them as zero and a lenient decoder
+ignores whatever is there. `DataUriError::NonCanonical { at, bits }`
+refuses the second spelling, and the fuzz target holds the line from the
+other side — everything the decoder accepts is re-encoded and must come
+back character for character. **A decoder that tolerated those bits would
+pass every test that decodes a payload written by an encoder**, which is
+exactly the shape of bug this entry exists for.
 
 `PoolNotCanonical` is the most complete instance and worth reading in
 full: scanning every table entry in document order, each pooled index must
