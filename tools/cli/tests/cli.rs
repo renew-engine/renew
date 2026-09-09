@@ -2253,35 +2253,99 @@ fn asset_import_refuses_a_material_library_for_what_it_is() -> std::io::Result<(
     Ok(())
 }
 
-/// **A binary glTF is turned away for the reader it lacks, not for
-/// being broken.**
+/// **A binary glTF is imported, and this test asserted the opposite
+/// until there was a reader.**
 ///
-/// Two things are being pinned, and the second is the one that used to
-/// be wrong. The container is *recognised* — before the format was known
-/// it fell through to the STL fallback and came back as a truncated
-/// model, which is a confident answer about the wrong file. And the
-/// refusal says the geometry has no reader here, which is a different
-/// verdict from "this file is malformed": the file may be perfect, and a
-/// script needs to tell "bring me a different file" apart from "this
-/// build cannot read this kind yet".
+/// It was written to pin two things: that the container is *recognised*
+/// — before the format was known a `.glb` fell through to the STL
+/// fallback and came back as a truncated model — and that the refusal
+/// said the geometry had no reader rather than that the file was broken.
+/// The first still holds. The second was honest when written and is now
+/// false, so the test asserts what replaced it.
 #[test]
-fn asset_import_says_a_container_has_no_geometry_reader_yet() -> std::io::Result<()> {
+fn asset_import_reads_a_container() -> std::io::Result<()> {
     let directory = scratch_directory("asset-import-glb")?;
     let model = directory.join("scene.glb");
     let blob = directory.join("out.msh");
 
-    // The smallest container that is one: a twelve-byte header and a
-    // single JSON chunk, padded to alignment with the space the format
-    // names for that chunk. Built here rather than copied from anywhere,
-    // because a container wraps somebody's model.
-    let document: &[u8] = b"{\"asset\":{\"version\":\"2.0\"}} ";
+    // One triangle under one node, built here: a container wraps
+    // somebody's model, so none is copied from anywhere.
+    let document = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"bufferViews":[{"byteLength":36}]}"#;
+    let mut json = document.to_vec();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let mut binary = Vec::new();
+    for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+
     let mut bytes = b"glTF".to_vec();
     bytes.extend_from_slice(&2u32.to_le_bytes());
-    bytes.extend_from_slice(&48u32.to_le_bytes());
-    bytes.extend_from_slice(&28u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(json.len()).expect("small").to_le_bytes());
     bytes.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
-    bytes.extend_from_slice(document);
-    assert_eq!(bytes.len(), 48, "the header's total length is the file's");
+    bytes.extend_from_slice(&json);
+    bytes.extend_from_slice(&u32::try_from(binary.len()).expect("small").to_le_bytes());
+    bytes.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+    bytes.extend_from_slice(&binary);
+    let total = u32::try_from(bytes.len()).expect("small");
+    bytes[8..12].copy_from_slice(&total.to_le_bytes());
+    fs::write(&model, &bytes)?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "a container holding one triangle imports: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let document = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        document.contains("\"format\":\"glb\""),
+        "and it says which format it decided this was: {document:?}"
+    );
+    assert!(
+        document.contains("\"triangles\":1"),
+        "one triangle in, one triangle out: {document:?}"
+    );
+    assert!(blob.exists(), "the geometry was written where --out said");
+    Ok(())
+}
+
+/// **A container this reader cannot finish is refused by the layer that
+/// stopped**, not by a generic parse failure.
+#[test]
+fn asset_import_names_the_layer_a_container_failed_in() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-glb-bad")?;
+    let model = directory.join("library.glb");
+    let blob = directory.join("out.msh");
+
+    // A well-formed container whose document places nothing: a library
+    // of entities rather than a model, which is the format's own reading
+    // of a document with no scenes.
+    // Twenty-seven bytes of document and nine of padding: a chunk
+    // length must be a multiple of four, and the first draft of this
+    // fixture was thirty-three, which the container layer caught and
+    // named itself for -- correctly, and not the fault under test.
+    let json = br#"{"asset":{"version":"2.0"}}         "#;
+    let mut bytes = b"glTF".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(json.len()).expect("small").to_le_bytes());
+    bytes.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    bytes.extend_from_slice(json);
+    let total = u32::try_from(bytes.len()).expect("small");
+    bytes[8..12].copy_from_slice(&total.to_le_bytes());
     fs::write(&model, &bytes)?;
 
     let output = run(&[
@@ -2295,17 +2359,16 @@ fn asset_import_says_a_container_has_no_geometry_reader_yet() -> std::io::Result
     assert!(!output.status.success(), "no geometry came out of it");
     let document = String::from_utf8_lossy(&output.stdout);
     assert!(
-        document.contains("\"refusal\":\"Unsupported\""),
-        "well-formed and unreadable here, which is not the same as malformed: {document:?}"
+        document.contains("\"refusal\":\"Gltf\""),
+        "a document-shaped format refused, and a script can key on that: {document:?}"
     );
     assert!(
-        document.contains("binary glTF"),
-        "and it names the reader that is missing rather than blaming the file: {document:?}"
+        document.contains("scenes"),
+        "and the message says which member was missing: {document:?}"
     );
     assert!(
         !document.contains("stl"),
-        "the container is recognised: it used to reach the fallback and be reported as a \
-         truncated STL: {document:?}"
+        "the container is recognised: it used to reach the fallback: {document:?}"
     );
     assert!(
         !blob.exists(),

@@ -339,6 +339,9 @@ fn every_byte_string_gets_an_answer() {
 /// until somebody decides which it is.
 fn mtl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::Gltf(_) => {
+            Some("a material library is named by a document rather than being one")
+        }
         MeshError::TransformNotInvertible => {
             Some("a material library carries no geometry to place anywhere")
         }

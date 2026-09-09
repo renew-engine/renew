@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! blob   an eight-byte magic, so it is certain
+//! glb    a four-byte magic, so it is certain too
 //! ply    a magic word, so it is nearly certain
 //! obj    keywords only it uses, so it is a good guess
 //! mtl    the same, and checked here so a material library is not
@@ -40,7 +41,7 @@
 //! reader accepts is a change this module's own tests see.
 
 use crate::error::MeshError;
-use crate::{Mesh, blob, glb, mtl, obj, ply, stl};
+use crate::{Mesh, blob, glb, gltf, mtl, obj, ply, stl};
 
 /// A format this crate can identify.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +58,11 @@ pub enum Format {
     Blob,
     /// The binary glTF container.
     ///
-    /// Identified here and **not yet read for geometry**. That is worth
-    /// the arm on its own: until this existed, a binary glTF fell
-    /// through to the fallback and was refused as a truncated STL, which
-    /// is a confident answer about the wrong format — the same defect
-    /// the PLY magic check was tightened to cure.
+    /// **Read for geometry now**, which this arm was not when it was
+    /// added. It earned its place before that: until it existed a binary
+    /// glTF fell through to the fallback and was refused as a truncated
+    /// STL, which is a confident answer about the wrong format — the
+    /// same defect the PLY magic check was tightened to cure.
     Glb,
 }
 
@@ -103,26 +104,19 @@ impl Format {
             Self::Stl => Some(stl::read(bytes)),
             Self::Ply => Some(ply::read(bytes)),
             Self::Blob => Some(blob::read(bytes)),
-            // **The same answer whatever the container says, and that is
-            // deliberate.** There is no reader here for the geometry
-            // inside a binary glTF, which is true of a well-formed one
-            // and a corrupt one alike, so validating the framing first
-            // would only let this arm report a fault it is not in a
-            // position to do anything about.
+            // **This arm said the geometry had no reader until it did.**
+            // It now reads one, and the refusal it can return carries
+            // the whole layered answer: which of the container, the
+            // document, an accessor or the geometry was at fault, and
+            // that layer's own numbers.
             //
-            // The first draft did validate, and returned "not this
-            // format" when the framing was wrong — about a file whose
-            // magic had just matched, which is how it reached this arm.
-            // A caller that wants the container's own refusals, with the
-            // chunk and the numbers, calls `glb::read`, which is where
-            // they live.
-            //
-            // `Unsupported` is the refusal for a file this crate cannot
-            // turn into geometry though nothing is wrong with it, which
-            // is exactly the case until a glTF reader exists.
-            Self::Glb => Some(Err(MeshError::Unsupported {
-                wanted: "a reader for the geometry inside a binary glTF",
-            })),
+            // A caller wanting the unwrapped answer calls `gltf::read`
+            // directly; this arm exists so that a caller who found the
+            // format by detection gets geometry the same way it does for
+            // every other format here.
+            Self::Glb => {
+                Some(gltf::read(bytes).map_err(|refusal| MeshError::Gltf(Box::new(refusal))))
+            }
             Self::Mtl => None,
         }
     }

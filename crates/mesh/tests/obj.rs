@@ -563,6 +563,9 @@ fn the_names_returned_never_outweigh_the_file_they_came_from() {
 /// the STL reader that no input on any target could produce.
 fn obj_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::Gltf(_) => Some(
+            "this format is lines of text with no document above them, and the one file it\n             names is a material library rather than a description of itself",
+        ),
         MeshError::TransformNotInvertible => Some(
             "this format has no node hierarchy, so there is no transform for this reader\n             to be handed and none to be singular",
         ),

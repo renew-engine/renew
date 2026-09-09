@@ -514,6 +514,9 @@ fn every_byte_string_gets_an_answer() {
 /// until somebody decides which it is.
 fn blob_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::Gltf(_) => Some(
+            "the blob is a format this repository owns and has no document layer at all: its\n             header is the whole description",
+        ),
         MeshError::TransformNotInvertible => Some(
             "the blob stores geometry already in its own space and this reader applies\n             nothing to it",
         ),

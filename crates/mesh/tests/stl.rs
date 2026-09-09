@@ -167,6 +167,9 @@ endsolid x",
 /// finding. A reason the test prints is a reason somebody reads.
 fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::Gltf(_) => Some(
+            "this reader takes a flat list of triangles: there is no document above it to\n             have a container, a table, or a node that is its own ancestor",
+        ),
         MeshError::TransformNotInvertible => Some(
             "a reader is handed bytes and returns geometry in the file's own space;\n             placing it somewhere else is a later step with its own refusals",
         ),
