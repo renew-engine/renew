@@ -691,25 +691,35 @@ fn the_census_and_the_claims_agree() {
         assert!(!shown.is_empty(), "{refused:?} says nothing");
     }
 
-    assert!(
-        accessor_cannot_reach(&AccessorError::TooLarge {
+    // **Every variant is asked its name, including the ones this layer
+    // cannot reach.** A refusal a caller cannot key on is half a
+    // refusal, and the ones refused elsewhere — a shape name read from a
+    // document, an overflow only a narrow target reaches — are exactly
+    // the ones no provocation here covers. Asked once, so the next
+    // variant added is covered by a test that already exists.
+    let unreachable = [
+        AccessorError::TooLarge {
             field: "count times stride",
-            value: 0,
-        })
-        .is_some(),
-        "the one the census calls unreachable from here"
-    );
-    // Named as well as printed. It is unreachable from here on a
-    // 64-bit target, so its arm of `name` is only executed if something
-    // asks for it on purpose -- and a refusal a caller cannot key on is
-    // half a refusal.
-    let too_large = AccessorError::TooLarge {
-        field: "count times stride",
-        value: 7,
-    };
-    assert_eq!(too_large.name(), "TooLarge");
-    assert!(
-        !too_large.to_string().is_empty(),
-        "and it still says something, because a 32-bit target reaches it"
+            value: 7,
+        },
+        AccessorError::UnknownShape,
+    ];
+    for refusal in unreachable {
+        assert!(
+            accessor_cannot_reach(&refusal).is_some(),
+            "{refusal:?} is listed here and the census calls it reachable"
+        );
+        assert!(!refusal.name().is_empty(), "{refusal:?} has no name");
+        assert!(!refusal.to_string().is_empty(), "{refusal:?} says nothing");
+    }
+
+    assert_eq!(
+        AccessorError::TooLarge {
+            field: "count times stride",
+            value: 7,
+        }
+        .name(),
+        "TooLarge",
+        "still says something, because a 32-bit target reaches it"
     );
 }

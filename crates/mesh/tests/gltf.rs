@@ -206,6 +206,99 @@ fn a_member_of_the_wrong_type_is_the_documents_refusal() {
     );
 }
 
+/// **Members of the wrong type, in the four places the reader reads
+/// one.**
+///
+/// Each is a `Document` refusal, and each was an untravelled path until
+/// the coverage gate named it: a normalisation flag that is not a
+/// boolean, an attribute index that is not a number, a scene selector
+/// that is not one, and a root node that is not one. **A reader that
+/// took any of them on trust would be indexing a table with something
+/// that was never an index.**
+#[test]
+fn a_member_of_the_wrong_type_is_refused_wherever_it_is_read() {
+    let normalised = document(
+        r#"{ "accessors": [{
+            "bufferView": 0, "componentType": 5121, "count": 1, "type": "VEC3",
+            "normalized": "yes"
+        }] }"#,
+    );
+    assert_eq!(
+        gltf::accessors(normalised.root())
+            .expect_err("a flag is a boolean")
+            .name(),
+        "Document"
+    );
+
+    let attribute = document(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": "one" }
+          }] }]
+        }"#,
+    );
+    let views = gltf::buffer_views(attribute.root()).expect("one view");
+    let accessors = gltf::accessors(attribute.root()).expect("one accessor");
+    assert_eq!(
+        gltf::primitive(
+            attribute.root(),
+            &views,
+            &accessors,
+            &three_positions(),
+            0,
+            0
+        )
+        .expect_err("an attribute names an accessor by number")
+        .name(),
+        "Document"
+    );
+
+    let selector = container(
+        &ONE_NODE.replace(r#""scenes""#, r#""scene": "first", "scenes""#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&selector)
+            .expect_err("a scene is chosen by number")
+            .name(),
+        "Document"
+    );
+
+    let root_node = container(
+        &ONE_NODE.replace(r#""nodes": [0]"#, r#""nodes": ["zero"]"#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&root_node)
+            .expect_err("a scene names its roots by number")
+            .name(),
+        "Document"
+    );
+}
+
+/// **A normalised attribute travels the whole way**, from the flag in
+/// the document to the fraction the accessor layer produces.
+#[test]
+fn a_normalised_attribute_is_read_as_a_fraction() {
+    // Three unsigned bytes per position, at their ceiling: normalised,
+    // that is 1.0 in each axis.
+    let binary = vec![255u8; 9];
+    let json = ONE_NODE
+        .replace(
+            r#""componentType": 5126, "count": 3, "type": "VEC3""#,
+            r#""componentType": 5121, "count": 3, "type": "VEC3", "normalized": true"#,
+        )
+        .replace(r#""byteLength": 36"#, r#""byteLength": 9"#);
+    let mesh = gltf::read(&container(&json, &binary)).expect("normalised bytes");
+    same(
+        &mesh.positions[0],
+        &[1.0, 1.0, 1.0],
+        "255 of 255 is one, and the flag is what says so",
+    );
+}
+
 /// **Every refusal this layer can make is reachable, and it took the
 /// whole reader to make that true.**
 ///
