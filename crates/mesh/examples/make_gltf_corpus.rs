@@ -262,6 +262,12 @@ fn refused_seeds() -> Vec<(String, Vec<u8>)> {
                 &[],
             ),
         ),
+        // A scene with no `nodes` member at all, which is legal and a
+        // different document from one with an empty list.
+        (
+            "scene-without-nodes".to_owned(),
+            container(r#"{"asset":{"version":"2.0"},"scenes":[{}]}"#, &[]),
+        ),
     ]
 }
 

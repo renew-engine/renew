@@ -957,13 +957,23 @@ fn a_document_with_no_scenes_is_refused() {
     );
 }
 
-/// A scene naming no geometry has none, and says so.
+/// **A scene naming no geometry has none, whether it says so with an
+/// empty list or by not having one.**
+///
+/// Two different documents and one answer. `nodes` is optional on a
+/// scene, so a scene object with no member at all is a legal thing to
+/// write — and it was the shape no fixture had, which the coverage gate
+/// noticed by naming the closing brace of the branch that reads it.
 #[test]
 fn a_scene_that_places_nothing_has_no_geometry() {
-    let json = r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#;
-    let refused = gltf::read(&container(json, &[])).expect_err("an empty scene");
-    assert_eq!(refused.name(), "Geometry");
-    assert!(refused.to_string().contains("no geometry"), "{refused}");
+    for json in [
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#,
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{}] }"#,
+    ] {
+        let refused = gltf::read(&container(json, &[])).expect_err("a scene placing nothing");
+        assert_eq!(refused.name(), "Geometry", "for `{json}`");
+        assert!(refused.to_string().contains("no geometry"), "{refused}");
+    }
 }
 
 /// **A container fault arrives as a container fault**, not as a
