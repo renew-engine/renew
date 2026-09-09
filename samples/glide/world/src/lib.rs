@@ -45,11 +45,20 @@ pub const UNITS_PER_PIXEL: i64 = 1_000;
 const ONE: i64 = UNITS_PER_PIXEL;
 
 const GRAVITY: i64 = 45;
-/// Tuned for a steering input rather than a blind schedule: strong
-/// enough that reaching a distant gap is possible, which is what makes
-/// the outcome depend on the seed and the input rather than on neither.
-const FLAP_VELOCITY: i64 = -900;
-const TERMINAL_VELOCITY: i64 = 1_200;
+/// The velocity a flap sets, world units per tick. Negative is up.
+///
+/// Public so a presentation can map a velocity onto something visible —
+/// a tilt, a stretch — against the two ends of the range the bird can
+/// actually be at. Tuned for a steering input rather than a blind
+/// schedule: strong enough that reaching a distant gap is possible,
+/// which is what makes the outcome depend on the seed and the input
+/// rather than on neither.
+pub const FLAP_VELOCITY: i64 = -900;
+/// The fastest the bird falls, world units per tick, positive downward.
+///
+/// Public for the same reason as the flap: it is the far end of the
+/// range a presentation maps onto.
+pub const TERMINAL_VELOCITY: i64 = 1_200;
 
 const BIRD_X: i64 = 40 * ONE;
 const BIRD_HALF: i64 = 6 * ONE;
@@ -237,6 +246,21 @@ impl World {
     #[must_use]
     pub fn bird_y(&self) -> i64 {
         self.bird_y
+    }
+
+    /// The bird's vertical velocity in world units per tick, positive
+    /// downward — a derived read of state the digest already covers.
+    ///
+    /// It is bounded by [`FLAP_VELOCITY`] below and
+    /// [`TERMINAL_VELOCITY`] above, which is what lets a presentation
+    /// map it onto a bounded quantity without inventing a range of its
+    /// own. Frozen at its last value once the bird dies, because a dead
+    /// world stops integrating: the corpse keeps the velocity death left
+    /// it with, and a presentation that draws from this keeps whatever
+    /// it drew.
+    #[must_use]
+    pub fn bird_velocity(&self) -> i64 {
+        self.bird_velocity
     }
 
     /// Visit every pipe as (left edge x, gap centre y) in whole screen
@@ -524,6 +548,11 @@ mod tests {
         assert!(world.alive(), "the pilot survives to the pin");
         assert_eq!(world.score(), 1, "observed at tick 361");
         assert_eq!(world.bird_y_units(), 162, "observed at tick 361");
+        assert_eq!(
+            world.bird_velocity(),
+            1_200,
+            "observed at tick 361: the pilot is at terminal velocity, the top of the range \n             a presentation maps a tilt onto"
+        );
         let before = world.digest();
         let mut pipes = Vec::new();
         world.for_each_pipe_units(|x, gap| pipes.push((x, gap)));

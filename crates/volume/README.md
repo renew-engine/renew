@@ -39,6 +39,16 @@ would let a body walk off it and fall for ever with no way to tell that
 from a hole; one that answered "solid" would trap it at the boundary with
 no explanation.
 
+**What lives below a cell.** A consumer whose world is finer than its
+cells — destructible matter, a surface shaped inside the cell it sits in,
+a level-of-detail scheme with several resolutions at once — keeps that
+detail itself. `Volume::sweep_box_fine` is the seam: it sweeps a box
+against a lattice `n` times finer than the cells and asks a predicate
+which sub-cells are solid, so the detail never has to be stored here and
+this crate never has to have an opinion about what shapes it. At `n = 1`
+with the volume's own solidity it is exactly `Volume::sweep_box`, and a
+test asserts that rather than the doc claiming it.
+
 ## The three decisions worth knowing before you use it
 
 **Cells are centred on integers.** Cell zero spans −0.5 to +0.5, so every

@@ -62,6 +62,7 @@ extern "Rust" fn android_main(activity: AndroidApp) {
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
+        ..WindowConfig::default()
     };
     let outcome = run_window_app_android(activity, &config, &mut app);
     app.note(&match outcome {

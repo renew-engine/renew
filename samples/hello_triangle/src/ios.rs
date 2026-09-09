@@ -66,6 +66,7 @@ pub fn ios_main() -> ! {
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
+        ..WindowConfig::default()
     };
 
     if let Err(error) = run_window_app(&config, &mut app) {

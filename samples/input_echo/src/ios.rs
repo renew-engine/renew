@@ -73,6 +73,7 @@ pub fn ios_main() -> ! {
         logical_width: 640.0,
         logical_height: 360.0,
         resizable: true,
+        ..WindowConfig::default()
     };
 
     // A failure here is a loop that never started, which is the only

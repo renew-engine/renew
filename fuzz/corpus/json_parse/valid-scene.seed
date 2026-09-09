@@ -1,0 +1,16 @@
+{
+  "asset": {"version": "2.0", "generator": "renew"},
+  "scene": 0,
+  "scenes": [{"nodes": [0, 1]}],
+  "nodes": [
+    {"mesh": 0, "translation": [0.0, -1.5, 2.25e0]},
+    {"mesh": 0, "children": []}
+  ],
+  "meshes": [
+    {"name": "hull", "primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}
+  ],
+  "accessors": [
+    {"componentType": 5126, "count": 24.0, "type": "VEC3"},
+    {"componentType": 5.123e3, "count": 36, "normalized": false, "extras": {"note": null}}
+  ]
+}

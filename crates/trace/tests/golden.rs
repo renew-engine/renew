@@ -28,7 +28,7 @@ use renew_trace::{
 /// resized and rescaled, a redraw is served, and the window is closed
 /// after the final step.
 const GOLDEN: &str = "\
-renew-trace 2 sample=input_echo ticks=12 timestep_ns=16666667 budget=5 seed=3 extent=640x480
+renew-trace 3 sample=input_echo ticks=12 timestep_ns=16666667 budget=5 seed=3 extent=640x480
 e 0 focus in
 e 1 pointer 0x3ff8000000000000 0xc000000000000000
 e 1 motion 0x3ff8000000000000 0xc000000000000000

@@ -18,7 +18,8 @@ core = false
 extension_points = []
 # Not `true`, and the reason is worth a comment because it looks wrong on the
 # crate physics is written in. The float-closure rule asks of a crate a
-# simulation *reaches* only that its root denies float arithmetic. Declaring
+# simulation *reaches* two things: that its root denies float arithmetic, and
+# that its lint file bans the float maths that deny cannot see. Declaring
 # `simulation = true` additionally imposes the platform-closure walk and the
 # cross-target comparison's obligations, which belong to code that has state to
 # reproduce; a stateless number type has none. `renew-event` is the same shape.

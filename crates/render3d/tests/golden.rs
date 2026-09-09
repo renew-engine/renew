@@ -15,8 +15,9 @@
 //! real hardware as on a software rasterizer.
 
 use renew_render3d::{
-    Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer, Render3dError, Scene,
-    ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer, TexturedMeshRenderer, pass,
+    Air, BlendedCameraRenderer, Camera, CameraRenderer, CutoutCameraRenderer, MeshRenderer,
+    Render3dError, Scene, ShadowedCamera, ShadowedCameraRenderer, TexturedCameraRenderer,
+    TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, DeviceError, Extent, RenderDesc, TargetFormat, Validation,
@@ -498,6 +499,15 @@ fn a_translation_moves_the_picture_rather_than_bending_it() -> Result<(), Box<dy
 /// The matrix puts `z` into `w`, so the two draws differ in distance and
 /// in nothing else; the centre pixel sits on the view axis, where the
 /// perspective divide moves nothing.
+///
+/// **Both reads are refused if they are the clear colour, and that is not
+/// belt-and-braces.** The far draw sat at a depth of forty until
+/// 2026-08-19, by which the quad has shrunk past the centre pixel
+/// entirely — so the "far" sample *was* the clear colour, and every
+/// assertion below is satisfied by the background: magenta has less green
+/// than green and more red and blue, and it has them monotonically. This
+/// test reported a fade it had never once seen, for as long as it existed.
+/// A control on one of two samples is a control on neither.
 #[test]
 fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error>> {
     let Some(device) = device_or_skip()? else {
@@ -517,7 +527,14 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     let camera = Camera::from_columns(columns);
 
     let mut seen = Vec::new();
-    for depth in [4.0f32, 40.0] {
+    // **Twenty-four, with the bound derived rather than guessed.** The
+    // matrix puts `z` into `w`, so this quad's NDC half-extent is
+    // `1 / depth`, and the centre pixel of a 32-wide target samples at
+    // `16.5 / 32 * 2 - 1`, which is `0.03125`. Coverage therefore ends at
+    // a depth of thirty-two, exactly on the sample point and so at the
+    // mercy of the fill rule; thirty-one is the last depth that certainly
+    // draws. Twenty-four is that bound with room, and heavily faded.
+    for depth in [4.0f32, 24.0] {
         let mut target = device.create_offscreen_target(extent)?;
         let mut scene = Scene::new();
         // Positions are world space on this path, so `depth` is distance
@@ -533,11 +550,13 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     }
 
     let (near, far) = (seen[0], seen[1]);
-    assert_ne!(
-        near,
-        [255, 0, 255, 255],
-        "the near quad did not draw at all, so the comparison would be vacuous"
-    );
+    for (which, pixel) in [("near", near), ("far", far)] {
+        assert_ne!(
+            pixel,
+            [255, 0, 255, 255],
+            "the {which} quad did not draw at all, so everything below is the backdrop, not a fade"
+        );
+    }
     assert!(
         far[1] < near[1],
         "distance must cost green: near {near:?}, far {far:?}"
@@ -549,6 +568,137 @@ fn the_camera_path_fades_with_distance() -> Result<(), Box<dyn std::error::Error
     assert!(
         near[1] > 200,
         "a quad four units away should still be plainly green, not washed out: {near:?}"
+    );
+
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The distance fades toward the colour the caller named**, which is
+/// the whole reason the colour stopped being compiled in.
+///
+/// It was matched by hand to what this repository's own samples clear to,
+/// so the fade was correct for exactly one backdrop. A caller clearing to
+/// daylight got its far geometry faded toward near-black — a bank of soot
+/// across the horizon, which reads as a wall rather than as distance.
+///
+/// Asserted as a comparison between two airs rather than against absolute
+/// values: what matters is that the answer *follows* what was asked for,
+/// and a pinned pixel would also pass if the shader averaged the request
+/// with something of its own.
+///
+/// Probed by ignoring `air.horizon` and mixing toward a constant: the two
+/// renders come out identical and this names both pixels.
+#[test]
+fn the_fade_goes_toward_the_colour_the_caller_named() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+
+    // Columns of a matrix whose last row is (0, 0, 1, 0): w becomes z.
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+
+    // **The furthest reading that is a reading of the quad.** Past about
+    // this the quad has shrunk off the centre pixel and the sample is the
+    // clear colour, which satisfies a fade assertion perfectly well while
+    // measuring nothing. The refusal below is what caught it here.
+    let far = 24.0f32;
+    let mut seen = Vec::new();
+    for horizon in [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+        let camera = Camera::from_columns(columns).through(Air::of(horizon, 0.72));
+        let mut target = device.create_offscreen_target(extent)?;
+        let mut scene = Scene::new();
+        // Grey, so neither request is being handed its own answer by the
+        // surface it is fading.
+        full_quad(&mut scene, far, [0.5, 0.5, 0.5, 1.0]);
+        let mesh = through.upload(&device, &scene)?;
+        let items = [through.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+    }
+
+    let (reddened, blued) = (seen[0], seen[1]);
+    assert_ne!(
+        reddened,
+        [255, 0, 255, 255],
+        "the quad did not draw at all, so the comparison would be vacuous"
+    );
+    assert!(
+        reddened[0] > blued[0],
+        "asking for a red horizon must redden the distance: red air gave {reddened:?}, \
+         blue air gave {blued:?}"
+    );
+    assert!(
+        blued[2] > reddened[2],
+        "asking for a blue horizon must blue the distance: blue air gave {blued:?}, \
+         red air gave {reddened:?}"
+    );
+
+    drop(through);
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **How much of the horizon shows is the caller's too.** The same
+/// distance under the same colour, asked for at two strengths, has to
+/// differ — otherwise the strength is decorative and a caller that wanted
+/// a clear day would get this crate's haze anyway.
+///
+/// Probed by ignoring `air.horizon.a` and using a constant: the two
+/// renders agree and this names them.
+#[test]
+fn how_much_horizon_shows_is_the_callers_too() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let through = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let mut columns = IDENTITY;
+    columns[2][3] = 1.0;
+    columns[3][3] = 0.0;
+
+    let mut seen = Vec::new();
+    for most in [0.1f32, 0.9] {
+        // A black horizon, so more of it means plainly less green.
+        let camera = Camera::from_columns(columns).through(Air::of([0.0; 3], most));
+        let mut target = device.create_offscreen_target(extent)?;
+        let mut scene = Scene::new();
+        full_quad(&mut scene, 24.0, [0.0, 1.0, 0.0, 1.0]);
+        let mesh = through.upload(&device, &scene)?;
+        let items = [through.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        seen.push(at(&pixels, SIZE / 2, SIZE / 2));
+        drop(target);
+    }
+
+    let (barely, mostly) = (seen[0], seen[1]);
+    assert_ne!(
+        barely,
+        [255, 0, 255, 255],
+        "the quad did not draw at all, so the comparison would be vacuous"
+    );
+    assert!(
+        mostly[1] < barely[1],
+        "asking for more horizon must cost more green: a tenth gave {barely:?}, \
+         nine tenths gave {mostly:?}"
     );
 
     drop(through);
@@ -647,6 +797,805 @@ fn a_textured_draw_shows_the_texture_it_was_given() -> Result<(), Box<dyn std::e
         "a green texture drew {green:?}"
     );
 
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// A textured frame of `scene` through `air`, as raw bytes.
+fn textured_frame(
+    device: &Device,
+    scene: &Scene,
+    air: Air,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY).through(air);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(device, scene)?;
+    let items = [renderer.item(&mesh, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **An air that never opted in changes not one byte.** This is the
+/// promise that let the sway land ahead of any consumer: every existing
+/// draw goes through the widened block with its tail zeroed, and the
+/// vertex stage then passes the position through with no arithmetic
+/// against it at all — untouched input, not cancelled arithmetic, is
+/// what makes identity certain. Asserted over the whole frame, alpha
+/// included, by drawing one scene through one air twice; the
+/// calm-swayer and plain-path goldens beside this hold the
+/// neighbouring claims.
+#[test]
+fn an_unasked_air_changes_no_byte() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.8, 0.7, 0.6, 1.0]);
+    let still = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    // A zero reach with a lively phase and ripple: the words the swing
+    // is computed from are as non-trivial as they get while the reach
+    // multiplies it all away.
+    let unasked = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    assert_eq!(
+        still, unasked,
+        "one air drew two pictures, so nothing below can claim anything"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **Calm air bends nothing and betrays nothing.** A swayer whose wind
+/// has dropped to zero reach draws exactly its unswayed geometry — and
+/// its weight-zero vertices stay *drawn* through the cutout mask,
+/// because the opt-in is the declaration, not the wind speed. The
+/// review's scenario, pinned: grass authored with rooted alphas must
+/// survive the first calm evening.
+///
+/// Probed by deriving `bent` from the reach instead of the flag: the
+/// roots vanish in calm air and this names the centre.
+#[test]
+fn calm_air_keeps_a_swayers_roots() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    // Declared a swayer; the wind is dead calm.
+    let calm =
+        Camera::from_columns(IDENTITY).through(Air::CLEAR_BLACK.swaying([0.0, 0.0], 0.9, 0.4));
+    let mut scene = Scene::new();
+    // Weight-zero roots, in a declared swayer, in calm air.
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(&device, &scene)?;
+    let items = [renderer.item(&mesh, &calm)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "calm air cut a swayer's roots out of the mask: centre {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The ripple makes the swing uneven across the world, and the
+/// second reach word pushes along the second world axis.** The x-axis
+/// test beside this one can see neither: a deleted ripple term and an
+/// axis swap both pass it. The first version of *this* test could not
+/// see them either — it pushed along z under the identity projection,
+/// where a z displacement moves depth and not one pixel, and its own
+/// probe run announced as much. Both claims are staged where they
+/// show now.
+///
+/// Ripple: at phase zero a lockstep swing is `sin(0)` — nothing — so
+/// the lockstep twin must equal the still frame exactly, while a
+/// ripple across the quad bends its two halves opposite ways and must
+/// not. Second word: the camera's columns are permuted so world z
+/// lands on clip x, and the same edge probes as the x-axis test then
+/// watch the quad translate.
+///
+/// Probed by deleting the ripple term from the vertex stage: the
+/// rippled frame equals the still one and the first inequality names
+/// it.
+#[test]
+fn the_ripple_walks_the_swing_across_the_world() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    // Half the screen, so the quad HAS an edge on screen to move: a
+    // full-screen quad pushed sideways still covers every pixel, which
+    // is how this test's own first run measured nothing.
+    half_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let still = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    // Phase zero: whatever swings, swings by the ripple term alone.
+    let rippled = textured_frame(
+        &device,
+        &scene,
+        Air::CLEAR_BLACK.swaying([0.4, 0.0], 0.0, 2.0),
+    )?;
+    let lockstep = textured_frame(
+        &device,
+        &scene,
+        Air::CLEAR_BLACK.swaying([0.4, 0.0], 0.0, 0.0),
+    )?;
+    assert_ne!(
+        rippled, still,
+        "a ripple across the world changed nothing, so fields move in lockstep"
+    );
+    assert_eq!(
+        lockstep, still,
+        "a lockstep swing at phase zero moved something, so the ripple test measures noise"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The second reach word pushes along the second world axis.** World
+/// z is steered onto clip x by a permuted camera, so the half-quad
+/// must vacate its old ground and claim new ground exactly as the
+/// x-axis test's quad does — and an axis swap that pushed y instead
+/// would move it vertically, which the row probes cannot mistake.
+///
+/// Probed by swapping the displacement to `vec3(sway.x, sway.y, 0.0)`
+/// in the vertex stage: nothing moves along z and the claimed-ground
+/// probe names it.
+#[test]
+fn the_second_reach_word_pushes_along_z() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    // World z out to clip x, world x into clip z: a z push becomes a
+    // horizontal move on screen.
+    let steered = [
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    // The quad spans world z in [-1, 0] at world x = 0.5: on screen,
+    // the left half at depth 0.5, exactly the half_quad picture.
+    let mut scene = Scene::new();
+    scene.quad(
+        [
+            [0.5, -1.0, -1.0],
+            [0.5, -1.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.5, 1.0, -1.0],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let frame = |air: Air| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let camera = Camera::from_columns(steered).through(air);
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer =
+            TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        Ok(pixels)
+    };
+    let still = frame(Air::CLEAR_BLACK)?;
+    // sin(pi/2) = 1: displacement is exactly the half-unit reach.
+    let blown = frame(Air::CLEAR_BLACK.swaying([0.0, 0.5], std::f32::consts::FRAC_PI_2, 0.0))?;
+    let vacated = SIZE / 8;
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "the second reach word claimed no new ground along z"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared along z instead of moving"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The plain camera path stands still under swaying air.** The sway
+/// words live in a block every camera pipeline binds, and only the
+/// textured vertex stage reads them — a claim the docs make and this
+/// holds behaviorally, so a swayer and the plain-drawn world beside it
+/// cannot shear apart by accident of which pipeline read what.
+#[test]
+fn the_plain_path_ignores_the_sway() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [0.9, 0.8, 0.7, 1.0]);
+    let frame = |air: Air| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let camera = Camera::from_columns(IDENTITY).through(air);
+        let mut target = device.create_offscreen_target(extent)?;
+        let renderer = CameraRenderer::new(&device, TargetFormat::Rgba8Srgb)?;
+        let mesh = renderer.upload(&device, &scene)?;
+        let items = [renderer.item(&mesh, &camera)];
+        target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+        let mut pixels = vec![0u8; target.byte_len()];
+        target.read_back_into(&mut pixels);
+        Ok(pixels)
+    };
+    let still = frame(Air::CLEAR_BLACK)?;
+    let blown = frame(Air::CLEAR_BLACK.swaying([0.6, 0.6], 1.0, 1.0))?;
+    assert_eq!(
+        still, blown,
+        "the plain path bent under swaying air, so a mixed frame shears apart"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The reach carries the weighted and the weightless hold still.** A
+/// half-screen quad at full weight, pushed a quarter of clip space at
+/// the top of its swing, must vacate its old left edge and cover ground
+/// past its old right edge — a translation, not a smear. The same quad
+/// at weight zero must sit exactly where the still frame put it.
+///
+/// Probed by zeroing the weight multiply in the vertex stage: the
+/// weightless arm moves too, and the equality names it.
+#[test]
+fn the_reach_carries_the_weighted_and_pins_the_weightless() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // sin(pi/2) = 1: the swing is at its top, so the displacement is
+    // exactly the reach and the probes below are plain arithmetic.
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], std::f32::consts::FRAC_PI_2, 0.0);
+
+    let mut weighted = Scene::new();
+    half_quad(&mut weighted, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let still = textured_frame(&device, &weighted, Air::CLEAR_BLACK)?;
+    let blown = textured_frame(&device, &weighted, wind)?;
+    // Clip x = -0.75: inside the quad at rest, vacated once it moves.
+    let vacated = SIZE / 8;
+    // Clip x = +0.25: past the quad's resting edge, covered once blown.
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "full weight at full swing claimed no new ground"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared instead of moving: its old ground is still covered"
+    );
+
+    let mut weightless = Scene::new();
+    half_quad(&mut weightless, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let pinned = textured_frame(&device, &weightless, wind)?;
+    for (x, name) in [(vacated, "its own ground"), (claimed, "new ground")] {
+        let (was, is) = (at(&still, x, row), at(&pinned, x, row));
+        assert_eq!(
+            was[0..3],
+            is[0..3],
+            "a weightless vertex moved: {name} at column {x} was {was:?} and is {is:?}"
+        );
+    }
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **A swaying draw spends its weight before the mask reads it.** The
+/// cutout pipeline discards where `texel.a * colour.a` falls below
+/// half, and the sway borrows exactly that alpha as its bend weight —
+/// so a rooted vertex at weight zero would vanish from a cutout the
+/// moment its draw started swaying, unless the vertex stage hands the
+/// fragment stage a one in its place. The grass this exists for is
+/// rooted at weight zero everywhere it meets the ground.
+///
+/// Probed by forwarding the raw alpha in the vertex stage: the centre
+/// goes to the clear colour and this names it.
+#[test]
+fn a_swaying_cutout_keeps_its_weightless_roots() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera =
+        Camera::from_columns(IDENTITY).through(Air::CLEAR_BLACK.swaying([0.1, 0.0], 0.0, 0.0));
+    let mut scene = Scene::new();
+    // Weight zero everywhere: rooted vertices, in a draw that sways.
+    full_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let mut target = device.create_offscreen_target(extent)?;
+    let renderer =
+        CutoutCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mesh = renderer.upload(&device, &scene)?;
+    let items = [renderer.item(&mesh, &camera)];
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "a weightless vertex was discarded by the mask it sways under: centre {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The fade completes where the caller says, and silence means the
+/// compiled default exactly.** Under this identity projection every
+/// vertex sits at w = 1: against the compiled forty-eight that is a
+/// fade of one part in forty-eight — a quad drawn essentially unfaded —
+/// while a caller who says the fade completes at half a unit gets a
+/// frame pulled its full fraction toward the horizon. And a caller
+/// passing zero has said nothing, byte for byte, which is what lets a
+/// consumer thread the value through unconditionally.
+///
+/// Probed by ignoring the distance word in the textured stage: the
+/// near frame equals the far one and the inequality names it.
+#[test]
+fn the_fade_completes_where_the_caller_says() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut scene = Scene::new();
+    half_quad(&mut scene, 0.5, [1.0, 1.0, 1.0, 1.0]);
+    let silent = textured_frame(&device, &scene, Air::CLEAR_BLACK)?;
+    let explicit_zero = textured_frame(&device, &scene, Air::CLEAR_BLACK.fading_over(0.0))?;
+    assert_eq!(
+        silent, explicit_zero,
+        "zero is not the default it promises to be"
+    );
+    let near = textured_frame(&device, &scene, Air::CLEAR_BLACK.fading_over(0.5))?;
+    let (x, row) = (SIZE / 4, SIZE / 2);
+    let far_pixel = at(&silent, x, row);
+    let near_pixel = at(&near, x, row);
+    assert!(
+        u32::from(near_pixel[0]) * 10 < u32::from(far_pixel[0]) * 7,
+        "a fade completing at half a unit did not darken the quad: {near_pixel:?} \
+         against {far_pixel:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One blended frame: a solid red backdrop through the opaque textured
+/// pipeline, then `layers` drawn through the blended one, in order.
+/// **A surface that only leans reads as a rigid sheet sliding.** The
+/// sway displaces across the ground plane and nowhere else, so a flat
+/// draw under it translates - every vertex the same way at the same
+/// moment - and a plane moving sideways looks like a plane moving
+/// sideways however small the throw. `bend.w` is the vertical half, a
+/// quarter turn behind, so a vertex traces an ellipse instead of a
+/// line.
+///
+/// **The quarter turn is what this test is really about**, and the
+/// phase makes it visible: at phase zero the lean is `sin(0)`, which is
+/// nothing at all, while the lift is `cos(0)`, which is the whole
+/// reach. So the leaning arm here is byte-identical to the still one -
+/// if the two halves shared a phase, it could not be - and every pixel
+/// the lifted arm moves is the lift's doing.
+///
+/// The columns are held as well as the rows: a vertical reach must not
+/// move anything sideways, or the two words are not independent and a
+/// caller cannot tune one without the other.
+///
+/// Probed by driving the vertical from `sin` like the lean: at phase
+/// zero both halves are then nothing, the lifted arm stops moving at
+/// all, and "left the quad's edge exactly where it was" names it. That
+/// is the failure a shared phase produces here, and it is worth being
+/// exact about - the first assertion would catch a lift driven from
+/// something that is *not* zero at phase zero, which is the other way
+/// to get this wrong.
+#[test]
+fn the_lift_moves_a_draw_the_lean_leaves_still() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // Phase zero: sin is nothing, cos is everything.
+    let calm = Air::CLEAR_BLACK.swaying([0.5, 0.0], 0.0, 0.0);
+    let mut quad = Scene::new();
+    // A quad over the lower-left quarter of clip space, so there is
+    // room above it to move into and an edge to measure.
+    quad.quad(
+        [
+            [-1.0, -1.0, 0.5],
+            [0.0, -1.0, 0.5],
+            [0.0, 0.0, 0.5],
+            [-1.0, 0.0, 0.5],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let still = textured_frame(&device, &quad, Air::CLEAR_BLACK)?;
+    let leaning = textured_frame(&device, &quad, calm)?;
+    let lifted = textured_frame(&device, &quad, calm.lifting(0.5))?;
+
+    assert_eq!(
+        still, leaning,
+        "a swing of sin(0) moved something: the lean and the lift share a phase"
+    );
+
+    // Where the quad's edge sits in a column that runs through it, and
+    // which columns it covers in a row that runs through it. Read from
+    // the picture rather than worked out from the matrix, because which
+    // way clip y points is the API's business and not this claim's.
+    let covered = |pixels: &[u8], x: u32, y: u32| at(pixels, x, y)[0] > 0;
+    let edge = |pixels: &[u8]| -> Option<u32> {
+        let column = SIZE / 4;
+        (0..SIZE).find(|y| covered(pixels, column, *y))
+    };
+    let width = |pixels: &[u8]| -> usize {
+        let row = SIZE / 4;
+        (0..SIZE).filter(|x| covered(pixels, *x, row)).count()
+    };
+
+    let resting = edge(&still).expect("the quad is drawn at all");
+    let raised = edge(&lifted).expect("the lifted quad is drawn at all");
+    assert_ne!(
+        resting, raised,
+        "a lift of half a unit left the quad's edge exactly where it was"
+    );
+    assert_eq!(
+        width(&still),
+        width(&lifted),
+        "the lift moved the quad sideways: the vertical word is not independent of the lean"
+    );
+    Ok(())
+}
+
+/// **The even weight moves what alpha pins.** `bend.z` is where a
+/// swaying draw's weight rides when its alpha is spoken for: a quad
+/// authored at alpha zero — pinned under the alpha contract, and the
+/// control arm proves it stays pinned — crosses the frame the moment
+/// the air carries an even weight of one. Same reach, same swing, same
+/// mesh; the only difference is which word the vertex stage weighed.
+///
+/// Probed by weighing the vertex alpha regardless of the even word:
+/// the blown arm stays pinned and "claimed no new ground" names it.
+#[test]
+fn the_even_weight_moves_what_alpha_pins() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    // sin(pi/2) = 1: full swing, so the displacement is exactly the
+    // reach and the probe columns are the weighted golden's own.
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], std::f32::consts::FRAC_PI_2, 0.0);
+    let mut weightless = Scene::new();
+    half_quad(&mut weightless, 0.5, [1.0, 1.0, 1.0, 0.0]);
+    let still = textured_frame(&device, &weightless, Air::CLEAR_BLACK)?;
+    let pinned = textured_frame(&device, &weightless, wind)?;
+    let blown = textured_frame(&device, &weightless, wind.bending_evenly(1.0))?;
+    // Clip x = -0.75: inside the quad at rest. Clip x = +0.25: past its
+    // resting edge, covered only if the quad moved.
+    let vacated = SIZE / 8;
+    let claimed = 5 * SIZE / 8;
+    let row = SIZE / 2;
+    assert!(
+        at(&still, vacated, row)[0] > 0 && at(&still, claimed, row)[0] == 0,
+        "the resting quad is not where this test thinks it is"
+    );
+    for (x, name) in [(vacated, "its own ground"), (claimed, "new ground")] {
+        assert_eq!(
+            at(&still, x, row)[0..3],
+            at(&pinned, x, row)[0..3],
+            "the control arm moved: an alpha-zero quad swayed with no even word, at {name}"
+        );
+    }
+    assert!(
+        at(&blown, claimed, row)[0] > 0,
+        "an even weight of one at full swing claimed no new ground"
+    );
+    assert!(
+        at(&blown, vacated, row)[0] == 0,
+        "the quad smeared instead of moving: its old ground is still covered"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// One veil through the blended pair under a chosen air: the opaque red
+/// backdrop at 0.3, a half-alpha green veil at 0.5, and the air on the
+/// veil's camera alone — the fixture for holding what an even swayer
+/// does to the alpha it was told to leave.
+fn veiled_frame(device: &Device, air: Air) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mut backdrop = Scene::new();
+    full_quad(&mut backdrop, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let floor = opaque.upload(device, &backdrop)?;
+    let mut layer = Scene::new();
+    full_quad(&mut layer, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let veil = blended.upload(device, &layer)?;
+    let aired = camera.through(air);
+    let items = [opaque.item(&floor, &camera), blended.item(&veil, &aired)];
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **An even swayer leaves the alpha unspent.** On the blended pair
+/// alpha is translucency, and spending it as bend weight is exactly
+/// the conflict `bend.z` resolves: a half-alpha veil swaying at zero
+/// swing — phase zero, no ripple, so the displacement arithmetic is
+/// exact zeros and the geometry is byte-identical — must blend exactly
+/// as the becalmed veil does. The discriminating arm sways without the
+/// even word: alpha is spent, the veil turns opaque, and the frame
+/// changes — which is what would silently happen to every translucent
+/// swayer if this contract broke.
+///
+/// Probed by spending the alpha in the vertex stage even when the
+/// weight rode the air: the even arm turns opaque and the first
+/// equality names it.
+#[test]
+fn a_zero_swing_even_swayer_blends_like_a_still_one() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 0.0, 0.0);
+    let becalmed = veiled_frame(&device, Air::CLEAR_BLACK)?;
+    let even = veiled_frame(&device, wind.bending_evenly(1.0))?;
+    let spent = veiled_frame(&device, wind)?;
+    assert_eq!(
+        becalmed, even,
+        "an even swayer at zero swing changed the blend: it spent the alpha it was told to leave"
+    );
+    assert_ne!(
+        becalmed, spent,
+        "the discriminator went dull: spending the alpha no longer changes the blend, so the equality above holds nothing"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **An even weight of zero is the alpha contract.** The same
+/// zero-means-default the fade distance rides: a caller that says
+/// nothing — or says zero — gets the authored behaviour, byte for
+/// byte, because the builder writes the same zeros the block was born
+/// with.
+#[test]
+fn an_even_weight_of_zero_is_the_alpha_contract() {
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 1.0, 0.7);
+    assert_eq!(
+        wind.bending_evenly(0.0).bytes(),
+        wind.bytes(),
+        "a zero even weight moved a byte; silent callers are no longer identical"
+    );
+}
+
+/// **A lift of zero is the air that never asked for one.** The same
+/// zero-means-default the fade distance and the even weight ride: a
+/// caller that says nothing, or says zero, gets the picture it always
+/// got, byte for byte, because the builder writes the same zeros the
+/// block was born with. The vertical term is taken through the same
+/// multiply whatever the reach, and zero times a cosine is zero.
+#[test]
+fn a_lift_of_zero_is_the_air_that_never_asked() {
+    let wind = Air::CLEAR_BLACK.swaying([0.5, 0.0], 1.0, 0.7);
+    assert_eq!(
+        wind.lifting(0.0).bytes(),
+        wind.bytes(),
+        "a zero lift moved a byte; silent callers are no longer identical"
+    );
+    assert_ne!(
+        wind.lifting(0.02).bytes(),
+        wind.bytes(),
+        "a lift that is not zero left the block unchanged, so nothing reads it"
+    );
+}
+
+fn blended_frame(device: &Device, layers: &[Scene]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    // Reversed-Z: nearer is larger, so the backdrop sits at 0.3 and
+    // every veil above it — the same convention the shadow golden's
+    // floor-and-blocker fixture documents.
+    let mut backdrop = Scene::new();
+    full_quad(&mut backdrop, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let floor = opaque.upload(device, &backdrop)?;
+    let meshes: Vec<renew_rhi::Mesh> = layers
+        .iter()
+        .map(|layer| blended.upload(device, layer))
+        .collect::<Result<_, _>>()?;
+    let mut items = vec![opaque.item(&floor, &camera)];
+    for mesh in &meshes {
+        items.push(blended.item(mesh, &camera));
+    }
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    Ok(pixels)
+}
+
+/// **Half there means half its colour over what stood behind.** A
+/// half-alpha green quad over a red backdrop must read as a red-green
+/// mix — not as opaque green, which is what this pipeline drawn with
+/// blending disabled produces, and not as pure red, which is a draw
+/// that landed nowhere.
+///
+/// Probed by building the pipeline with `Blend::Opaque`: the mix
+/// vanishes and the red channel names it.
+#[test]
+fn a_half_alpha_quad_mixes_with_what_stood_behind() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut veil = Scene::new();
+    full_quad(&mut veil, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let pixels = blended_frame(&device, &[veil])?;
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 60 && centre[1] > 60,
+        "a half-green veil over red lost one of its parents: {centre:?}"
+    );
+    assert!(
+        centre[0] < 220 && centre[1] < 220,
+        "a half-green veil over red kept a parent whole: {centre:?}"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The caller owes the order, and the pipeline makes that owing
+/// visible.** Two overlapping translucent veils drawn in opposite
+/// orders produce different frames — blending's own equation says so —
+/// which is the sorting contract stated as arithmetic rather than as a
+/// sentence in a doc. A pipeline where the swap changed nothing would
+/// be one where blending was silently off.
+///
+/// Probed by giving both veils full alpha: order stops mattering for
+/// the winner-takes-all case only because depth is tested, and the
+/// assertion names the equality.
+#[test]
+fn swapping_two_veils_changes_the_picture() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let mut green = Scene::new();
+    full_quad(&mut green, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    let mut blue = Scene::new();
+    full_quad(&mut blue, 0.6, [0.0, 0.0, 1.0, 0.5]);
+    let green_first = blended_frame(&device, &[green.clone(), blue.clone()])?;
+    let blue_first = blended_frame(&device, &[blue, green])?;
+    assert_ne!(
+        green_first, blue_first,
+        "swapping two translucent veils changed nothing, so blending is not blending"
+    );
+    assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **Translucency leaves no footprint in depth.** A veil drawn first
+/// must not occlude opaque geometry drawn after it at a farther depth
+/// — the pipeline tests depth and never writes it, so a pond cannot
+/// eat the ground behind it just because the pond drew first.
+///
+/// Probed with `DepthState::read_write` on the blended pipeline: the
+/// late floor vanishes behind the veil and the red channel names it.
+#[test]
+fn a_veil_never_occludes_what_draws_after_it() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let texture_extent = Extent {
+        width: 2,
+        height: 2,
+    };
+    let white: Vec<u8> = [255u8, 255, 255, 255].repeat(4);
+    let clear = [renew_rhi::color_attachment(Color::new(0.0, 0.0, 0.0, 1.0))];
+    let camera = Camera::from_columns(IDENTITY);
+    let opaque =
+        TexturedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let blended =
+        BlendedCameraRenderer::new(&device, TargetFormat::Rgba8Srgb, texture_extent, &white)?;
+    let mut veil = Scene::new();
+    full_quad(&mut veil, 0.5, [0.0, 1.0, 0.0, 0.5]);
+    // Farther than the veil under reversed-Z: smaller.
+    let mut floor = Scene::new();
+    full_quad(&mut floor, 0.3, [1.0, 0.0, 0.0, 1.0]);
+    let veil_mesh = blended.upload(&device, &veil)?;
+    let floor_mesh = opaque.upload(&device, &floor)?;
+    // The veil draws FIRST, the opaque floor after and farther away.
+    let items = [
+        blended.item(&veil_mesh, &camera),
+        opaque.item(&floor_mesh, &camera),
+    ];
+    let mut target = device.create_offscreen_target(extent)?;
+    target.render(&RenderDesc::new(&[pass(&clear, &items)]))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+    let centre = at(&pixels, SIZE / 2, SIZE / 2);
+    assert!(
+        centre[0] > 100,
+        "the floor vanished behind a veil that drew first: {centre:?} — translucency \
+         wrote depth"
+    );
     assert_no_validation_errors(&device);
     Ok(())
 }
@@ -815,6 +1764,10 @@ fn the_plain_textured_path_draws_its_texture() -> Result<(), Box<dyn std::error:
 /// strips alike. Same-frame determinism rides along: both frames are
 /// drawn twice and compared byte for byte.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture, four claims: the dim, the v-flip guard, the empty map, and the kept-map cadence"
+)]
 fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::error::Error>> {
     let Some(device) = device_or_skip()? else {
         return Ok(());
@@ -864,7 +1817,13 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     // `Camera` for the caster and a second copy here — was how a
     // row/column mistake used to move the cast a little instead of
     // making the shadow vanish.
-    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns);
+    // **Through the default air, which is what makes this golden evidence.**
+    // The shadowed path reads the fade's colour from the same block the
+    // other camera paths do; `Air::CLEAR_BLACK` carries exactly the values
+    // the shaders used to compile in, so this picture is the picture it
+    // was before there was anything to say — and that it still matches is
+    // the claim, not an accident of the arm never being taken.
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns).through(Air::CLEAR_BLACK);
 
     let renderer = ShadowedCameraRenderer::new(
         &device,
@@ -872,6 +1831,7 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         texture_extent,
         &white,
         256,
+        renew_rhi::Facing::Both,
     )?;
     let mesh = renderer.upload(&device, &scene)?;
 
@@ -906,6 +1866,23 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
         let mut target = device.create_offscreen_target(extent)?;
         let first = run(&mut target)?;
         let second = run(&mut target)?;
+        // The cadence contract, end to end, on the casting side: the
+        // map is kept, so a frame may omit the caster pass outright
+        // and its lit pass samples what the last casting frame stored
+        // — the picture must be the shadowed picture, to the byte.
+        // Same target as the frames above: the per-frame block buffer
+        // belongs to one target by the buffer's own rule.
+        if cast {
+            let items = [renderer.item(&mesh, &camera)];
+            let sampling_only = [pass(&clear, &items)];
+            target.render(&RenderDesc::new(&sampling_only))?;
+            let mut omitted = vec![0u8; target.byte_len()];
+            target.read_back_into(&mut omitted);
+            assert_eq!(
+                second, omitted,
+                "a frame that omitted the caster pass must sample what the last casting                  frame kept"
+            );
+        }
         Ok((first, second))
     };
 
@@ -958,6 +1935,107 @@ fn a_caster_between_light_and_floor_dims_the_floor() -> Result<(), Box<dyn std::
     drop(mesh);
     drop(renderer);
     assert_no_validation_errors(&device);
+    Ok(())
+}
+
+/// **The cull mode reaches the lit pass and not the caster, and a
+/// back-wound blocker proves both halves at once.**
+///
+/// `ShadowedCameraRenderer` builds two pipelines over the same meshes.
+/// Giving them one cull mode is the obvious thing and it is wrong: a
+/// shadow map wants every surface that can occlude the *light*, and
+/// which faces those are depends on where the light is, not where the
+/// eye is. Culling the caster by the eye's rule drops occluders and
+/// punches holes in shadows nowhere near the camera.
+///
+/// So the blocker here is wound **backwards** and the renderer is built
+/// `Facing::Front`. Two things must both be true, and each would hide
+/// the other's failure if only one were asked:
+///
+/// * the blocker is **not drawn** — the lit pass culled it,
+/// * its **shadow still falls** on the floor — the caster did not.
+///
+/// The floor is wound the normal way and stays visible throughout, so a
+/// render that drew nothing at all cannot pass either.
+#[test]
+fn the_cull_mode_reaches_the_lit_pass_and_spares_the_caster()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 64;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = renew_rhi::Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+
+    let mut scene = Scene::new();
+    full_quad(&mut scene, 0.3, [1.0, 1.0, 1.0, 1.0]);
+    // The same blocker as the shadow golden below, with its corners in
+    // the opposite order — the one difference that decides whether a
+    // `Front` pipeline draws it.
+    scene.quad(
+        [
+            [-0.25, 0.0, 0.8],
+            [0.25, 0.0, 0.8],
+            [0.25, -1.0, 0.8],
+            [-0.25, -1.0, 0.8],
+        ],
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let mut light_columns = IDENTITY;
+    light_columns[2][0] = 0.5;
+    let camera = ShadowedCamera::from_columns(IDENTITY, light_columns).through(Air::CLEAR_BLACK);
+
+    let renderer = ShadowedCameraRenderer::new(
+        &device,
+        TargetFormat::Rgba8Srgb,
+        renew_rhi::Extent {
+            width: 1,
+            height: 1,
+        },
+        &[255, 255, 255, 255],
+        256,
+        renew_rhi::Facing::Front,
+    )?;
+    let mesh = renderer.upload(&device, &scene)?;
+
+    let clear = [renew_rhi::color_attachment(Color::new(1.0, 0.0, 1.0, 1.0))];
+    let casting = [renderer.caster_item(&mesh, &camera)];
+    let items = [renderer.item(&mesh, &camera)];
+    let passes = [renderer.shadow_pass(&casting), pass(&clear, &items)];
+    target.render(&RenderDesc::new(&passes))?;
+    let mut pixels = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut pixels);
+
+    // Where the blocker's own face would be, if it were drawn: inside
+    // the strip, in the half of the screen it covers.
+    let on_blocker = at(&pixels, SIZE / 2, SIZE / 4);
+    // Its shadow, cast onto the floor beside it.
+    let shadowed = at(&pixels, 11 * SIZE / 16, SIZE / 4);
+    // Open floor, well away from both.
+    let open = at(&pixels, SIZE / 4, 3 * SIZE / 4);
+
+    assert_ne!(
+        open,
+        [255, 0, 255, 255],
+        "the floor is wound the ordinary way and must still be drawn - if this is the clear \
+         colour the render produced nothing and the two claims below are vacuous"
+    );
+    assert_ne!(
+        on_blocker, open,
+        "a back-wound blocker was drawn by a Facing::Front lit pass"
+    );
+    assert_ne!(
+        shadowed, open,
+        "the back-wound blocker cast no shadow, so the caster was culled too - a shadow map \
+         needs the faces the LIGHT sees, not the ones the eye does"
+    );
     Ok(())
 }
 
@@ -1039,6 +2117,7 @@ fn a_scene_light_dims_a_shadowed_world_without_moving_its_shadow()
         texture_extent,
         &white,
         256,
+        renew_rhi::Facing::Both,
     )?;
     let mesh = renderer.upload(&device, &scene)?;
     let mut target = device.create_offscreen_target(extent)?;

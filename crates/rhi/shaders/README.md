@@ -509,3 +509,207 @@ layout, and nothing in the tree previously proved that an entirely-unread
 block member keeps its offset through `-O`. `spirv-dis` on both blobs reports
 `Offset 0 / 64 / 80 / 96 / 112` for the five members, identically. Had they
 moved, the fallback was an explicit `layout(offset = …)` in the caster.
+
+The four camera fragment stages were recompiled 2026-08-19, when the horizon
+they fade toward became a uniform block instead of a compiled-in constant.
+Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.frag -o mesh_camera.frag.spv
+> glslc -O mesh_camera_textured.frag -o mesh_camera_textured.frag.spv
+> glslc -O mesh_camera_cutout.frag -o mesh_camera_cutout.frag.spv
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+940, 1264, 1372 and 2340 bytes, read off disk after compiling — 192 bytes
+larger apiece, which is the block declaration and the two loads from it.
+
+**The pictures did not move.** `Air::CLEAR_BLACK` carries exactly the values
+the four shaders used to compile in, so every golden that fixed a faded pixel
+before this change still fixes the same pixel after it. That is the evidence
+the arithmetic folds the same way through a uniform as it did through a
+constant, which was the stated reason for leaving the constants compiled in.
+
+## mesh_camera_shadow.frag - recompiled 2026-08-25
+
+The shadow term softened: the single map tap became nine, one texel
+apart, averaged. One tap draws a hard lit/shadowed boundary, and a hard
+boundary aliases — wherever a shadow edge crosses geometry near the
+map's own sampling scale it renders as a row of sawteeth marching along
+the surface. Nine taps turn the same boundary into a two-texel
+gradient. Deep in light and deep in shadow all nine agree, so every
+pixel away from an edge reads exactly as before — which is why the
+arithmetic assertions in the golden and allocation suites, whose probes
+sit well inside each region, hold without being touched. Version output
+observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_shadow.frag -o mesh_camera_shadow.frag.spv
+```
+
+3016 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-25 (sway)
+
+The per-renderer block grew a sway word set and its own opt-in flag,
+and this stage learned to read them: vertices displace across the
+ground plane by the vertex colour's alpha as bend weight, phase
+travelling with world position. The flag, not the reach, is the
+opt-in — a wind calming to zero must not flip what a mesh's alphas
+mean — and a draw that never opted in has its position passed through
+with no arithmetic against it, which is what makes the byte-identity
+golden certain rather than probable. A swaying draw spends the weight
+in this stage and hands the fragment stage alpha one, so the cutout
+mask keeps its meaning at weightless roots. The four fragment stages
+declare the block's first sixteen bytes only — a leading subset,
+which per-stage descriptor validation accepts on both lanes — so
+their blobs are untouched by the widening. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2524 bytes, read off disk after compiling.
+
+## the three camera vertex stages - recompiled 2026-08-25 (fade distance)
+
+The distance at which the fade completes moved out of the shaders
+and into the per-renderer block: each vertex stage reads the third
+word's y and falls back to the compiled forty-eight when it is zero,
+so a caller that says nothing keeps its picture byte for byte - the
+same defaulting argument the sway's flag word carried, held by the
+golden that compares a silent air against an explicit zero. The
+plain and shadowed stages declare the block for the first time (a
+leading subset was already every fragment stage's shape); the
+registry holds all three as rangers that read the word and never
+touch the horizon. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera.vert -o mesh_camera.vert.spv
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+> glslc -O mesh_camera_shadow.vert -o mesh_camera_shadow.vert.spv
+```
+
+1548, 2608 and 2044 bytes, read off disk after compiling.
+
+## mesh_camera_blended.frag - compiled 2026-08-25
+
+The blended camera pair's fragment stage: the textured stage with
+its output premultiplied by its own alpha, so a pipeline built with
+premultiplied-alpha blending composites what the numbers claim. The
+multiply lives in the stage rather than in every caller because a
+convention one caller can forget is a defect waiting for a caller;
+one multiply makes it arithmetic. Shares the textured vertex stage,
+so it sways and takes its fade distance from the block like every
+camera path. Version output observed rather than assumed:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_blended.frag -o mesh_camera_blended.frag.spv
+```
+
+1284 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-25
+
+The sway learns where its weight rides: `bend.z` zero keeps the vertex
+alpha as the bend weight, spent in the vertex stage as before; nonzero
+is a per-draw even weight and the alpha passes through unspent - for
+draws whose alpha is spoken for, which is every mesh on the blended
+pair. Version output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2800 bytes, read off disk after compiling.
+
+## mesh_camera_textured.vert - recompiled 2026-08-26
+
+The sway gains its vertical half. `bend.w` is how far a bent vertex
+rises and falls, taken from the cosine of the same wave the lean takes
+its sine from - a quarter turn behind, so a vertex traces an ellipse
+rather than sliding along a slope. A surface that only leans reads as a
+rigid sheet translating, however small the throw; the orbit is what a
+particle in a surface wave does and what makes a flat draw read as a
+surface. Zero, and every draw that has never asked for a lift, keeps
+the position it always had. Version output observed again rather than
+assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O mesh_camera_textured.vert -o mesh_camera_textured.vert.spv
+```
+
+2948 bytes, read off disk after compiling.
+
+`textured_quad.frag` was compiled 2026-09-08: four sampled slots on one
+pipeline, one per quadrant of the target. It is the first thing in this
+tree to reach `MAX_SAMPLED_BINDINGS`, which is `maxBoundDescriptorSets`'
+guaranteed floor and the width a normal-mapped material wants — base
+colour, normal, metallic-roughness, occlusion. Quadrants rather than
+halves because a wrong bind order in any one of four places has to be
+visible, and halves would let two of the four swap unseen. Version
+output observed again rather than assumed unchanged:
+
+```
+> C:\VulkanSDK\1.4.328.1\Bin\glslc.exe --version
+shaderc v2023.8 v2025.3-10-gc7e73e8
+spirv-tools v2025.4 v2022.4-970-g19042c89
+glslang 11.1.0-1302-gd213562e
+
+Target: SPIR-V 1.0
+
+> glslc -O textured_quad.frag -o textured_quad.frag.spv
+```
+
+1304 bytes, read off disk after compiling.

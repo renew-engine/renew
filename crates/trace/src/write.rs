@@ -159,7 +159,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 2 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
+            "renew-trace 3 sample=input_echo ticks=30 timestep_ns=16666667 budget=5\n"
         );
     }
 
@@ -174,7 +174,7 @@ mod tests {
         let trace = Trace::new(header, Vec::new()).unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 2 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
+            "renew-trace 3 sample=input_echo ticks=1 timestep_ns=2 budget=3 seed=7 extent=640x480\n"
         );
     }
 
@@ -314,7 +314,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             write(&trace),
-            "renew-trace 2 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
+            "renew-trace 3 sample=input_echo ticks=2 timestep_ns=1 budget=1\n\
              e 0 redraw\n\
              e 0 focus in\n\
              e 0 text 97\n\

@@ -62,8 +62,8 @@ fn the_readback_holds_the_colour_the_world_computed_for_the_last_tick() {
         pixels.len(),
         (EXTENT.width as usize) * (EXTENT.height as usize) * 4
     );
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
-        assert_eq!(pixel, expected, "pixel {index} on adapter {adapter}");
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        assert_eq!(*pixel, expected, "pixel {index} on adapter {adapter}");
     }
 
     // A repaint of the same tick — the clear-only frame shape, drawn

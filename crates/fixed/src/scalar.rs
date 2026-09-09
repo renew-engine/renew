@@ -104,6 +104,20 @@ impl Fixed {
         self.0 / ONE_RAW
     }
 
+    /// The whole part, rounded toward negative infinity.
+    ///
+    /// **The one a lattice index wants, and [`Self::trunc_int`] is not
+    /// it.** Truncation rounds toward zero, so it maps both `-0.5` and
+    /// `+0.5` to `0` and every lattice built on it has two cells fused
+    /// into one at the origin and a seam running through the middle of
+    /// the world. Every consumer that has needed this has hand-rolled a
+    /// shift, which works only for the current fractional width and
+    /// silently stops being a floor if that width ever changes.
+    #[must_use]
+    pub const fn floor_int(self) -> i64 {
+        self.0.div_euclid(ONE_RAW)
+    }
+
     /// The fractional part, with the sign of the whole.
     #[must_use]
     pub const fn fract(self) -> Self {
@@ -398,6 +412,58 @@ impl Div for Fixed {
     type Output = Self;
     fn div(self, other: Self) -> Self {
         self.saturating_div(other)
+    }
+}
+
+#[cfg(test)]
+mod floor_tests {
+    use super::Fixed;
+
+    /// **Floor and truncation differ below zero, and that is the whole
+    /// point of the pair.** `trunc_int` maps both `-0.5` and `+0.5` to
+    /// zero, so a lattice built on it fuses the two cells either side of
+    /// the origin; `floor_int` maps `-0.5` to `-1`.
+    ///
+    /// Probed by delegating `floor_int` to `trunc_int`: every negative
+    /// fractional case below names the value it got.
+    #[test]
+    fn floor_rounds_toward_negative_infinity() {
+        let cases = [
+            (Fixed::from_ratio(1, 2), 0, 0),
+            (Fixed::from_ratio(-1, 2), -1, 0),
+            (Fixed::from_ratio(3, 2), 1, 1),
+            (Fixed::from_ratio(-3, 2), -2, -1),
+            (Fixed::from_int(2), 2, 2),
+            (Fixed::from_int(-2), -2, -2),
+            (Fixed::ZERO, 0, 0),
+            (Fixed::EPSILON, 0, 0),
+            (Fixed::ZERO - Fixed::EPSILON, -1, 0),
+        ];
+        for (value, floor, trunc) in cases {
+            assert_eq!(value.floor_int(), floor, "floor of {value:?}");
+            assert_eq!(value.trunc_int(), trunc, "truncation of {value:?}");
+        }
+    }
+
+    /// The defining property, over a spread that crosses zero: the floor
+    /// is the greatest whole number not above the value, so the value
+    /// minus its floor lies in `[0, 1)`.
+    ///
+    /// Probed the same way: the negative half of the range reports a
+    /// remainder of `-1 .. 0`.
+    #[test]
+    fn a_value_stands_no_less_than_its_floor_and_less_than_one_above_it() {
+        let step = Fixed::from_ratio(1, 7);
+        let mut value = Fixed::from_int(-4);
+        for _ in 0..60 {
+            let floor = i32::try_from(value.floor_int()).expect("the range is small");
+            let over = value - Fixed::from_int(floor);
+            assert!(
+                over >= Fixed::ZERO && over < Fixed::ONE,
+                "{value:?} stands {over:?} above its floor of {floor}"
+            );
+            value = value + step;
+        }
     }
 }
 

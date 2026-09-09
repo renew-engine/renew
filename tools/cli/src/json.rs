@@ -90,17 +90,19 @@ impl Value {
                 // back as `Number(2)` because the integer branch takes any
                 // lexeme without `.`/`e`. The value survives that trip but
                 // its type does not, so a parsed float re-emitted once
-                // comes back as an integer. Nothing renders a parsed float
-                // today -- the parser is the only thing that builds one --
-                // which is why this never showed up in output. It still
-                // makes `parse(render(v)) == v` false for a value the
-                // parser itself can produce, so the suffix goes on here
-                // rather than the property being weakened to match.
+                // comes back as an integer. That makes
+                // `parse(render(v)) == v` false for a value the parser
+                // itself can produce, so the suffix goes on here rather
+                // than the property being weakened to match.
                 //
-                // Finite only: the parser refuses non-finite numbers (JSON
-                // cannot spell them), so a non-finite `Float` is already
-                // unconstructible from input and `"inf.0"` would be no
-                // more valid than `"inf"`.
+                // Finite only. The parser refuses non-finite numbers,
+                // which JSON cannot spell, so one cannot arrive that way.
+                // **`asset-import` is now a second source**, reporting a
+                // material's factors, and it holds because every one of
+                // those is range-checked by the reader before it gets
+                // here -- a chain of checks in another crate rather than
+                // unconstructibility, which is worth saying out loud
+                // because it is the weaker guarantee.
                 if number.is_finite() && !text.contains(['.', 'e', 'E']) {
                     out.push_str(".0");
                 }

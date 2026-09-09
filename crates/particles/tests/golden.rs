@@ -82,6 +82,8 @@ fn a_still_particle_draws_its_exact_colour() -> Result<(), Box<dyn std::error::E
         // point of decoding here rather than restating it there.
         color: (AUTHORED, AUTHORED),
         tile: [0.0, 0.0, 1.0, 1.0],
+        angle: (0.0, 0.0),
+        spin: (0.0, 0.0),
     };
     let mut system = ParticleSystem::new(
         &desc,

@@ -15,6 +15,14 @@
 
 use ash::vk;
 
+/// Both depth-test stages as one named value: every depth arm scopes
+/// the pair together, because depth loads run early and depth writes
+/// run late and a barrier that names only one misses half the hazard.
+const DEPTH_STAGES: vk::PipelineStageFlags2 = vk::PipelineStageFlags2::from_raw(
+    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS.as_raw()
+        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS.as_raw(),
+);
+
 /// The masks and layouts of one image barrier, ready for a site to pour
 /// into a `vk::ImageMemoryBarrier2` against its own image and aspect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,10 +64,24 @@ pub(crate) enum ImageUse {
     /// This frame's first use of a render image as a depth target —
     /// [`Self::RenderColorFirstUse`]'s reasoning at the depth stages.
     RenderDepthFirstUse,
+    /// This frame's first use of a **kept** render image as a color
+    /// target, arriving from a sampled life: an earlier frame left the
+    /// image in the sampled layout and kept contents survive, so the
+    /// transition preserves instead of discarding. The source scope
+    /// covers what an earlier frame could still be running against
+    /// this one physical image: the fragment-shader reads that put it
+    /// in this layout (execution ordering is enough against reads),
+    /// plus the attachment-write availability belt the first-use arms
+    /// carry, for the writing frame before that.
+    KeptColorFromSampled,
+    /// [`Self::KeptColorFromSampled`]'s reasoning at the depth stages.
+    KeptDepthFromSampled,
     /// A render image a pass in this frame rendered into, now read by
     /// a sampling pass. Emitted once, at the first sampling pass's
-    /// boundary; the contract refuses re-targeting after sampling, so
-    /// no arm leads back out.
+    /// boundary; the contract refuses re-targeting after sampling
+    /// within a frame, so inside one frame no arm leads back out. A
+    /// kept image may be re-targeted by a LATER frame, and arrives
+    /// there through the `Kept*FromSampled` arms.
     SampledInPass,
 }
 
@@ -98,8 +120,7 @@ pub(crate) fn pass_boundary(from: ImageUse, to: ImageUse) -> BarrierMasks {
         (ImageUse::DepthAttachmentFirstUse, ImageUse::DepthAttachment) => BarrierMasks {
             src_stage: vk::PipelineStageFlags2::NONE,
             src_access: vk::AccessFlags2::NONE,
-            dst_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            dst_stage: DEPTH_STAGES,
             dst_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
                 | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             old_layout: vk::ImageLayout::UNDEFINED,
@@ -108,11 +129,9 @@ pub(crate) fn pass_boundary(from: ImageUse, to: ImageUse) -> BarrierMasks {
         // Between depth-carrying passes: the previous pass's depth
         // writes, ordered before this pass's tests and writes.
         (ImageUse::DepthAttachment, ImageUse::DepthAttachment) => BarrierMasks {
-            src_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            src_stage: DEPTH_STAGES,
             src_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            dst_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            dst_stage: DEPTH_STAGES,
             dst_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
                 | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             old_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -138,15 +157,35 @@ pub(crate) fn pass_boundary(from: ImageUse, to: ImageUse) -> BarrierMasks {
             new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         },
         (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment) => BarrierMasks {
-            src_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            src_stage: DEPTH_STAGES | vk::PipelineStageFlags2::FRAGMENT_SHADER,
             src_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            dst_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            dst_stage: DEPTH_STAGES,
             dst_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
                 | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        },
+        // A kept image re-targeted out of a sampled life: the layout
+        // walks back from sampled to attachment WITHOUT discarding -
+        // kept contents are the point, so `UNDEFINED` never appears.
+        // Cross-frame source scope as the variant doc states.
+        (ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment) => BarrierMasks {
+            src_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            src_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            dst_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            dst_access: vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            old_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        },
+        (ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment) => BarrierMasks {
+            src_stage: DEPTH_STAGES | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            src_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            dst_stage: DEPTH_STAGES,
+            dst_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            old_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         },
         // Rendered this frame, sampled from here on: the writing
@@ -163,8 +202,7 @@ pub(crate) fn pass_boundary(from: ImageUse, to: ImageUse) -> BarrierMasks {
             new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         },
         (ImageUse::DepthAttachment, ImageUse::SampledInPass) => BarrierMasks {
-            src_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            src_stage: DEPTH_STAGES,
             src_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             dst_stage: vk::PipelineStageFlags2::FRAGMENT_SHADER,
             dst_access: vk::AccessFlags2::SHADER_SAMPLED_READ,
@@ -491,6 +529,51 @@ mod tests {
         assert_eq!(host.src_access, vk::AccessFlags2::TRANSFER_WRITE);
         assert_eq!(host.dst_stage, vk::PipelineStageFlags2::HOST);
         assert_eq!(host.dst_access, vk::AccessFlags2::HOST_READ);
+    }
+
+    /// The kept arms, pinned like the rest: these are the only pairs
+    /// whose `old_layout` is the sampled layout, because kept contents
+    /// re-enter attachment life instead of starting undefined.
+    #[test]
+    fn the_kept_arms_are_pinned_field_by_field() {
+        let color = pass_boundary(ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment);
+        assert_eq!(
+            color.src_stage,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+        assert_eq!(color.src_access, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
+        assert_eq!(
+            color.dst_stage,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+        );
+        assert_eq!(
+            color.dst_access,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+        );
+        assert_eq!(color.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(color.new_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let depth = pass_boundary(ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment);
+        assert_eq!(
+            depth.src_stage,
+            DEPTH_STAGES | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+        assert_eq!(
+            depth.src_access,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        );
+        assert_eq!(depth.dst_stage, DEPTH_STAGES);
+        assert_eq!(
+            depth.dst_access,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        );
+        assert_eq!(depth.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(
+            depth.new_layout,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        );
     }
 
     /// The unreachable pairs are refused, not silently mapped: proving

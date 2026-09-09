@@ -9,8 +9,8 @@
 
 use renew_math::Alpha;
 use renew_sample_glide_world::{
-    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, UNITS_PER_PIXEL,
-    VIEW_HEIGHT, World,
+    BIRD_HALF_UNITS, BIRD_X_UNITS, PIPE_GAP_HALF_UNITS, PIPE_WIDTH_UNITS, TERMINAL_VELOCITY,
+    UNITS_PER_PIXEL, VIEW_HEIGHT, World,
 };
 use renew_snapshot::{Blend, Key, Snapshots};
 
@@ -24,16 +24,22 @@ pub enum Tile {
     Bird,
     /// One pipe bar (either half; the gap is the absence between them).
     Pipe,
+    /// One spark of the crash burst — a white texel the tint colours,
+    /// drawn as light rather than ink.
+    Spark,
 }
 
 /// One rectangle of the picture, in canvas units (the world's own
 /// screen units; y down from the top-left).
 ///
 /// `#[non_exhaustive]` without a constructor — a deliberate deviation
-/// from the descriptor pattern: this is a read-side record produced only
-/// by this module, by [`scene`] and by [`Presentation::fill`], never
-/// built by callers, so a constructor would have no caller outside this
-/// file.
+/// from the descriptor pattern: this is a read-side record produced by
+/// the game itself and never by a consumer of it. [`scene`] and
+/// [`Presentation::fill`] build the world's own sprites here, and
+/// [`crate::effects::Effects::fill`] builds the crash sparks in the
+/// sibling module — which is why the fields are `pub` rather than
+/// private to this file. Nothing outside the crate builds one, so a
+/// constructor would still have no caller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct SceneSprite {
@@ -47,8 +53,133 @@ pub struct SceneSprite {
     pub width: f32,
     /// Height, canvas units.
     pub height: f32,
+    /// How much of the sprite's own colour survives: `1.0` for all of
+    /// it, `0.0` for grey at the same luminance. A dead bird is drawn
+    /// grey; everything else keeps its colour.
+    pub saturation: f32,
+    /// Turn about the rectangle's centre, in turns, clockwise on
+    /// screen. `0.0` for everything that does not tilt — every pipe.
+    pub rotation: f32,
+    /// How far the sprite is smeared, in canvas units, along the
+    /// direction it moved: the displacement to average the sprite over,
+    /// which reads as motion blur. `[0.0, 0.0]` for everything that does
+    /// not move — every pipe, and a dead bird.
+    pub smear: [f32; 2],
+    /// Premultiplied tint, multiplied into the sprite after everything
+    /// else. `[1.0; 4]` — no tint — for every sprite the world itself
+    /// produces; a spark carries its colour here, with **alpha zero**,
+    /// which is what makes it add light instead of covering what is
+    /// under it.
+    pub tint: [f32; 4],
 }
 
+/// The tint a sprite carries when it has none: premultiplied white,
+/// which multiplies through unchanged.
+///
+/// Named rather than written out at each of its three call sites, so
+/// "no tint" is one decision and reads as one.
+const UNTINTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// The most sprites a frame of this game can hold.
+///
+/// Every pipe **slot** as two bars, the bird, and both spark pools full
+/// at once: `2 × 16 + 1 + 32 + 32 = 97`. Sized from [`PIPE_SLOTS`]
+/// rather than from the five pipes the rules actually keep on screen,
+/// because the slot count is what `Capture::put` refuses against — a
+/// budget derived from the smaller number would be a refusal waiting
+/// for the day the rules change.
+///
+/// Named once so the windowed driver and the offscreen oracle size the
+/// same batch. Two hardcoded numbers used to say 32, which was headroom
+/// before the sparks existed and would be a refusal now.
+///
+/// **Both pools are counted, and neither is discounted for being
+/// unlikely.** A full crash burst and a full trail cannot in fact be in
+/// the air on the same frame — the trail stops emitting on the tick the
+/// burst fires — but a budget is a refusal threshold, not a prediction,
+/// and sizing it on that argument would make the batch refuse the first
+/// time the argument stopped holding.
+pub const SPRITE_BUDGET: u32 = 2 * PIPE_SLOTS + 1 + SPARK_CAPACITY + TRAIL_CAPACITY;
+
+/// How many sparks the crash pool holds.
+///
+/// Here rather than beside the effect that uses it because two modules
+/// need to agree on it: the pool is created with this capacity, and the
+/// sprite budget above must leave room for a full one. A number written
+/// twice is a number that drifts.
+pub const SPARK_CAPACITY: u32 = 32;
+
+/// How many sparks the trail pool holds.
+///
+/// **A second capacity rather than a bigger first one**, because the
+/// trail and the burst are separate pools. Sharing one would couple them
+/// in the direction that matters least and hurts most: `burst_in`
+/// saturates at capacity, so a trail that happened to be full on the
+/// tick the bird died would silently shorten the crash — the one moment
+/// the game has to look right. Two pools cost one extra `ParticleSystem`
+/// and make that impossible.
+///
+/// Sized well above the trail's own steady state. At its emission rate
+/// and the longest life its effect allows, the trail cannot hold more
+/// than about two dozen at once; the rest is the same arithmetic comfort
+/// the crash pool carries.
+pub const TRAIL_CAPACITY: u32 = 32;
+
+/// The steepest the bird tilts, in turns — an eighth, so a terminal
+/// dive is forty-five degrees nose-down and a fresh flap is thirty-three
+/// and three quarters degrees nose-up.
+const MAX_TILT: f32 = 0.125;
+
+/// The tilt a vertical velocity earns, in turns, clockwise on screen.
+///
+/// Linear in the velocity and clamped at the ends of the range the
+/// world can actually produce, so the steepest dive and the freshest
+/// flap are the extremes and nothing outside them is representable. The
+/// velocity arrives in **world units per tick** rather than canvas
+/// units: the tick-exact scene reads it straight from the world and the
+/// blended one interpolates two such readings, and both must reach the
+/// same function or the two pictures would tilt by different rules.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+pub(crate) fn tilt(velocity: f32) -> f32 {
+    (velocity / TERMINAL_VELOCITY as f32).clamp(-1.0, 1.0) * MAX_TILT
+}
+
+/// How many ticks of motion the bird is drawn averaged over.
+///
+/// An exaggerated exposure, chosen so the ghost is visible at this
+/// resolution rather than because a real camera works this way. A fall
+/// accelerates from nothing and tops out at [`TERMINAL_VELOCITY`],
+/// which is one and two tenths of a canvas unit per tick, so the widest
+/// smear this can ever ask for is `8 × 1.2 = 9.6` units on a twelve-unit
+/// body. Four ticks would top out at 4.8 — a ramp of two pixels at the
+/// scale the pictures are drawn, which nobody would call a ghost.
+const SMEAR_TICKS: f32 = 8.0;
+
+/// How far a bird is smeared, in canvas units, from its velocity.
+///
+/// Vertical only, because the bird's horizontal position never changes —
+/// the world scrolls past it. A dead bird does not smear: it is a corpse
+/// falling out of the frame, and a step at the moment of death is what
+/// the greying already says.
+///
+/// The velocity arrives in **world units per tick**, the same units
+/// [`tilt`] takes and for the same reason; this one converts to canvas
+/// units because a smear is a distance on screen rather than a fraction
+/// of a range.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+fn smear(velocity: f32, alive: bool) -> [f32; 2] {
+    if alive {
+        [0.0, velocity / UNITS_PER_PIXEL as f32 * SMEAR_TICKS]
+    } else {
+        [0.0, 0.0]
+    }
+}
 /// Fill `out` with the world's picture, in draw order: every pipe as
 /// two bars (top bar from the ceiling to the gap, bottom bar from the
 /// gap to the floor), then the bird over them. Pipe order is the
@@ -64,7 +195,14 @@ pub struct SceneSprite {
 pub fn scene(world: &World, out: &mut Vec<SceneSprite>) {
     out.clear();
     world.for_each_pipe_units(|x, gap_y| push_pipe(out, x as f32, gap_y as f32));
-    push_bird(out, world.bird_y_units() as f32);
+    let v = velocity(world.bird_velocity());
+    push_bird(
+        out,
+        world.bird_y_units() as f32,
+        tilt(v),
+        saturation(world.alive()),
+        smear(v, world.alive()),
+    );
 }
 
 /// One pipe's two bars, from the pipe's left edge and gap centre: the
@@ -88,6 +226,12 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         y: 0.0,
         width: PIPE_WIDTH_UNITS as f32,
         height: gap_top,
+        // A pipe never tilts: it is the fixed frame the bird moves in.
+        rotation: 0.0,
+        // A pipe neither dies nor moves under its own power.
+        saturation: 1.0,
+        smear: [0.0, 0.0],
+        tint: UNTINTED,
     });
     out.push(SceneSprite {
         tile: Tile::Pipe,
@@ -95,15 +239,35 @@ fn push_pipe(out: &mut Vec<SceneSprite>, x: f32, gap_y: f32) {
         y: gap_bottom,
         width: PIPE_WIDTH_UNITS as f32,
         height: VIEW_HEIGHT as f32 - gap_bottom,
+        rotation: 0.0,
+        // A pipe neither dies nor moves under its own power.
+        saturation: 1.0,
+        smear: [0.0, 0.0],
+        tint: UNTINTED,
     });
 }
 
-/// The bird's square body, from its centre's y.
+/// How much colour a bird keeps: all of it alive, none of it dead.
+///
+/// A bool rather than a float on the presentation side, and blended
+/// nowhere: death is a step, not a slide, and interpolating it would
+/// draw a half-grey bird for one frame at every death.
+fn saturation(alive: bool) -> f32 {
+    if alive { 1.0 } else { 0.0 }
+}
+
+/// The bird's square body, from its centre's y and its tilt.
 #[allow(
     clippy::cast_precision_loss,
     reason = "canvas units are bounded by the view constants, far below f32's exact range"
 )]
-fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32) {
+fn push_bird(
+    out: &mut Vec<SceneSprite>,
+    centre_y: f32,
+    rotation: f32,
+    saturation: f32,
+    smear: [f32; 2],
+) {
     let half = BIRD_HALF_UNITS as f32;
     out.push(SceneSprite {
         tile: Tile::Bird,
@@ -111,6 +275,10 @@ fn push_bird(out: &mut Vec<SceneSprite>, centre_y: f32) {
         y: centre_y - half,
         width: 2.0 * half,
         height: 2.0 * half,
+        rotation,
+        saturation,
+        smear,
+        tint: UNTINTED,
     });
 }
 
@@ -131,6 +299,19 @@ const PIPE_SLOTS: u32 = 16;
 )]
 fn units(world_units: i64) -> f32 {
     world_units as f32 / UNITS_PER_PIXEL as f32
+}
+
+/// A world velocity as a float, in world units per tick.
+///
+/// Not divided by [`UNITS_PER_PIXEL`] like [`units`] above: [`tilt`]
+/// maps from the world's own range, so converting here would mean
+/// converting back there.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the velocity is bounded by the flap and terminal constants, far below f32's exact range"
+)]
+fn velocity(world_units: i64) -> f32 {
+    world_units as f32
 }
 
 /// One pipe's blendable locals.
@@ -172,6 +353,16 @@ pub struct Presentation {
     /// singleton needs. A key is wanted exactly when a slot can be
     /// recycled, and this one cannot be.
     bird_y: f32,
+    /// The bird's velocity in **world** units per tick, not canvas
+    /// units: `tilt` maps from the world's own range, and blending
+    /// before tilting is what keeps this picture and the tick-exact one
+    /// on the same function.
+    bird_velocity: f32,
+    previous_bird_velocity: Option<f32>,
+    /// Whether the bird was alive at the newest capture. A bool, and
+    /// deliberately not blended: death is a step, and interpolating it
+    /// would grey the bird halfway for one frame.
+    bird_alive: bool,
     previous_bird_y: Option<f32>,
 }
 
@@ -187,6 +378,9 @@ impl Presentation {
         Self {
             pipes: Snapshots::new(PIPE_SLOTS),
             bird_y: units(world.bird_y()),
+            bird_velocity: velocity(world.bird_velocity()),
+            previous_bird_velocity: None,
+            bird_alive: world.alive(),
             previous_bird_y: None,
         }
     }
@@ -207,7 +401,10 @@ impl Presentation {
             );
         });
         self.previous_bird_y = Some(self.bird_y);
+        self.previous_bird_velocity = Some(self.bird_velocity);
         self.bird_y = units(world.bird_y());
+        self.bird_velocity = velocity(world.bird_velocity());
+        self.bird_alive = world.alive();
     }
 
     /// Fill `out` with the picture standing `alpha` of the way from the
@@ -236,7 +433,17 @@ impl Presentation {
             Some(previous) => f32::blend(previous, self.bird_y, alpha),
             None => self.bird_y,
         };
-        push_bird(out, y);
+        let velocity = match self.previous_bird_velocity {
+            Some(previous) => f32::blend(previous, self.bird_velocity, alpha),
+            None => self.bird_velocity,
+        };
+        push_bird(
+            out,
+            y,
+            tilt(velocity),
+            saturation(self.bird_alive),
+            smear(velocity, self.bird_alive),
+        );
     }
 }
 
@@ -247,6 +454,7 @@ impl Presentation {
 )]
 mod tests {
     use super::*;
+    use renew_sample_glide_world::FLAP_VELOCITY;
 
     /// Exact float claims compare bits, the math crate's own pattern:
     /// every expected value is an integer-valued f32.
@@ -305,6 +513,108 @@ mod tests {
                 b(12.0)
             )
         );
+        assert_eq!(
+            b(bird.rotation),
+            b(tilt(world.bird_velocity() as f32)),
+            "the bird's tilt is its velocity's, bit for bit"
+        );
+        assert_eq!(b(bird.saturation), b(1.0), "a living bird keeps its colour");
+        assert_eq!(
+            bird.tint.map(f32::to_bits),
+            [1.0f32.to_bits(); 4],
+            "the bird carries no tint either — only a spark does"
+        );
+        assert_eq!(
+            (b(bird.smear[0]), b(bird.smear[1])),
+            (
+                b(0.0),
+                b(world.bird_velocity() as f32 / UNITS_PER_PIXEL as f32 * SMEAR_TICKS)
+            ),
+            "the bird smears along its fall by eight ticks of it, and never sideways"
+        );
+        for pipe in &out[..out.len() - 1] {
+            assert_eq!(b(pipe.rotation), b(0.0), "a pipe never tilts");
+            assert_eq!(
+                (b(pipe.smear[0]), b(pipe.smear[1])),
+                (b(0.0), b(0.0)),
+                "a pipe never smears"
+            );
+            assert_eq!(
+                pipe.tint.map(f32::to_bits),
+                [1.0f32.to_bits(); 4],
+                "a sprite the world produced carries no tint"
+            );
+        }
+    }
+
+    /// The tilt's two ends and its clamp: a flap points the nose up, a
+    /// terminal dive points it down by the full eighth turn, and nothing
+    /// faster tilts further.
+    #[test]
+    fn a_flap_tilts_the_bird_up_and_a_dive_tilts_it_down_within_the_clamp() {
+        assert!(
+            tilt(FLAP_VELOCITY as f32) < 0.0,
+            "a flap must tilt the nose up"
+        );
+        assert_eq!(
+            b(tilt(TERMINAL_VELOCITY as f32)),
+            b(0.125),
+            "a terminal dive is the full eighth turn"
+        );
+        assert_eq!(
+            b(tilt(5_000.0)),
+            b(tilt(TERMINAL_VELOCITY as f32)),
+            "nothing faster than terminal tilts further"
+        );
+        assert_eq!(
+            b(tilt(-5_000.0)),
+            b(-0.125),
+            "and the clamp is symmetric, though the world never gets there"
+        );
+        assert_eq!(b(tilt(0.0)), b(0.0), "a still bird is level");
+    }
+
+    /// A corpse keeps the tilt death left it with, because a dead world
+    /// stops integrating: stepping it further moves neither the velocity
+    /// nor the tilt drawn from it.
+    ///
+    /// Observed, the crate's committed-fixture method: falling from the
+    /// start without a flap, seed 7 hits the floor on tick 108 at the
+    /// terminal velocity, so the corpse lies at the full eighth turn.
+    /// That is the picture `sink-240` shows, and the number its
+    /// structural check reads.
+    #[test]
+    fn a_corpse_keeps_the_tilt_death_left_it_with() {
+        let mut world = World::new(7);
+        let mut ticks = 0;
+        while world.alive() {
+            world.step(false);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 108, "observed: the fall reaches the floor here");
+        assert_eq!(
+            world.bird_velocity(),
+            TERMINAL_VELOCITY,
+            "observed: the fall is at terminal by the time it lands"
+        );
+        let mut out = Vec::new();
+        scene(&world, &mut out);
+        let at_death = out[out.len() - 1].rotation;
+        assert_eq!(b(at_death), b(0.125), "the corpse lies nose-down, fully");
+        for _ in 0..30 {
+            world.step(false);
+        }
+        assert_eq!(
+            world.bird_velocity(),
+            TERMINAL_VELOCITY,
+            "a dead world stopped integrating"
+        );
+        scene(&world, &mut out);
+        assert_eq!(
+            b(out[out.len() - 1].rotation),
+            b(at_death),
+            "the corpse's tilt moved after death"
+        );
     }
 
     #[test]
@@ -343,6 +653,22 @@ mod tests {
             b(228.0),
             "observed: frozen at death"
         );
+        assert_eq!(
+            b(out[out.len() - 1].saturation),
+            b(0.0),
+            "a dead bird is drawn grey"
+        );
+        assert_eq!(
+            (
+                b(out[out.len() - 1].smear[0]),
+                b(out[out.len() - 1].smear[1])
+            ),
+            (b(0.0), b(0.0)),
+            "a corpse does not smear, whatever velocity it froze at"
+        );
+        for pipe in &out[..out.len() - 1] {
+            assert_eq!(b(pipe.saturation), b(1.0), "a pipe keeps its colour");
+        }
     }
 
     /// Half a step past the boundary — exact in binary, so expectations

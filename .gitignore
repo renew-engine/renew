@@ -13,3 +13,9 @@
 # a file so CI can upload it after the emulator is destroyed, and it is
 # a record of one run rather than anything the tree should carry.
 /android-lifecycle.log
+
+# Golden candidates and mismatches. The comparison writes these beside
+# the committed images so an inspector can look at them; only the
+# canonical .rgba and its provenance sidecar are ever committed.
+**/tests/goldens/*.candidate.*
+**/tests/goldens/*.actual.*

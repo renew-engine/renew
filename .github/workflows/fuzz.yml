@@ -26,7 +26,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [asset_pack, trace_parse, wav, ui_document, ui_text, net_datagram]
+        # Every target `fuzz/Cargo.toml` declares, which a test in the
+        # stable workspace requires: a harness nothing runs is a claim
+        # nothing checks, and seven of these were declared, committed
+        # with corpora, and never once executed.
+        target: [asset_pack, trace_parse, wav, ui_document, ui_text, net_datagram, png_decode, json_parse, stl_read, ply_read, obj_read, mtl_read, blob_read, glb_read, accessor_view, gltf_read, data_uri_read]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

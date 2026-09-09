@@ -186,7 +186,15 @@ pub enum VertexAttribute {
 }
 
 impl VertexAttribute {
-    pub(crate) fn byte_len(self) -> u32 {
+    /// How many bytes this attribute occupies in a vertex record.
+    ///
+    /// **Public so that a caller can derive a stride rather than
+    /// restate one.** A record's stride is the sum of its attributes,
+    /// and every place that wrote the sum as a literal had to be found
+    /// and changed the first time an attribute was added — which is how
+    /// three tests came to assert a stride the layout no longer had.
+    #[must_use]
+    pub const fn byte_len(self) -> u32 {
         match self {
             Self::Vec2 | Self::Uint32x2 => 8,
             Self::Vec3 => 12,
@@ -277,6 +285,8 @@ pub struct PipelineDesc<'a> {
     /// [`Blend::Opaque`] — no blending — unless the builder says
     /// otherwise.
     pub blend: Blend,
+    /// Which side of a triangle this pipeline draws. See [`Facing`].
+    pub facing: Facing,
     /// How many sampled-binding slots this pipeline's shaders read;
     /// zero for none.
     ///
@@ -363,6 +373,39 @@ pub(crate) fn validate_push_constant_size(size: u32) {
 /// push ceiling, which is the whole point of the channel.
 pub const MAX_UNIFORM_BLOCK_BYTES: u32 = 16_384;
 
+/// Refuse a pipeline that would bind more descriptor sets than every
+/// conformant adapter guarantees.
+///
+/// **Bound sets are one budget, not two.** A sampled slot takes a set
+/// and a uniform block takes a set, and the guaranteed floor for
+/// `maxBoundDescriptorSets` is what [`MAX_SAMPLED_BINDINGS`] names — so
+/// four sampled slots is legal, three plus a block is legal, and four
+/// plus a block is not, however much room a particular adapter has.
+///
+/// **A pure validator rather than an assertion inside `create_pipeline`,
+/// because that is where it can be tested.** It spent its life inline,
+/// reachable only through a call that needs a device, on a path the
+/// suites skip wherever no adapter exists — so the one refusal that
+/// stops a pipeline building on one machine and failing on another was
+/// itself never provoked. The three validators beside this one are the
+/// shape it should have had.
+///
+/// [`MAX_SAMPLED_BINDINGS`]: crate::MAX_SAMPLED_BINDINGS
+/// **The block is a yes-or-no here, not a size.** A four-byte block and
+/// the largest block the spec guarantees spend one set each, so a byte
+/// count is a number this function must not look at — and two adjacent
+/// `u32` parameters can be passed in the wrong order and still compile.
+pub(crate) fn validate_bound_sets(sampled_bindings: u32, has_uniform_block: bool) {
+    let sampled_slots = sampled_bindings as usize;
+    let uniform_slots = usize::from(has_uniform_block);
+    assert!(
+        sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
+        "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
+         device minimum), and a uniform block spends one: {sampled_slots} sampled plus \
+         {uniform_slots} block"
+    );
+}
+
 /// Refuse a uniform-block declaration outside what the spec guarantees,
 /// or one std140 cannot describe.
 ///
@@ -404,6 +447,55 @@ pub(crate) fn validate_sampled_bindings(count: u32) {
         declared <= MAX_SAMPLED_BINDINGS,
         "a pipeline declares at most {MAX_SAMPLED_BINDINGS} sampled bindings (the guaranteed          device minimum for bound sets), got {declared}"
     );
+}
+
+/// Which side of a triangle a pipeline draws.
+///
+/// **Every pipeline drew both, and for closed geometry that is half the
+/// rasterisation thrown away.** A triangle whose back is turned to the
+/// camera is either inside a solid, where nothing can see it, or behind
+/// one, where the depth test discards it *after* it has been rasterised,
+/// shaded and tested at full price. Dropping it before the rasteriser is
+/// what `cull_mode` is for, and it costs nothing: the hardware decides
+/// from the sign of the triangle's screen-space area.
+///
+/// **Per pipeline rather than per device, and that is the whole design.**
+/// Closed solids want their backs dropped. Foliage, water surfaces,
+/// banners, decals and anything else a viewer is meant to see from
+/// behind want both sides — and culling those makes geometry vanish from
+/// one direction only, which is the hardest kind of rendering fault to
+/// notice because half the time it looks right.
+///
+/// **Front is counter-clockwise in clip space** — the winding a
+/// right-handed mesher gives the outside of a solid. So `Front` keeps
+/// what you can see and drops what is inside the rock, which is the only
+/// reading of the name that is any use.
+///
+/// Getting that took a deliberate choice, and it is worth knowing about
+/// before writing a mesher against this. Vulkan applies its front-face
+/// rule in **framebuffer** space, where Y points down, so a
+/// counter-clockwise clip-space triangle arrives at the rasteriser wound
+/// clockwise. Declaring the intuitive `COUNTER_CLOCKWISE` therefore
+/// culls precisely the geometry a caller can see. The rasteriser state
+/// declares `CLOCKWISE` to undo that, once, here — rather than leaving
+/// every caller of this crate to discover the flip by watching their
+/// world turn inside out.
+///
+/// An input enum, so `#[non_exhaustive]`: a fourth mode later must not be
+/// a breaking change for downstream matchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Facing {
+    /// Draw both sides. Today's behavior, and the default — because it
+    /// is the answer that is never *wrong*, only sometimes wasteful, and
+    /// a default that can make geometry disappear is not a default.
+    Both,
+    /// Draw only triangles wound counter-clockwise on screen: the
+    /// outside of a closed solid.
+    Front,
+    /// Draw only the ones wound clockwise: the inside of a volume, a
+    /// skybox seen from within, a cutaway.
+    Back,
 }
 
 /// How a pipeline's output is combined with what the target already
@@ -535,6 +627,7 @@ impl<'a> PipelineDesc<'a> {
             target_format,
             vertex_count: shaders.vertex_count,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: None,
@@ -542,6 +635,13 @@ impl<'a> PipelineDesc<'a> {
             depth_state: None,
             push_constant_size: 0,
         }
+    }
+
+    /// Draw only one side of each triangle. See [`Facing`].
+    #[must_use]
+    pub const fn facing(mut self, facing: Facing) -> Self {
+        self.facing = facing;
+        self
     }
 
     /// Combine output with the target per `blend` instead of replacing
@@ -587,6 +687,7 @@ impl<'a> PipelineDesc<'a> {
             // supply it and nothing consults it.
             vertex_count: 0,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: Some(layout),
@@ -624,6 +725,7 @@ impl<'a> PipelineDesc<'a> {
             target_format: TargetFormat::DepthOnly,
             vertex_count: 0,
             blend: Blend::Opaque,
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             vertex_input: Some(layout),
@@ -667,6 +769,10 @@ impl<'a> PipelineDesc<'a> {
             target_format: TargetFormat::DepthOnly,
             vertex_count,
             blend: Blend::Opaque,
+            // Both faces, as on `depth_mesh`: a caster's silhouette is
+            // the union of what it covers, and culling a face here would
+            // punch holes in a shadow rather than save work worth having.
+            facing: Facing::Both,
             sampled_bindings: 0,
             uniform_block: 0,
             // The difference from `depth_mesh`, and the whole of this
@@ -1329,17 +1435,9 @@ impl Device {
         // so the panic owns nothing.
         validate_sampled_bindings(desc.sampled_bindings);
         validate_uniform_block(desc.uniform_block);
+        validate_bound_sets(desc.sampled_bindings, desc.uniform_block > 0);
         let sampled_slots = desc.sampled_bindings as usize;
         let uniform_slots = usize::from(desc.uniform_block > 0);
-        // Bound sets are one budget, not two: the guaranteed floor for
-        // `maxBoundDescriptorSets` is what `MAX_SAMPLED_BINDINGS` names,
-        // and a block spends one of them.
-        assert!(
-            sampled_slots + uniform_slots <= MAX_SAMPLED_BINDINGS,
-            "a pipeline binds at most {MAX_SAMPLED_BINDINGS} descriptor sets (the guaranteed \
-             device minimum), and a uniform block spends one: {sampled_slots} sampled plus \
-             {uniform_slots} block"
-        );
         // The depth-only pairing: the format is what licenses the
         // missing fragment stage, and a depth-only pipeline without
         // depth state does nothing at all. One direction only — an
@@ -1502,8 +1600,34 @@ impl Device {
             .scissor_count(1);
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .cull_mode(match desc.facing {
+                Facing::Both => vk::CullModeFlags::NONE,
+                // Cull the BACK to draw the front, and the front to draw
+                // the back: the flag names what is *discarded*, and
+                // reading it as what is kept is the mistake this match
+                // exists to keep away from callers.
+                Facing::Front => vk::CullModeFlags::BACK,
+                Facing::Back => vk::CullModeFlags::FRONT,
+            })
+            // **Clockwise, and that is not a typo.** Vulkan applies
+            // this in *framebuffer* space, where Y points down — so a
+            // triangle written counter-clockwise in clip space, which
+            // is how every right-handed mesher winds the outside of a
+            // solid, arrives at the rasteriser wound clockwise.
+            // Declaring COUNTER_CLOCKWISE here would make
+            // `Facing::Front` cull exactly the geometry a caller can
+            // see and keep the geometry inside the rock.
+            //
+            // It had no effect at all until `Facing` existed, because
+            // the cull mode was always NONE. So this is a free choice
+            // made once, here, rather than a Y-flip exported to every
+            // caller of this crate for ever.
+            //
+            // `a_pipeline_draws_the_side_of_a_triangle_it_was_asked_for`
+            // is what holds it: it renders one triangle both ways round
+            // under all three modes, and the mirror pair is what would
+            // catch this being flipped back.
+            .front_face(vk::FrontFace::CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
@@ -1921,6 +2045,54 @@ mod tests {
         // across the pair.
         let offsets: Vec<u32> = both.attributes[..4].iter().map(|a| a.offset).collect();
         assert_eq!(offsets, vec![0, 12, 0, 8]);
+    }
+
+    /// The set budget is one budget, and every boundary of it answers.
+    ///
+    /// **This refusal had no test until the fourth slot was first
+    /// reached.** It lived inline in `create_pipeline`, behind a call
+    /// that needs an adapter, on a path every suite skips where no
+    /// adapter exists — so the one check that stops a pipeline building
+    /// on a generous adapter and failing on a conformant one had itself
+    /// never been provoked. Extracting it to a validator is what makes
+    /// this possible; the test is the reason the extraction was worth
+    /// doing.
+    ///
+    /// Both sides matter. The ceiling has to be *reachable*, or a
+    /// material wanting base colour, normal, metallic-roughness and
+    /// occlusion is refused for no reason a device would give; and it
+    /// has to be *enforced*, or that same material silently gains a
+    /// fifth set on the machine it was written on.
+    #[test]
+    fn sampled_slots_and_a_block_share_one_set_budget() {
+        // The ceiling as the width the API takes. `try_from` rather than
+        // a cast because the cast is a lint here and the conversion
+        // cannot fail for a constant this small.
+        let ceiling = u32::try_from(MAX_SAMPLED_BINDINGS).expect("the ceiling is a small number");
+        // The ceiling, with nothing else asking for a set.
+        validate_bound_sets(ceiling, false);
+        // One short of it, with a block taking the last one.
+        validate_bound_sets(ceiling - 1, true);
+        // A block's *size* is not what spends the set: any non-zero
+        // block costs exactly one, so the smallest and the largest are
+        // the same question and both must pass here.
+        validate_bound_sets(ceiling - 1, true);
+        validate_bound_sets(ceiling - 1, true);
+        // And nothing at all, which is most pipelines in this tree.
+        validate_bound_sets(0, false);
+
+        // The ceiling plus a block: the case a device with a larger
+        // `maxBoundDescriptorSets` would accept, which is exactly why it
+        // is refused here.
+        assert!(
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling, true)).is_err(),
+            "four sampled slots and a uniform block is five sets, and five is not guaranteed"
+        );
+        // Past the ceiling on sampled slots alone.
+        assert!(
+            std::panic::catch_unwind(|| validate_bound_sets(ceiling + 1, false)).is_err(),
+            "over the ceiling must refuse whether or not a block is asked for"
+        );
     }
 
     /// The fixed-width arrays make over-declaring a truncation rather

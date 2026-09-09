@@ -157,7 +157,8 @@ fn steady_state_frames_allocate_nothing() {
     // push channel allocates nothing must be gate-observed, not
     // code-read. The pipeline and the matrix bytes are built out here;
     // the window measures the record-time push alone.
-    let (camera_pipeline, matrix_bytes) = camera_fixture(&device).expect("camera fixture");
+    let (camera_pipeline, matrix_bytes, air_binding, air_bytes) =
+        camera_fixture(&device).expect("camera fixture");
     let clear_color = Color::new(0.1, 0.2, 0.3, 1.0);
     let mut pixels = vec![0u8; target.byte_len()];
 
@@ -178,7 +179,9 @@ fn steady_state_frames_allocate_nothing() {
             .expect("warmup mesh frame");
         let items = [Item::new(&camera_pipeline)
             .mesh(&mesh)
-            .push_data(&matrix_bytes)];
+            .push_data(&matrix_bytes)
+            .uniform_data(&air_bytes)
+            .bindings(&[&air_binding])];
         target
             .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
             .expect("warmup push frame");
@@ -228,7 +231,9 @@ fn steady_state_frames_allocate_nothing() {
             // push branch names itself.
             let items = [Item::new(&camera_pipeline)
                 .mesh(&mesh)
-                .push_data(&matrix_bytes)];
+                .push_data(&matrix_bytes)
+                .uniform_data(&air_bytes)
+                .bindings(&[&air_binding])];
             target
                 .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
                 .expect("steady push frame");
@@ -309,28 +314,37 @@ fn mesh_fixture(
         builtin::MESH_LAYOUT,
     ))?;
     let mut vertices = Vec::new();
-    for corner in [
+    for (index, corner) in [
         [-1.0f32, -1.0, 0.0],
         [1.0, -1.0, 0.0],
         [1.0, 1.0, 0.0],
         [-1.0, 1.0, 0.0],
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         for value in corner {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
         for value in [0.0f32, 1.0, 0.0, 1.0] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        // The texture coordinate the layout declares. These shaders do
-        // not consume it; the record must still be what the pipeline
-        // says it is.
-        for value in [0.0f32, 0.0] {
-            vertices.extend_from_slice(&value.to_ne_bytes());
-        }
+        // Pad the record out to whatever the layout packs to, rather
+        // than writing each attribute this fixture does not read.
+        //
+        // **Both of these files have now been broken twice by the same
+        // kind of change** — once by the normal and once by the tangent
+        // — because a fixture that spells out an attribute list is a
+        // second copy of the layout, and the second copy is always the
+        // one that goes stale. What this draw needs is a stride the
+        // pipeline agrees with and corners that are not all the same
+        // point; nothing here reads past the coordinate, so the rest is
+        // zero and stays correct however the record grows.
+        vertices.resize((index + 1) * builtin::MESH_STRIDE as usize, 0);
     }
     let mesh = device.create_mesh(&renew_rhi::MeshDesc::new(
         &vertices,
-        12 + 16 + 8,
+        builtin::MESH_STRIDE,
         &[0, 1, 2, 0, 2, 3],
     ))?;
     Ok((pipeline, mesh))
@@ -340,17 +354,36 @@ fn mesh_fixture(
 /// sixty-four bytes, built outside the measured window. Depth-free —
 /// what the window measures is the record-time push, and a depth
 /// attachment would measure something else beside it.
-fn camera_fixture(
-    device: &Device,
-) -> Result<(renew_rhi::RenderPipeline, [u8; 64]), Box<dyn std::error::Error>> {
+/// A camera pipeline, an identity matrix, and the set and bytes its
+/// fragment stage reads its fade through.
+type CameraFixture = (
+    renew_rhi::RenderPipeline,
+    [u8; 64],
+    renew_rhi::Binding,
+    [u8; 16],
+);
+
+fn camera_fixture(device: &Device) -> Result<CameraFixture, Box<dyn std::error::Error>> {
     let pipeline = device.create_pipeline(
         &PipelineDesc::mesh(
             builtin::MESH_CAMERA,
             TargetFormat::Rgba8Srgb,
             builtin::MESH_LAYOUT,
         )
-        .push_constant_size(64),
+        .push_constant_size(64)
+        // **The camera fragment stage reads what it fades toward.** Its
+        // horizon used to be compiled in; a pipeline built from these
+        // shaders without the block leaves that set unbound, which is
+        // undefined and which a software rasterizer takes as a fault
+        // rather than as a colour.
+        .uniform_block(16),
     )?;
+    let air = device.create_buffer(16, BufferUsage::PerFrame)?;
+    let air_binding = device.create_binding(&renew_rhi::BindingDesc::uniform(&air))?;
+    let mut air_bytes = [0u8; 16];
+    for (index, value) in [0.0f32, 0.0, 0.0, 0.72].iter().enumerate() {
+        air_bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
     let mut bytes = [0u8; 64];
     for (index, value) in [
         1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -360,7 +393,7 @@ fn camera_fixture(
     {
         bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
-    Ok((pipeline, bytes))
+    Ok((pipeline, bytes, air_binding, air_bytes))
 }
 
 /// The instanced pipeline, its per-frame buffer, and one packed

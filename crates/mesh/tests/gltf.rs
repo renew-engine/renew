@@ -1,0 +1,2667 @@
+//! The document's tables, and the refusals a table of indices needs.
+//!
+//! **Almost everything a document says is an index into an array**, so
+//! almost everything that can be wrong with one is a number naming a row
+//! that is not there. That refusal carries the table, the index and the
+//! count, because a reader holding the file wants all three.
+
+// An integration test is its own crate, so the `allow-*-in-tests`
+// settings in `clippy.toml` do not reach it.
+#![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+
+use renew_mesh::accessor::{Component, Shape};
+use renew_mesh::gltf::{self, GltfError};
+use renew_mesh::pbr::{Alpha, Material, TextureRef};
+
+// The encoder the seeds and the URI suite share, included the way six
+// other targets include it: a document that embeds its geometry has to
+// spell it, and spelling it by hand in a fixture is how a fixture stops
+// meaning what its name says.
+#[path = "shared/base64_encode.rs"]
+mod base64_encode;
+
+/// Parse a document and hand back its root, panicking on text this test
+/// wrote itself and cannot read back.
+fn document(text: &str) -> renew_json::Json<'_> {
+    gltf::parse(text.as_bytes()).expect("a fixture this file wrote")
+}
+
+/// One accessor, whole, for the cases that take a member away.
+const WHOLE_ACCESSOR: &str =
+    r#"{ "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3" }] }"#;
+
+/// A document with one buffer view and one accessor over it.
+const WHOLE: &str = r#"{
+  "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }],
+  "accessors": [{
+    "bufferView": 0, "byteOffset": 0,
+    "componentType": 5126, "count": 3, "type": "VEC3"
+  }]
+}"#;
+
+/// The tables come back with the numbers the document spelled.
+#[test]
+fn the_tables_are_read_as_the_document_spells_them() {
+    let json = document(WHOLE);
+    let views = gltf::buffer_views(json.root()).expect("one view");
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].0, 0, "and which buffer it reads out of");
+    assert_eq!(views[0].1.byte_offset, 0);
+    assert_eq!(views[0].1.byte_length, 36);
+    assert_eq!(views[0].1.byte_stride, None, "absent means tightly packed");
+
+    let accessors = gltf::accessors(json.root()).expect("one accessor");
+    assert_eq!(accessors.len(), 1);
+    let (view, accessor) = accessors[0];
+    assert_eq!(view, 0, "and which view it reads through");
+    assert_eq!(accessor.component, Component::F32);
+    assert_eq!(accessor.shape, Shape::Vec3);
+    assert_eq!(accessor.count, 3);
+    assert!(!accessor.normalized);
+}
+
+/// **The format's defaults are applied, and they are the format's.**
+///
+/// `byteOffset` and `normalized` are optional; a document that omits
+/// them means zero and false, not "missing".
+#[test]
+fn absent_optional_members_take_the_formats_defaults() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 12 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 12 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3" }]
+        }"#,
+    );
+    let views = gltf::buffer_views(json.root()).expect("one view");
+    assert_eq!(views[0].1.byte_offset, 0, "an absent offset is zero");
+    // `buffer` is absent too, and defaults to the only buffer there is.
+    let accessors = gltf::accessors(json.root()).expect("one accessor");
+    assert_eq!(accessors[0].1.byte_offset, 0);
+    assert!(!accessors[0].1.normalized);
+}
+
+/// A stride on the view is read, because that is where the format puts
+/// it.
+#[test]
+fn a_stride_is_read_from_the_view() {
+    let json = document(
+        r#"{ "buffers": [{ "byteLength": 96 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 96, "byteStride": 32 }] }"#,
+    );
+    let views = gltf::buffer_views(json.root()).expect("one view");
+    assert_eq!(views[0].1.byte_stride, Some(32));
+}
+
+/// A document with no tables has no tables, which is not a refusal.
+#[test]
+fn a_document_with_no_tables_reads_as_empty() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(
+        gltf::buffer_views(json.root())
+            .expect("no views")
+            .is_empty()
+    );
+    assert!(
+        gltf::accessors(json.root())
+            .expect("no accessors")
+            .is_empty()
+    );
+}
+
+/// **A required member that is not there is named.**
+#[test]
+fn a_missing_required_member_is_named() {
+    let json = document(r#"{ "bufferViews": [{"buffer": 0, "byteOffset": 4 }] }"#);
+    assert_eq!(
+        gltf::buffer_views(json.root()).expect_err("a view must say how long it is"),
+        GltfError::MissingField { path: "byteLength" }
+    );
+
+    let json =
+        document(r#"{ "accessors": [{ "componentType": 5126, "count": 1, "type": "VEC3" }] }"#);
+    assert_eq!(
+        gltf::accessors(json.root()).expect_err("an accessor must say what it reads"),
+        GltfError::MissingField { path: "bufferView" }
+    );
+
+    for missing in ["componentType", "count", "type"] {
+        let text = WHOLE_ACCESSOR.replace(&format!(r#""{missing}""#), r#""ignored""#);
+        let json = document(&text);
+        assert_eq!(
+            gltf::accessors(json.root()).expect_err("a required member was renamed away"),
+            GltfError::MissingField { path: missing }
+        );
+    }
+}
+
+/// **A buffer naming a second file is refused rather than fetched.**
+///
+/// This crate never opens anything. A relative path is what a document
+/// beside its `.bin` looks like, and the honest answer is to say so.
+#[test]
+fn a_buffer_naming_a_second_file_is_refused_rather_than_fetched() {
+    let json = document(r#"{ "buffers": [{ "byteLength": 12, "uri": "geometry.bin" }] }"#);
+    assert_eq!(
+        gltf::buffers(json.root(), None).expect_err("a second file is somewhere else"),
+        GltfError::ExternalResource
+    );
+}
+
+/// **Only the first buffer may be the container's own chunk.**
+///
+/// The specification leaves any other sourceless buffer undefined, and
+/// undefined is refused here rather than guessed at -- the alternative
+/// is handing a view the first buffer's bytes and calling the result
+/// geometry.
+#[test]
+fn a_later_buffer_with_no_source_is_refused_by_name() {
+    let json = document(r#"{ "buffers": [{ "byteLength": 4 }, { "byteLength": 4 }] }"#);
+    assert_eq!(
+        gltf::buffers(json.root(), Some(&[0, 1, 2, 3])).expect_err("buffer 1 has no source"),
+        GltfError::BufferWithoutSource { buffer: 1 }
+    );
+}
+
+/// **A document wanting the container's chunk when there is none.**
+///
+/// The ordinary way to meet this is a document read on its own: it has
+/// no container, so there is no chunk for its first buffer to be.
+#[test]
+fn a_buffer_wanting_a_chunk_that_is_not_there_is_refused() {
+    let json = document(r#"{ "buffers": [{ "byteLength": 4 }] }"#);
+    assert_eq!(
+        gltf::buffers(json.root(), None).expect_err("there is no chunk"),
+        GltfError::NoBinaryChunk
+    );
+}
+
+/// **A buffer is its resource cut to the length it declares.**
+///
+/// The specification allows the resource to be longer and says only the
+/// first `byteLength` bytes belong to the buffer. The container's chunk
+/// routinely *is* longer, because it is padded to a four-byte boundary,
+/// so this is the rule that stops a view reaching into that padding.
+#[test]
+fn a_resource_longer_than_its_buffer_is_cut_to_the_buffer() {
+    let json = document(r#"{ "buffers": [{ "byteLength": 4 }] }"#);
+    let read = gltf::buffers(json.root(), Some(&[1, 2, 3, 4, 0, 0, 0, 0])).expect("a buffer");
+    assert_eq!(read.len(), 1);
+    assert_eq!(
+        &*read[0],
+        &[1, 2, 3, 4],
+        "the padding is not part of the buffer"
+    );
+}
+
+/// And a resource shorter than its buffer is a disagreement, not a cut.
+#[test]
+fn a_resource_shorter_than_its_buffer_is_refused() {
+    let json = document(r#"{ "buffers": [{ "byteLength": 16 }] }"#);
+    assert_eq!(
+        gltf::buffers(json.root(), Some(&[1, 2, 3, 4])).expect_err("four bytes are not sixteen"),
+        GltfError::BufferTooShort {
+            buffer: 0,
+            declared: 16,
+            available: 4,
+        }
+    );
+}
+
+/// **A payload embedded in the document is decoded and cut.**
+#[test]
+fn an_embedded_payload_becomes_the_buffers_bytes() {
+    // `AQIDBA==` is 0x01 0x02 0x03 0x04.
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:application/octet-stream;base64,AQIDBA=="
+        }] }"#,
+    );
+    let read = gltf::buffers(json.root(), None).expect("an embedded buffer");
+    assert_eq!(&*read[0], &[1, 2, 3, 4]);
+
+    // The other media type a buffer may declare reads the same way.
+    let other = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:application/gltf-buffer;base64,AQIDBA=="
+        }] }"#,
+    );
+    assert_eq!(
+        &*gltf::buffers(other.root(), None).expect("a buffer")[0],
+        &[1, 2, 3, 4]
+    );
+}
+
+/// **A payload whose media type is not one a buffer may declare.**
+#[test]
+fn a_payload_of_the_wrong_media_type_is_refused_naming_it() {
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:image/png;base64,AQIDBA=="
+        }] }"#,
+    );
+    let refused = gltf::buffers(json.root(), None).expect_err("a buffer is not an image");
+    assert_eq!(
+        refused,
+        GltfError::WrongMediaType {
+            found: "image/png".into()
+        }
+    );
+    assert!(
+        refused.to_string().contains("image/png"),
+        "the message shows what it found: {refused}"
+    );
+}
+
+/// **A payload that will not decode says which rule it broke.**
+#[test]
+fn a_payload_that_will_not_decode_carries_the_decoders_refusal() {
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:application/octet-stream;base64,AQID!A=="
+        }] }"#,
+    );
+    let refused = gltf::buffers(json.root(), None).expect_err("`!` is not base64");
+    assert_eq!(refused.name(), "Payload");
+    assert!(
+        refused.to_string().contains("base64 character"),
+        "the layer below names the rule: {refused}"
+    );
+}
+
+/// **A URI spelled with an escape is still a URI.**
+///
+/// A base64 payload contains `/`, and a document may spell that `\/`.
+/// A reader taking the borrowed fast path sees no plain string for
+/// exactly the URIs it needs to read.
+#[test]
+fn a_payload_whose_uri_carries_an_escape_still_decodes() {
+    // `Lw==` is a single `/`, and the URI spells its own slash escaped.
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 1,
+          "uri": "data:application\/octet-stream;base64,Lw=="
+        }] }"#,
+    );
+    let read = gltf::buffers(json.root(), None).expect("an escaped URI is a URI");
+    assert_eq!(&*read[0], b"/");
+}
+
+/// A sparse accessor is a different reader, and says so.
+#[test]
+fn a_sparse_accessor_is_refused_by_name() {
+    let json = document(
+        r#"{ "accessors": [{
+            "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3",
+            "sparse": { "count": 1 }
+        }] }"#,
+    );
+    let refused = gltf::accessors(json.root()).expect_err("sparse is not read");
+    assert_eq!(refused, GltfError::Unsupported { found: "sparse" });
+    assert!(refused.to_string().contains("not in this reader"));
+}
+
+/// **A component type or shape outside the table is refused by the layer
+/// that owns the table**, and arrives here wrapped.
+#[test]
+fn an_unknown_type_is_refused_by_the_layer_that_owns_the_table() {
+    let json = document(
+        r#"{ "accessors": [{ "bufferView": 0, "componentType": 5124, "count": 1, "type": "VEC3" }] }"#,
+    );
+    let refused = gltf::accessors(json.root()).expect_err("5124 is not in the table");
+    assert_eq!(
+        refused.name(),
+        "Accessor",
+        "wrapped, and named for its layer"
+    );
+    assert!(
+        refused.to_string().contains("5124"),
+        "and the inner refusal's numbers survive: {refused}"
+    );
+
+    // A matrix shape is in the format and not in this reader, and it
+    // reaches the shape table rather than a missing case.
+    let json = document(
+        r#"{ "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "MAT4" }] }"#,
+    );
+    let refused = gltf::accessors(json.root()).expect_err("matrices are not read");
+    assert_eq!(refused.name(), "Accessor");
+    assert!(refused.to_string().contains("SCALAR"), "{refused}");
+}
+
+/// **An escaped shape name is the shape it spells.**
+///
+/// `"\u0056EC3"` is `VEC3`, however strange it looks, and refusing it
+/// for its spelling would be this reader inventing a rule the format
+/// does not have.
+///
+/// **This test contained no escape when it was first written** — a
+/// plain `VEC3` under a name that claimed otherwise, which is a test
+/// that passes by duplicating one beside it.
+#[test]
+fn an_escaped_shape_name_is_the_shape_it_spells() {
+    let json = document(
+        r#"{ "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "\u0056EC3" }] }"#,
+    );
+    let accessors = gltf::accessors(json.root()).expect("an escaped VEC3 is a VEC3");
+    assert_eq!(accessors[0].1.shape, Shape::Vec3);
+}
+
+/// A member of the wrong JSON type is the document reader's refusal, and
+/// arrives wrapped.
+#[test]
+fn a_member_of_the_wrong_type_is_the_documents_refusal() {
+    let json = document(r#"{ "bufferViews": [{"buffer": 0, "byteLength": "long" }] }"#);
+    let refused = gltf::buffer_views(json.root()).expect_err("a length is a number");
+    assert_eq!(
+        refused.name(),
+        "Document",
+        "wrapped, and named for its layer"
+    );
+}
+
+/// **Members of the wrong type, in the four places the reader reads
+/// one.**
+///
+/// Each is a `Document` refusal, and each was an untravelled path until
+/// the coverage gate named it: a normalisation flag that is not a
+/// boolean, an attribute index that is not a number, a scene selector
+/// that is not one, and a root node that is not one. **A reader that
+/// took any of them on trust would be indexing a table with something
+/// that was never an index.**
+#[test]
+fn a_member_of_the_wrong_type_is_refused_wherever_it_is_read() {
+    let normalised = document(
+        r#"{ "accessors": [{
+            "bufferView": 0, "componentType": 5121, "count": 1, "type": "VEC3",
+            "normalized": "yes"
+        }] }"#,
+    );
+    assert_eq!(
+        gltf::accessors(normalised.root())
+            .expect_err("a flag is a boolean")
+            .name(),
+        "Document"
+    );
+
+    let attribute = document(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": "one" }
+          }] }]
+        }"#,
+    );
+    let bytes = three_positions();
+    let source = gltf::Source::of(attribute.root(), Some(&bytes)).expect("the tables read");
+    assert_eq!(
+        gltf::primitive(attribute.root(), &source, 0, 0)
+            .expect_err("an attribute names an accessor by number")
+            .name(),
+        "Document"
+    );
+
+    let selector = container(
+        &ONE_NODE.replace(r#""scenes""#, r#""scene": "first", "scenes""#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&selector)
+            .expect_err("a scene is chosen by number")
+            .name(),
+        "Document"
+    );
+
+    let root_node = container(
+        &ONE_NODE.replace(r#""nodes": [0]"#, r#""nodes": ["zero"]"#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&root_node)
+            .expect_err("a scene names its roots by number")
+            .name(),
+        "Document"
+    );
+}
+
+/// **An optional attribute naming a row that is not there is refused,
+/// and so is a scene selector naming one.**
+///
+/// Both are the same fault one level apart, and both were paths nothing
+/// travelled: a document may name any accessor for `NORMAL` and any
+/// scene for `scene`, and neither number is checked by anything until it
+/// is used.
+#[test]
+fn an_optional_attribute_or_a_scene_past_its_table_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": 9 }
+          }] }]
+        }"#,
+    );
+    let bytes = three_positions();
+    let source = gltf::Source::of(json.root(), Some(&bytes)).expect("the tables read");
+    assert_eq!(
+        gltf::primitive(json.root(), &source, 0, 0).expect_err("accessor 9 of one"),
+        GltfError::NoSuchEntry {
+            table: "accessors",
+            index: 9,
+            count: 1,
+        }
+    );
+
+    let selector = container(
+        &ONE_NODE.replace(r#""scenes""#, r#""scene": 4, "scenes""#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&selector).expect_err("scene 4 of one"),
+        GltfError::NoSuchEntry {
+            table: "scenes",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
+/// **A normalised attribute travels the whole way**, from the flag in
+/// the document to the fraction the accessor layer produces.
+#[test]
+fn a_normalised_attribute_is_read_as_a_fraction() {
+    // Three unsigned bytes per position, at their ceiling: normalised,
+    // that is 1.0 in each axis.
+    let binary = vec![255u8; 9];
+    let json = ONE_NODE
+        .replace(
+            r#""componentType": 5126, "count": 3, "type": "VEC3""#,
+            r#""componentType": 5121, "count": 3, "type": "VEC3", "normalized": true"#,
+        )
+        .replace(r#""byteLength": 36"#, r#""byteLength": 9"#);
+    let mesh = gltf::read(&container(&json, &binary)).expect("normalised bytes");
+    same(
+        &mesh.positions[0],
+        &[1.0, 1.0, 1.0],
+        "255 of 255 is one, and the flag is what says so",
+    );
+}
+
+/// **Every refusal this layer can make is reachable, and it took the
+/// whole reader to make that true.**
+///
+/// This census was written when only the tables existed, and four of its
+/// arms said why a refusal could not be reached from them — the
+/// container's, the geometry's, the cycle's, and an index past a table.
+/// **Every one of those reasons went stale the moment `read` existed**,
+/// and the wildcard-free match is what said so: adding `NodeCycle`
+/// stopped this file compiling until the list was looked at again.
+///
+/// No wildcard arm, so the next refusal added does the same.
+fn gltf_cannot_reach(refusal: &GltfError) -> Option<&'static str> {
+    match refusal {
+        GltfError::Container(_)
+        | GltfError::Document(_)
+        | GltfError::Accessor(_)
+        | GltfError::Geometry(_)
+        | GltfError::MissingField { .. }
+        | GltfError::NoSuchEntry { .. }
+        | GltfError::ExternalResource
+        | GltfError::NodeCycle { .. }
+        | GltfError::Unsupported { .. }
+        | GltfError::Payload(_)
+        | GltfError::BufferWithoutSource { .. }
+        | GltfError::NoBinaryChunk
+        | GltfError::WrongMediaType { .. }
+        | GltfError::BufferTooShort { .. }
+        | GltfError::FactorOutOfRange { .. }
+        | GltfError::UnknownAlphaMode { .. }
+        | GltfError::ImageSource { .. } => None,
+    }
+}
+
+/// The refusals split out of the census below, each provoked by a
+/// document: the buffer layer's five, the material layer's two, and the
+/// image layer's one.
+///
+/// Split out of the census below rather than listed inside it: five
+/// refusals arrived at once when a document learned to read more than
+/// the container's own chunk, and one function naming every refusal in
+/// the reader had grown past what anybody reads in one go.
+fn buffer_provocations() -> Vec<(&'static str, GltfError)> {
+    vec![
+        (
+            "BufferWithoutSource",
+            gltf::buffers(
+                document(r#"{ "buffers": [{ "byteLength": 4 }, { "byteLength": 4 }] }"#).root(),
+                Some(&[0, 1, 2, 3]),
+            )
+            .expect_err("only the first may be the chunk"),
+        ),
+        (
+            "NoBinaryChunk",
+            gltf::buffers(
+                document(r#"{ "buffers": [{ "byteLength": 4 }] }"#).root(),
+                None,
+            )
+            .expect_err("there is no chunk"),
+        ),
+        (
+            "WrongMediaType",
+            gltf::buffers(
+                document(
+                    r#"{ "buffers": [{ "byteLength": 4,
+                       "uri": "data:image/png;base64,AQIDBA==" }] }"#,
+                )
+                .root(),
+                None,
+            )
+            .expect_err("a buffer is not an image"),
+        ),
+        (
+            "BufferTooShort",
+            gltf::buffers(
+                document(r#"{ "buffers": [{ "byteLength": 16 }] }"#).root(),
+                Some(&[1, 2, 3, 4]),
+            )
+            .expect_err("four bytes are not sixteen"),
+        ),
+        ("ImageSource", {
+            let json = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
+            let source = gltf::Source::of(json.root(), None).expect("no tables");
+            gltf::images(json.root(), &source).expect_err("neither source")
+        }),
+        (
+            "UnknownAlphaMode",
+            gltf::materials(document(r#"{ "materials": [{ "alphaMode": "DITHER" }] }"#).root())
+                .expect_err("there are three modes"),
+        ),
+        (
+            "FactorOutOfRange",
+            gltf::materials(
+                document(r#"{ "materials": [{ "emissiveFactor": [0.0, 0.0, 4.0] }] }"#).root(),
+            )
+            .expect_err("four is outside zero to one"),
+        ),
+        (
+            "Payload",
+            gltf::buffers(
+                document(
+                    r#"{ "buffers": [{ "byteLength": 4,
+                       "uri": "data:application/octet-stream;base64,AQID!A==" }] }"#,
+                )
+                .root(),
+                None,
+            )
+            .expect_err("`!` is not base64"),
+        ),
+    ]
+}
+
+/// **A document read on its own, with its geometry embedded.**
+///
+/// The self-contained form of the same asset: no container, no chunk,
+/// and the buffer carrying its bytes as a payload the document spells
+/// out. Everything below the buffers table reads it identically.
+#[test]
+fn a_document_on_its_own_reads_its_embedded_geometry() {
+    // The same triangle the container fixtures use, as base64.
+    let payload = base64_encode::encode(&three_positions());
+    let text = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],
+          "nodes":[{{"mesh":0}}],
+          "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+          "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}}],
+          "buffers":[{{"byteLength":36,
+            "uri":"data:application/octet-stream;base64,{payload}"}}],
+          "bufferViews":[{{"buffer":0,"byteLength":36}}]}}"#
+    );
+
+    let mesh = gltf::read(text.as_bytes()).expect("a document that carries its own geometry");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.positions.len(), 3);
+
+    // **The same document in a container reads to the same geometry.**
+    // Its buffer carries its own payload, so the chunk beside it is
+    // beside the point -- which is the claim worth pinning: the shape
+    // the asset arrived in does not change what it means.
+    let packed = container(&text, &[]);
+    let wrapped = gltf::read(&packed).expect("the same document, wrapped");
+    assert_eq!(wrapped.positions, mesh.positions);
+    assert_eq!(wrapped.triangles(), mesh.triangles());
+}
+
+/// **A view reads the buffer it names, and not the first one.**
+///
+/// This is what the whole table is for, and until this test nothing
+/// asserted it: every fixture and every seed pointed its views at buffer
+/// zero, so a reader that dropped the index and always used the first
+/// buffer would have passed the entire suite. It nearly was that reader
+/// -- `buffer` was being defaulted to zero, which is a member the format
+/// requires and gives no default.
+#[test]
+fn a_view_reads_the_buffer_it_names() {
+    // Two buffers whose contents cannot be confused: one triangle at the
+    // origin, one shifted a long way along x.
+    let near = base64_encode::encode(&three_positions());
+    let far = base64_encode::encode(&{
+        let mut bytes = Vec::new();
+        for corner in [100.0_f32, 101.0, 102.0] {
+            for value in [corner, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    });
+
+    let text = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],
+          "nodes":[{{"mesh":0}}],
+          "meshes":[{{"primitives":[
+            {{"attributes":{{"POSITION":0}}}},
+            {{"attributes":{{"POSITION":1}}}}]}}],
+          "accessors":[
+            {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
+            {{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}}],
+          "buffers":[
+            {{"byteLength":36,"uri":"data:application/octet-stream;base64,{near}"}},
+            {{"byteLength":36,"uri":"data:application/octet-stream;base64,{far}"}}],
+          "bufferViews":[
+            {{"buffer":0,"byteLength":36}},
+            {{"buffer":1,"byteLength":36}}]}}"#
+    );
+
+    let mesh = gltf::read(text.as_bytes()).expect("two buffers, two primitives");
+    assert_eq!(mesh.triangles(), 2);
+
+    // The second primitive's corners came out of the second buffer, so
+    // they are the far ones. A reader ignoring the index would give six
+    // corners at the origin.
+    let far_corners = mesh.positions.iter().filter(|p| p[0] >= 100.0).count();
+    assert_eq!(
+        far_corners, 3,
+        "three corners must come from buffer 1: {:?}",
+        mesh.positions
+    );
+}
+
+/// **A view naming a buffer the document does not have.**
+#[test]
+fn a_view_naming_a_buffer_that_is_not_there_is_refused() {
+    let text = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+      "nodes":[{"mesh":0}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+      "buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}],
+      "bufferViews":[{"buffer":7,"byteLength":36}]}"#;
+    let refused = gltf::read(text.as_bytes()).expect_err("there is no buffer 7");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "buffers",
+            index: 7,
+            count: 1,
+        }
+    );
+}
+
+/// **A view with no `buffer` at all is refused rather than defaulted.**
+///
+/// The format requires the member and gives it no default, unlike
+/// `byteOffset` beside it. Inventing one would hand a view the first
+/// buffer's bytes whenever a document forgot to say.
+#[test]
+fn a_view_that_names_no_buffer_is_refused() {
+    let json = document(r#"{ "bufferViews": [{ "byteLength": 36 }] }"#);
+    assert_eq!(
+        gltf::buffer_views(json.root()).expect_err("`buffer` is required"),
+        GltfError::MissingField { path: "buffer" }
+    );
+}
+
+/// **An embedded payload longer than its buffer is cut too.**
+///
+/// The chunk path had a test for this and the payload path did not: every
+/// data-URI fixture happened to decode to exactly `byteLength`, so the
+/// owned half of the cut was never taken with anything to remove.
+#[test]
+fn an_embedded_payload_longer_than_its_buffer_is_cut() {
+    // `AQIDBAUGBwg=` is eight bytes; the buffer declares four.
+    let json = document(
+        r#"{ "buffers": [{
+          "byteLength": 4,
+          "uri": "data:application/octet-stream;base64,AQIDBAUGBwg="
+        }] }"#,
+    );
+    let read = gltf::buffers(json.root(), None).expect("an embedded buffer");
+    assert_eq!(
+        &*read[0],
+        &[1, 2, 3, 4],
+        "the tail is not part of the buffer"
+    );
+}
+
+/// **A media type is compared without case, as the format's own URIs
+/// permit.**
+#[test]
+fn a_media_type_is_read_without_regard_to_case() {
+    for spelling in [
+        "application/octet-stream",
+        "Application/Octet-Stream",
+        "APPLICATION/OCTET-STREAM",
+        "application/gltf-buffer",
+        "application/GLTF-Buffer",
+    ] {
+        let text = format!(
+            r#"{{ "buffers": [{{ "byteLength": 4,
+               "uri": "data:{spelling};base64,AQIDBA==" }}] }}"#
+        );
+        let json = document(&text);
+        assert!(
+            gltf::buffers(json.root(), None).is_ok(),
+            "`{spelling}` is one of the two types a buffer may declare"
+        );
+    }
+}
+
+/// **A document with views and no buffers table is refused.**
+///
+/// It used to read: every view was assumed to point into the container's
+/// chunk, so the table could be absent and nothing noticed. A view's
+/// `buffer` indexes that table, so a document without one is not a
+/// document, and this pins the answer rather than leaving the change
+/// visible only as a fixture edit.
+#[test]
+fn a_document_with_views_and_no_buffers_is_refused() {
+    let packed = container(
+        r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+          "nodes":[{"mesh":0}],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "bufferViews":[{"buffer":0,"byteLength":36}]}"#,
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&packed).expect_err("no buffers table"),
+        GltfError::NoSuchEntry {
+            table: "buffers",
+            index: 0,
+            count: 0,
+        }
+    );
+}
+
+/// **The document detector, asked directly.**
+///
+/// Every other detector in this crate has a test of its own; this one was
+/// reachable only through `detect`, which answers on the container magic
+/// first -- so its answer for anything opening with `glTF` was observed
+/// by nothing.
+#[test]
+fn the_document_detector_answers_for_itself() {
+    assert!(gltf::looks_like(br#"{"asset":{"version":"2.0"}}"#));
+    assert!(
+        gltf::looks_like(b"  \n\t {\"asset\":{\"version\":\"2.0\"}}"),
+        "leading whitespace is not a reason to decline"
+    );
+    assert!(!gltf::looks_like(b""));
+    assert!(!gltf::looks_like(b"   "));
+    assert!(
+        !gltf::looks_like(br#"glTF {"asset":{"version":"2.0"}}"#),
+        "a container is not a document, whatever follows its magic"
+    );
+    assert!(
+        !gltf::looks_like(br#"[{"asset":{"version":"2.0"}}]"#),
+        "a document's root is an object"
+    );
+    assert!(!gltf::looks_like(
+        b"# a comment
+v 0 0 0
+"
+    ));
+}
+
+/// **A document with no container and a buffer wanting one is refused.**
+///
+/// This is the ordinary way to meet `NoBinaryChunk`: a `.gltf` saved
+/// beside a `.bin` that the exporter forgot to write into the buffer.
+#[test]
+fn a_document_on_its_own_whose_buffer_wants_a_chunk_is_refused() {
+    let text = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+      "nodes":[{"mesh":0}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+      "buffers":[{"byteLength":36}],
+      "bufferViews":[{"buffer":0,"byteLength":36}]}"#;
+    assert_eq!(
+        gltf::read(text.as_bytes()).expect_err("no container, no chunk"),
+        GltfError::NoBinaryChunk
+    );
+}
+
+/// **Bytes that are neither a container nor a document are refused as a
+/// document**, because that is what they most nearly are.
+#[test]
+fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
+    let refused = gltf::read(b"not a container and not a document").expect_err("neither shape");
+    assert_eq!(refused.name(), "Document");
+}
+
+// ---------------------------------------------------------------------
+// Images.
+//
+// An image is bytes and a name for what they are. This layer decodes
+// nothing, so most of what follows is about where the bytes came from
+// and which of the two places the document was allowed to say it.
+
+/// A document, its tables, and its images in one step.
+fn images_of(text: &str, chunk: &[u8]) -> Result<Vec<Vec<u8>>, GltfError> {
+    let json = document(text);
+    let source = gltf::Source::of(json.root(), Some(chunk))?;
+    Ok(gltf::images(json.root(), &source)?
+        .into_iter()
+        .map(|image| image.bytes.into_owned())
+        .collect())
+}
+
+/// **An image carried as a payload comes back as its bytes.**
+#[test]
+fn an_embedded_image_is_read_to_its_bytes() {
+    let json = document(
+        r#"{ "images": [{
+          "name": "grain",
+          "uri": "data:image/png;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].name.as_deref(), Some("grain"));
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **An image stored in the document comes back as a view of it.**
+///
+/// The bytes are a whole file rather than a typed stream, so nothing
+/// reads elements out of them -- but they still have to lie inside the
+/// buffer that carries them.
+#[test]
+fn an_image_in_a_buffer_view_is_read_to_its_bytes() {
+    let read = images_of(
+        r#"{
+          "buffers": [{ "byteLength": 8 }],
+          "bufferViews": [{ "buffer": 0, "byteOffset": 4, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+        &[9, 9, 9, 9, 1, 2, 3, 4],
+    )
+    .expect("one image");
+    assert_eq!(
+        read,
+        vec![vec![1, 2, 3, 4]],
+        "the view's range, not the buffer's"
+    );
+}
+
+/// **Exactly one source: both is a contradiction, neither describes
+/// nothing.**
+///
+/// The format's schema is a `oneOf` over the two, and a reader that
+/// picked when both were named would be answering a question the
+/// document did not settle.
+#[test]
+fn an_image_names_exactly_one_source() {
+    let both = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png",
+                       "uri": "data:image/png;base64,AQIDBA==" }]
+        }"#,
+    );
+    let source = gltf::Source::of(both.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(both.root(), &source).expect_err("both sources"),
+        GltfError::ImageSource { both: true }
+    );
+
+    let neither = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
+    let empty = gltf::Source::of(neither.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(neither.root(), &empty).expect_err("neither source"),
+        GltfError::ImageSource { both: false }
+    );
+}
+
+/// **A view carries bytes and nothing about them, so the document must
+/// say what they are.**
+#[test]
+fn an_image_in_a_view_must_state_its_media_type() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0 }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("a view says nothing about its bytes"),
+        GltfError::MissingField { path: "mimeType" }
+    );
+}
+
+/// **A payload need not state its type, and then the image's own is all
+/// there is.**
+#[test]
+fn a_payload_without_a_type_takes_the_images_own() {
+    let json = document(
+        r#"{ "images": [{
+          "mimeType": "image/png",
+          "uri": "data:;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **Every image in the table is read, not the first one.**
+///
+/// Until this test each fixture and each seed held exactly one image, so
+/// a reader that stopped after the first would have passed the whole
+/// suite -- and would have dropped every texture of every real asset,
+/// which carry one image per map.
+#[test]
+fn every_image_in_the_table_is_read() {
+    let json = document(
+        r#"{ "images": [
+          { "name": "first", "uri": "data:image/png;base64,AQIDBA==" },
+          { "name": "second", "uri": "data:image/jpeg;base64,BQYHCA==" },
+          { "name": "third", "uri": "data:image/tiff;base64,CQoLDA==" }
+        ] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("three images");
+    assert_eq!(read.len(), 3);
+    let names: Vec<_> = read.iter().map(|image| image.name.as_deref()).collect();
+    assert_eq!(names, [Some("first"), Some("second"), Some("third")]);
+    assert_eq!(&*read[2].bytes, &[9, 10, 11, 12]);
+
+    // **A bad image anywhere refuses the document**, not just a bad
+    // first one: a reader that checked only what it read first would
+    // hand back two images and swallow the third.
+    let last_is_wrong = document(
+        r#"{ "images": [
+          { "uri": "data:image/png;base64,AQIDBA==" },
+          { "mimeType": "image/png" }
+        ] }"#,
+    );
+    let source = gltf::Source::of(last_is_wrong.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(last_is_wrong.root(), &source).expect_err("the second names nothing"),
+        GltfError::ImageSource { both: false }
+    );
+}
+
+/// **A view-sourced image reports the type stated beside it.**
+///
+/// The helper the other view tests use throws everything but the bytes
+/// away, so a reader that reported an empty type for every image read
+/// out of a buffer would have passed all of them.
+#[test]
+fn an_image_read_from_a_view_reports_its_stated_type() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "name": "stored", "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read[0].name.as_deref(), Some("stored"));
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **A payload that will not decode is refused as a payload.**
+///
+/// The refusal this layer promises for the case, rather than the one it
+/// gives a URI naming somewhere else: which of the two a caller gets
+/// decides whether the document is malformed or merely incomplete.
+#[test]
+fn an_image_payload_that_will_not_decode_is_refused_as_one() {
+    let json = document(r#"{ "images": [{ "uri": "data:image/png;base64,AQID!A==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let refused = gltf::images(json.root(), &source).expect_err("`!` is not base64");
+    assert_eq!(refused.name(), "Payload");
+    assert!(matches!(refused, GltfError::Payload(_)));
+}
+
+/// **An empty `mimeType` is a document saying nothing**, which beside a
+/// view is the one thing the format does not allow.
+///
+/// The schema's `mimeType` ends in a permissive `string`, so `""` is a
+/// conformant spelling of it. Treating it as a value would put a type
+/// nobody can name into every caller's hands.
+#[test]
+fn an_empty_media_type_says_nothing() {
+    let beside_a_view = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "" }]
+        }"#,
+    );
+    let source = gltf::Source::of(beside_a_view.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(beside_a_view.root(), &source).expect_err("a view still says nothing"),
+        GltfError::MissingField { path: "mimeType" }
+    );
+
+    // Beside a URI it is an absence too, so the payload's own is what is
+    // left -- and the image never reports `Some("")`.
+    let beside_a_uri =
+        document(r#"{ "images": [{ "mimeType": "", "uri": "data:image/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(beside_a_uri.root(), None).expect("no tables");
+    let read = gltf::images(beside_a_uri.root(), &source).expect("the payload says what it is");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **`mimeType` is the document's answer when it gives one.**
+///
+/// A payload carries a media type and the image may state one, and the
+/// format relates neither to the other: its rule is that a payload's
+/// type match its *content*, which nothing here can check because
+/// nothing here decodes. Refusing a disagreement would refuse
+/// conformant documents -- a PNG carried as `application/octet-stream`
+/// is ordinary -- so the one the format makes mandatory beside a view
+/// wins, and the payload's is what is left when there is no other.
+#[test]
+fn the_images_own_type_wins_over_its_payloads() {
+    let json = document(
+        r#"{ "images": [{
+          "mimeType": "image/png",
+          "uri": "data:application/octet-stream;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("a carrier is not a contradiction");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **Nothing said is not the same as an empty statement.**
+///
+/// A payload may carry no media type at all, and an image beside a URI
+/// need not state one either. The reader reports the absence rather
+/// than inventing RFC 2397's `text/plain` default or handing back an
+/// empty string that reads like a type nobody can name.
+#[test]
+fn an_image_that_states_no_type_anywhere_reports_none() {
+    let json = document(r#"{ "images": [{ "uri": "data:;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("bytes without a name are bytes");
+    assert_eq!(read[0].media_type, None);
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **A texture says which image it draws from, and that is a step.**
+///
+/// A material names a texture and a texture names a source, so the two
+/// indices are not the same number and a caller pairing them directly
+/// is wrong whenever they differ. This is the table that joins them.
+#[test]
+fn a_texture_names_the_image_it_draws_from() {
+    let json = document(r#"{ "textures": [{ "source": 2 }, { "sampler": 0 }, { "source": 0 }] }"#);
+    let read = gltf::textures(json.root()).expect("three textures");
+    assert_eq!(read, [Some(2), None, Some(0)]);
+}
+
+/// **A texture with no source is `None`, not zero.**
+///
+/// The format leaves `source` optional because an extension may supply
+/// the image instead. Defaulting it to zero would point every such
+/// texture at whichever image happened to be first.
+#[test]
+fn a_texture_without_a_source_is_not_texture_zero() {
+    let json = document(r#"{ "textures": [{}] }"#);
+    assert_eq!(gltf::textures(json.root()).expect("one texture"), [None]);
+}
+
+/// A document with no texture table has none, which is not a refusal.
+#[test]
+fn a_document_with_no_textures_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(gltf::textures(json.root()).expect("no textures").is_empty());
+}
+
+/// **A texture is an object**, and one that is not is refused for that
+/// rather than read as naming no source.
+#[test]
+fn a_texture_that_is_not_an_object_is_refused() {
+    let json = document(r#"{ "textures": [5] }"#);
+    assert_eq!(
+        gltf::textures(json.root())
+            .expect_err("a number is not a texture")
+            .name(),
+        "Document"
+    );
+
+    let source = document(r#"{ "textures": [{ "source": "first" }] }"#);
+    assert_eq!(
+        gltf::textures(source.root())
+            .expect_err("a name is not an index")
+            .name(),
+        "Document"
+    );
+}
+
+/// **The tables read from either shape of the same asset.**
+///
+/// The whole reason this entry point exists: a caller would otherwise
+/// write the container dispatch itself, and the two places that already
+/// had it written each got it wrong in a different way.
+#[test]
+fn the_tables_read_from_a_document_and_from_a_container() {
+    let text = r#"{"asset":{"version":"2.0"},
+"materials":[{"name":"brass","metallicFactor":1.0,"roughnessFactor":0.25}],
+"textures":[{"source":0}],
+"images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]}"#;
+
+    let alone =
+        gltf::tables(text.as_bytes(), gltf::ImageBytes::Kept).expect("a document on its own");
+    assert_eq!(alone.materials.len(), 1);
+    assert_eq!(alone.materials[0].name.as_deref(), Some("brass"));
+    assert_eq!(alone.textures, [Some(0)]);
+    assert_eq!(alone.images.len(), 1);
+    assert_eq!(alone.images[0].name.as_deref(), Some("grain"));
+    assert_eq!(alone.images[0].bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
+
+    // The same document wrapped, which the layers below cannot tell
+    // apart and this one must.
+    let wrapped = gltf::tables(&container(text, &[]), gltf::ImageBytes::Kept)
+        .expect("the same document, wrapped");
+    assert_eq!(wrapped, alone);
+}
+
+/// **An image out of a container's chunk owns its bytes afterwards.**
+///
+/// It is borrowed while the document is alive and this hands it back
+/// after the document is gone, so the copy is the whole point rather
+/// than an inefficiency: without it the value could not be returned at
+/// all.
+#[test]
+fn an_image_stored_in_a_chunk_survives_the_document() {
+    let text = r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":[{"bufferView":0,"mimeType":"image/png"}]}"#;
+
+    let read = gltf::tables(&container(text, &[9, 8, 7, 6]), gltf::ImageBytes::Kept)
+        .expect("one image, from the chunk");
+    assert_eq!(read.images.len(), 1);
+    assert_eq!(read.images[0].bytes.as_deref(), Some(&[9, 8, 7, 6][..]));
+    assert_eq!(read.images[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **Many images may name one view, and asking for their bytes copies
+/// each one.**
+///
+/// Nothing in the format says two images must name two views. A
+/// document that points a thousand of them at one shared region pays
+/// about thirty bytes an entry to write and a gigabyte to hold, which
+/// measured at nearly three thousand times the input and grew as its
+/// square. Counting them instead costs nothing, and that is what a
+/// caller reporting a model wants.
+#[test]
+fn images_that_share_one_view_are_counted_without_being_copied() {
+    let mut aliased = String::from(
+        r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":["#,
+    );
+    for index in 0..64 {
+        if index > 0 {
+            aliased.push(',');
+        }
+        aliased.push_str(r#"{"bufferView":0,"mimeType":"image/png"}"#);
+    }
+    aliased.push_str("]}");
+    let packed = container(&aliased, &[1, 2, 3, 4]);
+
+    let counted = gltf::tables(&packed, gltf::ImageBytes::Counted).expect("counted");
+    assert_eq!(counted.images.len(), 64);
+    for image in &counted.images {
+        // **The length is known and the bytes are not held.** A caller
+        // reporting what a model carries needs exactly this much.
+        assert_eq!(image.len, 4);
+        assert_eq!(image.bytes, None);
+    }
+
+    let kept = gltf::tables(&packed, gltf::ImageBytes::Kept).expect("kept");
+    for image in &kept.images {
+        assert_eq!(image.bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
+    }
+    // The two answer the same about everything but the bytes.
+    assert_eq!(
+        counted.images.iter().map(|image| image.len).sum::<usize>(),
+        kept.images.iter().map(|image| image.len).sum::<usize>()
+    );
+}
+
+/// A document with neither table has neither, which is not a refusal.
+#[test]
+fn a_document_with_no_tables_has_none() {
+    let read = gltf::tables(br#"{"asset":{"version":"2.0"}}"#, gltf::ImageBytes::Kept)
+        .expect("nothing is not a refusal");
+    assert_eq!(read, gltf::Tables::default());
+}
+
+/// **A refusal from either table is the whole call's refusal**, named by
+/// the layer that made it rather than by this one.
+#[test]
+fn a_table_that_refuses_refuses_the_call() {
+    let refused = gltf::tables(
+        br#"{"asset":{"version":"2.0"},"images":[{"uri":"grain.png"}]}"#,
+        gltf::ImageBytes::Kept,
+    )
+    .expect_err("a second file is not opened");
+    assert_eq!(refused, GltfError::ExternalResource);
+}
+
+/// **A URI spelled with escapes is the URI it spells.**
+///
+/// JSON lets a document write `/` as `\/`, and a `data:` payload is
+/// mostly slashes -- the media type carries one and base64 uses one as
+/// a digit. The reader resolves escapes only when there are any, so
+/// this is the path that proves the shortcut has not changed what a
+/// document means.
+#[test]
+fn an_image_uri_written_with_escapes_reads_the_same() {
+    let escaped = document(r#"{ "images": [{ "uri": "data:image\/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(escaped.root(), None).expect("no tables");
+    let read = gltf::images(escaped.root(), &source).expect("an escape is not a difference");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+
+    // The same image spelled plainly, which is the branch that skips the
+    // copy -- both spellings, one answer.
+    let plain = document(r#"{ "images": [{ "uri": "data:image/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(plain.root(), None).expect("no tables");
+    let same = gltf::images(plain.root(), &source).expect("one image");
+    assert_eq!(same, read);
+}
+
+/// **A stride is a rule about elements, and an image is not elements.**
+///
+/// The format states that a view carrying anything but vertex or index
+/// data must not define one. The accessor layer only refuses a stride
+/// wider than the region it sits in, which is a different rule and
+/// would let this document through.
+#[test]
+fn an_image_in_a_view_that_declares_a_stride_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 8 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 8, "byteStride": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4, 5, 6, 7, 8])).expect("tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("an image is not elements"),
+        GltfError::Unsupported {
+            found: "byteStride on an image"
+        }
+    );
+}
+
+/// **A view of no bytes is refused where the table is read.**
+///
+/// The schema states a minimum of one. Every accessor over an empty
+/// region was already refused a layer down, so nothing needed the rule
+/// until an image -- the first reader with no accessor over its bytes
+/// -- could otherwise have handed back a zero-byte PNG.
+#[test]
+fn a_view_of_no_bytes_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 0 }]
+        }"#,
+    );
+    assert_eq!(
+        gltf::buffer_views(json.root()).expect_err("a view of nothing is not a view"),
+        GltfError::FactorOutOfRange {
+            field: "byteLength"
+        }
+    );
+}
+
+/// **An image naming a view the document does not have is refused**, and
+/// says which table it looked in.
+#[test]
+fn an_image_naming_a_view_that_is_not_there_is_refused() {
+    let json = document(r#"{ "images": [{ "bufferView": 3, "mimeType": "image/png" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("there are no views"),
+        GltfError::NoSuchEntry {
+            table: "bufferViews",
+            index: 3,
+            count: 0
+        }
+    );
+}
+
+/// **An image naming a second file is refused rather than fetched**, as
+/// a buffer naming one is.
+#[test]
+fn an_image_naming_a_second_file_is_refused() {
+    let json = document(r#"{ "images": [{ "uri": "grain.png" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("a file is somewhere else"),
+        GltfError::ExternalResource
+    );
+}
+
+/// **A media type is reported and not judged.**
+///
+/// This layer decodes nothing, so which types are readable is a question
+/// for whoever reads the bytes. A document naming one this engine has no
+/// decoder for is not thereby malformed.
+#[test]
+fn a_media_type_this_engine_cannot_decode_is_still_reported() {
+    let json = document(r#"{ "images": [{ "uri": "data:image/tiff;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("bytes are bytes");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/tiff"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// A document with no image table has none, which is not a refusal.
+#[test]
+fn a_document_with_no_images_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert!(
+        gltf::images(json.root(), &source)
+            .expect("no images")
+            .is_empty()
+    );
+}
+
+/// **An image that is not an object is refused**, for the reason a
+/// material that is not one is: every member of a number answers absent.
+#[test]
+fn an_image_that_is_not_an_object_is_refused() {
+    let json = document(r#"{ "images": [5] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source)
+            .expect_err("an image is an object")
+            .name(),
+        "Document"
+    );
+}
+
+/// **A view past its buffer is the accessor layer's refusal, reached
+/// through an image.**
+#[test]
+fn an_image_whose_view_runs_past_its_buffer_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteOffset": 2, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(json.root(), &source)
+            .expect_err("two plus four is past four")
+            .name(),
+        "Accessor"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Materials.
+//
+// The vocabulary is glTF's own, and every member of it has a default, so
+// most of what follows is about what a document that says nothing means.
+
+/// **An empty material is every default, because the format says so.**
+///
+/// A material object has no required members at all. A reader that
+/// refused one would be refusing a conformant document, and a reader that
+/// invented values would be reporting a material nobody wrote -- the
+/// defaults are the format's, which is what makes returning them honest.
+#[test]
+fn a_material_that_says_nothing_is_every_default() {
+    let json = document(r#"{ "materials": [{}] }"#);
+    let read = gltf::materials(json.root()).expect("an empty material is a material");
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0], Material::default());
+}
+
+/// A document with no material table has no materials, which is not a
+/// refusal.
+#[test]
+fn a_document_with_no_materials_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(
+        gltf::materials(json.root())
+            .expect("no materials")
+            .is_empty()
+    );
+}
+
+/// **Every member the format states, read into the vocabulary it states
+/// them in.**
+#[expect(
+    clippy::float_cmp,
+    reason = "the claim is that the document's own numbers came back unchanged, and no arithmetic happens between the file and the assertion, so equality with what the file says is exactly what must hold; a tolerance would pass a reader that rounded a factor or read the wrong member"
+)]
+#[test]
+fn a_material_reads_every_member_the_format_states() {
+    let json = document(
+        r#"{
+          "textures": [{}, {}, {}, {}, {}, {}, {}, {}],
+          "materials": [{
+          "name": "brushed",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [0.5, 0.25, 0.125, 1.0],
+            "metallicFactor": 0.75,
+            "roughnessFactor": 0.25,
+            "baseColorTexture": { "index": 3, "texCoord": 1 },
+            "metallicRoughnessTexture": { "index": 4 }
+          },
+          "normalTexture": { "index": 5, "scale": 2.5 },
+          "occlusionTexture": { "index": 6, "strength": 0.5 },
+          "emissiveTexture": { "index": 7 },
+          "emissiveFactor": [0.1, 0.2, 0.3],
+          "alphaMode": "MASK",
+          "alphaCutoff": 0.25,
+          "doubleSided": true
+        }] }"#,
+    );
+    let read = gltf::materials(json.root()).expect("a full material");
+    let material = &read[0];
+
+    assert_eq!(material.name.as_deref(), Some("brushed"));
+    assert_eq!(material.base_color, [0.5, 0.25, 0.125, 1.0]);
+    assert_eq!(material.metallic, 0.75);
+    assert_eq!(material.roughness, 0.25);
+    assert_eq!(material.emissive, [0.1, 0.2, 0.3]);
+    assert_eq!(material.alpha, Alpha::Mask { cutoff: 0.25 });
+    assert!(material.double_sided);
+
+    assert_eq!(
+        material.base_color_map,
+        Some(TextureRef {
+            texture: 3,
+            uv_set: 1
+        })
+    );
+    assert_eq!(
+        material.metallic_roughness_map,
+        Some(TextureRef {
+            texture: 4,
+            uv_set: 0
+        }),
+        "an absent texCoord is the first set, which is the format's default"
+    );
+    let normal = material.normal_map.expect("a normal map");
+    assert_eq!(normal.map.texture, 5);
+    assert_eq!(normal.scale, 2.5, "and its scale is unbounded");
+    let occlusion = material.occlusion_map.expect("an occlusion map");
+    assert_eq!(occlusion.map.texture, 6);
+    assert_eq!(occlusion.strength, 0.5);
+    assert_eq!(
+        material.emissive_map,
+        Some(TextureRef {
+            texture: 7,
+            uv_set: 0
+        })
+    );
+}
+
+/// **A cutoff reaches the caller only on the mode that uses one.**
+#[test]
+fn only_a_masked_material_carries_its_cutoff() {
+    for (mode, expected) in [
+        (r#""alphaMode": "OPAQUE","#, Alpha::Opaque),
+        (r#""alphaMode": "BLEND","#, Alpha::Blend),
+    ] {
+        // The cutoff is written in both cases and reported in neither.
+        // A third row without any mode used to sit here and read clean;
+        // the format forbids that document, and the test above now says
+        // so instead.
+        let text = format!(r#"{{ "materials": [{{ {mode} "alphaCutoff": 0.75 }}] }}"#);
+        let json = document(&text);
+        let read = gltf::materials(json.root()).expect("a material");
+        assert_eq!(read[0].alpha, expected, "{mode}");
+    }
+
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK" }] }"#);
+    let read = gltf::materials(json.root()).expect("a masked material");
+    assert_eq!(
+        read[0].alpha,
+        Alpha::Mask { cutoff: 0.5 },
+        "an absent cutoff is a half, which is the format's default"
+    );
+}
+
+/// An alpha mode this format does not have is refused by name.
+/// **An alpha mode the format does not define is its own refusal, and
+/// it carries what was spelled.**
+///
+/// Not `Unsupported`, which means the construct is in the format and not
+/// in this reader and tells a caller to convert the file. This is the
+/// other way round: the reader knows the member, the document's value is
+/// not one of the three, and the fix is a repair.
+#[test]
+fn an_alpha_mode_the_format_does_not_have_is_refused() {
+    let json = document(r#"{ "materials": [{ "alphaMode": "DITHER" }] }"#);
+    let refused = gltf::materials(json.root()).expect_err("there are three modes");
+    assert_eq!(
+        refused,
+        GltfError::UnknownAlphaMode {
+            found: "DITHER".into()
+        }
+    );
+    assert!(
+        refused.to_string().contains("DITHER"),
+        "the message shows what the document spelled: {refused}"
+    );
+}
+
+/// **A material that is not an object is refused rather than defaulted.**
+///
+/// Every member of a number, a string or an array answers absent, so a
+/// reader that only asked for members would hand back a full default
+/// material for a document that described none at all.
+#[test]
+fn a_material_that_is_not_an_object_is_refused() {
+    for text in [
+        r#"{ "materials": [5] }"#,
+        r#"{ "materials": ["a material"] }"#,
+        r#"{ "materials": [null] }"#,
+        r#"{ "materials": [[]] }"#,
+        r#"{ "materials": [true] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root())
+                .expect_err("a material is an object")
+                .name(),
+            "Document",
+            "{text}"
+        );
+    }
+}
+
+/// **The shading half is asked for its kind, not merely its presence.**
+///
+/// A wrong-typed `pbrMetallicRoughness` answers absent to every member,
+/// so testing presence alone would read it as a material that simply
+/// said nothing -- and would hide a factor sitting one wrapper deep that
+/// the reader would otherwise have refused.
+#[test]
+fn a_shading_half_that_is_not_an_object_is_refused() {
+    for text in [
+        r#"{ "materials": [{ "pbrMetallicRoughness": 5 }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": "x" }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": null }] }"#,
+        r#"{ "materials": [{ "pbrMetallicRoughness": [{ "metallicFactor": 5 }] }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root())
+                .expect_err("the shading half is an object")
+                .name(),
+            "Document",
+            "{text}"
+        );
+    }
+}
+
+/// **A factor one step past its bound is refused, not snapped onto it.**
+///
+/// The document's number is wider than the one this reader keeps, so a
+/// value a hair above the maximum narrows to exactly the maximum. Checked
+/// at the document's own width, that value is what it is: out of range.
+/// Checked after narrowing, it would be silently clamped -- which is the
+/// behaviour this crate's prose promises it does not have.
+#[test]
+fn a_factor_a_hair_past_its_bound_is_refused_rather_than_snapped() {
+    let json = document(
+        r#"{ "materials": [{ "pbrMetallicRoughness": {
+          "metallicFactor": 1.0000000000001 } }] }"#,
+    );
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("wider than an f32 can see"),
+        GltfError::FactorOutOfRange {
+            field: "metallicFactor"
+        }
+    );
+
+    // And the bounds themselves are inside the range, both ends.
+    for value in ["0.0", "1.0", "-0.0"] {
+        let text = format!(
+            r#"{{ "materials": [{{ "pbrMetallicRoughness": {{
+              "metallicFactor": {value} }} }}] }}"#
+        );
+        let json = document(&text);
+        assert!(
+            gltf::materials(json.root()).is_ok(),
+            "{value} is inside the stated range"
+        );
+    }
+}
+
+/// **A colour is exactly as long as the format states.**
+///
+/// Reading the first few and dropping the rest would hide whatever the
+/// tail said, including a component the reader would have refused.
+#[test]
+fn a_colour_of_the_wrong_length_is_refused() {
+    for (member, text) in [
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [0.1, 0.2, 0.3, 0.4, 9.0] } }] }"#,
+        ),
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [0.1, 0.2, 0.3] } }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.1, 0.2, 0.3, 9.0] }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.1, 0.2] }] }"#,
+        ),
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("the length is exact"),
+            GltfError::FactorOutOfRange { field: member },
+            "{text}"
+        );
+    }
+}
+
+/// **A cutoff is checked whatever the mode, and may not appear without
+/// one.**
+///
+/// The schema bounds it unconditionally and states that it must not be
+/// present when no mode is -- so validating it inside the masked arm
+/// alone would let two non-conformant shapes through.
+#[test]
+fn a_cutoff_is_checked_whatever_the_mode_names() {
+    for text in [
+        r#"{ "materials": [{ "alphaMode": "BLEND", "alphaCutoff": -5.0 }] }"#,
+        r#"{ "materials": [{ "alphaMode": "OPAQUE", "alphaCutoff": -5.0 }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("the minimum is not conditional"),
+            GltfError::FactorOutOfRange {
+                field: "alphaCutoff"
+            },
+            "{text}"
+        );
+    }
+
+    // And a cutoff with no mode at all is a document the format forbids.
+    let json = document(r#"{ "materials": [{ "alphaCutoff": 0.75 }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("a cutoff needs a mode"),
+        GltfError::FactorOutOfRange {
+            field: "alphaCutoff"
+        }
+    );
+}
+
+/// **A map that states no scale or strength takes the format's
+/// default.**
+///
+/// The whole-material fixture states both, so the branch that supplies
+/// the default was reached by nothing -- and a default that drifted
+/// would be a value this crate invented with nothing to say so.
+#[expect(
+    clippy::float_cmp,
+    reason = "these are the format's stated defaults, written as literals in both places and reached without arithmetic; a tolerance would let a default drift onto a neighbouring value and still pass, which is the one thing this test exists to prevent"
+)]
+#[test]
+fn a_map_that_states_no_scale_or_strength_takes_the_default() {
+    let json = document(
+        r#"{ "textures": [{}], "materials": [{
+          "normalTexture": { "index": 0 },
+          "occlusionTexture": { "index": 0 }
+        }] }"#,
+    );
+    let read = gltf::materials(json.root()).expect("two maps");
+    let normal = read[0].normal_map.expect("a normal map");
+    let occlusion = read[0].occlusion_map.expect("an occlusion map");
+    assert_eq!(normal.scale, 1.0, "an absent scale is one");
+    assert_eq!(occlusion.strength, 1.0, "an absent strength is one");
+}
+
+/// **A mesh with no primitives pairs with nothing**, which is not a
+/// refusal: the format allows the member to be absent and a mesh that
+/// draws nothing names no material.
+#[test]
+fn a_mesh_with_no_primitives_pairs_with_nothing() {
+    let json = document(r#"{ "meshes": [{ "name": "empty" }] }"#);
+    assert!(
+        gltf::primitive_materials(json.root(), 0)
+            .expect("a mesh that draws nothing")
+            .is_empty()
+    );
+}
+
+/// **A map naming a texture the document does not have is refused.**
+///
+/// The index is not resolved here -- this reader does not read the
+/// texture table -- but it is bounded by it, which is the most that can
+/// be said without a reader for what it points at, and more than passing
+/// the number through.
+#[test]
+fn a_map_naming_a_texture_that_is_not_there_is_refused() {
+    let json =
+        document(r#"{ "textures": [{}], "materials": [{ "emissiveTexture": { "index": 4 } }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("there is one texture"),
+        GltfError::NoSuchEntry {
+            table: "textures",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
+/// **A factor outside the range the schema states is refused, and the
+/// refusal names the member.**
+///
+/// Refused rather than clamped: clamping would report a material the
+/// document does not contain. The material library's specular exponent
+/// *is* left unclamped, and the two differ because that range is a
+/// convention files exceed while this one is stated by the schema.
+#[test]
+fn a_factor_outside_its_stated_range_is_refused_naming_it() {
+    for (member, text) in [
+        (
+            "baseColorFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "baseColorFactor": [1.5, 0.0, 0.0, 1.0] } }] }"#,
+        ),
+        (
+            "metallicFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "metallicFactor": -0.5 } }] }"#,
+        ),
+        (
+            "roughnessFactor",
+            r#"{ "materials": [{ "pbrMetallicRoughness": {
+              "roughnessFactor": 2.0 } }] }"#,
+        ),
+        (
+            "emissiveFactor",
+            r#"{ "materials": [{ "emissiveFactor": [0.0, 0.0, 4.0] }] }"#,
+        ),
+        (
+            "strength",
+            r#"{ "textures": [{}], "materials": [{ "occlusionTexture": {
+              "index": 0, "strength": 3.0 } }] }"#,
+        ),
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("outside the stated range"),
+            GltfError::FactorOutOfRange { field: member },
+            "{member}"
+        );
+    }
+}
+
+/// **A cutoff is bounded below and not above**, which is what the schema
+/// states and not a guess about what a renderer wants.
+#[test]
+fn a_cutoff_is_bounded_below_and_not_above() {
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK", "alphaCutoff": 4.0 }] }"#);
+    let read = gltf::materials(json.root()).expect("no upper bound is stated");
+    assert_eq!(read[0].alpha, Alpha::Mask { cutoff: 4.0 });
+
+    let json = document(r#"{ "materials": [{ "alphaMode": "MASK", "alphaCutoff": -1.0 }] }"#);
+    assert_eq!(
+        gltf::materials(json.root()).expect_err("a minimum is stated"),
+        GltfError::FactorOutOfRange {
+            field: "alphaCutoff"
+        }
+    );
+}
+
+/// **A map that names no texture is not a map.**
+///
+/// `index` is the one required member of a texture reference, and the
+/// normal and occlusion kinds inherit the requirement rather than
+/// restating it -- which is a schema arrangement, not a licence to leave
+/// it out.
+#[test]
+fn a_map_that_names_no_texture_is_refused() {
+    for text in [
+        r#"{ "textures": [{}], "materials": [{ "pbrMetallicRoughness": {
+          "baseColorTexture": { "texCoord": 1 } } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "normalTexture": { "scale": 1.0 } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "occlusionTexture": { "strength": 1.0 } }] }"#,
+        r#"{ "textures": [{}], "materials": [{ "emissiveTexture": {} }] }"#,
+    ] {
+        let json = document(text);
+        assert_eq!(
+            gltf::materials(json.root()).expect_err("a map names a texture"),
+            GltfError::MissingField { path: "index" },
+            "{text}"
+        );
+    }
+}
+
+/// **A primitive's material is reported, not stored.**
+///
+/// Geometry and the surface it wears are two facts, and the canonical
+/// form carries one of them. A caller that wants the pairing asks for it;
+/// putting the index into the geometry would change the stored form for a
+/// value nothing here can yet use.
+#[test]
+fn a_primitives_material_is_reported_by_index() {
+    let json = document(
+        r#"{ "materials": [{}, {}, {}], "meshes": [{ "primitives": [
+          { "attributes": { "POSITION": 0 }, "material": 2 },
+          { "attributes": { "POSITION": 0 } }
+        ] }] }"#,
+    );
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 0).expect("one mesh"),
+        vec![Some(2), None],
+        "the second names no material, which is the default material"
+    );
+
+    // A mesh the document does not have.
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 4).expect_err("there is one mesh"),
+        GltfError::NoSuchEntry {
+            table: "meshes",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
+/// **A primitive naming a material the document does not have is
+/// refused.**
+///
+/// Every other index into a table in this reader is bounded by it, and
+/// the module's own documentation calls a number naming a row that is
+/// not there the commonest thing wrong with a hand-edited document.
+#[test]
+fn a_primitive_naming_a_material_that_is_not_there_is_refused() {
+    let json = document(
+        r#"{ "materials": [{}], "meshes": [{ "primitives": [
+          { "attributes": { "POSITION": 0 }, "material": 7 } ] }] }"#,
+    );
+    assert_eq!(
+        gltf::primitive_materials(json.root(), 0).expect_err("there is one material"),
+        GltfError::NoSuchEntry {
+            table: "materials",
+            index: 7,
+            count: 1,
+        }
+    );
+}
+
+/// The census and the documents agree, and every refusal says something.
+#[test]
+fn the_census_and_the_documents_agree() {
+    let bad_type = document(r#"{ "bufferViews": [{"buffer": 0, "byteLength": "long" }] }"#);
+    let unknown = document(
+        r#"{ "accessors": [{ "bufferView": 0, "componentType": 5124, "count": 1, "type": "VEC3" }] }"#,
+    );
+    let missing = document(r#"{ "bufferViews": [{"buffer": 0, "byteOffset": 4 }] }"#);
+    let elsewhere = document(r#"{ "buffers": [{ "byteLength": 12, "uri": "geometry.bin" }] }"#);
+    let sparse = document(
+        r#"{ "accessors": [{
+            "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3",
+            "sparse": {}
+        }] }"#,
+    );
+
+    // The magic stays intact: bytes that do not announce themselves as a
+    // container are not one, and are tried as a document instead.
+    let mut bad_version = container(ONE_NODE, &three_positions());
+    bad_version[4] = 9;
+    let cycle = container(
+        &ONE_NODE.replace(
+            r#""nodes": [{ "mesh": 0 }]"#,
+            r#""nodes": [{ "children": [0], "mesh": 0 }]"#,
+        ),
+        &three_positions(),
+    );
+    let empty_scene = container(
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#,
+        &[],
+    );
+    let past_a_table = document(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
+        }"#,
+    );
+
+    let mut provocations: Vec<(&str, GltfError)> = vec![
+        (
+            "Document",
+            gltf::buffer_views(bad_type.root()).expect_err("a length is a number"),
+        ),
+        (
+            "Accessor",
+            gltf::accessors(unknown.root()).expect_err("5124 is not a component type"),
+        ),
+        (
+            "MissingField",
+            gltf::buffer_views(missing.root()).expect_err("no length"),
+        ),
+        (
+            "ExternalResource",
+            gltf::buffers(elsewhere.root(), None).expect_err("a second file"),
+        ),
+        (
+            "Unsupported",
+            gltf::accessors(sparse.root()).expect_err("sparse"),
+        ),
+        (
+            "Container",
+            gltf::read(&bad_version).expect_err("version 9 is not version 2"),
+        ),
+        (
+            "NodeCycle",
+            gltf::read(&cycle).expect_err("0 is its own child"),
+        ),
+        (
+            "Geometry",
+            gltf::read(&empty_scene).expect_err("a scene placing nothing"),
+        ),
+        (
+            "NoSuchEntry",
+            gltf::primitive(
+                past_a_table.root(),
+                &gltf::Source::of(past_a_table.root(), Some(&three_positions()))
+                    .expect("the tables read"),
+                0,
+                0,
+            )
+            .expect_err("accessor 7 of one"),
+        ),
+    ];
+
+    provocations.extend(buffer_provocations());
+
+    for (name, refused) in &provocations {
+        assert!(
+            gltf_cannot_reach(refused).is_none(),
+            "`{name}` is provoked here and the census calls it unreachable"
+        );
+        assert_eq!(refused.name(), *name);
+        assert!(!refused.to_string().is_empty(), "{refused:?} says nothing");
+    }
+
+    let mut named: Vec<&str> = Vec::new();
+
+    for (name, _) in &provocations {
+        assert!(!named.contains(name), "`{name}` is provoked twice");
+        named.push(name);
+    }
+    assert_eq!(named.len(), 17, "one provocation per refusal");
+}
+
+// ---------------------------------------------------------------------
+// Meshes and primitives.
+//
+// The tables above are numbers; these turn a document's indices into
+// streams and hand them to the layer that assembles geometry. **The
+// interesting cases are the crossings**: an index into a table that is
+// too short, and the stride travelling from a view to the accessor that
+// reads through it.
+// ---------------------------------------------------------------------
+
+/// Compare coordinates by bits.
+///
+/// **The honest comparison here, not a way around the lint.** Reading a
+/// document does no arithmetic on a coordinate: it takes four bytes out
+/// of the chunk and puts them in an array. Anything but an exact match
+/// is a value that came from somewhere other than where the fixture put
+/// it, and a tolerance would hide exactly that.
+fn same(got: &[f32], want: &[f32], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: different lengths");
+    for (index, (left, right)) in got.iter().zip(want).enumerate() {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "{what}: component {index} is {left}, not {right}"
+        );
+    }
+}
+
+/// Three positions, tightly packed, as a binary chunk would store them.
+fn three_positions() -> Vec<u8> {
+    [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+/// Read the tables and one primitive out of a document and a chunk.
+fn assemble(text: &str, binary: &[u8]) -> Result<renew_mesh::Mesh, GltfError> {
+    let json = document(text);
+    let source = gltf::Source::of(json.root(), Some(binary))?;
+    gltf::primitive(json.root(), &source, 0, 0)
+}
+
+/// A document naming one triangle produces one triangle.
+#[test]
+fn a_document_naming_one_triangle_produces_one() {
+    let mesh = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("one unindexed triangle");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.positions.len(), 3);
+    assert!(
+        mesh.corner_normals.is_empty(),
+        "the document carried no normals"
+    );
+}
+
+/// **A primitive with no `mode` is a triangle list, by the format's own
+/// default.**
+///
+/// A reader that refused one would reject most of the files in the
+/// world, which is why the default is written down rather than left to
+/// whichever branch happens to run.
+#[test]
+fn a_primitive_with_no_mode_is_triangles() {
+    let with = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "mode": 4, "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("mode 4 is triangles");
+    let without = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("and so is no mode at all");
+    same(
+        &with.positions.concat(),
+        &without.positions.concat(),
+        "an absent mode and mode 4",
+    );
+}
+
+/// A mode this reader does not draw arrives wrapped as a geometry
+/// refusal.
+#[test]
+fn a_mode_this_reader_does_not_draw_is_a_geometry_refusal() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "mode": 5, "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("a triangle strip is not assembled");
+    assert_eq!(refused.name(), "Geometry");
+    assert!(
+        refused.to_string().contains("triangle strip"),
+        "the inner refusal names which mode: {refused}"
+    );
+}
+
+/// **The stride travels from the view to the accessor that reads through
+/// it**, which is the one place that number crosses layers.
+///
+/// Six floats at a stride of twenty-four: two positions whose second
+/// starts a whole stride in, with a neighbour's bytes between them. A
+/// reader that dropped the stride would read the neighbour as a
+/// coordinate and would not notice.
+#[test]
+fn the_stride_crosses_from_the_view_to_the_accessor() {
+    let mut binary: Vec<u8> = Vec::new();
+    for value in [1.0f32, 2.0, 3.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&[0xFF; 12]); // A neighbour's bytes.
+    for value in [4.0f32, 5.0, 6.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&[0xFF; 12]);
+    for value in [7.0f32, 8.0, 9.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mesh = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 60 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 60, "byteStride": 24 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &binary,
+    )
+    .expect("three interleaved positions");
+    same(&mesh.positions[0], &[1.0, 2.0, 3.0], "the first position");
+    same(
+        &mesh.positions[1],
+        &[4.0, 5.0, 6.0],
+        "the neighbour's bytes were stepped over",
+    );
+    same(&mesh.positions[2], &[7.0, 8.0, 9.0], "the third position");
+}
+
+/// Normals, texture coordinates and an index stream are all read when
+/// the document names them.
+#[test]
+fn the_optional_streams_are_read_when_named() {
+    let mut binary = three_positions();
+    // Normals at 36, texture coordinates at 72, indices at 96.
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    for index in [0u16, 1, 2] {
+        binary.extend_from_slice(&index.to_le_bytes());
+    }
+
+    let mesh = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 102 }],
+          "bufferViews": [
+            {"buffer": 0, "byteLength": 36, "byteOffset": 0 },
+            {"buffer": 0, "byteLength": 36, "byteOffset": 36 },
+            {"buffer": 0, "byteLength": 24, "byteOffset": 72 },
+            {"buffer": 0, "byteLength": 6, "byteOffset": 96 }
+          ],
+          "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+            { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" },
+            { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" },
+            { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" }
+          ],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+            "indices": 3
+          }] }]
+        }"#,
+        &binary,
+    )
+    .expect("everything named is read");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.corner_normals.len(), 3);
+    assert_eq!(mesh.corner_texcoords.len(), 3);
+    same(
+        &mesh.corner_normals[0],
+        &[0.0, 0.0, 1.0],
+        "the first normal",
+    );
+}
+
+/// **An index naming a row that is not there carries the table, the
+/// index and the count.**
+#[test]
+fn an_index_past_a_table_names_all_three() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("accessor 7 of one");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "accessors",
+            index: 7,
+            count: 1,
+        }
+    );
+
+    // And a view index past the views, which is the same shape one
+    // level down.
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("view 3 of one");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "bufferViews",
+            index: 3,
+            count: 1,
+        }
+    );
+
+    // And a mesh that is not there at all.
+    let refused = assemble(r#"{ "asset": { "version": "2.0" } }"#, &three_positions())
+        .expect_err("no meshes at all");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "meshes",
+            index: 0,
+            count: 0,
+        }
+    );
+}
+
+/// A primitive with no positions is not geometry, and says which member
+/// is missing.
+#[test]
+fn a_primitive_with_no_positions_is_refused() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "NORMAL": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("a primitive without positions describes nothing");
+    assert_eq!(refused, GltfError::MissingField { path: "POSITION" });
+}
+
+/// **An accessor that does not fit the chunk is refused by the layer
+/// that does the arithmetic**, and arrives wrapped.
+#[test]
+fn an_accessor_past_the_chunk_is_an_accessor_refusal() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 99, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("ninety-nine positions in thirty-six bytes");
+    assert_eq!(refused.name(), "Accessor");
+    assert!(
+        refused.to_string().contains("1188"),
+        "the inner refusal's numbers survive: {refused}"
+    );
+}
+
+/// **A view that runs past its buffer is caught before any element is
+/// read**, and the buffer layer has nothing to say about it: the buffer
+/// is exactly as long as it claimed, and the view inside it is not.
+#[test]
+fn a_view_past_its_buffer_is_refused() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteOffset": 24, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("24 + 36 is past 36");
+    assert_eq!(refused.name(), "Accessor");
+    assert!(refused.to_string().contains("36"), "{refused}");
+}
+
+/// **A buffer longer than the resource behind it is a different fault,
+/// one layer down**, and the two are worth telling apart: this document
+/// and its chunk disagree about how much is there, where the test above
+/// has a document that disagrees with itself.
+#[test]
+fn a_buffer_longer_than_its_chunk_is_refused() {
+    let refused = assemble(
+        r#"{
+          "buffers": [{ "byteLength": 60 }],
+          "bufferViews": [{"buffer": 0, "byteOffset": 24, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("a sixty-byte buffer over a thirty-six-byte chunk");
+    assert_eq!(
+        refused,
+        GltfError::BufferTooShort {
+            buffer: 0,
+            declared: 60,
+            available: 36,
+        }
+    );
+}
+
+// ---------------------------------------------------------------------
+// Whole containers, read end to end.
+//
+// **The test this section exists for is the cycle**, and it is the one
+// that cannot be a corpus seed. A reader that followed parent links
+// without remembering where it had been would walk forever, and a hang
+// is the one failure a fuzz harness has no way to report — so the guard
+// is checked by construction and pinned here.
+// ---------------------------------------------------------------------
+
+/// Wrap a document and a binary payload in a container.
+fn container(json: &str, binary: &[u8]) -> Vec<u8> {
+    let mut document = json.as_bytes().to_vec();
+    while !document.len().is_multiple_of(4) {
+        document.push(b' ');
+    }
+    let mut payload = binary.to_vec();
+    while !payload.len().is_multiple_of(4) {
+        payload.push(0);
+    }
+
+    let mut out = b"glTF".to_vec();
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(document.len())
+            .expect("a fixture is small")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    out.extend_from_slice(&document);
+    if !payload.is_empty() {
+        out.extend_from_slice(&u32::try_from(payload.len()).expect("small").to_le_bytes());
+        out.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        out.extend_from_slice(&payload);
+    }
+    let total = u32::try_from(out.len()).expect("a fixture is small");
+    out[8..12].copy_from_slice(&total.to_le_bytes());
+    out
+}
+
+/// One triangle, one node, one scene.
+const ONE_NODE: &str = r#"{
+  "asset": { "version": "2.0" },
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+  "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+  "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }]
+}"#;
+
+/// **A container reads end to end.**
+#[test]
+fn a_container_reads_into_geometry() {
+    let bytes = container(ONE_NODE, &three_positions());
+    let mesh = gltf::read(&bytes).expect("one triangle under one node");
+    assert_eq!(mesh.triangles(), 1);
+    same(&mesh.positions[1], &[1.0, 0.0, 0.0], "the second corner");
+}
+
+/// **A node's transform reaches its geometry**, by the composition order
+/// the format states.
+#[test]
+fn a_nodes_transform_moves_its_geometry() {
+    let json = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "translation": [10.0, 0.0, 0.0], "scale": [2.0, 1.0, 1.0] }"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("a placed triangle");
+    // Scale first, then translate, which is the order the format names.
+    same(&mesh.positions[0], &[10.0, 0.0, 0.0], "the origin corner");
+    same(&mesh.positions[1], &[12.0, 0.0, 0.0], "scaled then moved");
+}
+
+/// A matrix says the same thing as the three parts that compose it.
+#[test]
+fn a_matrix_and_its_parts_agree() {
+    let parts = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "translation": [1.0, 2.0, 3.0], "scale": [2.0, 2.0, 2.0] }"#,
+    );
+    // The same transform, column-major, as the file stores it.
+    let matrix = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "matrix": [2,0,0,0, 0,2,0,0, 0,0,2,0, 1,2,3,1] }"#,
+    );
+    let from_parts = gltf::read(&container(&parts, &three_positions())).expect("parts");
+    let from_matrix = gltf::read(&container(&matrix, &three_positions())).expect("matrix");
+    same(
+        &from_parts.positions.concat(),
+        &from_matrix.positions.concat(),
+        "a matrix and the parts it composes",
+    );
+}
+
+/// A parent's transform reaches a child's geometry.
+#[test]
+fn a_parents_transform_reaches_its_children() {
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [
+              { "children": [1], "translation": [10.0, 0.0, 0.0] },
+              { "mesh": 0, "translation": [0.0, 5.0, 0.0] }
+            ]"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("a child under a parent");
+    same(
+        &mesh.positions[0],
+        &[10.0, 5.0, 0.0],
+        "the parent's translation composed with the child's",
+    );
+}
+
+/// **A node that is its own ancestor is refused, and the walk does not
+/// hang.**
+///
+/// The refusal this reader could not have got from a fuzzer: a corpus
+/// seed carrying a cycle would wedge the harness rather than fail it, so
+/// the guard is checked by construction and pinned here.
+#[test]
+fn a_cycle_in_the_hierarchy_is_refused() {
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [{ "children": [1] }, { "children": [0], "mesh": 0 }]"#,
+    );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("0 is its own grandparent"),
+        GltfError::NodeCycle { node: 0 }
+    );
+
+    // A node that is its own child, which is the shortest cycle there
+    // is and the one an off-by-one guard would miss.
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [{ "children": [0], "mesh": 0 }]"#,
+    );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("0 is its own child"),
+        GltfError::NodeCycle { node: 0 }
+    );
+}
+
+/// A node claimed by two parents is refused by the same guard.
+#[test]
+fn a_node_with_two_parents_is_refused() {
+    let json = ONE_NODE
+        .replace(r#""nodes": [0]"#, r#""nodes": [0, 1]"#)
+        .replace(
+            r#""nodes": [{ "mesh": 0 }]"#,
+            r#""nodes": [
+              { "children": [2] },
+              { "children": [2] },
+              { "mesh": 0 }
+            ]"#,
+        );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("two parents claim node 2"),
+        GltfError::NodeCycle { node: 2 }
+    );
+}
+
+/// **A document with no scenes is a library, not a model.**
+#[test]
+fn a_document_with_no_scenes_is_refused() {
+    let json = r#"{
+      "asset": { "version": "2.0" },
+      "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+      "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+      "buffers": [{ "byteLength": 36 }],
+          "bufferViews": [{"buffer": 0, "byteLength": 36 }]
+    }"#;
+    assert_eq!(
+        gltf::read(&container(json, &three_positions())).expect_err("no scene places anything"),
+        GltfError::MissingField { path: "scenes" }
+    );
+}
+
+/// **A scene naming no geometry has none, whether it says so with an
+/// empty list or by not having one.**
+///
+/// Two different documents and one answer. `nodes` is optional on a
+/// scene, so a scene object with no member at all is a legal thing to
+/// write — and it was the shape no fixture had, which the coverage gate
+/// noticed by naming the closing brace of the branch that reads it.
+#[test]
+fn a_scene_that_places_nothing_has_no_geometry() {
+    for json in [
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#,
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{}] }"#,
+    ] {
+        let refused = gltf::read(&container(json, &[])).expect_err("a scene placing nothing");
+        assert_eq!(refused.name(), "Geometry", "for `{json}`");
+        assert!(refused.to_string().contains("no geometry"), "{refused}");
+    }
+}
+
+/// **A container fault arrives as a container fault**, not as a
+/// document one.
+///
+/// The magic is left intact deliberately. These bytes announce
+/// themselves as a container and then fail to be one, which is the case
+/// this claim is about; bytes whose magic is *wrong* are not a container
+/// at all, and the test below says what happens to those.
+#[test]
+fn a_malformed_container_is_a_container_refusal() {
+    let mut bytes = container(ONE_NODE, &three_positions());
+    bytes[4] = 9; // a container version this build does not read
+    let refused = gltf::read(&bytes).expect_err("version 9 is not version 2");
+    assert_eq!(refused.name(), "Container");
+    assert!(refused.to_string().contains("version"), "{refused}");
+}
+
+/// **Bytes whose magic is wrong are tried as a document.**
+///
+/// A reader that takes two shapes has to choose, and the magic is what
+/// chooses: four bytes that either say `glTF` or do not. Something that
+/// does not say it is not a container, so the remaining question is
+/// whether it is a document -- and when it is not one either, the
+/// document layer is what refused, because it is what was asked.
+#[test]
+fn bytes_whose_magic_is_wrong_are_tried_as_a_document() {
+    let mut bytes = container(ONE_NODE, &three_positions());
+    bytes[0] = b'X';
+    assert_eq!(
+        gltf::read(&bytes).expect_err("neither shape").name(),
+        "Document"
+    );
+}
+
+/// Several primitives under one node are joined into one mesh.
+#[test]
+fn several_primitives_are_joined() {
+    let json = ONE_NODE.replace(
+        r#""primitives": [{ "attributes": { "POSITION": 0 } }]"#,
+        r#""primitives": [
+          { "attributes": { "POSITION": 0 } },
+          { "attributes": { "POSITION": 0 } }
+        ]"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("two primitives");
+    assert_eq!(mesh.triangles(), 2, "joined rather than replaced");
+}
+
+/// **A transform that flattens geometry carrying normals is refused, and
+/// the refusal comes from the placement layer.**
+#[test]
+fn a_flattening_transform_over_normals_is_a_geometry_refusal() {
+    let mut binary = three_positions();
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    let json = r#"{
+      "asset": { "version": "2.0" },
+      "scenes": [{ "nodes": [0] }],
+      "nodes": [{ "mesh": 0, "scale": [1.0, 0.0, 1.0] }],
+      "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0, "NORMAL": 1 } }] }],
+      "accessors": [
+        { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+        { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" }
+      ],
+      "buffers": [{ "byteLength": 72 }],
+          "bufferViews": [
+        {"buffer": 0, "byteLength": 36, "byteOffset": 0 },
+        {"buffer": 0, "byteLength": 36, "byteOffset": 36 }
+      ]
+    }"#;
+    let refused = gltf::read(&container(json, &binary)).expect_err("no inverse to transpose");
+    assert_eq!(refused.name(), "Geometry");
+    assert!(refused.to_string().contains("flattens space"), "{refused}");
+}

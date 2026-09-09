@@ -160,6 +160,70 @@ pub enum TraceKey {
     KeyA,
     KeyS,
     KeyD,
+    KeyB,
+    KeyC,
+    KeyE,
+    KeyF,
+    KeyG,
+    KeyH,
+    KeyI,
+    KeyJ,
+    KeyK,
+    KeyL,
+    KeyM,
+    KeyN,
+    KeyO,
+    KeyP,
+    KeyQ,
+    KeyR,
+    KeyT,
+    KeyU,
+    KeyV,
+    KeyX,
+    KeyY,
+    KeyZ,
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    ShiftLeft,
+    ShiftRight,
+    ControlLeft,
+    ControlRight,
+    AltLeft,
+    AltRight,
+    PageUp,
+    PageDown,
+    Insert,
+    Minus,
+    Equal,
+    BracketLeft,
+    BracketRight,
+    Semicolon,
+    Quote,
+    Comma,
+    Period,
+    Slash,
+    Backslash,
+    Backquote,
     /// A physical key outside the mapped set. Encodable, replayable, and
     /// honest about what it does not know.
     Unidentified,
@@ -190,6 +254,70 @@ impl TraceKey {
         Self::KeyA,
         Self::KeyS,
         Self::KeyD,
+        Self::KeyB,
+        Self::KeyC,
+        Self::KeyE,
+        Self::KeyF,
+        Self::KeyG,
+        Self::KeyH,
+        Self::KeyI,
+        Self::KeyJ,
+        Self::KeyK,
+        Self::KeyL,
+        Self::KeyM,
+        Self::KeyN,
+        Self::KeyO,
+        Self::KeyP,
+        Self::KeyQ,
+        Self::KeyR,
+        Self::KeyT,
+        Self::KeyU,
+        Self::KeyV,
+        Self::KeyX,
+        Self::KeyY,
+        Self::KeyZ,
+        Self::Digit0,
+        Self::Digit1,
+        Self::Digit2,
+        Self::Digit3,
+        Self::Digit4,
+        Self::Digit5,
+        Self::Digit6,
+        Self::Digit7,
+        Self::Digit8,
+        Self::Digit9,
+        Self::F1,
+        Self::F2,
+        Self::F3,
+        Self::F4,
+        Self::F5,
+        Self::F6,
+        Self::F7,
+        Self::F8,
+        Self::F9,
+        Self::F10,
+        Self::F11,
+        Self::F12,
+        Self::ShiftLeft,
+        Self::ShiftRight,
+        Self::ControlLeft,
+        Self::ControlRight,
+        Self::AltLeft,
+        Self::AltRight,
+        Self::PageUp,
+        Self::PageDown,
+        Self::Insert,
+        Self::Minus,
+        Self::Equal,
+        Self::BracketLeft,
+        Self::BracketRight,
+        Self::Semicolon,
+        Self::Quote,
+        Self::Comma,
+        Self::Period,
+        Self::Slash,
+        Self::Backslash,
+        Self::Backquote,
         Self::Unidentified,
     ];
 
@@ -215,6 +343,70 @@ impl TraceKey {
             Self::KeyA => "key-a",
             Self::KeyS => "key-s",
             Self::KeyD => "key-d",
+            Self::KeyB => "key-b",
+            Self::KeyC => "key-c",
+            Self::KeyE => "key-e",
+            Self::KeyF => "key-f",
+            Self::KeyG => "key-g",
+            Self::KeyH => "key-h",
+            Self::KeyI => "key-i",
+            Self::KeyJ => "key-j",
+            Self::KeyK => "key-k",
+            Self::KeyL => "key-l",
+            Self::KeyM => "key-m",
+            Self::KeyN => "key-n",
+            Self::KeyO => "key-o",
+            Self::KeyP => "key-p",
+            Self::KeyQ => "key-q",
+            Self::KeyR => "key-r",
+            Self::KeyT => "key-t",
+            Self::KeyU => "key-u",
+            Self::KeyV => "key-v",
+            Self::KeyX => "key-x",
+            Self::KeyY => "key-y",
+            Self::KeyZ => "key-z",
+            Self::Digit0 => "digit-0",
+            Self::Digit1 => "digit-1",
+            Self::Digit2 => "digit-2",
+            Self::Digit3 => "digit-3",
+            Self::Digit4 => "digit-4",
+            Self::Digit5 => "digit-5",
+            Self::Digit6 => "digit-6",
+            Self::Digit7 => "digit-7",
+            Self::Digit8 => "digit-8",
+            Self::Digit9 => "digit-9",
+            Self::F1 => "f1",
+            Self::F2 => "f2",
+            Self::F3 => "f3",
+            Self::F4 => "f4",
+            Self::F5 => "f5",
+            Self::F6 => "f6",
+            Self::F7 => "f7",
+            Self::F8 => "f8",
+            Self::F9 => "f9",
+            Self::F10 => "f10",
+            Self::F11 => "f11",
+            Self::F12 => "f12",
+            Self::ShiftLeft => "shift-left",
+            Self::ShiftRight => "shift-right",
+            Self::ControlLeft => "control-left",
+            Self::ControlRight => "control-right",
+            Self::AltLeft => "alt-left",
+            Self::AltRight => "alt-right",
+            Self::PageUp => "page-up",
+            Self::PageDown => "page-down",
+            Self::Insert => "insert",
+            Self::Minus => "minus",
+            Self::Equal => "equal",
+            Self::BracketLeft => "bracket-left",
+            Self::BracketRight => "bracket-right",
+            Self::Semicolon => "semicolon",
+            Self::Quote => "quote",
+            Self::Comma => "comma",
+            Self::Period => "period",
+            Self::Slash => "slash",
+            Self::Backslash => "backslash",
+            Self::Backquote => "backquote",
             Self::Unidentified => "unidentified",
         }
     }
@@ -223,6 +415,36 @@ impl TraceKey {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|key| key.name() == name)
+    }
+
+    /// The format version this name first appeared in.
+    ///
+    /// The reader holds a file to it: a version-2 file carrying a
+    /// version-3 name is lying to every version-2 reader it names, so
+    /// the one reader able to notice refuses rather than laundering it
+    /// — the same rule the touch words established.
+    #[must_use]
+    pub const fn introduced(self) -> u32 {
+        match self {
+            Self::Escape
+            | Self::Space
+            | Self::Enter
+            | Self::Tab
+            | Self::Backspace
+            | Self::Delete
+            | Self::Home
+            | Self::End
+            | Self::ArrowUp
+            | Self::ArrowDown
+            | Self::ArrowLeft
+            | Self::ArrowRight
+            | Self::KeyW
+            | Self::KeyA
+            | Self::KeyS
+            | Self::KeyD
+            | Self::Unidentified => 1,
+            _ => 3,
+        }
     }
 }
 
@@ -465,7 +687,7 @@ mod tests {
     /// emits, and this is what says so.
     #[test]
     fn every_key_has_a_unique_name_that_reads_back() {
-        assert_eq!(TraceKey::ALL.len(), 17);
+        assert_eq!(TraceKey::ALL.len(), 81);
         for key in TraceKey::ALL {
             assert_eq!(TraceKey::from_name(key.name()), Some(*key));
         }

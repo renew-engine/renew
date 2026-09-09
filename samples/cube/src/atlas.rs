@@ -226,12 +226,18 @@ mod tests {
         let pixels = pixels();
         assert_eq!(pixels.len(), (WIDTH * HEIGHT * 4) as usize);
         assert!(
-            pixels.chunks_exact(4).all(|texel| texel[3] == 255),
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|texel| texel[3] == 255),
             "a transparent texel would blend a block with whatever is behind it"
         );
         assert!(
             pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|texel| texel[0] == texel[1] && texel[1] == texel[2]),
             "stone is grey; a channel that drifted would tint the world"
         );
@@ -327,7 +333,7 @@ mod tests {
     fn the_particle_tile_is_a_premultiplied_soft_square() {
         let (side, pixels) = particle_pixels();
         assert_eq!(pixels.len(), (side * side * 4) as usize);
-        for texel in pixels.chunks_exact(4) {
+        for texel in pixels.as_chunks::<4>().0 {
             assert!(
                 texel.iter().all(|&channel| channel == texel[0]),
                 "premultiplied white: every channel carries the same ink: {texel:?}"

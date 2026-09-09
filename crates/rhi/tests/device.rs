@@ -738,7 +738,7 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
-    let many: Vec<renew_rhi::Buffer> = (0..17)
+    let many: Vec<renew_rhi::Buffer> = (0..257)
         .map(|_| {
             device
                 .create_buffer(64, BufferUsage::PerFrame)
@@ -746,7 +746,7 @@ fn malformed_frames_are_refused_by_name() {
         })
         .collect();
     refused(
-        "a seventeenth distinct buffer",
+        "a two-hundred-and-fifty-seventh distinct buffer",
         "distinct resources",
         &|target| {
             let color = clear(black);
@@ -769,7 +769,11 @@ fn malformed_frames_are_refused_by_name() {
         ))
         .expect("mesh pipeline");
     let mesh = device
-        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
+        .create_mesh(&MeshDesc::new(
+            &[0u8; builtin::MESH_STRIDE as usize * 3],
+            builtin::MESH_STRIDE,
+            &[0, 1, 2],
+        ))
         .expect("mesh");
     refused(
         "a mesh pipeline drawn with no geometry",
@@ -789,6 +793,46 @@ fn malformed_frames_are_refused_by_name() {
             let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
         },
     );
+    // An index range with nothing to slice. Refused rather than
+    // ignored: dropping it would draw the whole mesh where the caller
+    // asked for a piece, which is the quiet wrong draw every rule here
+    // exists to prevent.
+    refused(
+        "an index range on an item that names no mesh",
+        "only alongside geometry",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&pipeline).indices(0, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // A range past the end of the list. The sibling of the stride rule
+    // below and refused for the same reason: creation proved every index
+    // *in* the list is inside the vertex count, which says nothing about
+    // indices past the list's end — those are whatever the allocation
+    // holds, fetched as vertices.
+    refused(
+        "an index range reaching past the end of its mesh",
+        "must stay inside its mesh",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&mesh_pipeline).mesh(&mesh).indices(1, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    // The same rule reached by overflow rather than by size, which is
+    // why `IndexRange::end` saturates: a wrapping sum would make this
+    // three-index mesh accept a range of four billion.
+    refused(
+        "an index range whose first plus count wraps",
+        "must stay inside its mesh",
+        &|target| {
+            let color = clear(black);
+            let items = [Item::new(&mesh_pipeline).mesh(&mesh).indices(u32::MAX, 3)];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+
     // A stride the pipeline does not pack to: the mesh's own indices stay
     // inside its own vertex count, and the fetch still runs off the end,
     // which is why this rule exists separately from the creation check.
@@ -1043,7 +1087,11 @@ fn malformed_frames_are_refused_by_name() {
         )
         .expect("depth-only pipeline");
     let quad_mesh = device
-        .create_mesh(&MeshDesc::new(&[0u8; 36 * 3], 36, &[0, 1, 2]))
+        .create_mesh(&MeshDesc::new(
+            &[0u8; builtin::MESH_STRIDE as usize * 3],
+            builtin::MESH_STRIDE,
+            &[0, 1, 2],
+        ))
         .expect("mesh");
     refused(
         "a depth-only pipeline drawn into a color image",
@@ -1134,6 +1182,350 @@ fn malformed_frames_are_refused_by_name() {
     target
         .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
         .expect("the target survives every refusal");
+    assert_no_validation_errors(&device);
+}
+
+/// The kept-image rules: persistence changes what is legal, not
+/// whether legality is checked. A virgin kept image refuses loads and
+/// reads by its own name (nothing was ever kept); a stored frame makes
+/// the sample-only frame legal; a discarding frame takes the
+/// permission back. Each refusal is matched to its clause's words, and
+/// the target renders a clean frame afterwards to prove the refusals
+/// fired before any GPU work.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case per kept-contract clause; the matrix is the point"
+)]
+fn a_kept_image_keeps_only_what_was_stored() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("triangle pipeline");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let sampler = device
+        .create_sampler(&renew_rhi::SamplerDesc::atlas())
+        .expect("sampler");
+    let kept = device
+        .create_render_image(
+            &renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept image");
+    let kept_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&kept), &sampler))
+        .expect("kept binding");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    let discard = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Discard,
+    );
+    let load = Attachment::new(LoadOp::Load, StoreOp::Store);
+
+    // Virgin: nothing was ever kept, so nothing may be read or loaded.
+    refused_by_name(
+        "sampling a virgin kept image",
+        "render it once before reading it",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused_by_name(
+        "loading a virgin kept image",
+        "render it once before loading it",
+        || {
+            let color = clear(black);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+
+    // Stored: the sample-only frame is now legal — the whole point.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+        let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+        target
+            .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+            .expect("a frame may sample what an earlier frame kept");
+        // And a loading re-open of the sampled layout renders too.
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("a frame may load what an earlier frame kept");
+    }
+
+    // Discarded: the permission is taken back, by name.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, discard, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the discarding frame itself is well-formed");
+    }
+    refused_by_name(
+        "sampling a kept image after a discarding frame",
+        "store what a later frame reads",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+    refused_by_name(
+        "loading a kept image after a discarding frame",
+        "store what a later frame loads",
+        || {
+            let color = clear(black);
+            let surface = [Item::new(&pipeline)];
+            let _ = target.render(&RenderDesc::new(&[
+                Pass::render_to(&kept, load, &[]),
+                Pass::new(&color, &surface),
+            ]));
+        },
+    );
+
+    // A frame-scoped image's rules did not move: the same sample-only
+    // frame that a kept image earns stays refused for it.
+    let scoped = device
+        .create_render_image(&renew_rhi::RenderImageDesc::new(
+            renew_rhi::RenderImageKind::Color,
+            Extent {
+                width: 8,
+                height: 8,
+            },
+        ))
+        .expect("frame-scoped image");
+    let scoped_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&scoped), &sampler))
+        .expect("scoped binding");
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&scoped, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+    }
+    refused_by_name(
+        "sampling a frame-scoped image a previous frame stored",
+        "must write it first",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&scoped_binding])];
+            let _ = target.render(&RenderDesc::new(&[Pass::new(&color, &items)]));
+        },
+    );
+
+    // The refusals fired before any GPU work: a clean frame still
+    // renders and validation stayed silent.
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives every refusal");
+    drop(scoped_binding);
+    drop(scoped);
+    drop(kept_binding);
+    drop(kept);
+    drop(sampler);
+    drop(one_slot);
+    drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
+/// A kept image read without a writing pass still spends a frame
+/// slot: the ceiling counts identities however they are used, so four
+/// targeted images plus a kept sample-only fifth is refused as the
+/// fifth, by the ceiling's own words.
+#[test]
+fn a_kept_sample_costs_a_frame_slot() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let pipeline = device
+        .create_pipeline(&PipelineDesc::new(
+            builtin::TRIANGLE,
+            TargetFormat::Rgba8Srgb,
+        ))
+        .expect("triangle pipeline");
+    let one_slot = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("one-slot pipeline");
+    let sampler = device
+        .create_sampler(&renew_rhi::SamplerDesc::atlas())
+        .expect("sampler");
+    let kept = device
+        .create_render_image(
+            &renew_rhi::RenderImageDesc::new(
+                renew_rhi::RenderImageKind::Color,
+                Extent {
+                    width: 8,
+                    height: 8,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept image");
+    let kept_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&kept), &sampler))
+        .expect("kept binding");
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let store = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(0.0, 0.0, 0.0, 1.0))),
+        StoreOp::Store,
+    );
+    // Stored once, so the sample-only mention is legal on its own
+    // terms and the refusal below can only be the ceiling's.
+    {
+        let color = clear(black);
+        let surface = [Item::new(&pipeline)];
+        target
+            .render(&RenderDesc::new(&[
+                Pass::render_to(&kept, store, &[]),
+                Pass::new(&color, &surface),
+            ]))
+            .expect("the storing frame renders");
+    }
+    let four: Vec<renew_rhi::RenderImage> = (0..4)
+        .map(|_| {
+            device
+                .create_render_image(&renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Color,
+                    Extent {
+                        width: 8,
+                        height: 8,
+                    },
+                ))
+                .expect("boundary image")
+        })
+        .collect();
+    refused_by_name(
+        "a kept sample as the fifth image",
+        "at most 4 distinct render images",
+        || {
+            let color = clear(black);
+            let items = [Item::new(&one_slot).bindings(&[&kept_binding])];
+            let image_passes: Vec<Pass<'_>> = four
+                .iter()
+                .map(|image| Pass::render_to(image, store, &[]))
+                .chain(std::iter::once(Pass::new(&color, &items)))
+                .collect();
+            let _ = target.render(&RenderDesc::new(&image_passes));
+        },
+    );
+    let color = clear(black);
+    let items = [Item::new(&pipeline)];
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("the target survives the refusal");
+    drop(four);
+    drop(kept_binding);
+    drop(kept);
+    drop(sampler);
+    drop(one_slot);
+    drop(pipeline);
+    drop(target);
+    assert_no_validation_errors(&device);
+}
+
+/// A frame filled to the retention ceiling exactly: two hundred and
+/// fifty-six distinct resources render, because a bound that only ever
+/// refused its successor could quietly shrink and no test would say
+/// so. The refusal battery proves the two-hundred-and-fifty-seventh is
+/// refused; this proves the boundary itself is livable - the shape a
+/// chunked world's fullest vista actually draws.
+#[test]
+fn the_retention_ceiling_is_livable_at_the_boundary() {
+    let Some(device) = required_device().expect("device bring-up") else {
+        return;
+    };
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: 8,
+            height: 8,
+        })
+        .expect("offscreen target");
+    let instanced = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::INSTANCED, TargetFormat::Rgba8Srgb)
+                .instance_input(builtin::INSTANCED_LAYOUT),
+        )
+        .expect("instanced pipeline");
+    let bytes = [0u8; 24];
+    // One slot is the pipeline's own share of the table; the buffers
+    // take the rest to land the frame exactly on the ceiling.
+    let many: Vec<renew_rhi::Buffer> = (0..255)
+        .map(|_| {
+            device
+                .create_buffer(64, BufferUsage::PerFrame)
+                .expect("boundary buffer")
+        })
+        .collect();
+    let black = Color::new(0.0, 0.0, 0.0, 1.0);
+    let color = clear(black);
+    let items: Vec<Item<'_>> = many
+        .iter()
+        .map(|buffer| Item::new(&instanced).frame_data(FrameData::new(buffer, &bytes, 1)))
+        .collect();
+    target
+        .render(&RenderDesc::new(&[Pass::new(&color, &items)]))
+        .expect("a frame at the ceiling renders");
+    drop(many);
+    drop(instanced);
+    drop(target);
     assert_no_validation_errors(&device);
 }
 
@@ -1240,7 +1632,7 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
     // is the clear, so a draw that silently read zeroed constants fails.
     for authored in [[0u8, 255, 64, 255], [255u8, 32, 0, 255]] {
         let mut pushed = [0u8; 16];
-        for (slot, &channel) in pushed.chunks_exact_mut(4).zip(&authored) {
+        for (slot, &channel) in pushed.as_chunks_mut::<4>().0.iter_mut().zip(&authored) {
             slot.copy_from_slice(&renew_rhi::srgb::decode(channel).to_ne_bytes());
         }
         let expected = &authored;
@@ -1250,7 +1642,7 @@ fn push_constants_reach_the_draw_and_update_per_frame() {
             .render(&RenderDesc::new(&passes))
             .expect("push-constant render");
         target.read_back_into(&mut pixels);
-        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+        for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
             assert_eq!(
                 pixel, expected,
                 "pixel {index}: every pixel carries the color this frame pushed"
@@ -1300,7 +1692,7 @@ fn additive_blending_sums_the_same_bytes_in_all_six_orders() {
         .expect("additive push-constant pipeline");
     let push = |channels: [u8; 4]| {
         let mut bytes = [0u8; 16];
-        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+        for (slot, &channel) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&channels) {
             slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
         }
         bytes
@@ -1407,7 +1799,7 @@ fn additive_blending_sums_channels_in_either_order() {
         .expect("additive push-constant pipeline");
     let push = |channels: [u8; 4]| {
         let mut bytes = [0u8; 16];
-        for (slot, &channel) in bytes.chunks_exact_mut(4).zip(&channels) {
+        for (slot, &channel) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&channels) {
             slot.copy_from_slice(&(f32::from(channel) / 255.0).to_ne_bytes());
         }
         bytes
@@ -1434,9 +1826,9 @@ fn additive_blending_sums_channels_in_either_order() {
         pixels
     };
     let forward = render(&first, &second);
-    for (index, pixel) in forward.chunks_exact(4).enumerate() {
+    for (index, pixel) in forward.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel, expected,
+            *pixel, expected,
             "pixel {index}: additive must land exactly on the channel sums"
         );
     }

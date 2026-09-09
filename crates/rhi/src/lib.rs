@@ -81,11 +81,11 @@ pub use vk::device::{Device, HostAllocationStats, ValidationReport};
 pub use vk::mesh::{Mesh, MeshDesc};
 pub use vk::offscreen::OffscreenTarget;
 pub use vk::pass::{
-    Attachment, Bindings, ClearValue, Item, ItemList, LoadOp, MAX_FRAME_RENDER_IMAGES, Pass,
-    PassTarget, RenderDesc, StoreOp, color_attachment,
+    Attachment, Bindings, ClearValue, IndexRange, Item, ItemList, LoadOp, MAX_FRAME_RENDER_IMAGES,
+    Pass, PassTarget, RenderDesc, StoreOp, color_attachment,
 };
 pub use vk::pipeline::{
-    AddressMode, Blend, DepthState, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES,
+    AddressMode, Blend, DepthState, Facing, Filter, FrameData, MAX_PUSH_CONSTANT_BYTES,
     MAX_UNIFORM_BLOCK_BYTES, MeshShaders, PipelineDesc, RenderPipeline, Sampler, SamplerDesc,
     Shaders, TargetFormat, VertexAttribute,
 };
@@ -203,6 +203,28 @@ pub mod builtin {
     pub const MESH_CAMERA_CUTOUT: crate::MeshShaders<'static> = crate::MeshShaders {
         vertex: MESH_CAMERA_TEXTURED_VS_SPV,
         fragment: MESH_CAMERA_CUTOUT_FS_SPV,
+    };
+
+    /// Fragment stage SPIR-V for the camera mesh path that blends over
+    /// what is already drawn.
+    pub static MESH_CAMERA_BLENDED_FS_SPV: &[u8] =
+        include_bytes!("../shaders/mesh_camera_blended.frag.spv");
+
+    /// The camera mesh pair that **blends**: the textured pair's vertex
+    /// stage over a fragment stage whose output is premultiplied by its
+    /// own alpha, for pipelines built with
+    /// [`Blend::PremultipliedAlpha`](crate::Blend::PremultipliedAlpha)
+    /// and a depth state that tests without writing.
+    ///
+    /// **The caller owes the order.** Blending is order-dependent by
+    /// its equation; this pair composites honestly and nothing more.
+    /// Draw the opaque world first, then translucent geometry back to
+    /// front — a wrong order is a wrong picture, visibly and
+    /// deterministically, never unsafely. The cutout pair's own doc
+    /// names this pair as where genuinely half-there surfaces belong.
+    pub const MESH_CAMERA_BLENDED: crate::MeshShaders<'static> = crate::MeshShaders {
+        vertex: MESH_CAMERA_TEXTURED_VS_SPV,
+        fragment: MESH_CAMERA_BLENDED_FS_SPV,
     };
 
     /// Vertex stage SPIR-V for the shadowed camera mesh path: the
@@ -363,6 +385,37 @@ pub mod builtin {
         vertex_count: 6,
     };
 
+    /// Fragment stage SPIR-V sampling four slots, one per quadrant of
+    /// the target: set 0 lower left, set 1 lower right, set 2 upper
+    /// left, set 3 upper right.
+    pub static TEXTURED_QUAD_FS_SPV: &[u8] = include_bytes!("../shaders/textured_quad.frag.spv");
+
+    /// The four-slot quad: [`TEXTURED`]'s vertex stage over a fragment
+    /// stage reading [`MAX_SAMPLED_BINDINGS`] sampled bindings — the
+    /// widest pipeline this tree's layout admits.
+    ///
+    /// **Why the ceiling gets a shader rather than only a constant.** A
+    /// limit nothing reaches is a limit nobody has tested: the array
+    /// sizes, the set-layout loop and the record path's set array all
+    /// have to hold at four, and until this existed the widest thing
+    /// that had ever asked was [`TEXTURED_PAIR`] at two. Four is also
+    /// not an arbitrary target — it is `maxBoundDescriptorSets`'
+    /// guaranteed floor, so a pipeline shaped like this is one every
+    /// conformant adapter accepts, and it is exactly the width a
+    /// normal-mapped material wants: base colour, normal,
+    /// metallic-roughness, occlusion.
+    ///
+    /// The target splits into quadrants rather than halves so that a
+    /// wrong bind order in any one of the four places is visible; with
+    /// halves, two of the four could swap unseen.
+    ///
+    /// [`MAX_SAMPLED_BINDINGS`]: crate::MAX_SAMPLED_BINDINGS
+    pub const TEXTURED_QUAD: Shaders<'static> = Shaders {
+        vertex: TEXTURED_VS_SPV,
+        fragment: TEXTURED_QUAD_FS_SPV,
+        vertex_count: 6,
+    };
+
     /// Vertex stage SPIR-V reading a per-vertex stream.
     pub static MESH_VS_SPV: &[u8] = include_bytes!("../shaders/mesh.vert.spv");
     /// Fragment stage SPIR-V passing the interpolated colour through.
@@ -393,20 +446,53 @@ pub mod builtin {
     };
 
     /// The per-vertex layout [`MESH`] consumes: clip-space position,
-    /// then colour, then a texture coordinate. Packs to **36 bytes**,
-    /// which is the stride every mesh drawn by that pipeline must carry.
+    /// then colour, then a texture coordinate, then the surface normal,
+    /// then the tangent with its handedness. Packs to [`MESH_STRIDE`]
+    /// bytes, which is the stride every mesh drawn by that pipeline must
+    /// carry.
     ///
-    /// The coordinate is carried even though this pipeline never samples
-    /// anything, and `mesh.vert` says why at the declaration: the record
-    /// is shared with the paths that do sample, and a pipeline describes
-    /// the whole record rather than the part one shader happens to read.
-    /// An attribute a shader ignores is legal; a record the pipeline
-    /// mis-describes is not.
+    /// **The width is not restated here on purpose.** An earlier version
+    /// of this comment said "36 bytes" and went on saying it after the
+    /// normal was appended, which is the drift [`MESH_STRIDE`] exists to
+    /// end. The stride is a sum of this list; a sentence is not.
+    ///
+    /// Most of the record is carried by pipelines that never read it, and
+    /// `mesh.vert` says why at the declaration: the record is shared with
+    /// the paths that do, and a pipeline describes the whole record rather
+    /// than the part one shader happens to read. An attribute a shader
+    /// ignores is legal; a record the pipeline mis-describes is not.
+    ///
+    /// **Every attribute is appended, never inserted**, so each addition
+    /// leaves the locations before it where they were and no committed
+    /// SPIR-V is recompiled. The tangent is a `Vec4` rather than a `Vec3`
+    /// for the same reason glTF's is: `xyz` is the tangent and `w` is the
+    /// sign the bitangent is reconstructed with, so a shader that wants
+    /// the third axis computes `cross(normal, tangent.xyz) * tangent.w`
+    /// and needs nothing else in the record.
     pub const MESH_LAYOUT: &[crate::VertexAttribute] = &[
         crate::VertexAttribute::Vec3,
         crate::VertexAttribute::Vec4,
         crate::VertexAttribute::Vec2,
+        crate::VertexAttribute::Vec3,
+        crate::VertexAttribute::Vec4,
     ];
+
+    /// The byte stride of one [`MESH_LAYOUT`] record, summed from the
+    /// layout rather than restated beside it.
+    ///
+    /// **Derived because the literal has already drifted once.** Three
+    /// tests carried `36` as a constant, and adding one attribute to the
+    /// layout made every one of them describe a record that no longer
+    /// existed. A sum cannot disagree with what it sums.
+    pub const MESH_STRIDE: u32 = {
+        let mut total = 0;
+        let mut at = 0;
+        while at < MESH_LAYOUT.len() {
+            total += MESH_LAYOUT[at].byte_len();
+            at += 1;
+        }
+        total
+    };
 
     /// The mesh pair with a camera: **world-space** positions and
     /// colours per vertex, multiplied by a matrix supplied once per
@@ -441,18 +527,21 @@ pub mod builtin {
 
 #[cfg(test)]
 mod horizon_tests {
-    /// Every shader that declares `HORIZON`, so the test can check all of
-    /// them rather than the one somebody thought of.
+    /// Every camera fragment shader, which is every shader that fades.
     ///
-    /// **Named here rather than discovered at runtime** because the sources
-    /// are `include_str!`-ed into the binary and a test cannot read the
-    /// directory of a crate it was compiled from. That makes this list the
-    /// weak point, so `every_shader_declaring_horizon_is_on_the_list`
-    /// below holds it against the shaders that actually exist.
-    const HORIZON_SHADERS: [(&str, &str); 4] = [
+    /// **Named here rather than discovered at runtime** because the
+    /// sources are `include_str!`-ed into the binary and a test cannot
+    /// read the directory of a crate it was compiled from. That makes this
+    /// list the weak point, so `no_shader_compiles_the_horizon_in` below
+    /// holds it against the shaders that actually exist.
+    const FADING_SHADERS: [(&str, &str); 5] = [
         (
             "mesh_camera.frag",
             include_str!("../shaders/mesh_camera.frag"),
+        ),
+        (
+            "mesh_camera_blended.frag",
+            include_str!("../shaders/mesh_camera_blended.frag"),
         ),
         (
             "mesh_camera_cutout.frag",
@@ -468,310 +557,171 @@ mod horizon_tests {
         ),
     ];
 
-    /// Pull the `vec3(...)` components out of a `const vec3 HORIZON` line.
-    fn declared_horizon(name: &str, source: &str) -> Vec<f32> {
-        let line = source
-            .lines()
-            .find(|line| line.starts_with("const vec3 HORIZON"))
-            .unwrap_or_else(|| panic!("{name} must declare `const vec3 HORIZON`"));
-        let inside = line
-            .split_once("vec3(")
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(inside, _)| inside)
-            .expect("the declaration must be a vec3(...) literal");
-        inside
-            .split(',')
-            .map(|part| {
-                part.trim()
-                    .parse()
-                    .expect("each component must be a float literal")
-            })
-            .collect()
-    }
-
-    /// **The constant and the shaders that use it cannot drift.**
-    /// A colour written in two languages is coupled by nothing but the
-    /// hope that whoever edits one greps for the other. Here the shader
-    /// source is the authority and this reads it.
+    /// The block's other half: every shader that bends geometry by it.
     ///
-    /// **All three of them.** This checked `mesh_camera.frag` alone while
-    /// two more shaders declared the same constant, so the fade applied to
-    /// shadowed and textured surfaces was coupled to nothing. All three
-    /// agreed, so nothing was wrong — but the next edit to the horizon
-    /// would have changed one, passed, and left two surfaces fading to the
-    /// old colour, which looks like a lighting bug and is a stale copy.
-    #[test]
-    fn the_horizon_constant_matches_every_shader_that_fades_to_it() {
-        for (name, source) in HORIZON_SHADERS {
-            assert_eq!(
-                declared_horizon(name, source),
-                crate::builtin::HORIZON.to_vec(),
-                "{name} disagrees with builtin::HORIZON — the shader is the authority, so the \
-                 constant is what needs changing"
-            );
-        }
-    }
+    /// The Air block stopped being only the fade when the sway words
+    /// joined it, so "declares the block" stopped implying "fades" —
+    /// a vertex stage reads the second half and never touches the
+    /// horizon. Listed apart so each half's claim stays checkable:
+    /// a fader fades, a swayer sways, and the directory walk holds the
+    /// union against what actually exists.
+    const SWAYING_SHADERS: [(&str, &str); 1] = [(
+        "mesh_camera_textured.vert",
+        include_str!("../shaders/mesh_camera_textured.vert"),
+    )];
 
-    /// The list above is the thing that can go stale, so it is checked
-    /// against the directory rather than trusted.
-    ///
-    /// A shader added tomorrow that fades to the horizon and is not listed
-    /// would leave the drift check silently narrower than it reads.
-    ///
-    /// The filesystem ban this crate carries is about the *renderer* never
-    /// reading a file while it draws. Reading this crate's own shader
-    /// directory to check a list against it is a different act, at a
-    /// different time, and is named rather than exempted silently.
-    #[test]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a test reading its own crate's sources is not the renderer reading files"
-    )]
-    fn every_shader_declaring_horizon_is_on_the_list() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let mut declaring: Vec<String> = std::fs::read_dir(&dir)
-            .expect("the shader directory is beside the crate")
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                if path.extension()? != "frag" && path.extension()? != "vert" {
-                    return None;
-                }
-                let source = std::fs::read_to_string(&path).ok()?;
-                source
-                    .lines()
-                    .any(|line| line.starts_with("const vec3 HORIZON"))
-                    .then(|| path.file_name()?.to_str().map(str::to_owned))
-                    .flatten()
-            })
-            .collect();
-        declaring.sort();
-
-        let mut listed: Vec<String> = HORIZON_SHADERS
-            .iter()
-            .map(|(name, _)| (*name).to_owned())
-            .collect();
-        listed.sort();
-
-        assert_eq!(
-            declaring, listed,
-            "the shaders declaring HORIZON and the list the drift check walks have diverged"
-        );
-    }
-
-    /// The two shadowed vertex stages that share one push block, and the
-    /// members they must both declare, in order, with the bytes each
-    /// costs.
-    ///
-    /// **The block is exactly the guaranteed push ceiling, and the fit is
-    /// the whole design.** A camera matrix, the light's three rows, and a
-    /// scene light come to 128; the naive layout — two full matrices and
-    /// a colour — is 144 and does not fit, which is why no path carried a
-    /// light and a shadow at once before. Anything that grows a member
-    /// breaks the path silently, so the shape is pinned here rather than
-    /// left to two files agreeing by habit.
-    const SHADOW_BLOCK_MEMBERS: [(&str, &str, u32); 5] = [
-        ("mat4", "view_projection", 64),
-        ("vec4", "light_row_0", 16),
-        ("vec4", "light_row_1", 16),
-        ("vec4", "light_row_2", 16),
-        ("vec4", "light", 16),
-    ];
-
-    /// Both stages reading that block.
-    const SHADOW_BLOCK_SHADERS: [(&str, &str); 2] = [
+    /// The block's third claim: every vertex stage that computes the
+    /// fade reads how far it completes from the block, not from a
+    /// constant of its own — the distance moved out of the shaders the
+    /// same day the sway's flag proved a word can default safely. A
+    /// stage may be a ranger and a swayer at once (the textured one
+    /// is); the walk below holds the union.
+    const RANGING_SHADERS: [(&str, &str); 3] = [
+        (
+            "mesh_camera.vert",
+            include_str!("../shaders/mesh_camera.vert"),
+        ),
         (
             "mesh_camera_shadow.vert",
             include_str!("../shaders/mesh_camera_shadow.vert"),
         ),
         (
-            "mesh_camera_shadow_caster.vert",
-            include_str!("../shaders/mesh_camera_shadow_caster.vert"),
+            "mesh_camera_textured.vert",
+            include_str!("../shaders/mesh_camera_textured.vert"),
         ),
     ];
 
-    /// The `type name;` pairs inside a shader's `push_constant` block, in
-    /// declaration order, with comments and blank lines dropped.
-    fn declared_push_members(name: &str, source: &str) -> Vec<(String, String)> {
-        let open = source
-            .find("layout(push_constant) uniform Matrices {")
-            .unwrap_or_else(|| panic!("{name} must declare a push_constant block named Matrices"));
-        // `unwrap_or_else` rather than `let ... else`, matching the
-        // sibling parser above: the refusal is the same, and this shape
-        // keeps the never-taken arm inside the expression rather than on
-        // a line of its own that no well-formed shader can reach.
-        let body_start = open
-            + source[open..]
-                .find('{')
-                .unwrap_or_else(|| panic!("{name}'s push block must have a body"))
-            + 1;
-        let body_end = body_start
-            + source[body_start..]
-                .find('}')
-                .unwrap_or_else(|| panic!("{name}'s push block must be closed"));
-        source[body_start..body_end]
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with("//"))
-            .map(|line| {
-                let statement = line.trim_end_matches(';');
-                let (kind, member) = statement
-                    .split_once(char::is_whitespace)
-                    .unwrap_or_else(|| panic!("{name}: `{line}` is not `type name;`"));
-                (kind.trim().to_owned(), member.trim().to_owned())
-            })
-            .collect()
-    }
-
-    /// **Both shadowed stages declare one block, member for member, in
-    /// one order.**
+    /// **Every shader that fades reads the colour rather than knowing it.**
     ///
-    /// They are two files that must agree byte for byte: the caster
-    /// rasterizes the depth the lit stage compares against, so a member
-    /// that moved in one and not the other would put the comparison at
-    /// the wrong offset and shift every shadow. Nothing else in the
-    /// toolchain checks it — SPIR-V is embedded as bytes and no stage
-    /// reflection exists here.
+    /// This replaces a pair of tests that checked the Rust constant and
+    /// four compiled-in copies of it had not drifted apart. They cannot
+    /// drift now, because there is one copy and the shaders no longer hold
+    /// it — which is the better answer to the same question, and it is why
+    /// those tests are gone rather than adapted.
     ///
-    /// Probed by reordering two members in one stage, by renaming one,
-    /// and by replacing the three rows with a `mat4x3`: each fails.
+    /// What can still go wrong is the opposite: somebody reintroduces a
+    /// constant, the fade stops honouring what the caller asked for, and
+    /// nothing looks wrong until a caller clears to a colour that is not
+    /// this crate's default.
     #[test]
-    fn the_shadowed_shaders_declare_one_push_block() {
-        let expected: Vec<(String, String)> = SHADOW_BLOCK_MEMBERS
-            .iter()
-            .map(|(kind, member, _)| ((*kind).to_owned(), (*member).to_owned()))
-            .collect();
-        for (name, source) in SHADOW_BLOCK_SHADERS {
-            assert_eq!(
-                declared_push_members(name, source),
-                expected,
-                "{name}'s push block is not the shared shadow block"
-            );
-        }
-        let total: u32 = SHADOW_BLOCK_MEMBERS.iter().map(|(_, _, bytes)| bytes).sum();
-        assert_eq!(
-            total,
-            crate::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES,
-            "the members do not sum to the declared push range"
-        );
-        assert_eq!(
-            total,
-            crate::MAX_PUSH_CONSTANT_BYTES,
-            "the block is meant to be exactly the guaranteed ceiling"
-        );
-
-        // **Where the light is applied, pinned in text — with the
-        // comments stripped first.** No pixel probe can tell a light
-        // multiplied in the vertex stage from one multiplied in the
-        // fragment stage, so this substring is the only guard. Searching
-        // the raw source would let a commented-out line satisfy it:
-        // `// fragment_colour = vertex_colour * matrices.light;` above a
-        // line that drops the multiply keeps a naive `contains` green.
-        //
-        // Both halves of the family are pinned, not just the shadowed
-        // one. They are spelled differently — one parenthesises the
-        // vertex colour — so each is matched on the parts that carry the
-        // meaning: the destination, the source, and the light.
-        for (name, source, receiver) in [
-            (
-                "mesh_camera_shadow.vert",
-                SHADOW_BLOCK_SHADERS[0].1,
-                "matrices.light",
-            ),
-            (
-                "mesh_camera.vert",
-                include_str!("../shaders/mesh_camera.vert"),
-                "camera.light",
-            ),
-        ] {
-            let code: String = source
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let applied = code
-                .split_once("fragment_colour =")
-                .is_some_and(|(_, rest)| {
-                    let statement = rest.split(';').next().unwrap_or("");
-                    statement.contains("vertex_colour") && statement.contains(receiver)
-                });
+    fn every_fading_shader_reads_the_horizon_from_its_caller() {
+        for (name, source) in FADING_SHADERS {
             assert!(
-                applied,
-                "{name} must apply the scene light to the vertex colour in the vertex \
-                 stage, as every camera path does — a world drawn half by each must dim \
-                 alike"
+                source.contains("uniform Air {"),
+                "{name} fades with distance but declares no Air block, so whatever it fades \
+                 toward is not what the caller asked for"
+            );
+            assert!(
+                source.contains("air.horizon.rgb"),
+                "{name} declares an Air block and does not fade toward it"
             );
         }
     }
 
-    /// Every shader that reads the shared shadow block is on the list
-    /// above, and none of them spells the light's rows as a `mat4x3`.
+    /// The list above is the thing that can go stale, so it is checked
+    /// against the directory rather than trusted — and the same walk
+    /// catches a compiled-in horizon coming back anywhere.
     ///
-    /// **A directory read, because a list is only as good as its
-    /// completeness** — the sibling of `every_shader_declaring_horizon_is_on_the_list`,
-    /// for the same reason. The `mat4x3` ban is the trap this layout
-    /// invites: that type looks like the same saving and is not, because
-    /// std430 pads each of its four three-component columns back to
-    /// sixteen bytes — 64 again, and the block back to 144, while the
-    /// host packs 48 and the shader reads padding.
-    ///
-    /// Probed by adding a third shader that reads `light_row_0` without
-    /// listing it, and by writing `mat4x3` in any shader: each fails.
+    /// The filesystem ban this crate carries is about the *renderer* never
+    /// reading a file while it draws. Reading this crate's own shader
+    /// directory is a different act, at a different time, and is named
+    /// rather than exempted silently.
     #[test]
     #[allow(
         clippy::disallowed_methods,
         reason = "a test reading its own crate's sources is not the renderer reading files"
     )]
-    fn every_shader_reading_the_shadow_block_is_on_the_list() {
+    fn no_shader_compiles_the_horizon_in() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let mut reading: Vec<String> = Vec::new();
-        let mut with_mat4x3: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&dir).expect("the shader directory is beside the crate") {
-            let path = entry.expect("a readable directory entry").path();
-            let is_source = path
-                .extension()
-                .is_some_and(|kind| kind == "vert" || kind == "frag");
-            if !is_source {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .expect("a named file")
-                .to_string_lossy()
-                .into_owned();
-            let source = std::fs::read_to_string(&path).expect("a readable shader");
-            if source.contains("light_row_0") {
-                reading.push(name.clone());
-            }
-            // The word, not a comment mentioning it: the bans below are
-            // about declarations, and this file's own comments explain
-            // why the type is wrong.
-            // A filter rather than an `if` that pushes: the push can only
-            // run when a shader breaks the ban, so as a branch it is
-            // untaken by design and reads as uncovered forever. Collected
-            // this way the predicate runs on every shader and the result
-            // is simply empty.
-            with_mat4x3.extend(
-                source
+        let mut fading: Vec<String> = Vec::new();
+        // **Filtered rather than skipped with `continue`.** An arm that
+        // steps over an unreadable entry is an arm nothing in this
+        // directory can take, so it is a line no run covers and a hole in
+        // the coverage ratchet for no gain — the walk simply wants the
+        // shaders it can read.
+        let shaders = std::fs::read_dir(&dir)
+            .expect("the shader directory is beside the crate")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|kind| kind == "frag" || kind == "vert")
+            })
+            .filter_map(|path| {
+                let name = path.file_name()?.to_str()?.to_owned();
+                let source = std::fs::read_to_string(&path).ok()?;
+                Some((name, source))
+            });
+        for (name, source) in shaders {
+            assert!(
+                !source
                     .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains("mat4x3"))
-                    .then_some(name),
+                    .any(|line| line.starts_with("const vec3 HORIZON")),
+                "{name} compiles a horizon in, so it cannot fade toward what its caller clears \
+                 to — the colour belongs in the Air block"
             );
+            if source.contains("uniform Air {") {
+                fading.push(name);
+            }
         }
-        reading.sort();
-        let mut listed: Vec<String> = SHADOW_BLOCK_SHADERS
+        fading.sort();
+
+        let mut listed: Vec<String> = FADING_SHADERS
             .iter()
+            .chain(SWAYING_SHADERS.iter())
+            .chain(RANGING_SHADERS.iter())
             .map(|(name, _)| (*name).to_owned())
             .collect();
         listed.sort();
+        listed.dedup();
+
         assert_eq!(
-            reading, listed,
-            "every shader reading the shadow block must be on SHADOW_BLOCK_SHADERS"
+            fading, listed,
+            "the shaders reading an Air block and the lists the checks above walk have diverged"
         );
-        assert!(
-            with_mat4x3.is_empty(),
-            "mat4x3 saves nothing under std430 — each of its four columns pads back to \
-             sixteen bytes — and using it here silently returns the block to 144: {with_mat4x3:?}"
-        );
+    }
+
+    /// A swayer reads the block's second half and leaves the first
+    /// alone: displacement is its business and the horizon is not — a
+    /// vertex stage that started mixing toward the fade colour would be
+    /// duplicating the fragment stage's job with its own arithmetic.
+    /// And it asks where the weight rides: a swayer that read only the
+    /// vertex alpha would silently strip an even caller back to
+    /// alpha-weighting — the exact channel conflict `bend.z` exists to
+    /// resolve.
+    #[test]
+    fn every_swaying_shader_sways_and_does_not_fade() {
+        for (name, source) in SWAYING_SHADERS {
+            assert!(
+                source.contains("air.sway"),
+                "{name} is listed as a swayer and never reads the sway words"
+            );
+            assert!(
+                source.contains("air.bend.z"),
+                "{name} sways and never asks where the weight rides"
+            );
+            assert!(
+                !source.contains("air.horizon"),
+                "{name} reads the horizon from the vertex stage; the fade is the fragment stage's job"
+            );
+        }
+    }
+
+    /// A ranger reads how far the fade completes from the block and
+    /// never invents its own: the compiled default may appear only as
+    /// the fallback beside the select, so a stage cannot quietly stop
+    /// honouring the caller's distance.
+    #[test]
+    fn every_ranging_shader_takes_its_distance_from_the_block() {
+        for (name, source) in RANGING_SHADERS {
+            assert!(
+                source.contains("air.bend.y"),
+                "{name} is listed as a ranger and never reads the distance word"
+            );
+            assert!(
+                !source.contains("air.horizon"),
+                "{name} reads the horizon from the vertex stage; the fade is the fragment stage's job"
+            );
+        }
     }
 }

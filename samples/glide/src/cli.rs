@@ -233,6 +233,19 @@ pub struct Report {
     /// have to absorb them or inherit the gap; this sentence is where
     /// that obligation is written.
     pub session_hash: u64,
+    /// The presentation effects as the run left them.
+    ///
+    /// **Carried on the report so an image oracle draws what the game
+    /// draws.** The trail is a function of the whole flight, not of the
+    /// world's final state, so a checkpoint that rebuilt the pool from
+    /// the world it stopped at would show an empty trail and a committed
+    /// picture would prove nothing about it. Reading it back off the
+    /// same loop the runs use is the same argument that promoted
+    /// `world_at` in the first place.
+    ///
+    /// Nothing here reaches [`Report::session_hash`]: the effects are
+    /// presentation, and the digest is the world's and the menu's.
+    pub effects: crate::effects::Effects,
 }
 
 impl Report {

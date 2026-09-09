@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use renew_rhi::{
     AdapterKind, Attachment, BindingDesc, BindingSource, Blend, ClearValue, Color, DepthState,
-    Device, DeviceDesc, DeviceError, Extent, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
+    Device, DeviceDesc, DeviceError, Extent, Facing, Item, LoadOp, MeshDesc, Pass, PipelineDesc,
     RenderDesc, RenderImageDesc, RenderImageKind, SamplerDesc, StoreOp, TargetFormat, TextureDesc,
     Validation, builtin,
 };
@@ -154,7 +154,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// goldens — the humanly-viewable form of a mismatch or candidate.
 fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Result<()> {
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         ppm.extend_from_slice(&pixel[..3]);
     }
     std::fs::write(path, ppm)
@@ -190,9 +190,9 @@ fn clear_is_byte_exact_everywhere() {
     // them and the attachment encodes it back, so the round trip is exact
     // and the expectation is the value that was chosen — no derivation.
     let expected = [51u8, 102, 153, 255];
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel,
+            *pixel,
             expected,
             "pixel {index} diverged on adapter {:?}",
             device.adapter()
@@ -264,8 +264,10 @@ impl Difference {
         let mut largest_channel = 0;
         let mut first_byte = usize::MAX;
         for (index, (a, b)) in rendered
-            .chunks_exact(4)
-            .zip(golden.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(golden.as_chunks::<4>().0.iter())
             .enumerate()
         {
             let mut differs = false;
@@ -737,6 +739,145 @@ fn two_textures_share_one_pipeline() {
     assert_no_validation_errors(&device);
 }
 
+/// Four textures through ONE pipeline — the ceiling this tree declares,
+/// reached for the first time.
+///
+/// **A limit nothing reaches is a limit nobody has tested.**
+/// `MAX_SAMPLED_BINDINGS` has been four since it was written, its
+/// comment has said "four sampled slots is legal" for as long, and the
+/// widest pipeline that had ever asked was the two-slot pair above. The
+/// set-layout loop, the item's slot array and the record path's set
+/// array all have to hold at four; two of them proves that they hold at
+/// two.
+///
+/// Four is also not an arbitrary target. It is `maxBoundDescriptorSets`'
+/// guaranteed floor, so a pipeline shaped like this is one every
+/// conformant adapter accepts, and it is exactly the width a
+/// normal-mapped material wants: base colour, normal,
+/// metallic-roughness, occlusion.
+///
+/// The fragment stage splits the target into quadrants rather than
+/// halves, so a bind order that is wrong in any one of the four places
+/// is a visibly wrong image. With halves, two of four could swap unseen.
+/// The rotated frame draws the same four bindings shifted by one, which
+/// no partial correctness can satisfy: every quadrant changes.
+///
+/// Probed two ways. Transposing `x` and `y` in the quadrant model:
+/// red, 150 codes apart at (4,0) — so the split is checked against the
+/// shader rather than against itself. Collapsing the shader to read
+/// slot 0 everywhere: red at the same pixel — so four sets are
+/// genuinely bound and read, not declared and ignored.
+#[test]
+fn four_textures_share_one_pipeline() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 1;
+    /// One flat texel each, far enough apart that a quadrant reading the
+    /// wrong slot is not a near miss.
+    const ATLASES: [[u8; 4]; 4] = [
+        [200, 20, 20, 255],
+        [20, 200, 20, 255],
+        [20, 20, 200, 255],
+        [200, 200, 20, 255],
+    ];
+
+    /// Which slot a target pixel's quadrant reads — the CPU statement of
+    /// the fragment stage's split, in the order the shader declares its
+    /// sets: lower left, lower right, upper left, upper right.
+    ///
+    /// The target's rows run top-down and the shader's `v` runs with
+    /// them, so "lower" here is the first half of `fragUv.y` and the
+    /// first half of the rows together.
+    fn quadrant(x: u32, y: u32) -> usize {
+        usize::from(y >= SIZE / 2) * 2 + usize::from(x >= SIZE / 2)
+    }
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let size = Extent {
+        width: TEXELS,
+        height: TEXELS,
+    };
+    let sampler = device
+        .create_sampler(&SamplerDesc::atlas())
+        .expect("sampler");
+    // One sampler across all four, which is the same claim the two-slot
+    // test makes and worth re-making at the ceiling: a sampler is an
+    // input to a binding, never owned by one, so N bindings do not mean
+    // N samplers.
+    let textures: Vec<_> = ATLASES
+        .iter()
+        .map(|atlas| {
+            device
+                .create_texture(&TextureDesc::new(size, atlas))
+                .expect("texture")
+        })
+        .collect();
+    let bindings: Vec<_> = textures
+        .iter()
+        .map(|texture| {
+            device
+                .create_binding(&BindingDesc::new(BindingSource::Texture(texture), &sampler))
+                .expect("binding")
+        })
+        .collect();
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED_QUAD, TargetFormat::Rgba8Srgb)
+                .sampled_bindings(u32::try_from(ATLASES.len()).expect("four fits")),
+        )
+        .expect("four-slot pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    // Every rotation of the four, so each binding is asked for from each
+    // slot. One frame would leave three of the four orders unexercised.
+    for shift in 0..ATLASES.len() {
+        let order: Vec<_> = (0..ATLASES.len())
+            .map(|slot| &bindings[(slot + shift) % ATLASES.len()])
+            .collect();
+        let items = [Item::new(&pipeline).bindings(&order)];
+        let passes = [Pass::new(&color, &items)];
+        target
+            .render(&RenderDesc::new(&passes))
+            .expect("four-slot render");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let offset = ((y * SIZE + x) as usize) * 4;
+                let slot = quadrant(x, y);
+                let atlas = ATLASES[(slot + shift) % ATLASES.len()];
+                assert_within_one_code(
+                    &pixels[offset..offset + 4],
+                    stored(&atlas).as_slice(),
+                    &format!(
+                        "pixel ({x},{y}) is in quadrant {slot}, which at shift {shift} \
+                         reads slot {slot} holding atlas {} on adapter {:?}",
+                        (slot + shift) % ATLASES.len(),
+                        device.adapter()
+                    ),
+                );
+            }
+        }
+    }
+
+    // Teardown first, oracle second, in the order the two-slot test
+    // records: the target releases its frame references before the
+    // bindings drop, and the sources go after the bindings.
+    drop(target);
+    drop(pipeline);
+    drop(bindings);
+    drop(textures);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
 /// The atlas trio the sampled tests start from: texture, sampler, and
 /// the binding over both.
 fn atlas_fixture(
@@ -886,10 +1027,135 @@ fn a_rendered_image_samples_back_byte_exact() {
     assert_no_validation_errors(&device);
 }
 
+/// **Kept contents cross frames.** Frame one renders the atlas into a
+/// kept image and samples it to the surface; frame two contains ONLY
+/// the sampling pass — the writing half omitted, which is the shape
+/// the kept contract exists for (a shadow map under a slow sun, a
+/// probe, a minimap); frame three re-opens the image with `LoadOp::Load`
+/// and draws nothing over it. All three read back byte-identical to
+/// the same CPU oracle: the pixels are the proof that the contents,
+/// the layouts, and the cross-frame barriers all survived — on a
+/// frame-scoped image frames two and three are refused outright. On
+/// the CPU rasterizer CI runs, the bytes prove contract legality and
+/// layout-tracking cleanliness, not preservation — a transition that
+/// wrongly discarded would still read back intact there, exactly as
+/// the barrier table's own tests say of masks; on a real adapter,
+/// where a transition can actually move memory, these same bytes
+/// become the preservation oracle.
+#[test]
+fn a_kept_image_survives_frames_that_never_render_it() {
+    const SIZE: u32 = 8;
+    const TEXELS: u32 = 2;
+    #[rustfmt::skip]
+    const ATLAS: [u8; 16] = [
+        10, 20, 30, 255,    40, 50, 60, 255,
+        70, 80, 90, 255,    100, 110, 120, 255,
+    ];
+
+    let Some(device) = device_or_skip().expect("device bring-up") else {
+        return;
+    };
+    let (texture, sampler, atlas_binding) =
+        atlas_fixture(&device, TEXELS, &ATLAS).expect("atlas fixture");
+    let image = device
+        .create_render_image(
+            &RenderImageDesc::new(
+                RenderImageKind::Color,
+                Extent {
+                    width: SIZE,
+                    height: SIZE,
+                },
+            )
+            .kept(),
+        )
+        .expect("kept render image");
+    let image_binding = device
+        .create_binding(&BindingDesc::new(BindingSource::Image(&image), &sampler))
+        .expect("image binding");
+    let into_image_pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Unorm).sampled_bindings(1),
+        )
+        .expect("render-image pipeline");
+    let pipeline = device
+        .create_pipeline(
+            &PipelineDesc::new(builtin::TEXTURED, TargetFormat::Rgba8Srgb).sampled_bindings(1),
+        )
+        .expect("sampled pipeline");
+    let mut target = device
+        .create_offscreen_target(Extent {
+            width: SIZE,
+            height: SIZE,
+        })
+        .expect("offscreen target");
+
+    let clear_value = Attachment::new(
+        LoadOp::Clear(ClearValue::Color(Color::new(1.0, 0.0, 1.0, 1.0))),
+        StoreOp::Store,
+    );
+    let load_value = Attachment::new(LoadOp::Load, StoreOp::Store);
+    let color = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let into_image = [Item::new(&into_image_pipeline).bindings(&[&atlas_binding])];
+    let onto_surface = [Item::new(&pipeline).bindings(&[&image_binding])];
+
+    let writing_frame = [
+        Pass::render_to(&image, clear_value, &into_image),
+        Pass::new(&color, &onto_surface),
+    ];
+    let sampling_frame = [Pass::new(&color, &onto_surface)];
+    let loading_frame = [
+        Pass::render_to(&image, load_value, &[]),
+        Pass::new(&color, &onto_surface),
+    ];
+
+    let mut pixels = vec![0u8; target.byte_len()];
+    let frames: [(&str, &[Pass<'_>]); 4] = [
+        ("writes and samples", &writing_frame),
+        ("samples what frame one kept", &sampling_frame),
+        // Twice in a row, deliberately: an image that arrives already
+        // sampled crosses no barrier at all - the boldest arm in the
+        // walk - and this is the frame that executes it.
+        ("samples again with no barrier at all", &sampling_frame),
+        ("loads what frame three left sampled", &loading_frame),
+    ];
+    for (label, passes) in frames {
+        target
+            .render(&RenderDesc::new(passes))
+            .expect("a kept frame renders");
+        target.read_back_into(&mut pixels);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let texel = ((y * TEXELS) / SIZE) * TEXELS + (x * TEXELS) / SIZE;
+                let expected = stored(&ATLAS[(texel as usize) * 4..(texel as usize) * 4 + 4]);
+                let offset = ((y * SIZE + x) as usize) * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    expected,
+                    "the frame that {label}: pixel ({x},{y}) should carry texel {texel} on \
+                     adapter {:?}",
+                    device.adapter()
+                );
+            }
+        }
+    }
+
+    drop(target);
+    drop(pipeline);
+    drop(into_image_pipeline);
+    drop(image_binding);
+    drop(atlas_binding);
+    drop(image);
+    drop(texture);
+    drop(sampler);
+    assert_no_validation_errors(&device);
+}
+
 /// A quad over the left half of clip space at `depth`, packed to the
-/// mesh layout's 36-byte records: positions pass straight through the
-/// mesh vertex stage; colour and uv ride along unread — the layout
-/// describes the record, not the use.
+/// mesh layout's records: positions pass straight through the mesh
+/// vertex stage; everything after them rides along unread — the layout
+/// describes the record, not the use. The width comes from
+/// `builtin::MESH_STRIDE` below rather than from this sentence, which
+/// said 36 for two attributes longer than that was true.
 fn left_half_quad(depth: f32) -> Vec<u8> {
     let mut vertices = Vec::new();
     for [x, y] in [
@@ -903,7 +1169,9 @@ fn left_half_quad(depth: f32) -> Vec<u8> {
         for value in [x, y, depth] {
             vertices.extend_from_slice(&value.to_ne_bytes());
         }
-        for _ in 0..6 {
+        // Padded to the record the layout describes, derived not counted.
+        let filled = 3 * 4;
+        for _ in 0..(builtin::MESH_STRIDE as usize - filled) / 4 {
             vertices.extend_from_slice(&0.0f32.to_ne_bytes());
         }
     }
@@ -990,6 +1258,10 @@ fn a_generative_pipeline_can_write_into_a_depth_target() {
     assert_no_validation_errors(&device);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one narrative: a depth-only pass writes, a sampling pass reads it back, and the oracle checks the whole path -- splitting it would hide which half a failure came from. It crossed the bound when deriving the mesh stride from the layout made the constructor wrap."
+)]
 #[test]
 fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     const SIZE: u32 = 8;
@@ -1001,13 +1273,19 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     let Some(device) = device_or_skip().expect("device bring-up") else {
         return;
     };
-    let image = match device.create_render_image(&RenderImageDesc::new(
-        RenderImageKind::Depth,
-        Extent {
-            width: SIZE,
-            height: SIZE,
-        },
-    )) {
+    // Kept, so the second frame below may re-open what this one wrote:
+    // the depth twin of the colour persistence golden, and the one
+    // place the sampled-to-depth-attachment walk-back arm runs.
+    let image = match device.create_render_image(
+        &RenderImageDesc::new(
+            RenderImageKind::Depth,
+            Extent {
+                width: SIZE,
+                height: SIZE,
+            },
+        )
+        .kept(),
+    ) {
         Ok(image) => image,
         // An adapter whose depth format cannot be sampled refuses at
         // creation by design; off the strict lane that is a skip, on it
@@ -1043,7 +1321,11 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
         .expect("reader pipeline");
     let vertices = left_half_quad(QUAD_DEPTH);
     let mesh = device
-        .create_mesh(&MeshDesc::new(&vertices, 36, &[0, 1, 2, 3, 4, 5]))
+        .create_mesh(&MeshDesc::new(
+            &vertices,
+            builtin::MESH_STRIDE,
+            &[0, 1, 2, 3, 4, 5],
+        ))
         .expect("caster quad");
     let mut target = device
         .create_offscreen_target(Extent {
@@ -1070,6 +1352,17 @@ fn a_depth_only_pass_writes_depth_a_sampler_reads_back() {
     target
         .render(&RenderDesc::new(&passes))
         .expect("shadow render");
+    // Frame two: the image arrives in its sampled life and a depth
+    // pass re-opens it with Load, drawing nothing - the
+    // sampled-to-attachment walk-back at the depth stages, and the
+    // reader must see the same quad the first frame cast.
+    let second = [
+        Pass::render_to(&image, depth_again, &[]),
+        Pass::new(&color, &reading),
+    ];
+    target
+        .render(&RenderDesc::new(&second))
+        .expect("the kept re-open renders");
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
 
@@ -1489,7 +1782,7 @@ fn a_second_pass_loads_and_draws_over_the_first() -> Result<(), Box<dyn std::err
 }
 
 /// The bytes one mesh vertex occupies, as `MESH_LAYOUT` declares them.
-const MESH_VERTEX_STRIDE: u32 = 12 + 16 + 8;
+const MESH_VERTEX_STRIDE: u32 = builtin::MESH_STRIDE;
 
 /// One mesh vertex, packed exactly as `MESH_LAYOUT` declares:
 /// clip-space position vec3, colour vec4, texture coordinate vec2. The
@@ -1508,8 +1801,11 @@ fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
     for value in colour {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
-    for value in [0.0f32, 0.0] {
-        bytes.extend_from_slice(&value.to_ne_bytes());
+    // The coordinate and anything after it, zeroed and sized from the
+    // layout so an added attribute does not silently shorten this.
+    let filled = (3 + 4) * 4;
+    for _ in 0..(builtin::MESH_STRIDE as usize - filled) / 4 {
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
     }
     bytes
 }
@@ -1528,6 +1824,234 @@ fn mesh_vertex(position: [f32; 3], colour: [f32; 4]) -> Vec<u8> {
 /// either, so every pixel has one right value on every conformant
 /// adapter.
 ///
+/// **A pipeline that draws one side of a triangle draws exactly that
+/// side.**
+///
+/// Every pipeline drew both, and for closed geometry that is half the
+/// rasterisation thrown away: a triangle with its back to the camera is
+/// either inside a solid or behind one, and the depth test discards it
+/// only after it has cost full price.
+///
+/// **Three renders of one triangle**, because the failure modes are
+/// mirror images and each looks like success from the other side:
+/// `Both` draws it whichever way it is wound, `Front` draws only the
+/// counter-clockwise winding, `Back` only the clockwise one. Asked of
+/// the *same* geometry with its corner order reversed rather than of two
+/// different triangles, so nothing but the winding can account for the
+/// difference.
+///
+/// The mirror pair is what makes this more than a smoke test, and it
+/// earned its keep on the first run. A `cull_mode` wired to the wrong
+/// flag — `FRONT` where `BACK` belongs — passes any test that only ever
+/// asks for one mode. **And the first run failed**: `Front` culled the
+/// counter-clockwise triangle, because Vulkan applies its front-face
+/// rule in framebuffer space where Y points down, so a
+/// counter-clockwise clip-space triangle reaches the rasteriser wound
+/// clockwise. The rasteriser declares `CLOCKWISE` to undo that, and this
+/// is what holds it there — the assertions below are written the way a
+/// caller would expect them to read, which is the point.
+#[test]
+fn a_pipeline_draws_the_side_of_a_triangle_it_was_asked_for()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 16;
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+
+    // The middle of the target, so no edge rule can be what decides it.
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let corners = [[-0.5f32, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]];
+    let mut anticlockwise = Vec::new();
+    for corner in corners {
+        anticlockwise.extend(mesh_vertex(corner, green));
+    }
+    let mut clockwise = Vec::new();
+    for corner in [corners[0], corners[2], corners[1]] {
+        clockwise.extend(mesh_vertex(corner, green));
+    }
+    let one_way = device.create_mesh(&MeshDesc::new(
+        &anticlockwise,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2],
+    ))?;
+    let other_way = device.create_mesh(&MeshDesc::new(
+        &clockwise,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2],
+    ))?;
+
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+    let middle = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+
+    for (facing, one_shows, other_shows) in [
+        (Facing::Both, true, true),
+        (Facing::Front, true, false),
+        (Facing::Back, false, true),
+    ] {
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH, TargetFormat::Rgba8Srgb, builtin::MESH_LAYOUT)
+                .facing(facing),
+        )?;
+        for (mesh, should_show, wound) in [
+            (&one_way, one_shows, "counter-clockwise"),
+            (&other_way, other_shows, "clockwise"),
+        ] {
+            let items = [Item::new(&pipeline).mesh(mesh)];
+            target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+            target.read_back_into(&mut pixels);
+            let drawn = pixels[middle..middle + 4] == [0, 255, 0, 255];
+            assert_eq!(
+                drawn,
+                should_show,
+                "{facing:?}: a {wound} triangle {} drawn and {} have been - the cull flag is \
+                 wired to the wrong side, or to nothing",
+                if drawn { "was" } else { "was not" },
+                if should_show { "should" } else { "should not" }
+            );
+        }
+    }
+    Ok(())
+}
+
+/// **A draw over part of a mesh's index list.**
+///
+/// The test above proves the index buffer is read, using a second mesh
+/// built from a prefix of the same indices — which means every line of
+/// it is satisfied by a path that honours a count and ignores an offset,
+/// because a prefix has no offset. This one names slices of *one* mesh,
+/// including one that does not start at zero, which nothing a prefix can
+/// express reaches.
+///
+/// Why the feature exists: geometry that changes in pieces is meshed in
+/// pieces laid out as contiguous runs of one index list, so replacing a
+/// piece is a splice. Drawing a piece is then a `firstIndex` and an
+/// `indexCount`, and without them the choice is the whole mesh or none of
+/// it.
+#[test]
+fn an_index_range_draws_the_slice_it_names() -> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: u32 = 32;
+    fn at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+    let Some(device) = device_or_skip()? else {
+        return Ok(());
+    };
+    let extent = Extent {
+        width: SIZE,
+        height: SIZE,
+    };
+    let mut target = device.create_offscreen_target(extent)?;
+    let pipeline = device.create_pipeline(&PipelineDesc::mesh(
+        builtin::MESH,
+        TargetFormat::Rgba8Srgb,
+        builtin::MESH_LAYOUT,
+    ))?;
+
+    // The same four corners and two triangles as the test above: 0
+    // top-left, 1 top-right, 2 bottom-right, 3 bottom-left, sharing the
+    // 0-2 diagonal. Indices 0..3 are the top-right half, 3..6 the
+    // bottom-left half, and the two corners that tell them apart are the
+    // ones asserted below.
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let mut vertices = Vec::new();
+    for corner in [
+        [-1.0f32, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ] {
+        vertices.extend(mesh_vertex(corner, green));
+    }
+    let mesh = device.create_mesh(&MeshDesc::new(
+        &vertices,
+        MESH_VERTEX_STRIDE,
+        &[0u32, 1, 2, 0, 2, 3],
+    ))?;
+    let magenta = clear(Color::new(1.0, 0.0, 1.0, 1.0));
+    let mut pixels = vec![0u8; target.byte_len()];
+
+    // **The other triangle, from the same mesh, by index range.** This
+    // is the half above run backwards, and the asymmetry is the whole
+    // proof: `whole[..3]` can only ever reach a prefix, so every earlier
+    // line here is satisfied by a path that honours `indexCount` and
+    // ignores `firstIndex` entirely. Indices 3..6 are `0, 2, 3` —
+    // top-left, bottom-right, bottom-left — which is the *complement* of
+    // the triangle drawn above. A path that dropped the offset would
+    // draw triangle one again and put green in the top-right corner,
+    // where this asserts the clear colour.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(3, 3)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        at(&pixels, 0, SIZE - 1),
+        [0, 255, 0, 255],
+        "the bottom-left corner is inside the second triangle, which only a range starting          at index 3 can name"
+    );
+    assert_eq!(
+        at(&pixels, SIZE - 1, 0),
+        [255, 0, 255, 255],
+        "the top-right corner is outside it — a path honouring the count but ignoring the          first index would draw triangle one and cover this pixel"
+    );
+
+    // And the whole list named explicitly is the whole list: a range
+    // covering everything must equal no range at all, or the offset
+    // arithmetic is off by something that the two partial draws above
+    // both happen to survive.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(0, 6)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    let mut all = vec![0u8; target.byte_len()];
+    target.read_back_into(&mut all);
+    let items = [Item::new(&pipeline).mesh(&mesh)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert_eq!(
+        all, pixels,
+        "a range over the whole index list draws what naming no range draws"
+    );
+
+    // A zero-count range records a draw that covers nothing — the arm a
+    // caller looping over pieces relies on so an empty piece needs no
+    // branch. The target keeps its clear colour everywhere.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(3, 0)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| *px == [255, 0, 255, 255]),
+        "a zero-count range draws nothing at all, leaving the clear colour"
+    );
+
+    // The loop terminus, and the reason the bound is `end() <= count`
+    // rather than `first < count`: a caller walking contiguous pieces
+    // computes each `first` as a running offset, so the piece after the
+    // last one starts exactly at the end of the list. With a count of
+    // zero that names nothing and must be accepted, or every such loop
+    // needs a special case for its own final step.
+    let items = [Item::new(&pipeline).mesh(&mesh).indices(6, 0)];
+    target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
+    target.read_back_into(&mut pixels);
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| *px == [255, 0, 255, 255]),
+        "an empty range starting at the end of the list is the terminus of a walk over          pieces, not a mistake"
+    );
+
+    Ok(())
+}
+
 /// **What makes this prove indices rather than merely draw:** the second
 /// frame keeps the same four vertices and submits half the index list.
 /// A path that ignored the index buffer would draw the same picture
@@ -1723,9 +2247,9 @@ fn a_mesh_and_per_frame_bytes_bind_two_streams_in_one_draw()
     target.render(&RenderDesc::new(&[Pass::new(&magenta, &items)]))?;
     let mut pixels = vec![0u8; target.byte_len()];
     target.read_back_into(&mut pixels);
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel,
+            *pixel,
             [0, 0, 255, 255],
             "pixel {index} is not the mesh's own colour on adapter {:?} — a per-instance stream              bound where the per-vertex one belongs would change it",
             device.adapter()

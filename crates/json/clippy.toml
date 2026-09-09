@@ -1,0 +1,43 @@
+# Crate-local lint configuration (a crate-local file fully replaces the
+# workspace one, so the test allowances are repeated). Contract
+# tripwires: this crate turns a byte string into a document that borrows
+# it — it never reads a clock, never touches the filesystem, never spawns
+# a thread. Opening the file is the caller's business, which is what lets
+# the same reader serve a file on disk and a chunk carved out of the
+# middle of a larger one.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "this crate never reads a clock; a document is a pure function of its bytes" },
+    { path = "std::time::SystemTime::now", reason = "this crate never reads a clock; a document is a pure function of its bytes" },
+    { path = "std::fs::read", reason = "this crate never touches the filesystem; a caller that reads a file owns it, and owns the size bound on reading it" },
+    { path = "std::fs::read_to_string", reason = "this crate never touches the filesystem; a caller that reads a file owns it, and owns the size bound on reading it" },
+    { path = "std::fs::write", reason = "this crate never touches the filesystem; it reads bytes and writes nothing" },
+    { path = "std::fs::File::open", reason = "this crate never touches the filesystem; a caller that reads a file owns it" },
+    { path = "std::fs::File::create", reason = "this crate never touches the filesystem; it reads bytes and writes nothing" },
+    { path = "std::thread::spawn", reason = "this crate never spawns; parallelism belongs to the job system" },
+    { path = "std::thread::Builder::spawn", reason = "the named-thread spelling of the same act" },
+    { path = "std::fs::copy", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::metadata", reason = "this crate never touches the filesystem" },
+    { path = "std::fs::read_dir", reason = "this crate never touches the filesystem" },
+    { path = "std::io::Read::read_to_string", reason = "the whole-file road the fs bans would otherwise leave open" },
+    { path = "std::io::Read::read_to_end", reason = "the whole-file road the fs bans would otherwise leave open" },
+]
+
+# Banning the methods alone is not enough, and the pack reader learned it
+# first: `OpenOptions::new().read(true).open(…)` plus `Read::read_to_end`
+# is the same unbounded read of the same untrusted file, spelled in two
+# lines. A crate that takes bytes has no use for a path type at all, so
+# the type is the thing to refuse.
+disallowed-types = [
+    { path = "std::fs::File", reason = "this crate takes bytes; the caller owns the file and the bound on reading it" },
+    { path = "std::fs::OpenOptions", reason = "the two-line spelling of opening a file, which the method bans alone would leave open" },
+    { path = "std::path::Path", reason = "this crate never names a file, so it has no use for a path" },
+    { path = "std::path::PathBuf", reason = "this crate never names a file, so it has no use for a path" },
+]
+
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

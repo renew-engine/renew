@@ -586,17 +586,52 @@ impl Session {
     }
 
     /// Take the next confirmed tick, if there is one.
+    ///
+    /// # A departure does not discard what the roster already agreed to
+    ///
+    /// **The ending is reported after the confirmed ticks, not instead of
+    /// them.** A peer's goodbye arrives with a tick on it, and every tick
+    /// this session has already confirmed was confirmed *with that peer's
+    /// input in it* - the roster had to be complete or `pending` would
+    /// never have advanced. Ending on the spot would throw away work every
+    /// participant had agreed to, including the one that left.
+    ///
+    /// The visible cost of getting this wrong is two peers reporting
+    /// different tick counts for the same session: whoever consumed the
+    /// last step before the goodbye landed is one ahead of whoever did
+    /// not. Two worlds one step apart do not agree about anything, so it
+    /// reads as a desync and is not one.
+    ///
+    /// So: a fully-held tick is handed out whatever the phase, and the
+    /// outcome is returned only once nothing is left to hand out. A
+    /// desync is the exception and ends immediately - the worlds have
+    /// stopped agreeing, and running further on inputs they disagree
+    /// about is the one thing worse than stopping.
     pub fn advance(&mut self) -> Advance {
-        if let Some(outcome) = self.outcome {
+        // Still owed a `commit`, so nothing can be handed out yet - and
+        // this comes before the outcome so a caller mid-step is told to
+        // finish it rather than that the session is over.
+        if self.uncommitted.is_some() {
+            return Advance::Waiting;
+        }
+        let ending = self.outcome;
+        // A desync is the one ending that does not drain: two worlds that
+        // have stopped agreeing must not run further on inputs they
+        // disagree about, and there is nothing to salvage in trying.
+        if let Some(outcome @ Outcome::Desynced { .. }) = ending {
             return Advance::Ended(outcome);
         }
-        if self.uncommitted.is_some() || !matches!(self.phase, Phase::Playing) {
+        if ending.is_none() && !matches!(self.phase, Phase::Playing) {
             return Advance::Waiting;
         }
         let tick = self.pending;
         let roster = self.params.roster();
         let held = self.held_by(tick);
         if held != roster {
+            // Nothing more was agreed, so now the ending stands.
+            if let Some(outcome) = ending {
+                return Advance::Ended(outcome);
+            }
             if self.stalled_at != tick {
                 self.stalled_at = tick;
                 self.stats.stall_pumps = 0;

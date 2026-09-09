@@ -273,7 +273,7 @@ proptest! {
 /// same thing.
 #[test]
 fn a_header_field_is_split_at_its_first_equals_sign() {
-    let text = "renew-trace 2 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
+    let text = "renew-trace 3 sample=s ticks=1 timestep_ns=1 budget=1 k=v=w\n";
     let trace = parse(text).expect("a value may carry an equals sign");
     assert_eq!(
         trace.header().keys(),
@@ -285,7 +285,7 @@ fn a_header_field_is_split_at_its_first_equals_sign() {
 
     // The positional field is a value in the same sense, which is why
     // the no-equals rule binds keys only and cannot bind both halves.
-    let odd = "renew-trace 2 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
+    let odd = "renew-trace 3 sample=a=b ticks=1 timestep_ns=1 budget=1\n";
     let trace = parse(odd).expect("the sample name is a value too");
     assert_eq!(trace.header().sample(), "a=b");
     assert_eq!(write(&trace), odd);

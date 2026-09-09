@@ -11,13 +11,14 @@
 //! all three are pure and tested without a device.
 
 use renew_render3d::{
-    MeshRenderer, Scene, ShadowedCamera, ShadowedCameraRenderer, TexturedMeshRenderer, pass,
+    Frame, MeshRenderer, Scene, ShadowedCamera, ShadowedCameraRenderer, TexturedMeshRenderer, pass,
 };
 use renew_rhi::{
     Color, Device, DeviceDesc, Extent, ItemList, RenderDesc, TargetFormat, Validation,
     color_attachment,
 };
 use renew_sample_cube_world::grid::{Cell, Grid};
+use renew_sample_cube_world::ray::Face;
 
 use crate::mesh::{aimed_colour, colour, corner_shades, faces};
 use crate::projection::Projection;
@@ -121,6 +122,25 @@ pub enum ClipSurface {
     Textured,
 }
 
+/// Refuse a scene with nothing in it.
+///
+/// **Named and shared so the answer cannot depend on a device.** Both
+/// entry points below ask this first — the one that creates a device
+/// asks before creating it, and the one that takes a device asks before
+/// using it — so an empty world is `Empty` on every machine rather than
+/// `Empty` where there is an adapter and `NoDevice` where there is not.
+///
+/// One function rather than the same three lines twice, because the
+/// second copy would be unreachable: the outer entry point answers
+/// first, and a refusal nothing can reach is a refusal no test can hold
+/// an opinion about. A coverage gate said exactly that about it.
+fn refuse_if_empty(scene: &Scene) -> Result<(), RenderError> {
+    if scene.is_empty() {
+        return Err(RenderError::Empty);
+    }
+    Ok(())
+}
+
 /// Draw a scene whose positions are **already clip space**, offscreen.
 ///
 /// The guts of [`draw`], named because the world is not the only thing
@@ -132,15 +152,37 @@ pub enum ClipSurface {
 ///
 /// As [`draw`].
 pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
-
+    // Before the device, and the order is the point: see the guard's
+    // own documentation for what depends on it.
+    refuse_if_empty(scene)?;
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
         validation: Validation::IfAvailable,
     })
     .map_err(|error| RenderError::NoDevice(error.to_string()))?;
+    draw_clip_space_with(&device, scene, surface)
+}
+
+/// The same draw, onto a device the caller already holds.
+///
+/// **Split out for the same reason [`draw`] was split from [`to_png`]:
+/// so a test can look at the result without also owning the step
+/// before it.** A picture compared byte for byte is only evidence if
+/// the comparison knows which adapter drew it — a software rasterizer
+/// and a real GPU disagree legitimately — and a caller that cannot see
+/// the device cannot ask. Everything above creates a device and throws
+/// the handle away, which is right for a command-line render and wrong
+/// for an oracle.
+///
+/// # Errors
+///
+/// As [`draw`], less the device creation the caller has already done.
+pub fn draw_clip_space_with(
+    device: &Device,
+    scene: &Scene,
+    surface: ClipSurface,
+) -> Result<Vec<u8>, RenderError> {
+    refuse_if_empty(scene)?;
 
     let extent = Extent {
         width: SIZE,
@@ -156,16 +198,16 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
     let mesh;
     let items = match surface {
         ClipSurface::Flat => {
-            flat = MeshRenderer::new(&device, TargetFormat::Rgba8Srgb)
+            flat = MeshRenderer::new(device, TargetFormat::Rgba8Srgb)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = flat
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [flat.item(&mesh)]
         }
         ClipSurface::Textured => {
             textured = TexturedMeshRenderer::new(
-                &device,
+                device,
                 TargetFormat::Rgba8Srgb,
                 Extent {
                     width: crate::atlas::WIDTH,
@@ -175,7 +217,7 @@ pub fn draw_clip_space(scene: &Scene, surface: ClipSurface) -> Result<Vec<u8>, R
             )
             .map_err(|error| RenderError::Refused(error.to_string()))?;
             mesh = textured
-                .upload(&device, scene)
+                .upload(device, scene)
                 .map_err(|error| RenderError::Refused(error.to_string()))?;
             [textured.item(&mesh)]
         }
@@ -221,7 +263,13 @@ pub fn build(grid: &Grid) -> Scene {
                 paint[3],
             ]
         });
-        scene.quad_uv(
+        // **No frame on this path, said rather than derived.** These
+        // corners have already been projected, so a frame recovered from
+        // them describes the shape on the screen and not the surface in
+        // the world — a plausible-looking direction that is not one.
+        // `NOWHERE` is a value a reader can test for, and saying it is
+        // cheaper than paying a solve for an answer that means nothing.
+        scene.quad_uv_with_frame(
             [
                 view.project(corners[0]),
                 view.project(corners[1]),
@@ -230,9 +278,45 @@ pub fn build(grid: &Grid) -> Scene {
             ],
             shaded,
             crate::atlas::tile_uv(crate::atlas::tile_for(quad.face)),
+            Frame::NOWHERE,
         );
     }
     scene
+}
+
+/// The tangent frame of a face, taken from the axis basis rather than
+/// recovered from the corners.
+///
+/// **A mesher knows its frames; it should not pay to be told them.**
+/// [`crate::mesh::basis`] already returns the normal and the two in-plane axes, and
+/// [`Scene::quad_uv`] would spend a cross product, a square root and a
+/// handful of divides per face rediscovering the same three vectors from
+/// the corners it is handed. This hands them over instead. At four
+/// thousand faces that is the difference measured in this repository's
+/// mesh-build benchmark, and it is the reason
+/// [`Scene::quad_uv_with_frame`] exists at all.
+///
+/// **The handedness is negative, and the atlas is why.** `basis` picks
+/// its axes so that `u` × `v` is the normal, which makes the corner
+/// order counter-clockwise from outside; the texture coordinates
+/// [`crate::atlas::tile_uv`] emits for those same corners run `u` along
+/// `+u` and `v` along `-v`, because an atlas row is addressed from the
+/// top down while the face is wound from the bottom up. So the
+/// bitangent the record reconstructs, `cross(normal, tangent) * w`, has
+/// to be `-v`, and `w` is where that is said.
+///
+/// A test beside this asserts the whole thing against what deriving the
+/// frame from the corners produces, for every face — which is the only
+/// honest way to hold a hand-derived sign.
+#[must_use]
+pub(crate) fn face_frame(face: Face) -> Frame {
+    let (normal, u, _v) = crate::mesh::basis(face);
+    let axis = |a: [i8; 3]| [f32::from(a[0]), f32::from(a[1]), f32::from(a[2])];
+    let [x, y, z] = axis(u);
+    Frame {
+        normal: axis(normal),
+        tangent: [x, y, z, -1.0],
+    }
 }
 
 /// The scene for a camera: every visible face, in **world** space.
@@ -268,10 +352,16 @@ pub fn build_world_space(grid: &Grid, aimed: Option<Cell>) -> Scene {
                 paint[3],
             ]
         });
-        scene.quad_uv(
+        // The frame comes from the face's axis basis rather than from a
+        // cross product over the corners: the mesher chose those axes and
+        // has not forgotten them. Only this path can do it — the
+        // isometric one hands over projected corners, whose frame is not
+        // the surface's.
+        scene.quad_uv_with_frame(
             quad.corners(),
             corners,
             crate::atlas::tile_uv(crate::atlas::tile_for(quad.face)),
+            face_frame(quad.face),
         );
     }
     scene
@@ -313,9 +403,7 @@ pub(crate) fn draw_scene(
     overlay: Option<&Scene>,
     dust: Option<&renew_particles::ParticleSystem>,
 ) -> Result<Vec<u8>, RenderError> {
-    if scene.is_empty() {
-        return Err(RenderError::Empty);
-    }
+    refuse_if_empty(scene)?;
 
     let device = Device::new(&DeviceDesc {
         app_name: "cube",
@@ -343,6 +431,11 @@ pub(crate) fn draw_scene(
         },
         &crate::atlas::pixels(),
         SHADOW_MAP_SIZE,
+        // Both sides, which is what this sample has always drawn. Its
+        // geometry is a voxel shell and would take `Front` happily, but
+        // a sample exists to show the ordinary path and changing what it
+        // draws is not part of adding the option.
+        renew_rhi::Facing::Both,
     )
     .map_err(|error| RenderError::Refused(error.to_string()))?;
     let mesh = renderer
@@ -580,6 +673,81 @@ pub(crate) mod tests {
         );
     }
 
+    /// **The frame the mesher hands over is the frame the crate would
+    /// have derived, for every one of the six faces.**
+    ///
+    /// This is the assertion that makes the fast path safe to have. Its
+    /// value comes from an argument written by hand — that the atlas
+    /// addresses a row top-down while the face winds bottom-up, so the
+    /// handedness is negative — and a hand-written sign in a lighting
+    /// term is exactly the kind of thing that is wrong for a year before
+    /// anybody notices, because a normal map lit with the bitangent
+    /// inverted looks like a normal map, just a worse one.
+    ///
+    /// So it is checked against the derivation rather than argued for:
+    /// `Frame::of_face` recovers the frame from the corners and the
+    /// coordinates with no knowledge of the basis, and the two must
+    /// agree. If the atlas ever flips, or `basis` reorders an axis, or
+    /// `CORNER_SIGNS` changes, this goes red on whichever face moved.
+    ///
+    /// Tolerance rather than equality on the vectors: one side is exact
+    /// integers promoted to floats, the other comes out of a cross
+    /// product, a division and a square root. The handedness is compared
+    /// exactly, because it is a sign and there is nothing to round.
+    #[expect(
+        clippy::float_cmp,
+        reason = "only the handedness is compared exactly, and it is a sign; the two vectors are compared with a tolerance because one side is derived"
+    )]
+    #[test]
+    fn the_supplied_frame_is_the_one_the_crate_would_derive() {
+        use crate::mesh::Quad;
+        use renew_sample_cube_world::grid::{BRICK, Cell};
+
+        for face in [
+            Face::East,
+            Face::West,
+            Face::Top,
+            Face::Bottom,
+            Face::North,
+            Face::South,
+        ] {
+            let supplied = face_frame(face);
+            // One real face of one real block, so the corners are the
+            // ones the mesher actually emits rather than a stand-in.
+            let quad = Quad {
+                cell: Cell::new(1, 1, 1),
+                face,
+                block: BRICK,
+            };
+            let corners = quad.corners();
+            let uvs = crate::atlas::tile_uv(crate::atlas::tile_for(face));
+            let derived = Frame::of_face(
+                [corners[0], corners[1], corners[2]],
+                [uvs[0], uvs[1], uvs[2]],
+            );
+
+            for axis in 0..3 {
+                assert!(
+                    (supplied.normal[axis] - derived.normal[axis]).abs() < 1e-5,
+                    "{face:?}: normal {:?} was handed over where {:?} is derived",
+                    supplied.normal,
+                    derived.normal
+                );
+                assert!(
+                    (supplied.tangent[axis] - derived.tangent[axis]).abs() < 1e-5,
+                    "{face:?}: tangent {:?} was handed over where {:?} is derived",
+                    supplied.tangent,
+                    derived.tangent
+                );
+            }
+            assert_eq!(
+                supplied.tangent[3], derived.tangent[3],
+                "{face:?}: the handedness handed over is not the one derived, \
+                 which means the bitangent a shader rebuilds points the wrong way"
+            );
+        }
+    }
+
     use super::*;
 
     /// An all-air world has no faces, and that is data rather than a bug:
@@ -600,6 +768,29 @@ pub(crate) mod tests {
         assert!(
             matches!(draw(&empty), Err(RenderError::Empty)),
             "and the same holds for the view with no camera"
+        );
+    }
+
+    /// **The refusal both entry points share, asked without a device.**
+    ///
+    /// This is the assertion that keeps the answer independent of the
+    /// hardware. It needs no adapter, which is the point: a test that
+    /// had to build a device to ask would run on some lanes and skip on
+    /// others, and a skipped branch is a line nobody has an opinion
+    /// about.
+    ///
+    /// Probed by returning `Ok(())` for an empty scene: red here, and
+    /// red in the two draw tests above it.
+    #[test]
+    fn an_empty_scene_is_refused_before_any_device_is_asked_for() {
+        assert!(
+            matches!(refuse_if_empty(&Scene::new()), Err(RenderError::Empty)),
+            "a scene with no faces must be refused by name"
+        );
+        let arena = Grid::new(Cell::new(0, 0, 0), (2, 2, 2));
+        assert!(
+            refuse_if_empty(&build(&arena)).is_err(),
+            "an all-air world has no faces either"
         );
     }
 

@@ -96,6 +96,44 @@ datagrams — each a thin, explicit seam.
   survivor is a contract violation, fatal in dev builds. Desktop
   platforms close no epochs, so desktop-only applications inherit no
   obligation.
+- **A window's icon is the application's picture.** `WindowApp::icon`
+  is asked once per surface epoch, immediately before the window is
+  created, and defaults to nothing. It is on the trait rather than in
+  `WindowConfig` because an icon arrives from a decoder or an asset
+  pack, where the config is a handful of settings written by hand; the
+  bytes are checked against the dimensions when the `WindowIcon` is
+  built, so nothing has to be reported from inside a platform callback.
+  A platform with no notion of a window icon ignores it.
+- **A window can be given a floor.** `WindowConfig::min_logical_width`
+  and `min_logical_height` are the smallest the user may drag the window
+  to; nought is no floor and is the default. A layout can always be
+  checked against the live size — `WindowRef::physical_size` and the
+  `Resized` event both give it — and against the size the window opened
+  at. What a floor adds is a size the user cannot take away, so a check
+  made once still holds later.
+
+  Two things happen here rather than on three platforms differently. A
+  floor above the opening size **raises the opening size**, because the
+  backends disagree about that and "no smaller than this" should mean
+  the same everywhere. And a floor that is not a size — negative, NaN,
+  infinite — is **read as no floor**: passed on, NaN and infinity fail an
+  assertion inside the windowing library during window creation, which
+  is not a failure this seam can report. Both are enforced here and
+  tested at the creation call.
+
+  Passed on whatever `resizable` says: what a fixed-size window does with
+  a floor is the platform's business, and the three differ. Unsupported
+  on iOS, Android and Orbital, where the windowing library ignores it —
+  the same way a platform with no notion of a window icon ignores one.
+- **Fullscreen is asked for between events, not at bring-up.**
+  `LoopControl::set_fullscreen` fills the screen or gives a window back,
+  borderless, on whichever monitor the window is on. It is a runtime
+  request for the same reason the cursor grab is one: an application
+  learns whether it wants the screen long after the window opened — it
+  is a line in a settings menu and a key on the keyboard — and a flag
+  readable only at bring-up gives a player no way out of a fullscreen
+  they turned on. Exclusive fullscreen would need a monitor handle and a
+  video mode, two windowing-library types this seam exists to keep out.
 - **No ambient state.** No global clock, no environment reads; everything
   is a value or an explicit call.
 - **Errors carry context** — paths and thread names, in crate-local
@@ -146,3 +184,7 @@ no `unsafe` code.
   looks like; guessing now would speculate its API.
 - **Named threads or no threads** — a nameless thread in a profiler or a
   panic message is a debugging tax nobody needs to pay.
+- **An icon is validated where the caller is, not where the window is**
+  — four bytes a pixel is an assumption every caller makes and none of
+  them states, and a window is created at the one moment there is
+  nowhere useful to report a mistake to.

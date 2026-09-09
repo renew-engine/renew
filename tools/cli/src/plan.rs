@@ -74,6 +74,7 @@ pub fn steps(command: Command, smoke: bool) -> &'static [Step] {
         | Command::Modules
         | Command::AssetPack
         | Command::AssetInspect
+        | Command::AssetImport
         | Command::Doctor
         | Command::Run
         | Command::Record

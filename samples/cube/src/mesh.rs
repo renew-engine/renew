@@ -134,7 +134,7 @@ pub(crate) fn world_units(coordinate: i32) -> f32 {
 /// A face's outward normal and its two in-plane axes, chosen so that
 /// `u × v == normal` — which is what makes the corner order above
 /// counter-clockwise from outside without a per-face special case.
-const fn basis(face: Face) -> ([i8; 3], [i8; 3], [i8; 3]) {
+pub(crate) const fn basis(face: Face) -> ([i8; 3], [i8; 3], [i8; 3]) {
     match face {
         Face::East => ([1, 0, 0], [0, 0, -1], [0, 1, 0]),
         Face::West => ([-1, 0, 0], [0, 0, 1], [0, 1, 0]),
@@ -208,9 +208,15 @@ const OCCLUSION_STEP: f32 = 0.16;
 /// The colour a renderer should draw this face in.
 ///
 /// **Shaded by direction, because a flat-coloured cube is a silhouette.**
-/// Nothing lights the scene — there is no light, no normal in the vertex
-/// format, and no shading in the built-in shader — so a world drawn in
-/// one colour per block type reads as a single blob with an outline.
+/// Nothing lights the scene — there is no light and no shading in the
+/// built-in shader — so a world drawn in one colour per block type reads
+/// as a single blob with an outline.
+///
+/// The vertex record does now carry a normal and a tangent, and this
+/// comment said it did not for as long as that was untrue. Nothing
+/// samples them yet: they are there so that a lit path has somewhere to
+/// read from when one exists, and until then this shading is still what
+/// makes the edges visible.
 /// Varying the colour by which way a face points is the cheapest thing
 /// that makes edges visible, and it costs nothing at runtime because the
 /// colour is baked into the vertex.

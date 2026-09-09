@@ -26,13 +26,12 @@ fn workspace_root() -> PathBuf {
     guess.canonicalize().unwrap_or(guess)
 }
 
-/// Crates whose manifest declares a `sanitized` feature.
+/// The workspace's own packages and targets, as cargo computes them.
 ///
-/// Read from cargo rather than by scraping TOML: the feature table is
-/// exactly what cargo already computes, and a hand-rolled parser here
-/// would be a third copy of a fact, in a test whose whole subject is
-/// duplicated facts.
-fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
+/// Shared by the checks below rather than invoked once each, because a
+/// second copy of this would be the exact thing this file exists to
+/// catch — a fact maintained in two places.
+fn workspace_metadata(root: &Path) -> Result<Value, String> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(root)
@@ -45,7 +44,17 @@ fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
         ));
     }
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let document = json::parse(&text).map_err(|error| format!("metadata is not JSON: {error}"))?;
+    json::parse(&text).map_err(|error| format!("metadata is not JSON: {error}"))
+}
+
+/// Crates whose manifest declares a `sanitized` feature.
+///
+/// Read from cargo rather than by scraping TOML: the feature table is
+/// exactly what cargo already computes, and a hand-rolled parser here
+/// would be a third copy of a fact, in a test whose whole subject is
+/// duplicated facts.
+fn crates_declaring_sanitized(root: &Path) -> Result<Vec<String>, String> {
+    let document = workspace_metadata(root)?;
     let packages = document
         .get("packages")
         .and_then(Value::as_array)
@@ -398,37 +407,15 @@ const BANNED_IN_SIMULATION: &[&str] = &[
     "std::collections::hash_map::DefaultHasher",
 ];
 
-/// Crates whose manifest sets `simulation = true`, with the text of the
-/// lint file sitting beside it.
-/// Every path a lint file actually bans, read as structure rather than text.
+/// The parser lives in the checker now, so there is one of it.
 ///
-/// The check over these used to be `file.contains(banned)` across the raw
-/// bytes, which passes on a commented-out entry and on a banned path
-/// quoted inside another entry's `reason` prose. No file has that shape
-/// today, so the guard was passing for the right reason -- but it was one
-/// explanatory sentence away from passing for the wrong one, and the
-/// reasons in these files do quote paths at each other.
-///
-/// Comment lines are dropped first, then each `path = "..."` value is
-/// taken. That is the only position clippy reads, so it is the only
-/// position this should accept.
-fn declared_paths(lints: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    for line in lints.lines() {
-        let line = line.trim();
-        if line.starts_with('#') {
-            continue;
-        }
-        let mut rest = line;
-        while let Some(at) = rest.find("path = \"") {
-            rest = &rest[at + "path = \"".len()..];
-            let Some(end) = rest.find('"') else { break };
-            paths.push(rest[..end].to_string());
-            rest = &rest[end..];
-        }
-    }
-    paths
-}
+/// It was written here first, with a comment explaining that a raw
+/// `contains` over the bytes passes on a commented-out entry and on a
+/// path quoted inside another entry's `reason`. That comment moved with
+/// the function, because the float-method gate was then written with a
+/// raw `contains` anyway — the note was worth more where the next
+/// person to need it would look.
+use renew_cli::structure::declared_paths;
 
 fn simulation_crates(root: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut found = Vec::new();
@@ -763,7 +750,7 @@ mod tests",
         .collect();
     assert!(
         missing.is_empty(),
-        "the parser accepts {missing:?} and the usage text never mentions them;          a flag a user cannot discover may as well not exist"
+        "the parser accepts {missing:?} and the usage text never mentions them; a flag a user cannot discover may as well not exist"
     );
 }
 
@@ -916,10 +903,11 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[test]
 fn every_golden_matches_the_hash_its_provenance_records() {
-    // The ritual is: render a candidate, have a human look at it, rename
-    // it, and commit it beside a sidecar recording what was approved and
-    // what rendered it. The sidecar is the only record that a human ever
-    // saw those bytes.
+    // The ritual is: render a candidate, have an inspector look at it,
+    // rename it, and commit it beside a sidecar recording what was approved
+    // and what rendered it. The sidecar is the only record that an inspector
+    // ever saw those bytes. An inspector is a person, or a session that
+    // records on the pull request what it inspected.
     //
     // This has already failed once. A golden was refreshed with "the
     // bytes the comparison produces" and its sidecar was left behind, so
@@ -1355,6 +1343,114 @@ fn parenthesised_rule_citation(line: &str) -> Option<String> {
     None
 }
 
+/// Every fuzz target the workspace builds, in declaration order.
+fn fuzz_targets(root: &Path) -> Result<Vec<String>, String> {
+    let manifest = std::fs::read_to_string(root.join("fuzz/Cargo.toml"))
+        .map_err(|error| format!("fuzz/Cargo.toml is unreadable: {error}"))?;
+
+    // A target is a `[[bin]]` section, and the package's own `name` is
+    // not one -- so sections are counted rather than every `name = `
+    // line, which would pick up the package and call it a target.
+    let mut names = Vec::new();
+    let mut in_bin = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_bin = line == "[[bin]]";
+            continue;
+        }
+        if !in_bin {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name = ") {
+            names.push(rest.trim_matches('"').to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err("no fuzz targets found, which cannot be right".to_owned());
+    }
+    Ok(names)
+}
+
+/// **Every fuzz target has an entry in the refusal catalogue.**
+///
+/// The catalogue is written to be implemented against: a reader is built
+/// by going down its list and answering every entry. That only works
+/// while the list describes the readers that exist — and a table of
+/// readers is exactly the kind of document that drifts, because nothing
+/// fails when a row is missing.
+///
+/// Three readers went in with fuzz targets and corpora and no row here
+/// before this check existed, which is the whole argument for it. A
+/// target is the right thing to key on: it is declared once, in one file,
+/// by the same change that adds the reader.
+#[test]
+fn every_fuzz_target_has_an_entry_in_the_refusal_catalogue() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let catalogue = std::fs::read_to_string(root.join("REFUSALS.md"))
+        .expect("the catalogue is part of the tree");
+
+    // **The table, not the whole document.** A substring search over the
+    // file is satisfied by any passing mention -- including one in a
+    // paragraph the same change added -- while the message below asks
+    // for a row with an error type, a refusal count and a corpus floor.
+    // A check that accepts less than its message demands teaches the
+    // next reader to write the mention and move on.
+    let rows: Vec<&str> = catalogue
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('|'))
+        .collect();
+
+    let missing: Vec<&String> = targets
+        .iter()
+        .filter(|target| !rows.iter().any(|row| row.contains(target.as_str())))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these fuzz targets have no row in REFUSALS.md's table of readers: {missing:?}. A reader \
+         worth attacking is worth describing: add its row, with its error type, how many refusals \
+         it has and its corpus floor."
+    );
+}
+
+/// **Every fuzz target is actually run by the fuzz workflow.**
+///
+/// A harness that is declared, built by nothing and run by nothing is
+/// not evidence of anything, and it fails silently: the corpus still
+/// replays through the library at every merge, so the reader looks
+/// covered while the assertions written into the harness itself have
+/// never once executed.
+///
+/// This is the half the catalogue check does not cover. That one asks
+/// whether a reader is described; this asks whether it is attacked.
+#[test]
+fn every_fuzz_target_is_run_by_the_fuzz_workflow() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/fuzz.yml"))
+        .expect("the fuzz workflow is part of the tree");
+
+    let matrix = workflow
+        .lines()
+        .find(|line| line.trim_start().starts_with("target: ["))
+        .expect("the fuzz workflow names its targets in one matrix line");
+
+    let unrun: Vec<&String> = targets
+        .iter()
+        .filter(|target| !matrix.contains(target.as_str()))
+        .collect();
+
+    assert!(
+        unrun.is_empty(),
+        "these fuzz targets are declared but never run: {unrun:?}. Add them to the matrix in \
+         .github/workflows/fuzz.yml, or delete the harness -- a target nothing runs is a claim \
+         nothing checks."
+    );
+}
+
 /// No source file may cite material this repository does not contain.
 ///
 /// **A comment naming a document a reader cannot open is worse than a
@@ -1559,6 +1655,88 @@ fn only_the_platform_socket_module_names_the_standard_network_types() {
     assert!(
         faults.is_empty(),
         "the socket belongs to one module and these reach around it:\n{}",
+        faults.join("\n")
+    );
+}
+/// Every example target in the workspace has a name no other package
+/// uses.
+///
+/// **Cargo names the output file from the target, not from the package.**
+/// An example called `make_corpus` in three crates is three compilations
+/// writing `target/<profile>/examples/make_corpus.exe`, and a workspace
+/// build runs them concurrently. Cargo warns about the collision and says
+/// it may become a hard error; before that, the symptom is a link step
+/// failing to open a file another link step is holding.
+///
+/// **That is not hypothetical.** `renew-json`, `renew-png` and
+/// `renew-mesh` each shipped a `make_corpus`, and a Windows CI run failed
+/// with `LNK1104: cannot open file 'make_corpus.exe'` on a tree that was
+/// otherwise fine. It was put down to a linker file lock and re-run
+/// green, which is the worst available outcome: the diagnosis was half
+/// right and the cause stayed in the tree. The corpus generators now
+/// carry their format in the name.
+///
+/// The check is over *every* example rather than that one name, because
+/// a corpus generator per format is the shape this repository keeps
+/// producing.
+#[test]
+fn no_two_packages_declare_an_example_of_the_same_name() {
+    let root = workspace_root();
+    let document = workspace_metadata(&root).unwrap_or_else(|error| panic!("{error}"));
+    let packages = document
+        .get("packages")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("cargo metadata carried no packages array"));
+
+    // (example name, declaring package), in metadata order.
+    let mut examples: Vec<(String, String)> = Vec::new();
+    for package in packages {
+        let Some(owner) = package.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(targets) = package.get("targets").and_then(Value::as_array) else {
+            continue;
+        };
+        for target in targets {
+            let is_example = target
+                .get("kind")
+                .and_then(Value::as_array)
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("example")));
+            if !is_example {
+                continue;
+            }
+            if let Some(name) = target.get("name").and_then(Value::as_str) {
+                examples.push((name.to_owned(), owner.to_owned()));
+            }
+        }
+    }
+
+    assert!(
+        !examples.is_empty(),
+        "no example targets found at all, so this check measured nothing"
+    );
+
+    let mut faults = Vec::new();
+    let mut reported: Vec<&str> = Vec::new();
+    for (name, _) in &examples {
+        if reported.contains(&name.as_str()) {
+            continue;
+        }
+        reported.push(name);
+        let sharers: Vec<&str> = examples
+            .iter()
+            .filter(|(other, _)| other == name)
+            .map(|(_, package)| package.as_str())
+            .collect();
+        if sharers.len() > 1 {
+            faults.push(format!("`{name}` in {}", sharers.join(", ")));
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "these example names are declared by more than one package, and cargo \
+         writes them all to one path:\n{}",
         faults.join("\n")
     );
 }

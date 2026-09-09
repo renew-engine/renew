@@ -17,13 +17,149 @@ use core::fmt;
 use winit::application::ApplicationHandler;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 
+/// A window's icon, as straight RGBA rows.
+///
+/// **Plain data, like everything else that crosses this seam.** No
+/// windowing-library type appears here for the reason the module doc
+/// gives: a consumer naming an icon must not be compiling a windowing
+/// library to do it. The bytes are eight-bit red, green, blue and alpha
+/// in that order, row-major from the top-left, which is what every image
+/// decoder on the way in already produces.
+///
+/// **Validated at construction rather than at the window.** A window is
+/// created once, deep inside a platform callback, at the one moment
+/// there is nowhere useful to report a mistake to; the size of a byte
+/// slice against two dimensions is arithmetic that can be done anywhere,
+/// so it is done where the caller is still holding the error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl WindowIcon {
+    /// Take `rgba` as a `width` by `height` image.
+    ///
+    /// # Errors
+    ///
+    /// [`IconError::Empty`] for an image with no pixels in it, and
+    /// [`IconError::WrongLength`] when the bytes and the dimensions
+    /// disagree — which is the mistake this type exists to catch, since
+    /// four bytes a pixel is the assumption every caller makes silently.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, IconError> {
+        if width == 0 || height == 0 {
+            return Err(IconError::Empty);
+        }
+        let wanted = usize::try_from(width)
+            .ok()
+            .and_then(|width| usize::try_from(height).ok().map(|height| (width, height)))
+            .and_then(|(width, height)| width.checked_mul(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(IconError::Empty)?;
+        if rgba.len() != wanted {
+            return Err(IconError::WrongLength {
+                expected: wanted,
+                found: rgba.len(),
+            });
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// How wide it is, in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// How tall it is, in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Its rows, as RGBA bytes.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+/// Why a set of bytes is not an icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconError {
+    /// No pixels: a zero on either side.
+    Empty,
+    /// The bytes and the dimensions disagree, at four bytes a pixel.
+    WrongLength {
+        /// What `width * height * 4` came to.
+        expected: usize,
+        /// How many bytes arrived.
+        found: usize,
+    },
+}
+
+impl fmt::Display for IconError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "an icon with no pixels in it"),
+            Self::WrongLength { expected, found } => {
+                write!(f, "an icon of {expected} bytes arrived as {found}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IconError {}
+
 /// Plain-data window configuration.
 #[derive(Debug, Clone)]
 pub struct WindowConfig {
+    /// What the title bar says.
     pub title: String,
+    /// How wide the window opens, in logical pixels, before
+    /// [`Self::min_logical_width`] is applied to it.
     pub logical_width: f64,
+    /// How tall the window opens, in logical pixels, before
+    /// [`Self::min_logical_height`] is applied to it.
     pub logical_height: f64,
+    /// Whether the user may resize it at all.
     pub resizable: bool,
+    /// The narrowest the window may be dragged to, in logical pixels.
+    /// Nought is no floor, and is the default.
+    ///
+    /// **A layout can always be checked against the size the window
+    /// opened at; a floor is the only size it can be checked against
+    /// and rely on.** The opening size is one a user takes away by
+    /// dragging a corner, so a guard measured against it outlives the
+    /// thing it measured. This is the size that is still there.
+    ///
+    /// **Nought rather than an `Option`, because the platform does not
+    /// make the distinction.** A floor of nought and no floor produce
+    /// the same window everywhere this runs, so an `Option` would carry
+    /// a state nothing downstream can tell apart — and two named
+    /// scalars match the two fields above them, where a pair could be
+    /// written the wrong way round and still compile.
+    ///
+    /// Anything not finite, or below nought, is **read as no floor**.
+    /// See [`floor_of`] for why that is a sanitised value rather than
+    /// an error or a pass-through.
+    ///
+    /// A floor above [`Self::logical_width`] raises it, so that the
+    /// window is not smaller than its floor on any platform — the
+    /// backends do not agree about that on their own.
+    ///
+    /// Unsupported on iOS, Android and Orbital, where the windowing
+    /// library ignores it.
+    pub min_logical_width: f64,
+    /// The shortest the window may be dragged to, in logical pixels.
+    /// Nought is no floor, and is the default. See
+    /// [`Self::min_logical_width`], which this matches in every respect.
+    pub min_logical_height: f64,
 }
 
 impl Default for WindowConfig {
@@ -33,7 +169,40 @@ impl Default for WindowConfig {
             logical_width: 1280.0,
             logical_height: 720.0,
             resizable: true,
+            // No floor: what every window did before these two existed,
+            // so a caller that says nothing gets what it used to get.
+            min_logical_width: 0.0,
+            min_logical_height: 0.0,
         }
+    }
+}
+
+/// One floor dimension as the window seam will use it: finite, not
+/// negative, and nought where the caller asked for nonsense.
+///
+/// **Sanitised here rather than passed on, and the reason is a crash.**
+/// The windowing library clamps the requested size between the floor
+/// and a ceiling, and that clamp asserts `min <= max` — so a floor of
+/// `f64::NAN` or `f64::INFINITY` fails an assertion inside a dependency,
+/// during window creation, in a seam whose whole documented character is
+/// that failures come back as a `Result`. A negative floor is the
+/// quieter half of the same problem: it converts to an unsigned pixel
+/// count by saturating at nought, so it silently means no floor already.
+///
+/// **Sanitised rather than refused**, because refusing needs an error
+/// this seam has nowhere to report from: a window is created deep inside
+/// a platform callback, which is the one moment there is nobody to hand
+/// a `Result` to. `WindowIcon` makes the other choice and validates at
+/// construction — it can, because an icon is built by the caller before
+/// the loop starts. A config is a struct literal with no constructor to
+/// check it in, so the check lives here and its answer is documented
+/// rather than surprising.
+#[must_use]
+pub fn floor_of(asked: f64) -> f64 {
+    if asked.is_finite() && asked > 0.0 {
+        asked
+    } else {
+        0.0
     }
 }
 
@@ -72,6 +241,9 @@ pub struct LoopControl {
     /// A change of mind about the cursor, if the app had one this
     /// iteration. `None` leaves the grab as it is.
     cursor: Option<bool>,
+    /// A change of mind about filling the screen, on the same terms as
+    /// the cursor: `None` leaves the window as it is.
+    fullscreen: Option<bool>,
 }
 
 impl LoopControl {
@@ -102,6 +274,41 @@ impl LoopControl {
         self.cursor = Some(held);
     }
 
+    /// Fill the screen, or go back to a window.
+    ///
+    /// **Between events, and for the same reason the cursor is.** An
+    /// application learns whether it wants the screen long after the
+    /// window opened: it is a line in a settings menu and a key on the
+    /// keyboard, and a flag readable only at bring-up gives a player no
+    /// way out of a fullscreen they turned on. That argument is
+    /// [`Self::hold_cursor`]'s, unchanged; it was made there first and
+    /// it applies here exactly.
+    ///
+    /// Borderless, on whichever monitor the window is on. Exclusive
+    /// fullscreen needs a monitor handle and a video mode, which are two
+    /// windowing-library types this seam exists to keep out — see the
+    /// module doc — and nothing has asked for one. A `bool` is what an
+    /// application wants to say.
+    ///
+    /// Idempotent, and asking twice for the same thing costs one call to
+    /// the platform that changes nothing.
+    ///
+    /// **Applied to the live window and not remembered**, which is the
+    /// one way this differs from the cursor beside it. The cursor is
+    /// remembered because focus loss makes the OS drop the grab and the
+    /// loop has to put it back; nothing takes fullscreen away, so there
+    /// is nothing to reapply. The case that would need a memory is a
+    /// surface epoch closing and reopening — and it cannot arise:
+    /// desktop platforms close no epochs (see the module doc), and the
+    /// platform that does is one where the windowing library does not
+    /// support fullscreen at all. Written down because "the request is
+    /// dropped when there is no window" is otherwise a silent hole, and
+    /// the day a platform both closes epochs and honours this is the day
+    /// to give it the cursor's treatment.
+    pub fn set_fullscreen(&mut self, filling: bool) {
+        self.fullscreen = Some(filling);
+    }
+
     /// Whether [`exit`](Self::exit) was called this iteration.
     #[must_use]
     pub fn exiting(&self) -> bool {
@@ -119,6 +326,15 @@ impl LoopControl {
     #[must_use]
     pub fn cursor_request(&self) -> Option<bool> {
         self.cursor
+    }
+
+    /// What the app asked about filling the screen this iteration, if
+    /// anything. Three-valued for the same reason the cursor is: saying
+    /// nothing leaves the window alone, which is a different instruction
+    /// from asking for a window back.
+    #[must_use]
+    pub fn fullscreen_request(&self) -> Option<bool> {
+        self.fullscreen
     }
 }
 
@@ -277,6 +493,27 @@ pub trait WindowApp {
     /// one revoking platform is Android; iOS suspends without revoking
     /// and deliberately does not reach this callback.
     fn surface_lost(&mut self) {}
+
+    /// The icon this application's window should carry, if it has one.
+    ///
+    /// Asked once per surface epoch, immediately before the window is
+    /// created, so an application that rebuilds its icon between epochs
+    /// gets the one it has now.
+    ///
+    /// **Defaulted to nothing, and on the trait rather than in
+    /// [`WindowConfig`].** An icon is a picture the application owns, in
+    /// a format only the application knows how to produce - it arrives
+    /// from a decoder, an asset pack or a build script - where the
+    /// config is a handful of plain settings a caller writes by hand.
+    /// Defaulting it also means every application that already exists
+    /// keeps compiling and keeps the icon the system gives an unadorned
+    /// executable, which is what it had before.
+    ///
+    /// A platform with no notion of a window icon ignores this, which
+    /// is why it answers with a picture rather than a promise.
+    fn icon(&self) -> Option<WindowIcon> {
+        None
+    }
 
     /// The application has stopped being the one in front.
     ///
@@ -648,13 +885,41 @@ impl Adapter<'_> {
         if self.epoch.window().is_some() || self.failure.is_some() {
             return;
         }
-        let attributes = winit::window::Window::default_attributes()
+        // **The opening size is raised to the floor here, so that every
+        // platform opens the same window.** Left to the backends they
+        // disagree: two of the three clamp the requested size up to the
+        // minimum and the third sets the minimum as a hint and opens at
+        // whatever was asked for. A caller who writes a floor larger
+        // than the size it opens at has contradicted itself, and the
+        // honest reading of "no smaller than this" is that the window is
+        // not smaller than this — on every machine.
+        let floor = (
+            floor_of(self.config.min_logical_width),
+            floor_of(self.config.min_logical_height),
+        );
+        let mut attributes = winit::window::Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_inner_size(winit::dpi::LogicalSize::new(
-                self.config.logical_width,
-                self.config.logical_height,
+                self.config.logical_width.max(floor.0),
+                self.config.logical_height.max(floor.1),
             ));
+        if floor.0 > 0.0 || floor.1 > 0.0 {
+            attributes =
+                attributes.with_min_inner_size(winit::dpi::LogicalSize::new(floor.0, floor.1));
+        }
+        // The icon is asked for here rather than held on the config
+        // because it is the application's picture; see `WindowApp::icon`.
+        // Its bytes were checked against its dimensions when it was
+        // built, so the only way the conversion below can refuse is a
+        // rule this seam does not know about - and a window that opens
+        // without its icon is worth more than one that does not open.
+        if let Some(icon) = self.app.icon() {
+            let (width, height) = (icon.width(), icon.height());
+            if let Ok(icon) = winit::window::Icon::from_rgba(icon.rgba().to_vec(), width, height) {
+                attributes = attributes.with_window_icon(Some(icon));
+            }
+        }
         match create(attributes) {
             Ok(window) => {
                 let window = std::sync::Arc::new(window);
@@ -741,6 +1006,17 @@ impl Adapter<'_> {
             // same thing: a desktop that refuses confinement plays on
             // without mouse look, which is not a failure to report.
             let _refused = self.apply_cursor_grab(held);
+        }
+        // `None` below is the windowing library's "the monitor this
+        // window is on", which is the only answer available without
+        // naming one — and naming one would mean a handle crossing this
+        // seam. Said here rather than inside the block because the
+        // coverage gate measures a block's lines, comments included, and
+        // a body of one statement needs a one-line exemption.
+        if let Some(filling) = control.fullscreen
+            && let Some(window) = self.epoch.window()
+        {
+            window.set_fullscreen(filling.then_some(winit::window::Fullscreen::Borderless(None)));
         }
         if control.redraw
             && let Some(window) = self.epoch.window()
@@ -1036,6 +1312,70 @@ fn translate_key(key: winit::keyboard::PhysicalKey) -> KeyCode {
             Wk::KeyA => KeyCode::KeyA,
             Wk::KeyS => KeyCode::KeyS,
             Wk::KeyD => KeyCode::KeyD,
+            Wk::KeyB => KeyCode::KeyB,
+            Wk::KeyC => KeyCode::KeyC,
+            Wk::KeyE => KeyCode::KeyE,
+            Wk::KeyF => KeyCode::KeyF,
+            Wk::KeyG => KeyCode::KeyG,
+            Wk::KeyH => KeyCode::KeyH,
+            Wk::KeyI => KeyCode::KeyI,
+            Wk::KeyJ => KeyCode::KeyJ,
+            Wk::KeyK => KeyCode::KeyK,
+            Wk::KeyL => KeyCode::KeyL,
+            Wk::KeyM => KeyCode::KeyM,
+            Wk::KeyN => KeyCode::KeyN,
+            Wk::KeyO => KeyCode::KeyO,
+            Wk::KeyP => KeyCode::KeyP,
+            Wk::KeyQ => KeyCode::KeyQ,
+            Wk::KeyR => KeyCode::KeyR,
+            Wk::KeyT => KeyCode::KeyT,
+            Wk::KeyU => KeyCode::KeyU,
+            Wk::KeyV => KeyCode::KeyV,
+            Wk::KeyX => KeyCode::KeyX,
+            Wk::KeyY => KeyCode::KeyY,
+            Wk::KeyZ => KeyCode::KeyZ,
+            Wk::Digit0 => KeyCode::Digit0,
+            Wk::Digit1 => KeyCode::Digit1,
+            Wk::Digit2 => KeyCode::Digit2,
+            Wk::Digit3 => KeyCode::Digit3,
+            Wk::Digit4 => KeyCode::Digit4,
+            Wk::Digit5 => KeyCode::Digit5,
+            Wk::Digit6 => KeyCode::Digit6,
+            Wk::Digit7 => KeyCode::Digit7,
+            Wk::Digit8 => KeyCode::Digit8,
+            Wk::Digit9 => KeyCode::Digit9,
+            Wk::F1 => KeyCode::F1,
+            Wk::F2 => KeyCode::F2,
+            Wk::F3 => KeyCode::F3,
+            Wk::F4 => KeyCode::F4,
+            Wk::F5 => KeyCode::F5,
+            Wk::F6 => KeyCode::F6,
+            Wk::F7 => KeyCode::F7,
+            Wk::F8 => KeyCode::F8,
+            Wk::F9 => KeyCode::F9,
+            Wk::F10 => KeyCode::F10,
+            Wk::F11 => KeyCode::F11,
+            Wk::F12 => KeyCode::F12,
+            Wk::ShiftLeft => KeyCode::ShiftLeft,
+            Wk::ShiftRight => KeyCode::ShiftRight,
+            Wk::ControlLeft => KeyCode::ControlLeft,
+            Wk::ControlRight => KeyCode::ControlRight,
+            Wk::AltLeft => KeyCode::AltLeft,
+            Wk::AltRight => KeyCode::AltRight,
+            Wk::PageUp => KeyCode::PageUp,
+            Wk::PageDown => KeyCode::PageDown,
+            Wk::Insert => KeyCode::Insert,
+            Wk::Minus => KeyCode::Minus,
+            Wk::Equal => KeyCode::Equal,
+            Wk::BracketLeft => KeyCode::BracketLeft,
+            Wk::BracketRight => KeyCode::BracketRight,
+            Wk::Semicolon => KeyCode::Semicolon,
+            Wk::Quote => KeyCode::Quote,
+            Wk::Comma => KeyCode::Comma,
+            Wk::Period => KeyCode::Period,
+            Wk::Slash => KeyCode::Slash,
+            Wk::Backslash => KeyCode::Backslash,
+            Wk::Backquote => KeyCode::Backquote,
             _ => KeyCode::Unidentified,
         },
         PhysicalKey::Unidentified(_) => KeyCode::Unidentified,
@@ -1074,6 +1414,82 @@ fn translate_wheel(delta: winit::event::MouseScrollDelta) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// An icon is its bytes and its dimensions agreeing.
+    ///
+    /// **The mistake this type exists to catch is four bytes a pixel**,
+    /// which every caller assumes and none of them states. A window is
+    /// created once, inside a platform callback, at the one moment
+    /// there is nowhere to report a bad picture to — so the arithmetic
+    /// is done where the caller still holds the error, and the wrong
+    /// count has to be refused there rather than dropped there.
+    ///
+    /// Probed by comparing against `width * height` rather than
+    /// `width * height * 4`: a quarter-sized buffer is accepted and the
+    /// first case fails.
+    #[test]
+    fn an_icon_is_refused_unless_its_bytes_match_its_size() {
+        use super::{IconError, WindowIcon};
+
+        let square = WindowIcon::from_rgba(2, 2, vec![0; 16]).expect("four pixels, sixteen bytes");
+        assert_eq!(square.width(), 2);
+        assert_eq!(square.height(), 2);
+        assert_eq!(square.rgba().len(), 16);
+
+        // A rectangle, so that a rule which multiplied one side by
+        // itself would be caught.
+        assert!(WindowIcon::from_rgba(4, 2, vec![0; 32]).is_ok());
+        assert_eq!(
+            WindowIcon::from_rgba(4, 2, vec![0; 16]),
+            Err(IconError::WrongLength {
+                expected: 32,
+                found: 16
+            })
+        );
+        assert_eq!(
+            WindowIcon::from_rgba(2, 2, vec![0; 17]),
+            Err(IconError::WrongLength {
+                expected: 16,
+                found: 17
+            })
+        );
+        for (width, height) in [(0, 4), (4, 0), (0, 0)] {
+            assert_eq!(
+                WindowIcon::from_rgba(width, height, Vec::new()),
+                Err(IconError::Empty),
+                "{width}x{height} is not a picture"
+            );
+        }
+    }
+
+    /// Every refusal says which one it is and carries its numbers.
+    ///
+    /// **A message that does not name the sizes is a message that sends
+    /// somebody to count bytes by hand.** The whole value of validating
+    /// an icon where the caller is standing is that the caller can be
+    /// told what went wrong; a `Display` that said "bad icon" would
+    /// throw that away at the last step.
+    ///
+    /// Probed by printing the same sentence for both variants: the two
+    /// assertions collapse onto each other and the second fails.
+    #[test]
+    fn an_icon_refusal_names_itself_and_its_numbers() {
+        use super::IconError;
+
+        assert_eq!(IconError::Empty.to_string(), "an icon with no pixels in it");
+        let wrong = IconError::WrongLength {
+            expected: 64,
+            found: 16,
+        }
+        .to_string();
+        assert!(wrong.contains("64"), "the wanted size is missing: {wrong}");
+        assert!(wrong.contains("16"), "the found size is missing: {wrong}");
+        assert_ne!(
+            wrong,
+            IconError::Empty.to_string(),
+            "two different refusals read the same"
+        );
+    }
 
     /// Text is delivered; the keys that also report text are not.
     ///
@@ -1205,6 +1621,70 @@ mod tests {
             (Wk::KeyA, KeyCode::KeyA),
             (Wk::KeyS, KeyCode::KeyS),
             (Wk::KeyD, KeyCode::KeyD),
+            (Wk::KeyB, KeyCode::KeyB),
+            (Wk::KeyC, KeyCode::KeyC),
+            (Wk::KeyE, KeyCode::KeyE),
+            (Wk::KeyF, KeyCode::KeyF),
+            (Wk::KeyG, KeyCode::KeyG),
+            (Wk::KeyH, KeyCode::KeyH),
+            (Wk::KeyI, KeyCode::KeyI),
+            (Wk::KeyJ, KeyCode::KeyJ),
+            (Wk::KeyK, KeyCode::KeyK),
+            (Wk::KeyL, KeyCode::KeyL),
+            (Wk::KeyM, KeyCode::KeyM),
+            (Wk::KeyN, KeyCode::KeyN),
+            (Wk::KeyO, KeyCode::KeyO),
+            (Wk::KeyP, KeyCode::KeyP),
+            (Wk::KeyQ, KeyCode::KeyQ),
+            (Wk::KeyR, KeyCode::KeyR),
+            (Wk::KeyT, KeyCode::KeyT),
+            (Wk::KeyU, KeyCode::KeyU),
+            (Wk::KeyV, KeyCode::KeyV),
+            (Wk::KeyX, KeyCode::KeyX),
+            (Wk::KeyY, KeyCode::KeyY),
+            (Wk::KeyZ, KeyCode::KeyZ),
+            (Wk::Digit0, KeyCode::Digit0),
+            (Wk::Digit1, KeyCode::Digit1),
+            (Wk::Digit2, KeyCode::Digit2),
+            (Wk::Digit3, KeyCode::Digit3),
+            (Wk::Digit4, KeyCode::Digit4),
+            (Wk::Digit5, KeyCode::Digit5),
+            (Wk::Digit6, KeyCode::Digit6),
+            (Wk::Digit7, KeyCode::Digit7),
+            (Wk::Digit8, KeyCode::Digit8),
+            (Wk::Digit9, KeyCode::Digit9),
+            (Wk::F1, KeyCode::F1),
+            (Wk::F2, KeyCode::F2),
+            (Wk::F3, KeyCode::F3),
+            (Wk::F4, KeyCode::F4),
+            (Wk::F5, KeyCode::F5),
+            (Wk::F6, KeyCode::F6),
+            (Wk::F7, KeyCode::F7),
+            (Wk::F8, KeyCode::F8),
+            (Wk::F9, KeyCode::F9),
+            (Wk::F10, KeyCode::F10),
+            (Wk::F11, KeyCode::F11),
+            (Wk::F12, KeyCode::F12),
+            (Wk::ShiftLeft, KeyCode::ShiftLeft),
+            (Wk::ShiftRight, KeyCode::ShiftRight),
+            (Wk::ControlLeft, KeyCode::ControlLeft),
+            (Wk::ControlRight, KeyCode::ControlRight),
+            (Wk::AltLeft, KeyCode::AltLeft),
+            (Wk::AltRight, KeyCode::AltRight),
+            (Wk::PageUp, KeyCode::PageUp),
+            (Wk::PageDown, KeyCode::PageDown),
+            (Wk::Insert, KeyCode::Insert),
+            (Wk::Minus, KeyCode::Minus),
+            (Wk::Equal, KeyCode::Equal),
+            (Wk::BracketLeft, KeyCode::BracketLeft),
+            (Wk::BracketRight, KeyCode::BracketRight),
+            (Wk::Semicolon, KeyCode::Semicolon),
+            (Wk::Quote, KeyCode::Quote),
+            (Wk::Comma, KeyCode::Comma),
+            (Wk::Period, KeyCode::Period),
+            (Wk::Slash, KeyCode::Slash),
+            (Wk::Backslash, KeyCode::Backslash),
+            (Wk::Backquote, KeyCode::Backquote),
         ];
         for (winit_key, engine_key) in mapped {
             assert_eq!(
@@ -1213,8 +1693,10 @@ mod tests {
                 "{winit_key:?}"
             );
         }
+        // The numpad is deliberately outside the vocabulary; its plus
+        // key stands for everything unmapped.
         assert_eq!(
-            translate_key(PhysicalKey::Code(Wk::KeyZ)),
+            translate_key(PhysicalKey::Code(Wk::NumpadAdd)),
             KeyCode::Unidentified
         );
     }
@@ -1414,14 +1896,59 @@ mod tests {
         );
     }
 
+    /// **A fullscreen request survives the iteration it was made in and
+    /// reaches the window, and asking nothing reaches nothing.**
+    ///
+    /// The window itself cannot be asserted on — there is none under a
+    /// unit test — so what is checked is that the request is *taken*:
+    /// the loop reads it, evaluates whether there is a window to hand it
+    /// to, and does not fall over when there is not. That last part is
+    /// the whole of what a headless iteration can prove, and it is worth
+    /// proving: an application that asks for the screen before a window
+    /// exists must be an ordinary iteration rather than a panic.
+    ///
+    /// **Unlike the cursor, nothing is remembered**, and that asymmetry
+    /// is deliberate — see `LoopControl::set_fullscreen`. So there is no
+    /// memory to assert against, and the absence of one is the claim.
+    #[test]
+    fn a_fullscreen_request_is_taken_even_with_no_window_to_apply_it_to() {
+        let config = WindowConfig::default();
+
+        for asked in [Some(true), Some(false), None] {
+            let mut app = Recorder {
+                ask_fullscreen: asked,
+                ..Recorder::default()
+            };
+            {
+                let mut adapter = new_adapter(&config, &mut app);
+                assert!(
+                    !adapter.tick(),
+                    "asking about the screen ({asked:?}) was read as asking to leave the loop"
+                );
+                assert!(
+                    !adapter.cursor_wanted.get(),
+                    "asking about the screen ({asked:?}) also took the cursor"
+                );
+            }
+            assert_eq!(
+                app.updates, 1,
+                "the iteration did not reach the application"
+            );
+        }
+    }
+
     /// The accessors report the fields the loop reads, and a silent
     /// iteration is distinguishable from one that asked for something.
     ///
-    /// **The cursor is three-valued and the other two are not.** Saying
+    /// **Two of the four are three-valued and two are not.** Saying
     /// nothing about the cursor leaves the grab alone, which is a
     /// different instruction from asking for it to be released — so a
     /// reader that collapsed `None` into `false` would turn every quiet
-    /// iteration into a release request.
+    /// iteration into a release request. Fullscreen is the same shape
+    /// for the same reason, and is checked here rather than in a test of
+    /// its own because what is being asserted is a property of this
+    /// type: every request is independent, and a quiet iteration asks
+    /// for nothing.
     #[test]
     fn loop_control_reports_what_was_asked() {
         let quiet = LoopControl::default();
@@ -1450,6 +1977,47 @@ mod tests {
             !released.exiting(),
             "a cursor request must not be read as an exit"
         );
+
+        // **Fullscreen is three-valued on the same terms**, and saying
+        // nothing about it must not read as asking for a window back —
+        // which is the mistake the cursor's own doc above warns of, in
+        // the one other place this type can make it.
+        assert_eq!(
+            quiet.fullscreen_request(),
+            None,
+            "saying nothing about the screen is not asking for a window back"
+        );
+        let mut screen = LoopControl::default();
+        screen.set_fullscreen(true);
+        assert_eq!(screen.fullscreen_request(), Some(true));
+        screen.set_fullscreen(false);
+        assert_eq!(
+            screen.fullscreen_request(),
+            Some(false),
+            "the last word in an iteration must win, as it does for the cursor"
+        );
+
+        // The three requests are independent: asking for one must not
+        // set another. A single `Option` reused for two questions would
+        // pass every assertion above and fail this one.
+        let mut only_screen = LoopControl::default();
+        only_screen.set_fullscreen(true);
+        assert_eq!(
+            only_screen.cursor_request(),
+            None,
+            "asking for the screen also asked something of the cursor"
+        );
+        assert!(
+            !only_screen.exiting() && !only_screen.redraw_requested(),
+            "asking for the screen also asked to exit or to redraw"
+        );
+        let mut only_cursor = LoopControl::default();
+        only_cursor.hold_cursor(true);
+        assert_eq!(
+            only_cursor.fullscreen_request(),
+            None,
+            "asking for the cursor also asked something of the screen"
+        );
     }
 
     #[test]
@@ -1469,7 +2037,11 @@ mod tests {
         );
         // The two flags are independent and neither is the other.
         assert_eq!(
-            keyboard(PhysicalKey::Code(Wk::KeyZ), ElementState::Released, false),
+            keyboard(
+                PhysicalKey::Code(Wk::NumpadAdd),
+                ElementState::Released,
+                false
+            ),
             WindowEvent::Key {
                 code: KeyCode::Unidentified,
                 pressed: false,
@@ -1491,6 +2063,23 @@ mod tests {
         /// What to ask of the cursor, if anything. `None` asks nothing,
         /// which is the case that must leave the grab alone.
         ask_cursor: Option<bool>,
+        /// What to ask about filling the screen, if anything.
+        ask_fullscreen: Option<bool>,
+    }
+
+    /// **An application that says nothing about an icon has none.**
+    ///
+    /// The default is what keeps the seam an addition rather than a
+    /// break: an implementation written before the method existed has to
+    /// keep compiling and keep behaving. Asked of a double that was
+    /// written before it, which is the strongest form of that claim
+    /// available here.
+    ///
+    /// Probed by defaulting the trait method to a picture: a recorder
+    /// that has never mentioned an icon starts carrying one.
+    #[test]
+    fn an_application_that_says_nothing_carries_no_icon() {
+        assert_eq!(Recorder::default().icon(), None);
     }
 
     impl WindowApp for Recorder {
@@ -1516,6 +2105,9 @@ mod tests {
             if let Some(held) = self.ask_cursor {
                 control.hold_cursor(held);
             }
+            if let Some(filling) = self.ask_fullscreen {
+                control.set_fullscreen(filling);
+            }
         }
 
         fn surface_lost(&mut self) {
@@ -1536,6 +2128,214 @@ mod tests {
         }
     }
 
+    /// Build an adapter, open one window through a source that records
+    /// what it was handed, and give the attributes back.
+    ///
+    /// **The call is counted, and every caller asserts on the count.**
+    /// A test whose assertions all live inside the source closure
+    /// passes, having run none of them, the moment a change stops
+    /// opening the window at all. The refusal test below had that guard
+    /// already; the first draft of the ones above had dropped it.
+    fn attributes_for(config: &WindowConfig) -> winit::window::WindowAttributes {
+        let seen = core::cell::RefCell::new(None);
+        let calls = core::cell::Cell::new(0_u32);
+        let source: &WindowSource<'_> = &|attributes| {
+            calls.set(calls.get() + 1);
+            *seen.borrow_mut() = Some(attributes);
+            Err("no display".to_string())
+        };
+        let mut app = Recorder::default();
+        new_adapter(config, &mut app).open(source);
+        assert_eq!(calls.get(), 1, "the window was never asked for");
+        seen.into_inner()
+            .unwrap_or_else(winit::window::Window::default_attributes)
+    }
+
+    /// A logical size as the attributes carry it, for comparing.
+    fn logical(width: f64, height: f64) -> winit::dpi::Size {
+        winit::dpi::LogicalSize::new(width, height).into()
+    }
+
+    /// **A floor reaches the window, and no floor reaches it as none.**
+    ///
+    /// Two separate claims: that a floor asked for is passed on, and
+    /// that a window whose caller said nothing is not given one anyway.
+    /// The second is what every caller written before this field existed
+    /// relies on.
+    ///
+    /// **The two dimensions are varied independently.** Setting both and
+    /// then neither leaves a whole class of mutant alive: nesting one
+    /// field's branch inside the other's passes a both-or-neither test
+    /// while silently dropping the floor for anyone who sets one.
+    #[test]
+    fn a_windows_floor_reaches_the_window_and_its_absence_reaches_it_as_absence() {
+        let asked = |width: f64, height: f64| WindowConfig {
+            title: "renew-floored".to_string(),
+            logical_width: 900.0,
+            logical_height: 700.0,
+            resizable: true,
+            min_logical_width: width,
+            min_logical_height: height,
+        };
+        assert_eq!(
+            attributes_for(&asked(320.0, 240.0)).min_inner_size,
+            Some(logical(320.0, 240.0)),
+            "a floor in both dimensions did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(320.0, 0.0)).min_inner_size,
+            Some(logical(320.0, 0.0)),
+            "a floor on the width alone did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(0.0, 240.0)).min_inner_size,
+            Some(logical(0.0, 240.0)),
+            "a floor on the height alone did not reach the window"
+        );
+        assert_eq!(
+            attributes_for(&asked(0.0, 0.0)).min_inner_size,
+            None,
+            "a window asked for no floor was given one"
+        );
+        assert_eq!(
+            attributes_for(&WindowConfig::default()).min_inner_size,
+            None,
+            "the default carries a floor, so every caller that predates it has one"
+        );
+    }
+
+    /// **Nonsense is read as no floor, and never handed on.**
+    ///
+    /// Not fussiness. The windowing library clamps the requested size
+    /// between the floor and a ceiling, and that clamp asserts
+    /// `min <= max` — so a floor of `NaN` or `INFINITY` fails an
+    /// assertion inside a dependency, during window creation, in a seam
+    /// whose whole character is that failures come back as a `Result`.
+    /// This crate builds with `panic = "abort"`, so it would not even
+    /// unwind.
+    ///
+    /// Negative is the quiet half of the same problem: it saturates to
+    /// nought on the way to an unsigned pixel count, so it already meant
+    /// no floor, silently. It means it out loud now.
+    #[test]
+    fn a_floor_that_is_not_a_size_is_no_floor() {
+        for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let config = WindowConfig {
+                min_logical_width: nonsense,
+                min_logical_height: nonsense,
+                ..WindowConfig::default()
+            };
+            let attributes = attributes_for(&config);
+            assert_eq!(
+                attributes.min_inner_size, None,
+                "a floor of {nonsense} reached the window instead of reading as no floor"
+            );
+            assert_eq!(
+                attributes.inner_size,
+                Some(logical(1280.0, 720.0)),
+                "a floor of {nonsense} moved the size the window opens at"
+            );
+        }
+    }
+
+    /// **A floor above the opening size raises it here, rather than on
+    /// two platforms out of three.**
+    ///
+    /// Left to the backends they disagree: two clamp the requested size
+    /// up to the minimum, the third opens at what was asked and sets the
+    /// minimum as a hint afterwards. A caller writing a floor larger
+    /// than its opening size has contradicted itself, and the honest
+    /// reading of "no smaller than this" is that the window is not
+    /// smaller than this — on every machine.
+    #[test]
+    fn a_floor_above_the_opening_size_raises_it_on_every_platform() {
+        let config = WindowConfig {
+            logical_width: 640.0,
+            logical_height: 480.0,
+            min_logical_width: 1024.0,
+            min_logical_height: 768.0,
+            ..WindowConfig::default()
+        };
+        let attributes = attributes_for(&config);
+        assert_eq!(
+            attributes.inner_size,
+            Some(logical(1024.0, 768.0)),
+            "the window opens smaller than the floor it was given"
+        );
+        assert_eq!(
+            attributes.min_inner_size,
+            Some(logical(1024.0, 768.0)),
+            "the floor was lost while the opening size was being raised"
+        );
+        // A floor under the opening size leaves it alone, which is the
+        // ordinary case and the one the raise must not disturb.
+        let ordinary = WindowConfig {
+            logical_width: 900.0,
+            logical_height: 700.0,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+            ..WindowConfig::default()
+        };
+        assert_eq!(
+            attributes_for(&ordinary).inner_size,
+            Some(logical(900.0, 700.0)),
+            "an ordinary floor moved the size the window opens at"
+        );
+    }
+
+    /// **A floor is passed on whether or not the window can be resized.**
+    ///
+    /// This crate does not decide what a fixed-size window does with a
+    /// floor — the platforms do, and they differ — but it must not
+    /// quietly drop one on the way, which is the combination the field's
+    /// own doc talks about and nothing checked.
+    #[test]
+    fn a_fixed_size_window_still_carries_the_floor_it_was_given() {
+        let config = WindowConfig {
+            resizable: false,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+            ..WindowConfig::default()
+        };
+        let attributes = attributes_for(&config);
+        assert!(
+            !attributes.resizable,
+            "the fixture stopped being fixed-size"
+        );
+        assert_eq!(
+            attributes.min_inner_size,
+            Some(logical(320.0, 240.0)),
+            "a fixed-size window had its floor dropped on the way to the platform"
+        );
+    }
+
+    /// **Nothing else the window was asked for moved.** The floor is one
+    /// of five things this function sets, and a test reading only the
+    /// one it changed cannot see the others being disturbed.
+    #[test]
+    fn adding_a_floor_disturbs_nothing_else_the_window_was_asked_for() {
+        let config = WindowConfig {
+            title: "renew-intact".to_string(),
+            logical_width: 900.0,
+            logical_height: 700.0,
+            resizable: true,
+            min_logical_width: 320.0,
+            min_logical_height: 240.0,
+        };
+        let attributes = attributes_for(&config);
+        assert_eq!(attributes.title, "renew-intact");
+        assert!(attributes.resizable);
+        assert_eq!(attributes.inner_size, Some(logical(900.0, 700.0)));
+        assert_eq!(
+            attributes.max_inner_size, None,
+            "a ceiling appeared beside the floor, pinning the window to one size"
+        );
+        assert!(
+            attributes.fullscreen.is_none(),
+            "the window opened fullscreen, which nothing asked for"
+        );
+    }
+
     #[test]
     fn a_refused_window_is_reported_once_and_never_retried() {
         let config = WindowConfig {
@@ -1543,6 +2343,7 @@ mod tests {
             logical_width: 640.0,
             logical_height: 480.0,
             resizable: false,
+            ..WindowConfig::default()
         };
         let attempts = std::cell::Cell::new(0_u32);
         let refuse: &WindowSource<'_> = &|attributes| {

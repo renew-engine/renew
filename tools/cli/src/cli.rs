@@ -16,6 +16,7 @@ pub enum Command {
     Modules,
     AssetPack,
     AssetInspect,
+    AssetImport,
     Doctor,
     Record,
     Replay,
@@ -25,7 +26,7 @@ pub enum Command {
 
 impl Command {
     /// Every subcommand, in the order `usage` lists them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Configure,
         Self::Build,
         Self::Test,
@@ -39,6 +40,7 @@ impl Command {
         Self::Modules,
         Self::AssetPack,
         Self::AssetInspect,
+        Self::AssetImport,
         Self::UiCompile,
         Self::Determinism,
         Self::Doctor,
@@ -59,6 +61,7 @@ impl Command {
             Self::Modules => "modules",
             Self::AssetPack => "asset-pack",
             Self::AssetInspect => "asset-inspect",
+            Self::AssetImport => "asset-import",
             Self::Doctor => "doctor",
             Self::Record => "record",
             Self::Replay => "replay",
@@ -131,6 +134,7 @@ impl Command {
             Self::Modules => "list every module with its maturity, from the manifests",
             Self::AssetPack => "build an asset pack from a directory of files",
             Self::AssetInspect => "list an asset pack's entries, optionally verifying them",
+            Self::AssetImport => "read a model file into the canonical form a pack can store",
             Self::Doctor => "check the development environment",
             Self::Record => "run a sample, writing the input it saw to a file",
             Self::Replay => "run a sample from a recorded input file",
@@ -176,16 +180,27 @@ pub struct Invocation {
     /// subcommand can be in play, and two would let a caller construct an
     /// invocation naming both.
     pub trace: Option<String>,
-    /// Both asset subcommands (parse enforces, and requires): the pack
-    /// file to write, or to read.
+    /// `asset-pack` and `asset-inspect` (parse enforces, and requires):
+    /// the pack file to write, or to read. `asset-import` writes through
+    /// `--out` instead, because what it writes is not a pack.
     pub pack: Option<String>,
-    /// `asset-pack` and `ui-compile` (parse enforces, and requires):
-    /// the directory whose files become the pack's entries, or the
-    /// text document to compile.
+    /// `asset-pack`, `ui-compile` and `asset-import` (parse enforces,
+    /// and requires): the directory whose files become the pack's
+    /// entries, the text document to compile, or the model to read.
     pub from: Option<String>,
-    /// `ui-compile` only (parse enforces, and requires): where the
-    /// compiled document is written.
+    /// `ui-compile` and `asset-import` (parse enforces, and requires):
+    /// where the compiled document, or the canonical mesh, is written.
     pub out: Option<String>,
+    /// `asset-import` only (parse enforces): the directory an imported
+    /// model's images are written into.
+    ///
+    /// **Absent means none are written.** A model can carry its textures
+    /// inside itself, and a command that scattered them beside the blob
+    /// because the input happened to hold some would be writing files
+    /// nobody asked for. The flag is the asking, and without it the
+    /// images are still counted and reported -- so a caller can find out
+    /// there are any before deciding where they go.
+    pub images: Option<String>,
     /// `asset-inspect` only (parse enforces): also check every payload
     /// against its recorded digest. Off by default because it reads every
     /// byte, where listing reads only the table.
@@ -348,6 +363,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
     let mut pack: Option<String> = None;
     let mut from: Option<String> = None;
     let mut out: Option<String> = None;
+    let mut images: Option<String> = None;
     let mut verify = false;
     let mut compare: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
@@ -439,6 +455,10 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
                 let path = rest.next().ok_or(ParseError::MissingValue("--out"))?;
                 out = Some(path.clone());
             }
+            "--images" => {
+                let path = rest.next().ok_or(ParseError::MissingValue("--images"))?;
+                images = Some(path.clone());
+            }
             "--from" => {
                 let path = rest.next().ok_or(ParseError::MissingValue("--from"))?;
                 from = Some(path.clone());
@@ -485,6 +505,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
         pack.as_deref(),
         from.as_deref(),
         out.as_deref(),
+        images.as_deref(),
         verify,
     )?;
     check_determinism_mode(command, emit.as_deref(), &compare, target.as_deref())?;
@@ -501,6 +522,7 @@ pub fn parse(arguments: &[String]) -> Result<Parsed, ParseError> {
             pack,
             from,
             out,
+            images,
             verify,
             compare,
             emit,
@@ -600,25 +622,37 @@ fn check_file_combination(
     pack: Option<&str>,
     from: Option<&str>,
     out: Option<&str>,
+    images: Option<&str>,
     verify: bool,
 ) -> Result<(), ParseError> {
     let is_pack = command == Some(Command::AssetPack);
     let is_inspect = command == Some(Command::AssetInspect);
     let is_compile = command == Some(Command::UiCompile);
+    let is_import = command == Some(Command::AssetImport);
 
     // Stray flags first, matching the order the other rules use: a flag
     // on the wrong subcommand is as unexpected as any other argument.
     if pack.is_some() && !(is_pack || is_inspect) {
         return Err(ParseError::UnexpectedArgument("--pack".to_string()));
     }
-    if from.is_some() && !(is_pack || is_compile) {
+    if from.is_some() && !(is_pack || is_compile || is_import) {
         return Err(ParseError::UnexpectedArgument("--from".to_string()));
     }
-    if out.is_some() && !is_compile {
+    if out.is_some() && !(is_compile || is_import) {
         return Err(ParseError::UnexpectedArgument("--out".to_string()));
     }
     if verify && !is_inspect {
         return Err(ParseError::UnexpectedArgument("--verify".to_string()));
+    }
+    if images.is_some() && !is_import {
+        return Err(ParseError::UnexpectedArgument("--images".to_string()));
+    }
+    // **An empty path is the working directory**, and `create_dir_all("")`
+    // succeeds, so `--images ""` would quietly scatter a model's textures
+    // wherever the process happens to be standing. Refused where the
+    // other path rules live rather than deep in the writer.
+    if images.is_some_and(str::is_empty) {
+        return Err(ParseError::MissingValue("--images"));
     }
 
     // Then what each subcommand cannot work without. Both paths are the
@@ -648,6 +682,21 @@ fn check_file_combination(
     if is_compile && out.is_none() {
         return Err(ParseError::MissingOption {
             command: "ui-compile",
+            option: "--out <path>",
+        });
+    }
+    // Both paths are the whole input here too. There is no default
+    // output name derived from the input: a tool that invents a path is
+    // a tool that can overwrite a file the caller did not name.
+    if is_import && from.is_none() {
+        return Err(ParseError::MissingOption {
+            command: "asset-import",
+            option: "--from <path>",
+        });
+    }
+    if is_import && out.is_none() {
+        return Err(ParseError::MissingOption {
+            command: "asset-import",
             option: "--out <path>",
         });
     }
@@ -767,10 +816,13 @@ pub fn usage() -> String {
         "  --output <path>   (record only, required) the trace file to write\n",
         "  --input <path>    (replay only, required) the trace file to read\n",
         "  --pack <path>     (asset-pack, asset-inspect; required) the pack file\n",
-        "  --from <path>     (asset-pack, ui-compile; required) the directory to\n",
-        "                    pack, or the text document to compile\n",
-        "  --out <path>      (ui-compile only, required) where the compiled document\n",
-        "                    is written\n",
+        "  --from <path>     (asset-pack, ui-compile, asset-import; required) the\n",
+        "                    directory to pack, the text document to compile, or\n",
+        "                    the model file to read\n",
+        "  --out <path>      (ui-compile, asset-import; required) where the\n",
+        "                    compiled document, or the canonical mesh, is written\n",
+        "  --images <path>   (asset-import only) write the model's own images into\n",
+        "                    this directory; without it they are counted, not written\n",
         "  --verify          (asset-inspect only) check each entry against its digest\n",
         "  --emit <path>     (determinism only) write this target's digests here\n",
         "  --compare <path>  (determinism only, repeatable) a target report to compare\n",
@@ -824,6 +876,7 @@ mod tests {
             pack: None,
             from: None,
             out: None,
+            images: None,
             verify: false,
             compare: Vec::new(),
             emit: None,
@@ -869,6 +922,14 @@ mod tests {
                     Invocation {
                         from: Some("assets".to_string()),
                         pack: Some("out.rpk".to_string()),
+                        ..plain(command)
+                    },
+                ),
+                Command::AssetImport => (
+                    vec![name, "--from", "model.obj", "--out", "model.msh"],
+                    Invocation {
+                        from: Some("model.obj".to_string()),
+                        out: Some("model.msh".to_string()),
                         ..plain(command)
                     },
                 ),
@@ -927,6 +988,48 @@ mod tests {
                 "command `{name}` did not round-trip"
             );
         }
+    }
+
+    /// **Both paths are required, and neither is invented.**
+    ///
+    /// A tool that derived an output name from an input name is a tool
+    /// that can overwrite a file the caller did not name, so the parser
+    /// refuses rather than defaulting — and it says which of the two is
+    /// missing, because "usage:" is not an answer to "what did I get
+    /// wrong".
+    #[test]
+    fn asset_import_needs_both_of_its_paths() {
+        assert_eq!(
+            parse(&arguments(&["asset-import", "--out", "mesh.blob"])),
+            Err(ParseError::MissingOption {
+                command: "asset-import",
+                option: "--from <path>",
+            })
+        );
+        assert_eq!(
+            parse(&arguments(&["asset-import", "--from", "model.stl"])),
+            Err(ParseError::MissingOption {
+                command: "asset-import",
+                option: "--out <path>",
+            })
+        );
+
+        // And with both, it parses to exactly the two paths and nothing
+        // else — no default, no derived name.
+        assert_eq!(
+            parse(&arguments(&[
+                "asset-import",
+                "--from",
+                "model.stl",
+                "--out",
+                "mesh.blob",
+            ])),
+            Ok(Parsed::Run(Invocation {
+                from: Some("model.stl".to_string()),
+                out: Some("mesh.blob".to_string()),
+                ..plain(Command::AssetImport)
+            }))
+        );
     }
 
     /// The two modes are one subcommand, and parsing is what keeps them

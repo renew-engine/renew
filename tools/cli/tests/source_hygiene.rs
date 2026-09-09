@@ -157,6 +157,89 @@ fn no_text_file_carries_a_byte_order_mark_or_a_mangled_encoding() {
     );
 }
 
+/// Tokens that mean a text substitution did not run.
+///
+/// Editing this tree at scale is done with scripts, and a script that
+/// writes prose containing an em dash has to get that character past a
+/// shell, a heredoc and a language's own escaping. The convention that
+/// survives all three is to write a placeholder and substitute it at the
+/// end — and a placeholder is only as good as the substitution, which is
+/// the part that silently does not happen.
+///
+/// **This is not hypothetical and it is not once.** The tokens below
+/// have reached the shared repository three separate times, in three
+/// different months, and each time were fixed as instances: five here,
+/// a handful there. Fixing instances does not work, because the cause is
+/// a step that is easy to omit and impossible to notice. A gate does
+/// work, because the omission then stops the build.
+///
+/// A list rather than a pattern, deliberately. A rule broad enough to
+/// catch a placeholder nobody has invented yet would also catch a
+/// legitimate pair of capitals standing alone, and a hygiene check that
+/// cries wolf gets an `#[allow]` rather than a fix. When a new
+/// convention appears, its token joins the list.
+const PLACEHOLDERS: &[&str] = &["MM", "$M", "EN", "$EN"];
+
+/// **A third way to damage a file: write it correctly and then not
+/// finish.**
+///
+/// The two checks above catch bytes that were mangled in transit. This
+/// one catches text that was never converted at all — which reads as
+/// nonsense to a person and passes every compiler, because `MM` in a
+/// doc comment is just a word.
+#[test]
+fn no_text_file_carries_an_unsubstituted_placeholder() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    text_files(&root, &mut files).expect("the workspace should be walkable");
+    assert!(
+        files.len() > 50,
+        "found only {} text files — the walk is not reaching the tree, and this would pass \
+         vacuously",
+        files.len()
+    );
+
+    let mut faults: Vec<String> = Vec::new();
+    for path in &files {
+        let shown = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let Ok(text) = std::fs::read_to_string(path) else {
+            // Already reported by the encoding check above.
+            continue;
+        };
+        // This file names the tokens in order to look for them, so it
+        // would otherwise report itself.
+        if shown.ends_with("source_hygiene.rs") {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            for token in PLACEHOLDERS {
+                // Standing alone as a word: `MM` inside `COMMAND` or
+                // `0x4D4D` is not a placeholder, and a check that said
+                // otherwise would be worse than none.
+                if line.split_ascii_whitespace().any(|word| word == *token) {
+                    faults.push(format!(
+                        "{shown}:{}: `{token}` stands alone, so a substitution did not run",
+                        number + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        faults.is_empty(),
+        "{} unsubstituted placeholder(s):\n  {}\n\nEach one stands where a character the \
+         editing script could not carry through a shell belongs — almost always an em dash. \
+         Replace them, and fix the script that wrote them, because it will do it again.",
+        faults.len(),
+        faults.join("\n  ")
+    );
+}
+
 /// The one-based line a byte offset falls on.
 ///
 /// Clippy suggests the `bytecount` crate here. Declined: this runs once
@@ -185,7 +268,7 @@ fn line_of(bytes: &[u8], offset: usize) -> usize {
 /// turns the two characters backslash-r into a carriage return, and
 /// backslash-t into a tab, inside whatever literal was being written.
 ///
-/// It happened here, twice in one session. A sample's README gained a
+/// It happened here, twice. A sample's README gained a
 /// PowerShell block whose `$env:USERPROFILE\run.log` had become
 /// `$env:USERPROFILE` + CR + `un.log`, and whose `.\target\debug\glide.exe`
 /// had become `.` + TAB + `arget\debug\glide.exe`. It reached a merged

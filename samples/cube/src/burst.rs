@@ -64,6 +64,9 @@ pub fn effect() -> EffectDesc {
             [0.0, 0.0, 0.0, 0.0],
         ),
         tile: [0.0, 0.0, 1.0, 1.0],
+        // Dust does not turn, and a billboard could not show it if it did.
+        angle: (0.0, 0.0),
+        spin: (0.0, 0.0),
     }
 }
 

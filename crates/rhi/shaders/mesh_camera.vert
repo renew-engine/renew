@@ -23,13 +23,12 @@
 // plane in the caller, because a triangle crossing w = 0 cannot be
 // divided at all.
 //
-// Layout here and the `VertexAttribute` slice at pipeline creation
-// describe the same bytes: binding 0 is location 0 = vec3 position
-// (world space now, not clip), location 1 = vec4 colour, location 2 =
-// vec2 texture coordinate. No per-instance stream — the pipeline
-// declares none, and the block below is the sixty-four bytes its
-// push-constant size names. Change one and the other in the same commit
-// or the draw reads garbage.
+// The record has five attributes and this stage reads the ones it
+// needs. Locations, in order: 0 vec3 position, 1 vec4 colour, 2 vec2
+// texture coordinate, 3 vec3 normal, 4 vec4 tangent (xyz, and the
+// bitangent's sign in w). A stage may ignore any of them; what it may
+// not do is disagree about which location is which, so change this
+// list and MESH_LAYOUT in the same commit or the draw reads garbage.
 
 layout(push_constant) uniform Camera {
     mat4 view_projection;
@@ -62,14 +61,30 @@ layout(location = 0) out vec4 fragment_colour;
 // twentieth of a block away. A fade driven by depth therefore saturates
 // almost immediately; driven the conventional way it turned the whole
 // room to fog, and that was not a guess -- it was the first picture.
+// The per-renderer block, for the one word this stage reads: how far
+// away the fade completes. `bend.y` is that distance in world units;
+// zero — every caller that never set it — selects the compiled
+// forty-eight this stage always carried, so the silent caller's
+// picture is untouched, byte for byte, by the exact argument the
+// sway's flag word made: the arithmetic is identical when the select
+// takes the constant. A stage may declare a leading subset of a
+// block's members, so nothing else here changes.
+layout(std140, set = 0, binding = 0) uniform Air {
+    vec4 horizon;
+    vec4 sway;
+    vec4 bend;
+} air;
+
 layout(location = 1) out float fragment_fade;
 
 void main() {
     gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
     fragment_colour = (vertex_colour) * camera.light;
-    // The distance at which the fade is complete, in world units. A
-    // little over the arena's diagonal, so its far corner is faint
-    // rather than lost.
+    // The distance at which the fade is complete, in world units: the
+    // caller's word when one was given, the compiled forty-eight when
+    // not. Only the caller knows how big its world is — this constant
+    // was sized to one arena and then met a world half again wider.
     const float FADE_DISTANCE = 48.0;
-    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+    float fade_over = air.bend.y > 0.0 ? air.bend.y : FADE_DISTANCE;
+    fragment_fade = clamp(gl_Position.w / fade_over, 0.0, 1.0);
 }

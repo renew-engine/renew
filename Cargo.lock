@@ -1608,6 +1608,9 @@ dependencies = [
  "renew-memory",
  "renew-particles",
  "renew-platform",
+ "renew-render2d",
+ "renew-render3d",
+ "renew-rhi",
  "renew-rng",
  "renew-ui",
  "renew-ui-render",
@@ -1627,6 +1630,7 @@ version = "0.1.1"
 dependencies = [
  "proptest",
  "renew-asset",
+ "renew-mesh",
  "renew-ui",
 ]
 
@@ -1680,6 +1684,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "renew-json"
+version = "0.1.1"
+dependencies = [
+ "proptest",
+ "renew-memory",
+]
+
+[[package]]
 name = "renew-math"
 version = "0.1.1"
 dependencies = [
@@ -1691,6 +1703,15 @@ name = "renew-memory"
 version = "0.1.1"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "renew-mesh"
+version = "0.1.1"
+dependencies = [
+ "proptest",
+ "renew-json",
+ "renew-math",
 ]
 
 [[package]]
@@ -1848,11 +1869,13 @@ dependencies = [
  "renew-frame",
  "renew-input",
  "renew-math",
+ "renew-particles",
  "renew-platform",
  "renew-png",
  "renew-render2d",
  "renew-replay",
  "renew-rhi",
+ "renew-rng",
  "renew-sample-glide-world",
  "renew-snapshot",
  "renew-trace",

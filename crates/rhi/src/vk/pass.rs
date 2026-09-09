@@ -18,6 +18,8 @@ use crate::vk::transition::ImageUse;
 
 use std::rc::Rc;
 
+use crate::vk::render_image::KeptContents;
+
 /// How many distinct render images one frame may touch — as targets,
 /// as sampled sources, or both. A fixed ceiling so the contract's walk
 /// table and the record paths' barrier arrays are stack-sized and the
@@ -174,9 +176,12 @@ pub enum LoadOp {
     Clear(ClearValue),
     /// The attachment keeps the previous pass's contents. Refused on
     /// each identity's first use in the frame — the surface, the
-    /// target's depth image, and every render image all start a frame
-    /// from undefined contents — and on a render image whose last
-    /// targeting pass discarded.
+    /// target's depth image, and every frame-scoped render image all
+    /// start a frame from undefined contents — and on a render image
+    /// whose last targeting pass discarded. The one exception is a
+    /// **kept** render image with live contents
+    /// ([`RenderImageDesc::kept`]): its first frame use may load what
+    /// an earlier frame stored.
     Load,
 }
 
@@ -203,6 +208,51 @@ pub enum ClearValue {
     Depth(f32),
 }
 
+/// A slice of a mesh's index list: `count` indices from `first`.
+///
+/// **Why a draw needs to name part of a mesh.** Geometry that changes in
+/// pieces is meshed in pieces — a terrain chunk, a batched sprite atlas,
+/// an instanced crowd — and the pieces are laid out as contiguous runs of
+/// one index list so that replacing one is a splice rather than a new
+/// allocation. Culling, sorting, or fading such a thing per piece then
+/// wants to draw a run and skip its neighbours, which is a `firstIndex`
+/// and an `indexCount` and nothing more: no second mesh, no re-upload, no
+/// copy. Without this the choice is all of the mesh or none of it, and a
+/// caller who wants finer grain has to give up the shared buffer that
+/// made the layout worth having.
+///
+/// A `count` of zero is a draw that records nothing, deliberately
+/// allowed: a caller looping over pieces should not need a branch for
+/// the piece that turned out empty. An empty range starting exactly at
+/// the end of the list is allowed for the same reason — that is where a
+/// running offset lands after the last piece, and the bound is on
+/// [`Self::end`] rather than on `first` so the walk needs no special
+/// case for its own final step. A `first` past the end is refused
+/// whatever the count, because nothing computes that but a bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexRange {
+    /// The first index walked, counted in indices from the list's start.
+    pub first: u32,
+    /// How many indices are walked.
+    pub count: u32,
+}
+
+impl IndexRange {
+    /// `count` indices from `first`.
+    #[must_use]
+    pub const fn new(first: u32, count: u32) -> Self {
+        Self { first, count }
+    }
+
+    /// One past the last index walked, saturating rather than wrapping —
+    /// the contract asserts on this, so it must not itself be the thing
+    /// that loses the overflow it is there to catch.
+    #[must_use]
+    pub const fn end(self) -> u32 {
+        self.first.saturating_add(self.count)
+    }
+}
+
 /// One draw: a pipeline, optionally the geometry it walks, and
 /// optionally this frame's bytes.
 #[derive(Clone, Copy)]
@@ -223,6 +273,15 @@ pub struct Item<'a> {
     /// be pointer-identical under the one-buffer-one-`FrameData` rule
     /// below.
     pub mesh: Option<&'a Mesh>,
+    /// Which slice of [`Item::mesh`]'s index list this draw walks;
+    /// `None` walks all of it.
+    ///
+    /// Present only alongside a mesh, and never reaching past that
+    /// mesh's index count — both refused by the frame contract before
+    /// any GPU call, because a range past the end fetches indices the
+    /// mesh does not own and a range without geometry names a slice of
+    /// nothing.
+    pub indices: Option<IndexRange>,
     /// `FrameData` contained, not forked; room to grow (a
     /// first-instance or vertex-offset field) without touching existing
     /// callers.
@@ -290,6 +349,7 @@ impl<'a> Item<'a> {
         Self {
             pipeline,
             mesh: None,
+            indices: None,
             frame_data: None,
             uniform_data: None,
             push_data: None,
@@ -301,6 +361,14 @@ impl<'a> Item<'a> {
     #[must_use]
     pub fn mesh(mut self, mesh: &'a Mesh) -> Self {
         self.mesh = Some(mesh);
+        self
+    }
+
+    /// Walk only `count` indices from `first` of this item's mesh,
+    /// rather than the whole list. See [`IndexRange`].
+    #[must_use]
+    pub const fn indices(mut self, first: u32, count: u32) -> Self {
+        self.indices = Some(IndexRange::new(first, count));
         self
     }
 
@@ -636,6 +704,11 @@ pub(crate) fn retained_of(item: &Item<'_>) -> [Option<Retained>; MAX_ITEM_RESOUR
     let Item {
         pipeline: _,
         mesh,
+        // Two integers recorded into the draw call itself. They name a
+        // slice of the mesh above, and retaining that mesh is what keeps
+        // the memory the slice reads alive — a range retains nothing of
+        // its own.
+        indices: _,
         frame_data,
         // Copied into the command stream by the record path's push
         // call, so no allocation outlives `render` — nothing to retain.
@@ -702,6 +775,48 @@ pub(crate) fn uniform_writes<'a>(
 /// the fill loops stay allocation-free.
 pub(crate) const MAX_ITEM_RESOURCES: usize = 2 + MAX_SAMPLED_BINDINGS;
 
+/// Why a first-frame-use `LoadOp::Load` on a render image is refused,
+/// if it is — `None` exactly when kept contents are there to load. A
+/// pure function so the refusals read as one table.
+fn load_refusal(kept: bool, arrived: KeptContents) -> Option<&'static str> {
+    match (kept, arrived) {
+        (true, KeptContents::Stored | KeptContents::Sampled) => None,
+        (true, KeptContents::Undefined) => Some(
+            "LoadOp::Load on a kept render image no frame has ever rendered loads undefined \
+             contents — render it once before loading it",
+        ),
+        (true, KeptContents::Discarded) => Some(
+            "LoadOp::Load on a kept render image whose last keeping frame discarded its \
+             contents loads undefined pixels — store what a later frame loads",
+        ),
+        (false, _) => Some(
+            "LoadOp::Load on a render image's first use this frame loads undefined contents \
+             — render-image contents are frame-scoped and start undefined every frame",
+        ),
+    }
+}
+
+/// Why sampling a render image no pass this frame has rendered is
+/// refused, if it is — `None` exactly when kept contents are there to
+/// read.
+fn sample_refusal(kept: bool, arrived: KeptContents) -> Option<&'static str> {
+    match (kept, arrived) {
+        (true, KeptContents::Stored | KeptContents::Sampled) => None,
+        (true, KeptContents::Undefined) => Some(
+            "an item samples a kept render image no frame has ever rendered — render it once \
+             before reading it",
+        ),
+        (true, KeptContents::Discarded) => Some(
+            "an item samples a kept render image whose last keeping frame discarded its \
+             contents — store what a later frame reads",
+        ),
+        (false, _) => Some(
+            "an item samples a render image no pass in this frame has rendered — render-image \
+             contents are frame-scoped, so a frame that reads one must write it first",
+        ),
+    }
+}
+
 /// The frame's per-identity image walk: which attachment identities
 /// this frame has used, and how -- ONE definition read by the contract
 /// and by both record paths.
@@ -729,6 +844,13 @@ struct ImageEntry {
     /// — what decides both whether a later `Load` reads anything and
     /// whether a later sample does.
     discarded: bool,
+    /// What an earlier frame left in it, snapshotted at the entry's
+    /// mint so both walks of one frame read one answer.
+    arrived: KeptContents,
+    /// The image to write the after-state into at [`FrameWalk::settle`]
+    /// — held exactly for kept images (`Some` IS the kept flag), and
+    /// only the record walks settle.
+    write_back: Option<Rc<crate::vk::render_image::RenderImageInner>>,
 }
 
 /// What one pass does to its target identities, as [`ImageUse`] pairs
@@ -768,7 +890,8 @@ impl FrameWalk {
     /// # Panics
     ///
     /// A fifth distinct image is refused by name.
-    fn entry_index(&mut self, key: *const u8, kind: RenderImageKind) -> usize {
+    fn entry_index(&mut self, inner: &Rc<crate::vk::render_image::RenderImageInner>) -> usize {
+        let key = Rc::as_ptr(inner).cast::<u8>();
         let known = self
             .images
             .iter()
@@ -786,10 +909,12 @@ impl FrameWalk {
         );
         self.images[occupied] = Some(ImageEntry {
             key,
-            kind,
+            kind: inner.kind,
             targeted: false,
             sampled: false,
             discarded: false,
+            arrived: inner.contents.get(),
+            write_back: inner.kept.then(|| Rc::clone(inner)),
         });
         occupied
     }
@@ -839,9 +964,8 @@ impl FrameWalk {
                 }
             }
             PassTarget::Image(image, attachment) => {
-                let key = Rc::as_ptr(&image.inner).cast::<u8>();
                 let kind = image.inner.kind;
-                let slot = self.entry_index(key, kind);
+                let slot = self.entry_index(&image.inner);
                 let Some(entry) = self.images[slot].as_mut() else {
                     unreachable!("entry_index returns an occupied slot")
                 };
@@ -852,12 +976,17 @@ impl FrameWalk {
                      writes an image must precede the first pass that reads it"
                 );
                 let first_use = !entry.targeted;
-                assert!(
-                    !first_use || !matches!(attachment.load, LoadOp::Load),
-                    "pass {index}: LoadOp::Load on a render image's first use this frame \
-                     loads undefined contents — render-image contents are frame-scoped and \
-                     start undefined every frame"
-                );
+                if first_use && matches!(attachment.load, LoadOp::Load) {
+                    // A kept image with live contents may open with a
+                    // load; everything else meets the frame-scoped
+                    // refusals, each naming its own reason.
+                    let refusal = load_refusal(entry.write_back.is_some(), entry.arrived);
+                    assert!(
+                        refusal.is_none(),
+                        "pass {index}: {}",
+                        refusal.unwrap_or_default()
+                    );
+                }
                 // Loading what the last targeting pass threw away is the
                 // same undefined read one pass later.
                 assert!(
@@ -866,23 +995,42 @@ impl FrameWalk {
                      pass discarded its contents loads undefined pixels — store what a \
                      later pass loads"
                 );
+                // The first frame-use pair: a frame-scoped image (or a
+                // kept one nothing ever rendered) starts undefined; a
+                // kept image OPENING WITH A LOAD re-enters from
+                // whichever layout its last frame left — the attachment
+                // layout preserves through the plain between-pass arms,
+                // the sampled layout walks back through the
+                // Kept*FromSampled arms. A Clear takes the undefined
+                // first-use arm even on a kept image: the clear
+                // overwrites every pixel, so preserving contents the
+                // pass immediately destroys would tax every
+                // clear-each-frame consumer for nothing.
+                let loads = matches!(attachment.load, LoadOp::Load);
+                let kept = entry.write_back.is_some();
+                let kept_alive = loads && kept && entry.arrived != KeptContents::Undefined;
+                let from_sampled = kept_alive && entry.arrived == KeptContents::Sampled;
                 entry.targeted = true;
                 entry.discarded = matches!(attachment.store, StoreOp::Discard);
                 match kind {
                     RenderImageKind::Color => TargetUses {
-                        color: Some(if first_use {
-                            (ImageUse::RenderColorFirstUse, ImageUse::ColorAttachment)
-                        } else {
+                        color: Some(if !first_use || kept_alive && !from_sampled {
                             (ImageUse::ColorAttachment, ImageUse::ColorAttachment)
+                        } else if from_sampled {
+                            (ImageUse::KeptColorFromSampled, ImageUse::ColorAttachment)
+                        } else {
+                            (ImageUse::RenderColorFirstUse, ImageUse::ColorAttachment)
                         }),
                         depth: None,
                     },
                     RenderImageKind::Depth => TargetUses {
                         color: None,
-                        depth: Some(if first_use {
-                            (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment)
-                        } else {
+                        depth: Some(if !first_use || kept_alive && !from_sampled {
                             (ImageUse::DepthAttachment, ImageUse::DepthAttachment)
+                        } else if from_sampled {
+                            (ImageUse::KeptDepthFromSampled, ImageUse::DepthAttachment)
+                        } else {
+                            (ImageUse::RenderDepthFirstUse, ImageUse::DepthAttachment)
                         }),
                     },
                     // No rest arm: `#[non_exhaustive]` does not bind
@@ -929,22 +1077,27 @@ impl FrameWalk {
                      into -- feedback within one pass is undefined; split it into a \
                      writing pass and a reading pass"
                 );
-                let entry = self
-                    .images
-                    .iter_mut()
-                    .flatten()
-                    .find(|entry| entry.key == key && entry.targeted);
-                assert!(
-                    entry.is_some(),
-                    "pass {index}: an item samples a render image no pass in this frame \
-                     has rendered — render-image contents are frame-scoped, so a frame \
-                     that reads one must write it first"
-                );
-                let Some(entry) = entry else {
-                    unreachable!("asserted just above")
+                // A kept image with live contents may be sampled without
+                // any pass this frame rendering it; everything else must
+                // have been written this frame, refused by name. Minted
+                // BEFORE the refusal so the verdict reads the same
+                // snapshot the whole frame reads - the refusal is the
+                // one place a live read could have let the dry walk and
+                // the record walk answer differently.
+                let slot = self.entry_index(inner);
+                let Some(entry) = self.images[slot].as_mut() else {
+                    unreachable!("entry_index returns an occupied slot")
                 };
+                if !entry.targeted {
+                    let refusal = sample_refusal(entry.write_back.is_some(), entry.arrived);
+                    assert!(
+                        refusal.is_none(),
+                        "pass {index}: {}",
+                        refusal.unwrap_or_default()
+                    );
+                }
                 assert!(
-                    !entry.discarded,
+                    !(entry.targeted && entry.discarded),
                     "pass {index}: an item samples a render image whose last targeting \
                      pass discarded its contents — a targeting pass whose image is read \
                      later must Store"
@@ -953,6 +1106,16 @@ impl FrameWalk {
                     continue;
                 }
                 entry.sampled = true;
+                // The crossing barrier. Written this frame: from the
+                // attachment life this frame built. Kept and untouched:
+                // from the attachment life an earlier frame stored — the
+                // same pair, because the layouts and hazards match. Kept
+                // and already sampled when it arrived: it never left the
+                // sampled layout, and read-after-read needs no barrier
+                // at all.
+                if !entry.targeted && entry.arrived == KeptContents::Sampled {
+                    continue;
+                }
                 out[count] = Some(SampleUse {
                     image: inner.image,
                     range: match entry.kind {
@@ -981,6 +1144,33 @@ impl FrameWalk {
     pub(crate) fn surface_used(&self) -> bool {
         self.surface_color_used
     }
+
+    /// Write each kept image's after-state back onto the image, so the
+    /// next frame's walk arrives where this one left.
+    ///
+    /// **Record walks only.** The contract's dry walk reads the same
+    /// cross-frame state and must not move it — the dry walk and the
+    /// record walk of one frame have to read one answer, and a frame
+    /// that is refused must leave no trace.
+    pub(crate) fn settle(&self) {
+        for entry in self.images.iter().flatten() {
+            let Some(inner) = &entry.write_back else {
+                continue;
+            };
+            let after = if entry.sampled {
+                KeptContents::Sampled
+            } else if entry.targeted {
+                if entry.discarded {
+                    KeptContents::Discarded
+                } else {
+                    KeptContents::Stored
+                }
+            } else {
+                continue;
+            };
+            inner.contents.set(after);
+        }
+    }
 }
 
 /// The frame-shape contract, asserted identically by both targets
@@ -992,6 +1182,22 @@ impl FrameWalk {
 /// two copies into one region) or a draw that renders differently than
 /// written. The per-item device and format checks stay beside each
 /// target's own device state, where they always were.
+/// The `(index_count, first_index)` a mesh draw records: the item's
+/// slice if it named one, the whole list otherwise.
+///
+/// **Shared so the two record paths cannot drift.** The window and
+/// offscreen targets record the same draw twice, in two files, and a
+/// range honoured by one and ignored by the other would show only as a
+/// picture that differs between a golden test and a real window — the
+/// most expensive shape of bug this crate can have. The contract has
+/// already proved the range fits.
+pub(crate) fn indexed_draw(item: &Item<'_>, mesh: &Mesh) -> (u32, u32) {
+    match item.indices {
+        Some(range) => (range.count, range.first),
+        None => (mesh.inner.index_count, 0),
+    }
+}
+
 pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
     assert!(
         !desc.passes.is_empty(),
@@ -1068,6 +1274,30 @@ pub(crate) fn check_frame_contract(desc: &RenderDesc<'_>) {
                      end of the mesh",
                     mesh.vertex_stride(),
                     item.pipeline.vertex_stride
+                );
+            }
+            // A slice of an index list only means something when
+            // there is a list. Refused rather than ignored: silently
+            // dropping the range would draw the whole mesh where the
+            // caller asked for a piece of it, which is the quiet wrong
+            // draw this file refuses everywhere else.
+            assert!(
+                item.indices.is_none() || item.mesh.is_some(),
+                "pass {index}: an item names an index range only alongside geometry — a                  range without a mesh slices a list that does not exist"
+            );
+            // Retained, and for the same reason as the stride rule
+            // above: this bounds the fetch. Mesh creation proved every
+            // index in the list is inside the vertex count, which says
+            // nothing about indices past the list's own end — those are
+            // whatever the allocation happens to hold, fetched as
+            // vertices.
+            if let (Some(mesh), Some(range)) = (item.mesh, item.indices) {
+                assert!(
+                    range.end() <= mesh.index_count(),
+                    "pass {index}: an index range must stay inside its mesh — asked for {}                      indices from {} of a {}-index mesh, and the tail reads indices the mesh                      does not own",
+                    range.count,
+                    range.first,
+                    mesh.index_count()
                 );
             }
             // The same presence rule as geometry and depth, plus an
@@ -1464,11 +1694,23 @@ fn count_matters(records: &[Option<BufferRecord>; MAX_RETAINED_RESOURCES]) -> us
 /// — the hard bound that keeps retention tables fixed-width and the frame
 /// path allocation-free. Per-frame buffers, meshes, bindings and
 /// pass-target render images share it, because they share one table. The
-/// seventeenth distinct resource is refused by name in
-/// [`check_frame_contract`]. Sixteen, doubled from eight when bindings
-/// joined the table: every draw's sampled slots now spend from the same
-/// budget its geometry does.
-pub(crate) const MAX_RETAINED_RESOURCES: usize = 16;
+/// next distinct resource past the bound is refused by name in
+/// [`check_frame_contract`].
+///
+/// Two hundred and fifty-six. The day a consumer moved from one world
+/// mesh to a buffer per chunk — the ordinary shape of any chunked or
+/// streaming world, and the move that makes uploads as incremental as
+/// the meshing — its fullest frame carried a mesh and a vegetation
+/// twin for every visible chunk and crossed thirty-two on the first
+/// real vista. Thirty-two had been doubled from sixteen the day a
+/// fullest frame landed on seventeen, and from eight before that,
+/// when bindings joined the table; each bump waited for a consumer to
+/// hit the wall, and this one grants the headroom class instead of
+/// the next doubling. The table is `Option`s in fixed arrays: the
+/// cost is two hundred and fifty-six words of `None` per frame slot,
+/// and the cost of too little is a consumer cutting a feature to fit
+/// a constant this crate chose.
+pub(crate) const MAX_RETAINED_RESOURCES: usize = 256;
 
 impl LoadOp {
     pub(crate) fn to_vk(self) -> ash::vk::AttachmentLoadOp {

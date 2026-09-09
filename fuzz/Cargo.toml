@@ -24,6 +24,9 @@ renew-trace = { path = "../crates/trace" }
 renew-ui = { path = "../crates/ui" }
 renew-cli = { path = "../tools/cli" }
 renew-net = { path = "../crates/net" }
+renew-png = { path = "../crates/png" }
+renew-json = { path = "../crates/json" }
+renew-mesh = { path = "../crates/mesh" }
 
 # Fuzzing measures the parser, not the optimiser's mood. Debug assertions
 # stay on so a violated internal invariant is a finding rather than
@@ -71,6 +74,83 @@ bench = false
 [[bin]]
 name = "ui_text"
 path = "fuzz_targets/ui_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "png_decode"
+path = "fuzz_targets/png_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_parse"
+path = "fuzz_targets/json_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stl_read"
+path = "fuzz_targets/stl_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ply_read"
+path = "fuzz_targets/ply_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "obj_read"
+path = "fuzz_targets/obj_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mtl_read"
+path = "fuzz_targets/mtl_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blob_read"
+path = "fuzz_targets/blob_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glb_read"
+path = "fuzz_targets/glb_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "accessor_view"
+path = "fuzz_targets/accessor_view.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gltf_read"
+path = "fuzz_targets/gltf_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "data_uri_read"
+path = "fuzz_targets/data_uri_read.rs"
 test = false
 doc = false
 bench = false

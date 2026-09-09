@@ -1,5 +1,7 @@
 //! Mechanical enforcement of the crate's allocation contract: after
-//! construction, the steady state — burst, step, pack — performs no
+//! construction, the steady state — burst, shaped burst, emitter, step
+//! with a spin,
+//! pack, view — performs no
 //! heap allocation through the global allocator.
 //!
 //! Shipped with the crate's first commit rather than after it, because
@@ -10,7 +12,9 @@
 //! asserts so.
 
 use renew_memory::{CountingAllocator, counters};
-use renew_particles::{EffectDesc, INSTANCE_STRIDE, ParticleSystem, Seed, StreamId, VelocityCone};
+use renew_particles::{
+    EffectDesc, Emitter, INSTANCE_STRIDE, ParticleSystem, Seed, Shape, StreamId, VelocityCone,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -34,6 +38,10 @@ fn the_steady_state_allocates_nothing() {
         size: (0.3, 0.02),
         color: ([1.0, 0.9, 0.5, 1.0], [0.1, 0.05, 0.02, 0.0]),
         tile: [0.0, 0.0, 1.0, 1.0],
+        // A turning effect, so the angle draws and the spin integration
+        // are inside the window too.
+        angle: (0.0, 0.25),
+        spin: (-1.0, 1.0),
     };
     // Everything that may allocate happens out here: the pool and the
     // packing buffer, once.
@@ -43,6 +51,9 @@ fn the_steady_state_allocates_nothing() {
         StreamId::from_name("gate"),
     );
     let mut bytes = vec![0u8; desc.capacity as usize * INSTANCE_STRIDE];
+    // An emitter is a value with two floats; nothing in it can allocate,
+    // and the window proves it.
+    let mut emitter = Emitter::new(240.0);
 
     // Warmup: reach a steady mix of spawning, aging and dying.
     for round in 0u8..8 {
@@ -56,6 +67,18 @@ fn the_steady_state_allocates_nothing() {
     let verdict = counters::quiet_window(5, || {
         for round in 0u8..16 {
             system.burst([f32::from(round), 0.5, 0.0], 24);
+            // A shaped burst at the rate the emitter says is due: four
+            // per step at 240 per second, drawn from a box.
+            let due = emitter.advance(1.0 / 60.0);
+            assert_eq!(due, 4, "the emitter must ask for something in the window");
+            system.burst_in(
+                Shape::Box {
+                    min: [0.0, 0.0, 0.0],
+                    max: [1.0, 1.0, 0.5],
+                },
+                [0.0, 1.0, 0.0],
+                due,
+            );
             for _ in 0..8 {
                 system.step(1.0 / 60.0);
             }
@@ -65,6 +88,29 @@ fn the_steady_state_allocates_nothing() {
             assert!(
                 live > 0,
                 "the measured window went vacuous at round {round}"
+            );
+            // The view inside the window too: a walk that folds every
+            // size into a sum, fenced so nothing folds the walk away,
+            // and asserted positive so the walk provably visited a
+            // live particle.
+            let total: f32 = system
+                .particles()
+                .map(|particle| std::hint::black_box(particle).size)
+                .sum();
+            let total = std::hint::black_box(total);
+            // And every rotation, the same way: the spin integrates in the
+            // window and the view reads it back without allocating.
+            let turned: f32 = system
+                .particles()
+                .map(|particle| std::hint::black_box(particle).rotation)
+                .sum();
+            assert!(
+                std::hint::black_box(turned).is_finite(),
+                "the rotations went non-finite at round {round}"
+            );
+            assert!(
+                total.is_finite() && total > 0.0,
+                "the view walked nothing at round {round}"
             );
         }
     });

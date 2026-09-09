@@ -1,18 +1,18 @@
 [package]
 name = "renew-png"
-description = "PNG encoding with no dependencies: RGBA pixels to the bytes of a file"
+description = "PNG with no dependencies, both ways: RGBA pixels to the bytes of a file and back"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-keywords = ["png", "encoding", "image", "gamedev", "no-std"]
-categories = ["multimedia::images", "encoding"]
+keywords = ["png", "encoding", "decoding", "image", "gamedev"]
+categories = ["multimedia::images", "encoding", "parser-implementations"]
 readme = "README.md"
 homepage.workspace = true
 
 [package.metadata.renew]
-purpose = "PNG encoding with no dependencies: RGBA pixels in, the bytes of a file out. It never touches the filesystem."
+purpose = "PNG with no dependencies, both ways: RGBA pixels in and the bytes of a file out, or a file in and pixels out. It never touches the filesystem."
 maturity = "bootstrap"
 core = false
 extension_points = []

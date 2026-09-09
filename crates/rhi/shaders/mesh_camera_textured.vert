@@ -11,11 +11,14 @@
 //
 // The matrix arrives as a push-constant block, exactly as in
 // `mesh_camera.vert` — see that file for why it left the instance
-// stream. Layout here and the `VertexAttribute` slice at pipeline
-// creation describe the same bytes: binding 0 is location 0 = vec3
-// position in world space, location 1 = vec4 colour, location 2 = vec2
-// texture coordinate. No per-instance stream. Change one and the other
-// in the same commit or the draw reads garbage.
+// stream.
+//
+// The record has five attributes and this stage reads the ones it
+// needs. Locations, in order: 0 vec3 position, 1 vec4 colour, 2 vec2
+// texture coordinate, 3 vec3 normal, 4 vec4 tangent (xyz, and the
+// bitangent's sign in w). A stage may ignore any of them; what it may
+// not do is disagree about which location is which, so change this
+// list and MESH_LAYOUT in the same commit or the draw reads garbage.
 
 layout(push_constant) uniform Camera {
     mat4 view_projection;
@@ -30,6 +33,33 @@ layout(push_constant) uniform Camera {
     vec4 light;
 } camera;
 
+// The per-renderer block every camera pipeline binds, in three words:
+// the fade's, which the fragment stages read; the sway's, which only
+// this stage does; and the sway's own opt-in flag. A stage may declare
+// a leading subset of a block's members — validation is per stage —
+// so the fragment shaders keep their sixteen-byte view of this buffer.
+//
+// **The sway, word by word.** `sway.xy` is how far a fully bent vertex
+// is pushed across the ground plane at the top of the swing, in world
+// units — direction and strength folded together by whoever owns the
+// wind. `sway.z` is where the swing is in its cycle, in radians; the
+// caller advances it with time. `sway.w` is radians of extra phase per
+// world unit, which turns a field moving in lockstep into travelling
+// waves. `bend.x` says whether this renderer's draws are swayers at
+// all — the flag, not the reach, because a wind that calms to zero
+// must not flip what a mesh's alphas mean (see Air::swaying). `bend.z`
+// is where the weight rides: zero means the vertex's own alpha, spent
+// below; nonzero is a per-draw even weight, for meshes whose alpha is
+// spoken for — the blended pair reads it as translucency, and one
+// channel cannot mean both (see Air::bending_evenly). `bend.w` is how
+// far a bent vertex rises and falls, a quarter turn behind the lean, so
+// that a flat draw orbits instead of sliding (see Air::lifting).
+layout(std140, set = 1, binding = 0) uniform Air {
+    vec4 horizon;
+    vec4 sway;
+    vec4 bend;
+} air;
+
 layout(location = 0) in vec3 vertex_position;
 layout(location = 1) in vec4 vertex_colour;
 layout(location = 2) in vec2 vertex_uv;
@@ -43,13 +73,51 @@ layout(location = 1) out float fragment_fade;
 layout(location = 2) out vec2 fragment_uv;
 
 void main() {
-    gl_Position = camera.view_projection * vec4(vertex_position, 1.0);
-    fragment_colour = vertex_colour * camera.light;
+    // Whether this renderer's draws sway at all: the declared flag, not
+    // the reach, so calm air bends nothing while every alpha keeps the
+    // meaning its mesh was authored to (see Air::swaying). For a draw
+    // that never opted in, the position below is passed through with no
+    // arithmetic against it at all — the goldens hold this stage to
+    // byte identity, and untouched input is how identity is certain
+    // rather than probable.
+    bool bent = air.bend.x != 0.0;
+    // The vertex colour's alpha is the bend weight while a draw sways:
+    // zero pins a vertex, one bends it the whole reach. Unless the air
+    // carries an even weight — then every vertex bends by that word and
+    // alpha keeps the meaning its mesh was authored to. The two phase
+    // rates keep the crest line off both axes and the diagonal, so a
+    // field reads as weather rather than as a scan.
+    bool evenly = air.bend.z != 0.0;
+    float weight = evenly ? air.bend.z : vertex_colour.a;
+    // The wave, twice: the lean is its sine and the rise is its cosine,
+    // a quarter turn behind. A vertex under both traces an ellipse -
+    // which is what a particle in a surface wave does, and why the two
+    // halves must not share a phase. In step they would compose into a
+    // slide along a slope and a flat draw would still read rigid.
+    // `bend.w` is the vertical reach; zero is every draw that has never
+    // asked for one, and zero times a cosine leaves the position it
+    // always had.
+    float wave = air.sway.z + (vertex_position.x + 0.7 * vertex_position.z) * air.sway.w;
+    float swing = sin(wave);
+    float heave = cos(wave);
+    vec3 placed = bent
+        ? vertex_position
+            + vec3(air.sway.x, 0.0, air.sway.y) * (swing * weight)
+            + vec3(0.0, air.bend.w, 0.0) * (heave * weight)
+        : vertex_position;
+    gl_Position = camera.view_projection * vec4(placed, 1.0);
+    // A swaying draw spends the weight here: the fragment stage sees
+    // alpha one, so a cutout's mask and a blend keep their meaning.
+    // A still draw's alpha keeps its old meaning untouched — and so
+    // does an even swayer's, whose weight rode the air instead.
+    fragment_colour =
+        vec4(vertex_colour.rgb, bent && !evenly ? 1.0 : vertex_colour.a) * camera.light;
     fragment_uv = vertex_uv;
-    // The distance at which the fade is complete, in world units. A
-    // little over the arena's diagonal, so its far corner is faint
-    // rather than lost. The same constant as the untextured path: two
-    // pipelines drawing one world must fade alike or the seam shows.
+    // The distance at which the fade is complete, in world units: the
+    // caller's word when one was given, the compiled forty-eight when
+    // not. Only the caller knows how big its world is — this constant
+    // was sized to one arena and then met a world half again wider.
     const float FADE_DISTANCE = 48.0;
-    fragment_fade = clamp(gl_Position.w / FADE_DISTANCE, 0.0, 1.0);
+    float fade_over = air.bend.y > 0.0 ? air.bend.y : FADE_DISTANCE;
+    fragment_fade = clamp(gl_Position.w / fade_over, 0.0, 1.0);
 }

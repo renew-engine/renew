@@ -16,6 +16,74 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 
 disallowed-methods = [
+
+# **Float maths the operator lint cannot see.**
+#
+# `clippy::float_arithmetic`, denied at the top of this crate, flags
+# operators. It does not flag method calls, so `a.mul_add(b, c)` and
+# `a.sin()` compile clean under it — measured, not assumed. Every entry
+# below computes a float by a call rather than by an operator.
+#
+# **The rule, so that a method not listed here can be placed without
+# guessing: banned if it has to round, legal if it cannot.** Selection,
+# comparison and reinterpretation are exact and stay legal — `abs`, `min`,
+# `max`, `clamp`, `signum`, `copysign`, `floor`, `ceil`, `round`, `trunc`,
+# `to_bits`, `from_bits` and the `is_*` predicates decide nothing two
+# correct implementations could decide differently.
+#
+# **Two entries break that rule on purpose and say so:** `sqrt` and
+# `recip` are correctly rounded by IEEE-754 and are banned anyway,
+# because float maths belongs to presentation and the fixed-point type is
+# the answer here. They are policy, not drift, and their reasons say
+# which.
+#
+# `mul_add` leads because it is the one this tree has been bitten by, and
+# the record is in `crates/fixed/tests/angles.rs`: it fuses on targets
+# with a fused multiply-add and not on targets without, so a reference
+# built with it differed between machines and the accuracy test passed on
+# one platform while failing on another.
+#
+# A tripwire across the roads people actually take, not a proof — the same
+# thing the filesystem and clock bans in this file are, and for the same
+# reason.
+    { path = "f32::mul_add", reason = "fused on targets that have a fused multiply-add and not on targets that do not, so the same source rounds once on one machine and twice on another; this crate has been bitten by exactly that, and `crates/fixed/tests/angles.rs` records the case" },
+    { path = "f64::mul_add", reason = "fused on targets that have a fused multiply-add and not on targets that do not, so the same source rounds once on one machine and twice on another; this crate has been bitten by exactly that, and `crates/fixed/tests/angles.rs` records the case" },
+    { path = "f32::sqrt", reason = "correctly rounded by IEEE-754, so this one is banned by policy rather than for drift: float maths belongs to presentation, and a simulation that needs a root uses `Fixed::sqrt`" },
+    { path = "f64::sqrt", reason = "correctly rounded by IEEE-754, so this one is banned by policy rather than for drift: float maths belongs to presentation, and a simulation that needs a root uses `Fixed::sqrt`" },
+    { path = "f32::hypot", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::hypot", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::cbrt", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::cbrt", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::powi", reason = "the order in which the repeated multiplications are associated is unspecified, so the rounding sequence is too" },
+    { path = "f64::powi", reason = "the order in which the repeated multiplications are associated is unspecified, so the rounding sequence is too" },
+    { path = "f32::powf", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::powf", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::exp", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::exp", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::ln", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::ln", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::log2", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::log2", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::log10", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::log10", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::sin", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::sin", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::cos", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::cos", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::tan", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::tan", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::sin_cos", reason = "both of the above in one call, and the spelling a reader reaches for after seeing `Angle::sin_cos` in the fixed-point crate" },
+    { path = "f64::sin_cos", reason = "both of the above in one call, and the spelling a reader reaches for after seeing `Angle::sin_cos` in the fixed-point crate" },
+    { path = "f32::atan2", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f64::atan2", reason = "Rust does not specify the precision of this, and no mainstream libm rounds it correctly, so two targets can differ in the last place" },
+    { path = "f32::recip", reason = "a division written as a call, correctly rounded like the operator it replaces and banned for the same policy reason as `sqrt`" },
+    { path = "f64::recip", reason = "a division written as a call, correctly rounded like the operator it replaces and banned for the same policy reason as `sqrt`" },
+    { path = "f32::rem_euclid", reason = "a modulo written as a call; it is the usual float way to wrap an angle, which is precisely the thing the fixed-point angle type exists to do" },
+    { path = "f64::rem_euclid", reason = "a modulo written as a call; it is the usual float way to wrap an angle, which is precisely the thing the fixed-point angle type exists to do" },
+    { path = "f32::to_degrees", reason = "a multiplication written as a call, which the operator lint cannot see" },
+    { path = "f64::to_degrees", reason = "a multiplication written as a call, which the operator lint cannot see" },
+    { path = "f32::to_radians", reason = "a multiplication written as a call, which the operator lint cannot see" },
+    { path = "f64::to_radians", reason = "a multiplication written as a call, which the operator lint cannot see" },
     { path = "std::time::Instant::now", reason = "a placement reads no clock; one that did would move between two runs of the same tick" },
     { path = "std::time::SystemTime::now", reason = "a placement reads no clock; one that did would move between two runs of the same tick" },
     { path = "std::thread::spawn", reason = "simulation is single-threaded until a deterministic parallel-scheduling contract exists: fixed partitioning and a fixed reduction order" },

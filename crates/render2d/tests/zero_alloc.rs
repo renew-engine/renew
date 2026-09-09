@@ -44,6 +44,11 @@ const CLEAR: Color = Color {
 /// expectation below follows it rather than restating it.
 const TARGET: TargetFormat = TargetFormat::Rgba8Srgb;
 
+/// Red's own luminance in linear light, the value a full desaturation
+/// moves it to: `0.2126 R + 0.7152 G + 0.0722 B` with red's premultiplied
+/// channels, which is the red weight alone.
+const LUMA_OF_RED: f32 = 0.2126;
+
 /// The clear's exact bytes, derived from the format rather than written
 /// down; the conversion is unambiguous by choice of channel values, so any
 /// adapter must land on them.
@@ -155,6 +160,29 @@ fn steady_state_fill_and_render_allocates_nothing() {
             [255, 0, 0, 255],
             "{when}: the fixed sprite never drew — the gate would measure a blank frame"
         );
+        // The turned sprite's centre pixel: its centre is under a
+        // pixel from the pivot, inside the square at any angle, so the
+        // trigonometry path is proved to be drawing inside the window.
+        //
+        // It is desaturated by a half and flashed by a quarter, so the
+        // expected colour is derived rather than written down: red's
+        // premultiplied channels moved half way to its own luminance,
+        // then a quarter of the way to its alpha, then encoded once by
+        // the attachment. Within one code per channel, because none of
+        // those values is a fixed point of the transfer function and
+        // this gate runs on whatever adapter the machine has — the
+        // pinned-lane oracles are where exactness lives.
+        let effected = |channel: f32| {
+            let grey = 0.5f32.mul_add(LUMA_OF_RED - channel, channel);
+            let flashed = 0.25f32.mul_add(1.0 - grey, grey);
+            TARGET.stores(flashed).expect("a color target stores color")
+        };
+        let want = [effected(1.0), effected(0.0), effected(0.0), 255];
+        let turned = pixel_at(pixels, 44, 12);
+        assert!(
+            (0..4).all(|c| turned[c].abs_diff(want[c]) <= 1),
+            "{when}: the turned sprite should draw {want:?} within one code, read {turned:?}"
+        );
         let wander_x = WANDER[index % WANDER.len()];
         #[allow(
             clippy::cast_possible_truncation,
@@ -179,7 +207,30 @@ fn steady_state_fill_and_render_allocates_nothing() {
                  index: usize| {
         renderer.begin();
         renderer.push(&Sprite::new(RED, 8.0, 8.0).size(8.0, 8.0));
-        renderer.push(&Sprite::new(GREEN, WANDER[index % WANDER.len()], 40.0).size(8.0, 8.0));
+        // Mirrored on both axes so the swap is inside the measured
+        // window; the region is one solid colour, so the picture the
+        // liveness checks read is unchanged by it.
+        renderer.push(
+            &Sprite::new(GREEN, WANDER[index % WANDER.len()], 40.0)
+                .size(8.0, 8.0)
+                .flip_x(true)
+                .flip_y(true),
+        );
+        // Turned, coloured and smeared: every lane of the record is
+        // packed, the sine-and-cosine path runs, and the fragment stage
+        // takes its eight-tap branch, so the gate covers the widest work
+        // the crate does per frame. Its taps reach 1.5 units either way
+        // and it still sits clear of every pixel the liveness checks
+        // read except its own centre, which stays inside the solid
+        // region the expectation is derived from.
+        renderer.push(
+            &Sprite::new(RED, 40.0, 8.0)
+                .size(8.0, 8.0)
+                .rotation(0.11)
+                .saturation(0.5)
+                .flash(0.25)
+                .smear(3.0, 1.0),
+        );
         assert!(
             renderer.sprites() > 0,
             "the measured frame must be non-empty"

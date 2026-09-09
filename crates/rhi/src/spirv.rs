@@ -28,10 +28,11 @@ pub fn words_from_bytes(stage: &'static str, bytes: &[u8]) -> Result<Vec<u32>, P
             reason: "length not a multiple of four",
         });
     }
-    let mut words = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
-        words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
+    // `as_chunks` rather than `chunks_exact(4)`: the length is already
+    // known to be a multiple of four, so the remainder is empty by the
+    // check above, and a fixed-size chunk needs no indexing to unpack.
+    let (quads, _) = bytes.as_chunks::<4>();
+    let words: Vec<u32> = quads.iter().copied().map(u32::from_le_bytes).collect();
     if words[0] != SPIRV_MAGIC {
         return Err(PipelineError::InvalidSpirv {
             stage,

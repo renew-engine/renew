@@ -24,6 +24,7 @@ commands:
   modules    list every module with its maturity, from the manifests
   asset-pack  build an asset pack from a directory of files
   asset-inspect  list an asset pack's entries, optionally verifying them
+  asset-import  read a model file into the canonical form a pack can store
   ui-compile  compile a text document into the binary form the engine loads
   determinism  emit this target's simulation digests, or compare several targets'
   doctor     check the development environment
@@ -35,10 +36,13 @@ options:
   --output <path>   (record only, required) the trace file to write
   --input <path>    (replay only, required) the trace file to read
   --pack <path>     (asset-pack, asset-inspect; required) the pack file
-  --from <path>     (asset-pack, ui-compile; required) the directory to
-                    pack, or the text document to compile
-  --out <path>      (ui-compile only, required) where the compiled document
-                    is written
+  --from <path>     (asset-pack, ui-compile, asset-import; required) the
+                    directory to pack, the text document to compile, or
+                    the model file to read
+  --out <path>      (ui-compile, asset-import; required) where the
+                    compiled document, or the canonical mesh, is written
+  --images <path>   (asset-import only) write the model's own images into
+                    this directory; without it they are counted, not written
   --verify          (asset-inspect only) check each entry against its digest
   --emit <path>     (determinism only) write this target's digests here
   --compare <path>  (determinism only, repeatable) a target report to compare
@@ -172,8 +176,105 @@ its recorded digest. It is off by default because listing reads only the
 table while verifying reads every byte — a distinction that matters once a
 pack is large.
 
-There is no `import` subcommand. A real importer needs an image or audio
-decoder, and one that only copied bytes would be worse than its absence.
+## Importing a model
+
+`asset-import` reads a model file into the canonical form a pack can
+store, so a model is parsed once rather than every time it loads.
+
+```
+renew asset-import --from tree.obj --out tree.msh
+renew asset-pack --from build/meshes/ --pack game.rpk
+```
+
+**The format is decided by the bytes, not the file name.** PLY and OBJ
+identify themselves — one by a magic word, the other by keywords only it
+uses — and STL is what is left, because the format has no magic number
+at all and "these are not STL bytes" is the same observation as "these
+are STL bytes cut short". A material library is recognised before that
+fallback and refused by name, since it describes surfaces rather than
+their shape and would otherwise be reported as a truncated mesh: true,
+and no help to anyone.
+
+STL, PLY, OBJ, glTF and this crate's own `.msh` blob are read -- both
+shapes of glTF, a `.gltf` document carrying its own payloads and a
+`.glb` container.
+
+**A glTF model's materials and images are reported, and its images are
+written only where you say.**
+
+```
+renew asset-import --from tree.gltf --out tree.msh --images build/textures/
+renew asset-pack --from build/ --pack game.rpk
+```
+
+The two commands compose and neither learns about the other: import
+writes files, pack collects them. `--images` names a directory, which is
+created if there is at least one image to put in it. Each file is named
+`image-<n>.<ext>` -- the index is the document's own address for the
+image, not the name the document gave it, because a name in a file is
+not a thing that should decide where bytes land on disk. The extension
+comes from the media type: `image/png` becomes `.png` and `image/jpeg`
+becomes `.jpg`, those being the two the format's own schema names.
+
+A material names a *texture* and a texture names a *source*, so the
+envelope carries the `textures` table too -- without it a caller holding
+a material and a directory of files cannot pair them.
+
+**Without `--images` nothing is written and everything the document
+carries inside itself is still reported.** A command that scattered
+textures beside the blob because the input happened to carry some would
+be writing files nobody asked for; the flag is the asking, and the
+report is there either way so a caller can learn there are images before
+deciding where they go.
+
+**A glTF that keeps its textures in files beside it is not refused.**
+This reader does not open a second file, so it reports no tables and
+says so in `tables_refusal` -- the geometry is still read and the blob
+is still written, because whether a texture is reachable says nothing
+about whether the shape is sound. Passing `--images` for such a model
+*is* a refusal: then the caller asked for the thing that cannot be
+delivered.
+
+**Files already in the directory are left alone.** Two models imported
+into one directory leave the union of their images, so a caller that
+globs it gets both. `images_written` in the envelope names exactly what
+this run wrote, and is the list to trust.
+
+**No image is decoded, here or below.** A media type is reported and not
+weighed -- until something has to name a file for it, which is the one
+judgement this arm makes and the one place a type it cannot name is a
+refusal. That refusal is about the name, not the bytes: they may be
+perfectly readable by something else.
+
+`asset-import --json` adds, to the envelope every subcommand shares,
+the `format` detected, the `triangles` read, one boolean per optional
+stream, the `bytes` written, the `out` path, the `materials` and
+`images` the document carried, the `textures` table that joins them,
+`tables_refusal` when those could not be read, and the `images_written`
+paths. `materials`, `textures` and `images` are `null` rather than empty
+for a format that does not state them in this vocabulary -- an OBJ
+carries materials in Wavefront's model, which this arm does not convert
+into, so an empty array there would be saying something false. **On a refusal it carries the variant's name
+in `refusal` as well as the sentence in `stderr`**, because a message is
+for a person and a name is for a program: the sentences are meant to
+improve, and a script keying on one breaks when they do.
+
+**Three of those names are this tool's own rather than a reader's**, and
+the distinction is worth a script knowing. `UnknownMediaType` says the
+document stated a type this tool cannot name a file extension for, or
+stated none at all — a verdict about naming a file rather than about the
+bytes, which may be perfectly readable by something else, and one that
+only ever appears when `--images` asked for a file to be named.
+`NotGeometry` says the file
+was read fine and describes materials rather than shape; `SameFile` says
+`--from` and `--out` name one file, which is refused before the file is
+opened, because writing the blob there would destroy the only thing that
+could produce it again. Every other name comes from the reader that
+refused, so it is a verdict about the file's contents.
+
+There is no audio import, and no image *decoding*: a real one needs a
+decoder per format, and this arm carries image bytes without ever
+looking inside them.
 
 ## The module inventory
 
@@ -305,8 +406,9 @@ documented here, below. The short version:
   (the path written); `asset-inspect --json` adds, on success or a
   failed verification, `verified` (whether verification ran), a
   `mismatched` array of names, and an `entries` array of
-  `{name, hash, bytes}`. On the error path both asset subcommands carry
-  only an empty `entries` array with the reason in `stderr`.
+  `{name, hash, bytes}`. On the error path those two carry only an
+  empty `entries` array with the reason in `stderr`; `asset-import`
+  carries the refusal's name instead, for the reason given above.
   `ui-compile --json` adds an `errors` array and, on success, `nodes`,
   `bytes`, and `out`.
 - `coverage --json` adds `measured_files` and `exempt_lines` counts, an

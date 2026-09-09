@@ -29,14 +29,18 @@ display server, and the golden-image tests attest the bytes.
   `ClearValue`, so a clear value without a clearing load is
   unrepresentable); depth is a per-target internal image a pass opts
   into, sized and owned by the target. An `Item` may name geometry
-  (`Item::mesh`), which makes its draw indexed, and may carry push data
+  (`Item::mesh`), which makes its draw indexed — over the whole index list,
+  or over a slice of it (`Item::indices`, an `IndexRange`) so that geometry
+  meshed in contiguous pieces can be culled or sorted per piece without a
+  second buffer — and may carry push data
   (`Item::push_data`) for a pipeline that declares a range. Malformed
   frames — no passes, no surface pass, a first-use `Load` on any
   attachment identity, a clear value of the wrong kind, a
   depth-testing pipeline in a depthless pass, two items carrying
   different data for one per-frame buffer, an item whose geometry and
   whose pipeline's per-vertex input disagree, a mesh whose stride the
-  pipeline does not pack to, push data or bindings missing,
+  pipeline does not pack to, an index range without a mesh or reaching
+  past the end of one, push data or bindings missing,
   mis-counted or of the wrong class against the declaration, uniform data
   missing, surplus or mis-sized, a block buffer a different size from the
   block its pipeline declares, a frame that reads a render
@@ -61,8 +65,15 @@ display server, and the golden-image tests attest the bytes.
   supplies it; `PipelineDesc::depth_mesh` takes one vertex stage over a
   per-vertex layout — no fragment stage, no color attachment,
   `TargetFormat::DepthOnly` — for pipelines that draw only into
-  depth-kinded render images. `builtin` carries the embedded shader bundles — a colored
-  triangle, textured full-target quads over one and two sampled slots,
+  depth-kinded render images. Any of them may drop one side of every
+  triangle (`PipelineDesc::facing`, a `Facing`): closed solids keep
+  `Facing::Front` and pay nothing for their own backs, while foliage,
+  water and anything else meant to be seen from behind stays `Both`,
+  which is the default because a default that can make geometry vanish
+  is not one. Front is counter-clockwise **in clip space** — Vulkan
+  applies its rule in framebuffer space where Y points down, and the
+  rasteriser state undoes that once here so callers do not each meet it. `builtin` carries the embedded shader bundles — a colored
+  triangle, textured full-target quads over one, two and four sampled slots,
   instanced quads with and without per-instance depth, the particle
   billboard, and the mesh pairs (sources and compile record in
   [shaders/](https://github.com/renew-engine/renew/blob/main/crates/rhi/shaders/README.md)).
@@ -93,10 +104,16 @@ display server, and the golden-image tests attest the bytes.
 - `RenderImage` — what one pass renders into and a later pass samples:
   one physical image, kinded Color (`Rgba8Unorm`) or Depth (the
   device's chosen format) at creation, with the format pre-checked
-  against the adapter's own sampled/attachment features. Its
+  against the adapter's own sampled/attachment features. By default its
   **contents are frame-scoped** — every frame's first use starts
   undefined, enforced by the same walk that plans its barriers — while
-  the image itself is retained by any frame that names it. A pass
+  the image itself is retained by any frame that names it. An image
+  created **kept** (`RenderImageDesc::kept`) persists its contents
+  instead: a later frame may open it with `LoadOp::Load` or sample it
+  without rendering it at all — the shape of any render-to-texture on
+  its own cadence (a shadow map under a slow sun, a probe, a minimap).
+  The first frame ever must still render before anything reads, and a
+  discarding write takes the permission back; both refused by name. A pass
   renders into one via `Pass::render_to` (the image's kind decides the
   pass shape, so a mismatch is unrepresentable), and items sample it
   through an ordinary binding. The per-frame identity rules — write

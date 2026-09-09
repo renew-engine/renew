@@ -29,6 +29,12 @@ mesh comes out, and a draw item goes into a frame the caller composes.
   brightly the scene is lit.
   One record for both, so the map cannot be written with one light and
   sampled with another; the caster simply reads fewer of its members.
+  `new` takes a `Facing` for the **lit** pass, so closed-solid geometry
+  can stop paying to rasterise its own backs; the caster deliberately
+  keeps both sides, because a shadow map wants the faces the *light*
+  sees and culling it by the eye's rule punches holes in shadows nowhere
+  near the camera. `Facing::Both` is what it has always done, and the
+  right answer for anything a viewer may see from behind.
   The light's fourth row is not carried: an orthographic projection over
   a rigid view is affine, so that row is exactly `(0, 0, 0, 1)` and both
   shaders write a literal one. Those sixteen bytes are what let a scene
@@ -106,6 +112,29 @@ target.render(&RenderDesc::new(&[pass(&color, &items)]))?;
   keeping it, so one mesh can be drawn by several items in a frame —
   which the rendering crate deliberately allows.
 
+## Wind
+
+Foliage-like geometry can sway without a new pipeline or a new vertex
+attribute: [`Air::swaying`] declares a renderer's draws swayers and
+carries the wind's words in the same per-frame block as the fade. The
+vertex colour's alpha becomes the bend weight — zero pins a vertex, one
+bends it the whole reach — and is spent in the vertex stage, so a
+cutout's mask never mistakes a weight for a fade. Calling `swaying` is
+the opt-in, whatever the reach says: calm air bends nothing and changes
+no contract. Only the textured and cutout pipelines bend; the plain and
+shadowed paths ignore the words, and a golden holds each of these
+sentences.
+
+The sway displaces across the ground plane, and for anything flat that
+is not enough on its own: every vertex goes the same way at the same
+moment, so the draw translates and a plane sliding sideways reads as a
+plane sliding sideways however small the throw. [`Air::lifting`] adds
+the vertical half, taken a quarter turn behind the lean, so a vertex
+traces an ellipse instead of a line — which is what a particle in a
+surface wave does, and why the two halves must not share a phase. A
+lift of zero, and every air that never asks for one, keeps the picture
+byte for byte.
+
 ## Two decisions worth knowing
 
 **The depth refusal is a translation, not a second detection.** The
@@ -129,11 +158,14 @@ No window or presentation, no image writing, and no meshing — a voxel
 mesher belongs to the sample that knows its world. The camera is a
 matrix, not a viewpoint type: eye/target/projection maths belongs to the
 caller — the engine's camera crate, ordinarily — and this crate takes
-the sixty-four bytes that result. The vertex layout is a
-position, a colour and a texture coordinate, packed to 36 bytes with no
-padding: the rendering crate asserts at record time that a mesh's stride
-matches the pipeline's, and a `#[repr(C)]` struct over the maths crate's
-aligned vectors would not give 36.
+the sixty-four bytes that result. The vertex layout is a position, a
+colour, a texture coordinate, a normal and a tangent, packed with no
+padding to whatever the layout sums to — a number this file deliberately
+does not restate, because it has changed twice and every copy of it was
+wrong afterwards. The rendering crate asserts at record time that a
+mesh's stride matches the pipeline's, and a `#[repr(C)]` struct over the
+maths crate's aligned vectors would not give the packed width at all:
+`Vec4` is sixteen-byte aligned and would pad the `Vec3`s out to meet it.
 
 ## Testing note
 

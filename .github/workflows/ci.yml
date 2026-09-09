@@ -180,9 +180,10 @@ jobs:
       #
       # renew-bench appears in several exclude lists because its bench
       # targets reach the crates they time (jobs, frame, rng, ecs,
-      # particles, ui, ui-render) and, through those, what they build
-      # on (render2d, rhi, fixed); every cell that removes a crate in
-      # that closure excludes the suite alongside it.
+      # platform, particles, ui, ui-render, render2d, render3d) and,
+      # through those, what they build on (rhi, fixed); every cell
+      # that removes a crate in that closure excludes the suite
+      # alongside it.
       - name: Build and test without the job system
         run: |
           sel="--workspace --exclude renew-jobs --exclude renew-bench"
@@ -310,13 +311,16 @@ jobs:
           cargo build $sel
           cargo test $sel
       # The particle pool: arithmetic over the seeded generator. Its
-      # one consumer is the voxel game, which bursts dust on a broken
-      # block behind its render feature — excluded with it, as the
-      # removability rule asks of dependents. renew-bench reaches the
-      # pool from its bench targets, like the job pool before it.
+      # consumers are the voxel game, which bursts dust on a broken
+      # block behind its render feature, and the side-scroller, whose
+      # crash sparks are in its NORMAL graph — the pool's pure half
+      # needs no GPU, so that game carries it headless. Both are
+      # excluded with it, as the removability rule asks of dependents.
+      # renew-bench reaches the pool from its bench targets, like the
+      # job pool before it.
       - name: Build and test without the particle pool
         run: |
-          sel="--workspace --exclude renew-particles --exclude renew-sample-cube --exclude renew-bench"
+          sel="--workspace --exclude renew-particles --exclude renew-sample-cube --exclude renew-sample-glide --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-particles $sel
           cargo build $sel
           cargo test $sel
@@ -389,15 +393,17 @@ jobs:
           # graph gained the sprite renderer, its normal graph did not.
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render2d -p renew-sample-glide
           cargo build -p renew-sample-glide
-      # The 3D renderer: policy over the rendering crate, and no
-      # consumers at all yet -- no sample draws geometry, so nothing is
-      # excluded alongside it. That is what makes this cell cheap to keep
-      # honest now and worth having before it stops being cheap: the
-      # first consumer joins the exclude list rather than discovering,
-      # later, that the crate was never actually removable.
+      # The 3D renderer: policy over the rendering crate. The voxel
+      # sample and the benchmark suite are its consumers, so both are
+      # excluded alongside it. The suite is the newer of the two and
+      # joined the moment it began timing the geometry path -- which is
+      # the arrangement this cell was kept honest for while the crate
+      # had no consumer at all: the first one joins the exclude list
+      # here, rather than discovering later that the crate was never
+      # actually removable.
       - name: Build and test without the 3D renderer
         run: |
-          sel="--workspace --exclude renew-render3d --exclude renew-sample-cube"
+          sel="--workspace --exclude renew-render3d --exclude renew-sample-cube --exclude renew-bench"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-render3d $sel
           cargo build $sel
           cargo test $sel
@@ -422,6 +428,35 @@ jobs:
           cargo test $sel
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png -p renew-sample-cube
           cargo build -p renew-sample-cube
+      # The JSON reader. This cell was written while nothing in the tree
+      # depended on it, on the argument that the first crate to depend
+      # on it should discover the obligation from a red lane here rather
+      # than from nobody -- and that is what happened: the mesh readers
+      # took an edge to read the document inside a container, this cell
+      # went red for a list that was no longer upward-closed, and the
+      # two exclusions below are the answer. The mesh crate brings the
+      # command-line tool with it, which is why that name is here too.
+      # Same shape as the pack format's cell above and the fixed-point
+      # cell below, which has now caught three dependents in turn.
+      - name: Build and test without the JSON reader
+        run: |
+          sel="--workspace --exclude renew-json --exclude renew-mesh --exclude renew-cli"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-json $sel
+          cargo build $sel
+          cargo test $sel
+      # The mesh readers. This cell was written while nothing in the tree
+      # depended on them, on the argument that the first crate to depend
+      # on this one should discover the obligation from a red lane here
+      # rather than from nobody -- and that is what happened: the CLI
+      # took an edge for `asset-import`, this cell went red for a list
+      # that was no longer upward-closed, and the exclusion below is the
+      # answer. Same shape as the pack format's cell above.
+      - name: Build and test without the mesh readers
+        run: |
+          sel="--workspace --exclude renew-mesh --exclude renew-cli"
+          bash "$RUNNER_TEMP/absent-from-graph.sh" renew-mesh $sel
+          cargo build $sel
+          cargo test $sel
       # The fixed-point arithmetic, and the crates written in it. This
       # cell was a single leaf when it landed, with a comment saying the
       # first crate to depend on it should discover the obligation from
@@ -504,7 +539,7 @@ jobs:
       - name: Build and test the minimal core alone
         run: |
           sel="-p renew-platform -p renew-diag -p renew-event -p renew-memory -p renew-math"
-          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
+          for optional in renew-rhi renew-render2d renew-render3d renew-camera renew-particles renew-png renew-json renew-mesh renew-jobs renew-frame renew-rng renew-trace renew-asset renew-ecs renew-input renew-replay renew-audio renew-fixed renew-physics2d renew-physics3d renew-ui renew-ui-render renew-snapshot renew-scene renew-volume renew-net; do
             bash "$RUNNER_TEMP/absent-from-graph.sh" "$optional" $sel
           done
           cargo build $sel
@@ -768,50 +803,29 @@ jobs:
         env:
           RENEW_GOLDEN: "1"
         run: cargo test --package renew-render3d --test golden --test zero_alloc
-      # The voxel sample's own picture, drawn through the whole stack on
-      # the pinned rasterizer. Not compared against the committed image:
-      # that file is drawn on a real GPU and this is a software
-      # rasterizer, so byte equality would be asserting that two
-      # different rasterizers agree -- which they need not, and a golden
-      # that flakes is worse than no golden. What is asserted is that the
-      # path runs end to end and produces a real PNG of the right size,
-      # which is the part that breaks when a projection or a feature
-      # wiring is wrong.
-      - name: The voxel sample draws itself on the pinned software rasterizer
+      # The voxel sample's own picture, on the pinned rasterizer and
+      # compared byte for byte against the committed one.
+      #
+      # This step used to decode the PNG inline and count colours. Those
+      # were structural questions -- is it a PNG, is it 512 square, did
+      # more than one colour appear -- and they caught a projection that
+      # stopped projecting and nothing finer: a change that moved every
+      # block three pixels, or lost the shadow, or swapped two atlas
+      # tiles, passed all of them. The same questions are assertions
+      # inside the test now, where they can be read and mutated, and the
+      # byte comparison is what this lane adds on top.
+      - name: The voxel sample's picture on the pinned software rasterizer
+        env:
+          RENEW_GOLDEN: "1"
+        run: cargo test --package renew-sample-cube --features render --test golden
+      # The command-line render arm, kept as its own step. The oracle
+      # above draws through the library and never touches the
+      # filesystem, so without this nothing proves `--render` still
+      # writes a file at all.
+      - name: The voxel sample writes a PNG from the command line
         run: |
-          cargo run -p renew-sample-cube --features render --bin cube --             --ticks 1 --render "$RUNNER_TEMP/arena.png"
-          python3 - "$RUNNER_TEMP/arena.png" <<'CHECK'
-          import struct, sys, zlib
-          data = open(sys.argv[1], "rb").read()
-          assert data[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]), "not a PNG"
-          width, height = struct.unpack(">II", data[16:24])
-          assert (width, height) == (512, 512), f"unexpected size {width}x{height}"
-          at, idat = 8, b""
-          while at < len(data):
-              length = struct.unpack(">I", data[at:at + 4])[0]
-              if data[at + 4:at + 8] == b"IDAT":
-                  idat += data[at + 8:at + 8 + length]
-              at += 12 + length
-          raw = zlib.decompress(idat)
-          assert len(raw) == height * (1 + width * 4), "the stream is the wrong length"
-          # A picture of one flat colour means nothing was drawn. Sampled
-          # over the whole image rather than down one column: the view is
-          # centred, so the left edge is entirely backdrop and a column
-          # probe there proves only that the backdrop is uniform. It did
-          # exactly that once.
-          stride = 1 + width * 4
-          colours = set()
-          for row in range(height):
-              line = raw[row * stride + 1:(row + 1) * stride]
-              for x in range(0, width * 4, 4):
-                  colours.add(bytes(line[x:x + 4]))
-          assert len(colours) >= 4, f"only {len(colours)} colour(s); the geometry did not draw"
-          corner = raw[1:5]
-          middle_row = height // 2
-          centre = raw[middle_row * stride + 1 + (width // 2) * 4:][:4]
-          assert centre != corner, "the middle of the picture is the backdrop; nothing drew there"
-          print(f"{len(data)} bytes, {width}x{height}, {len(colours)} colours")
-          CHECK
+          cargo run -p renew-sample-cube --features render --bin cube -- --ticks 1 --render "$RUNNER_TEMP/arena.png"
+          test -s "$RUNNER_TEMP/arena.png"
       # The game's replay-capture oracle on the same pinned rasterizer:
       # committed traces replayed through the driver's own loop, drawn
       # through the sprite pipeline, compared against committed images.
@@ -1374,6 +1388,14 @@ jobs:
   determinism-ios:
     name: Determinism (ios simulator)
     runs-on: macos-latest
+    # **It downloads two of `determinism-emit`'s artifacts, so it has to
+    # wait for them.** Without this the job starts as soon as a runner is
+    # free, races the matrix leg that uploads them, and fails with
+    # `Artifact not found for name: determinism-macos-latest` -- a red
+    # lane that says nothing about the change under test. Observed three
+    # times on 2026-09-07, twice on `main`. The comparison job below
+    # already declares the same dependency; this one was the asymmetry.
+    needs: [determinism-emit]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

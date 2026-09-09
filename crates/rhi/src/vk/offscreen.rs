@@ -417,7 +417,7 @@ fn build(
         cmd,
         fence,
         depth,
-        retained: Default::default(),
+        retained: [const { None }; MAX_RETAINED_RESOURCES],
         wedged: false,
     })
 }
@@ -892,14 +892,10 @@ impl OffscreenTarget {
                     // that writes its own vertex list. The frame contract
                     // already refused the mismatch.
                     match item.mesh {
-                        Some(mesh) => device.cmd_draw_indexed(
-                            self.cmd,
-                            mesh.inner.index_count,
-                            instances,
-                            0,
-                            0,
-                            0,
-                        ),
+                        Some(mesh) => {
+                            let (indices, first) = super::pass::indexed_draw(item, mesh);
+                            device.cmd_draw_indexed(self.cmd, indices, instances, first, 0, 0);
+                        }
                         None => {
                             device.cmd_draw(self.cmd, item.pipeline.vertex_count, instances, 0, 0);
                         }
@@ -985,6 +981,15 @@ impl OffscreenTarget {
                         creation("vkQueueSubmit2", code)
                     }
                 })?;
+            // Submitted, so the work executes in queue order or the
+            // device dies and poisons the spine - ONLY NOW may kept
+            // images remember where this frame leaves them. A recorded
+            // frame that never reached the queue must leave no trace:
+            // settling at record time let a failed vkEndCommandBuffer
+            // hand the next frame a layout no GPU work ever produced,
+            // and on a virgin image it quietly defeated the
+            // render-once-before-reading rule itself.
+            walk.settle();
 
             match device.wait_for_fences(&[self.fence], true, FENCE_TIMEOUT_NS) {
                 Ok(()) => {}

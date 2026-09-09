@@ -23,19 +23,26 @@ stacking, never existence.
 ## Frames as data
 
 `UiPresenter::frame` answers one frame as an iterator of quads —
-position, size, premultiplied tint — with clipping applied and
-invisible quads dropped. Quads are in the solver's pixel space, so
-the sprite renderer's canvas must match the viewport the tree solves
-at, and one frame can hold up to `max_quads` of them — twice the node
-limit, because a bulk replace draws every dying node once more under
-every newborn. Every decision the presenter makes is
+position, size, source rectangle, premultiplied tint — with clipping
+applied and invisible quads dropped. Quads are in the solver's pixel
+space, so the sprite renderer's canvas must match the viewport the
+tree solves at, and one frame can hold up to `max_quads` of them —
+twice the node limit, because a bulk replace draws every dying node
+once more under every newborn. Every decision the presenter makes is
 observable there without a device, which is where the unit and
 property tests hold it; `emit` is a thin adapter pushing each quad as
 a sprite. Clipping is rectangle intersection against the ancestor
-chain, computed at capture and blended with the rest; the one sampled
-atlas region is a uniform white texel, so clipping the rectangle is
-clipping the image — the proportional-UV half arrives with the first
-non-uniform region.
+chain, computed at capture and blended with the rest, and the quad's
+source rectangle is cut by the same linear map, so every surviving
+pixel samples the texel it would have sampled uncut. The one sampled
+atlas region is still a uniform white texel, so no committed picture
+The cut itself is `render2d::cut_to` rather than a second copy of it:
+this crate carried the derivation for a while, and the proof belongs
+with the arithmetic in the crate that owns sprites. What stays here is
+what belongs to a node rather than to a quad — a tint that draws
+nothing is dropped before any geometry runs.
+
+moves yet.
 
 ## Text
 

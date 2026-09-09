@@ -34,6 +34,35 @@ use crate::scene::{Scene, VERTEX_STRIDE};
 /// constant is what actually couples this pipeline to those shaders.
 const LAYOUT: &[VertexAttribute] = builtin::MESH_LAYOUT;
 
+/// The scene's record and the pipeline's layout describe the same bytes
+/// **in the same order**, checked when this crate is compiled.
+///
+/// **The order half is not decoration, and it became load-bearing the
+/// day a second `Vec4` joined the list.** A total is all a sum can see:
+/// with a position, a colour, a coordinate, a normal and a tangent, the
+/// last two can be exchanged and the sum is unchanged. `push_vertex`
+/// would then write the normal where the pipeline expects the tangent,
+/// every lit draw would read three of the wrong floats, and the equality
+/// below — and the record-time assertion in the rendering crate, which
+/// also compares only strides — would both stay green. Before the
+/// tangent there was no same-sum permutation of the tail and this could
+/// not happen.
+///
+/// A `const` block rather than a test, because both sides are constants
+/// and nothing about it needs to run.
+const _: () = {
+    assert!(
+        VERTEX_STRIDE == builtin::MESH_STRIDE,
+        "the scene's record and the pipeline's layout pack to different widths"
+    );
+    assert!(LAYOUT.len() == 5, "the record is five attributes");
+    assert!(matches!(LAYOUT[0], VertexAttribute::Vec3), "position");
+    assert!(matches!(LAYOUT[1], VertexAttribute::Vec4), "colour");
+    assert!(matches!(LAYOUT[2], VertexAttribute::Vec2), "coordinate");
+    assert!(matches!(LAYOUT[3], VertexAttribute::Vec3), "normal");
+    assert!(matches!(LAYOUT[4], VertexAttribute::Vec4), "tangent");
+};
+
 /// What can go wrong building or uploading. Creation only: the draw
 /// itself cannot fail, and the render belongs to the target.
 #[derive(Debug)]
@@ -176,7 +205,12 @@ impl MeshRenderer {
 
     /// The draw for `mesh`, ready to sit in a pass.
     ///
-    /// Every index the mesh holds, in the order the scene pushed them.
+    /// Every index the mesh holds, in the order the scene pushed them —
+    /// and a caller wanting fewer narrows the returned item with
+    /// [`Item::indices`], which is why this layer has no opinion about
+    /// ranges of its own. A scene uploaded as one mesh with its pieces
+    /// in contiguous runs can then be culled or sorted per piece against
+    /// that one buffer.
     #[must_use]
     pub fn item<'a>(&'a self, mesh: &'a Mesh) -> Item<'a> {
         Item::new(&self.pipeline).mesh(mesh)
@@ -211,9 +245,268 @@ fn upload_scene(device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
 /// **Plain columns rather than a matrix type**, so this crate keeps its
 /// single dependency. Whoever owns a camera owns the maths that built it;
 /// what crosses the boundary is sixty-four bytes with a stated order.
+/// The buffer and set a camera pipeline reads its per-frame block
+/// through — the fade, and the sway beside it.
+///
+/// **One per renderer, not one per draw.** The block holds a dozen
+/// floats given once per frame; a buffer and a set per pipeline is
+/// what that costs, and it is paid at bring-up rather than in the loop.
+fn air_binding(device: &Device) -> Result<renew_rhi::Binding, Render3dError> {
+    let buffer = device.create_buffer(AIR_BYTES as usize, renew_rhi::BufferUsage::PerFrame)?;
+    Ok(device.create_binding(&renew_rhi::BindingDesc::uniform(&buffer))?)
+}
+
+/// How many bytes the per-renderer block carries.
+///
+/// Three `vec4`s, each aligned to sixteen as `std140` wants: the fade's
+/// words, the sway's, and a third whose `x` is the sway's opt-in flag
+/// and whose `y` is how far away the fade completes (zero meaning the
+/// compiled default). Widened once, for
+/// every camera pipeline at once — the fragment stages declare and read
+/// the first sixteen bytes, the textured vertex stage reads the rest,
+/// and a stage that declares a leading subset of a block's members is
+/// reading exactly those members: descriptor validation is per-stage,
+/// and the validation layers on both a real adapter and the software
+/// lane accept the shapes here with no complaint. That is the observed
+/// mechanism, not a spec quotation, and the goldens hold the result.
+///
+/// **Per renderer, not per draw.** Each renderer owns one buffer of
+/// this block and the frame contract takes one set of bytes for it per
+/// frame — two cameras carrying different air through one renderer in
+/// one frame is refused at record time by name. A draw that must
+/// differ within a frame differs by vertex weight, or by a second
+/// renderer.
+pub const AIR_BYTES: u32 = 48;
+
+/// What distance fades toward, and how much of it shows.
+///
+/// **The colour has to match whatever the caller clears to**, and only the
+/// caller knows that. It was compiled into four fragment shaders, matched
+/// by hand to the colour this repository's own samples clear to; a caller
+/// clearing to daylight got its far geometry faded toward near-black,
+/// which reads as a wall of soot across the horizon rather than as
+/// distance. That is the whole reason this type exists.
+///
+/// [`Air::CLEAR_BLACK`] is the value those shaders held, so a caller that
+/// says nothing gets exactly the picture it got before there was anything
+/// to say.
+///
+/// The fade is no longer the whole of it: the block also carries the
+/// sway words a vertex stage bends foliage by — see [`Air::swaying`],
+/// which is their contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Air {
+    bytes: [u8; AIR_BYTES as usize],
+}
+
+impl Air {
+    /// What the shaders used to compile in: this repository's own sample
+    /// backdrop, at seventy-two per cent.
+    pub const CLEAR_BLACK: Self = Self::of(renew_rhi::builtin::HORIZON, 0.72);
+
+    /// Fade toward `horizon`, reaching `most` of it at the far plane.
+    ///
+    /// `horizon` is linear, the space the mix happens in and the space
+    /// [`renew_rhi::Color`] carries — so a caller passes the same numbers
+    /// it clears with and the fade meets the backdrop without a seam.
+    ///
+    /// `most` short of one leaves geometry at the very back faintly
+    /// visible rather than vanishing into the backdrop, which is what
+    /// keeps a room's far wall reading as a wall. One is legal and means
+    /// the far plane is exactly the backdrop.
+    #[must_use]
+    pub const fn of(horizon: [f32; 3], most: f32) -> Self {
+        let mut bytes = [0u8; AIR_BYTES as usize];
+        let values = [horizon[0], horizon[1], horizon[2], most];
+        let mut at = 0;
+        // A const loop, because this is what makes `CLEAR_BLACK` a
+        // constant rather than something built at every bring-up.
+        while at < 4 {
+            let word = values[at].to_ne_bytes();
+            let mut byte = 0;
+            while byte < 4 {
+                bytes[at * 4 + byte] = word[byte];
+                byte += 1;
+            }
+            at += 1;
+        }
+        Self { bytes }
+    }
+
+    /// The same air, declared a swayer and given the wind's words.
+    ///
+    /// `reach` is how far a fully bent vertex is displaced across the
+    /// ground plane at the top of the swing, in world units — direction
+    /// and strength folded into one pair, because whoever owns the wind
+    /// owns that arithmetic. `phase` is where the swing is in its
+    /// cycle, in radians; advance it with time and the geometry moves.
+    /// `ripple` is radians of extra phase per world unit, so a meadow
+    /// swings as travelling waves rather than in lockstep; zero is
+    /// lockstep, for the caller that wants it. The wave crests travel a
+    /// fixed world bearing (one across, seven tenths along, in plan),
+    /// not the wind's — at these amplitudes the eye reads motion, not
+    /// crest bearing, and a steerable crest is a second feature the day
+    /// something needs it.
+    ///
+    /// **Calling this is the opt-in, whatever the reach says.** Which
+    /// draws bend, and by how much, is per vertex: the vertex colour's
+    /// alpha is the bend weight — zero pins a vertex, one bends it the
+    /// whole reach — and it is *spent* in the vertex stage, reaching
+    /// the fragment stage as one, so a cutout's mask never reads a
+    /// weight as a fade. That trade is made when this is called, not
+    /// when the wind happens to blow: a swayer with reach zero is a
+    /// meadow standing in calm air, roots intact, and a draw that never
+    /// calls this keeps alpha's old meaning — including fading a cutout
+    /// to nothing — with its picture untouched, byte for byte. What a
+    /// caller must not do is flicker one draw between the two contracts
+    /// and expect its alphas to mean both things at once.
+    ///
+    /// Only the textured and cutout pipelines bend; the plain and
+    /// shadowed pipelines ignore these words entirely — foliage is
+    /// authored with holes or textures, and a swaying caster would need
+    /// its shadow to sway in step, which is a feature the day something
+    /// needs it. A golden holds the plain path still under swaying air.
+    ///
+    /// Two `Air`s differing only in dead sway words — a becalmed swayer
+    /// against [`Air::CLEAR_BLACK`], a negative zero in the reach —
+    /// compare unequal: equality here is byte equality, as everywhere
+    /// in this module.
+    #[must_use]
+    pub const fn swaying(mut self, reach: [f32; 2], phase: f32, ripple: f32) -> Self {
+        let values = [reach[0], reach[1], phase, ripple];
+        let mut at = 0;
+        while at < 4 {
+            let word = values[at].to_ne_bytes();
+            let mut byte = 0;
+            while byte < 4 {
+                self.bytes[16 + at * 4 + byte] = word[byte];
+                byte += 1;
+            }
+            at += 1;
+        }
+        // The opt-in flag, in its own word: the vertex stage reads
+        // *this* to decide whether alpha is a weight, so a wind calming
+        // to zero reach cannot flip a draw's authoring contract out
+        // from under meshes built to it.
+        let on = 1.0f32.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[32 + byte] = on[byte];
+            byte += 1;
+        }
+        self
+    }
+
+    /// The same air, with the fade completing at `distance` world units.
+    ///
+    /// **The compiled forty-eight was sized to one arena** and then met
+    /// worlds of other sizes; only the caller knows how big its world
+    /// is, which is the same reasoning that moved the horizon colour
+    /// into this block. Zero — and every `Air` built without this call —
+    /// selects the compiled default, so a caller that says nothing gets
+    /// the picture it always got, byte for byte: the stages take the
+    /// constant through a select, and identical arithmetic is identical
+    /// bytes.
+    ///
+    /// Every camera path reads the same word, textured, plain, shadowed
+    /// and cutout alike — pipelines drawing one world must fade alike or
+    /// the seam between them shows, and now they must also fade *this
+    /// far* alike.
+    #[must_use]
+    pub const fn fading_over(mut self, distance: f32) -> Self {
+        let word = distance.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[36 + byte] = word[byte];
+            byte += 1;
+        }
+        self
+    }
+
+    /// The same air, with a swaying vertex rising and falling by
+    /// `reach` as well as leaning.
+    ///
+    /// **A surface that only leans reads as a rigid sheet sliding.**
+    /// The sway displaces across the ground plane and nowhere else, so
+    /// a flat draw under it translates: every vertex goes the same way
+    /// at the same moment, and a plane moving sideways looks like a
+    /// plane moving sideways however small the throw. What makes a
+    /// surface read as a surface is the vertical half.
+    ///
+    /// The vertical rides a quarter turn behind the horizontal, so a
+    /// vertex traces an ellipse rather than a diagonal line. That is
+    /// not a flourish: it is what a particle in a surface wave does,
+    /// and it is why the two halves must not share a phase. In step,
+    /// the vertex slides along a slope and the sheet still reads rigid;
+    /// a quarter apart, it orbits, and the crest travelling through the
+    /// mesh is what the eye reads as a wave.
+    ///
+    /// Composes with [`Air::swaying`], which remains the opt-in - this
+    /// word alone lifts nothing - and with [`Air::bending_evenly`],
+    /// whose weight scales both halves alike. Zero, and every `Air`
+    /// built without this call, leans exactly as it always did, byte
+    /// for byte: the stage takes the term through the same multiply
+    /// whatever the reach, and zero times a cosine is zero.
+    ///
+    /// In world units, like the horizontal reach, and honest about
+    /// scale: a pond's swell is a couple of centimetres, and anything
+    /// a viewer can measure against a wall is too much.
+    #[must_use]
+    pub const fn lifting(mut self, reach: f32) -> Self {
+        let word = reach.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[44 + byte] = word[byte];
+            byte += 1;
+        }
+        self
+    }
+
+    /// The same air, with every vertex bending by `weight` instead of
+    /// by its own alpha.
+    ///
+    /// **For draws whose alpha is spoken for.** The blended pipelines
+    /// read vertex alpha as translucency, so a surface that is
+    /// genuinely half-there could never sway: one channel cannot be a
+    /// bend weight and a coverage at once. This word moves the weight
+    /// into the air — one weight per draw, even across the mesh — and
+    /// the vertex stage leaves alpha unspent, exactly as authored. The
+    /// evenness is the price of the channel, and it lands where it is
+    /// cheap: the meshes that need this are the ones whose per-vertex
+    /// channel is already taken.
+    ///
+    /// Composes with [`Air::swaying`], which remains the opt-in — this
+    /// word alone bends nothing. Zero, and every `Air` built without
+    /// this call, keeps the authored contract: alpha is the weight and
+    /// is spent while the draw sways (the same zero-means-default the
+    /// fade distance rides).
+    #[must_use]
+    pub const fn bending_evenly(mut self, weight: f32) -> Self {
+        let word = weight.to_ne_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            self.bytes[40 + byte] = word[byte];
+            byte += 1;
+        }
+        self
+    }
+
+    /// The packed bytes, exactly the length the pipelines' declared
+    /// uniform block wants.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Camera {
     bytes: [u8; 80],
+    /// **Carried here rather than passed to `item`**, so that adding it
+    /// broke no caller: a camera is already the thing every camera path
+    /// takes, and what the distance fades toward is a property of the
+    /// scene being looked at rather than of one draw within it.
+    air: Air,
 }
 
 impl Camera {
@@ -253,7 +546,17 @@ impl Camera {
             bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
             at += 4;
         }
-        Self { bytes }
+        Self {
+            bytes,
+            air: Air::CLEAR_BLACK,
+        }
+    }
+
+    /// The same camera, looking through different air.
+    #[must_use]
+    pub const fn through(mut self, air: Air) -> Self {
+        self.air = air;
+        self
     }
 
     /// The packed bytes, exactly the length the pipelines' declared
@@ -261,6 +564,13 @@ impl Camera {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// The per-frame block's bytes — fade and sway together — exactly
+    /// the length the pipelines' declared uniform block wants.
+    #[must_use]
+    pub fn air(&self) -> &[u8] {
+        self.air.bytes()
     }
 }
 
@@ -356,6 +666,13 @@ impl core::fmt::Debug for TexturedMeshRenderer {
 pub struct TexturedCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
+    /// The set the per-frame block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl TexturedCameraRenderer {
@@ -388,10 +705,16 @@ impl TexturedCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_TEXTURED, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(1)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -412,7 +735,8 @@ impl TexturedCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
     }
 }
 
@@ -445,6 +769,13 @@ impl TexturedCameraRenderer {
 pub struct CutoutCameraRenderer {
     pipeline: RenderPipeline,
     binding: renew_rhi::Binding,
+    /// The set the per-frame block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl CutoutCameraRenderer {
@@ -474,6 +805,7 @@ impl CutoutCameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_CUTOUT, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(1)
                 // Depth read *and* written, exactly as the opaque paths
                 // do. That is the whole point: what survives the cut is
@@ -481,7 +813,12 @@ impl CutoutCameraRenderer {
                 // blending cannot offer without sorting.
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline, binding })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -499,13 +836,110 @@ impl CutoutCameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
     }
 }
 
 impl core::fmt::Debug for CutoutCameraRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("CutoutCameraRenderer")
+    }
+}
+
+/// Draws indexed geometry through a camera, blended over what is
+/// already in the target — the pair the cutout's own doc promised for
+/// surfaces that are genuinely half-there: water, glass, smoke.
+///
+/// **Depth is tested and not written.** Translucent geometry respects
+/// the opaque world — a wall in front of a pond hides it — but leaves
+/// no footprint in the depth buffer, so it can never occlude what is
+/// drawn after it. That is one half of the compositing contract.
+///
+/// **The caller owes the other half: order.** Blending is
+/// order-dependent by its equation (`src + dst * (1 - src.a)`), so
+/// translucent draws land after the opaque world and back to front
+/// among themselves. A wrong order is a wrong picture — visibly and
+/// deterministically, never unsafely — and a golden holds exactly
+/// that: swapping two overlapping translucent quads changes the frame,
+/// which is this contract said as arithmetic.
+///
+/// The fragment stage premultiplies its own output, so vertex colours
+/// and atlas bytes keep the same meaning they have on every other
+/// path; a caller says "half there" with a vertex alpha of one half
+/// and nothing else changes.
+pub struct BlendedCameraRenderer {
+    pipeline: RenderPipeline,
+    binding: renew_rhi::Binding,
+    /// The set the per-frame block is read through — held for the
+    /// record path, exactly as the cutout's is.
+    air_binding: renew_rhi::Binding,
+}
+
+impl BlendedCameraRenderer {
+    /// Build the pipeline and upload `pixels` as the texture it samples.
+    ///
+    /// `pixels` is RGBA8, row-major, `extent.width * extent.height * 4`
+    /// bytes long.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::new`].
+    pub fn new(
+        device: &Device,
+        format: TargetFormat,
+        extent: renew_rhi::Extent,
+        pixels: &[u8],
+    ) -> Result<Self, Render3dError> {
+        let texture = device
+            .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
+            .map_err(Render3dError::Texture)?;
+        let sampler = device.create_sampler(&renew_rhi::SamplerDesc::atlas())?;
+        let binding = device.create_binding(&renew_rhi::BindingDesc::new(
+            renew_rhi::BindingSource::Texture(&texture),
+            &sampler,
+        ))?;
+        let pipeline = device.create_pipeline(
+            &PipelineDesc::mesh(builtin::MESH_CAMERA_BLENDED, format, LAYOUT)
+                .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
+                .sampled_bindings(1)
+                .blend(renew_rhi::Blend::PremultipliedAlpha)
+                // Tested against the opaque world, never written: see
+                // the type's doc for why both halves matter.
+                .depth_state(renew_rhi::DepthState::test_only()),
+        )?;
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            binding,
+            air_binding,
+        })
+    }
+
+    /// Upload `scene` into geometry the GPU can draw.
+    ///
+    /// # Errors
+    ///
+    /// As [`TexturedCameraRenderer::upload`].
+    pub fn upload(&self, device: &Device, scene: &Scene) -> Result<Mesh, Render3dError> {
+        upload_scene(device, scene)
+    }
+
+    /// The draw for `mesh` seen through `camera`.
+    #[must_use]
+    pub fn item<'a>(&'a self, mesh: &'a Mesh, camera: &'a Camera) -> Item<'a> {
+        Item::new(&self.pipeline)
+            .mesh(mesh)
+            .push_data(camera.bytes())
+            .uniform_data(camera.air())
+            .bindings(&[&self.binding, &self.air_binding])
+    }
+}
+
+impl core::fmt::Debug for BlendedCameraRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("BlendedCameraRenderer")
     }
 }
 
@@ -554,6 +988,13 @@ impl core::fmt::Debug for TexturedCameraRenderer {
 /// it is. They move only when something needs them to vary per draw.
 pub struct CameraRenderer {
     pipeline: RenderPipeline,
+    /// The set the per-frame block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 /// The camera's push-constant range: one column-major matrix, and the
@@ -563,7 +1004,7 @@ const CAMERA_PUSH_BYTES: u32 = 80;
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
-const _: () = assert!(CAMERA_PUSH_BYTES as usize == core::mem::size_of::<Camera>());
+const _: () = assert!(CAMERA_PUSH_BYTES as usize == 80);
 
 impl CameraRenderer {
     /// Build the pipeline.
@@ -579,9 +1020,14 @@ impl CameraRenderer {
         let pipeline = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA, format, LAYOUT)
                 .push_constant_size(CAMERA_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
-        Ok(Self { pipeline })
+        let air_binding = air_binding(device)?;
+        Ok(Self {
+            pipeline,
+            air_binding,
+        })
     }
 
     /// Upload `scene` into geometry the GPU can draw.
@@ -607,6 +1053,8 @@ impl CameraRenderer {
         Item::new(&self.pipeline)
             .mesh(mesh)
             .push_data(camera.bytes())
+            .uniform_data(camera.air())
+            .bindings(&[&self.air_binding])
     }
 }
 
@@ -659,6 +1107,9 @@ impl core::fmt::Debug for MeshRenderer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowedCamera {
     bytes: [u8; 128],
+    /// What distance fades toward — see [`Camera::air`], which carries it
+    /// for the same reason and hands it to the same uniform block.
+    air: Air,
 }
 
 impl ShadowedCamera {
@@ -743,7 +1194,30 @@ impl ShadowedCamera {
         }
         put(1.0, &mut at);
         debug_assert_eq!(at, 128, "the pack must fill the declared range exactly");
-        Self { bytes }
+        Self {
+            bytes,
+            air: Air::CLEAR_BLACK,
+        }
+    }
+
+    /// The same camera, looking through different air.
+    #[must_use]
+    pub const fn through(mut self, air: Air) -> Self {
+        self.air = air;
+        self
+    }
+
+    /// The per-frame block's bytes, exactly the length the lit
+    /// pipeline's declared uniform block wants.
+    ///
+    /// The caster has no colour attachment and reads none of this —
+    /// and the sway half is dead on this path entirely: the shadowed
+    /// stages never read it, so a swaying [`Air`] through this camera
+    /// draws a still world. See [`Air::swaying`] for which pipelines
+    /// bend.
+    #[must_use]
+    pub fn air(&self) -> &[u8] {
+        self.air.bytes()
     }
 
     /// The packed bytes, exactly both shadowed pipelines' declared
@@ -762,7 +1236,7 @@ const SHADOW_PUSH_BYTES: u32 = renew_rhi::builtin::MESH_CAMERA_SHADOW_PUSH_BYTES
 
 // Drift between the declared range and the pack type is a compile
 // error, not a record-time panic in a device-requiring test.
-const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<ShadowedCamera>());
+const _: () = assert!(SHADOW_PUSH_BYTES as usize == 128);
 
 /// Draws a world with a shadow: a depth-only caster pass renders the
 /// scene from the light into a depth image, and the lit pipeline
@@ -786,6 +1260,17 @@ const _: () = assert!(SHADOW_PUSH_BYTES as usize == core::mem::size_of::<Shadowe
 /// 2. a surface pass whose [`Self::item`]s draw the same world through
 ///    the camera, dimmed where the map recorded something nearer.
 ///
+/// # Contract
+///
+/// **The caster pass runs on the shadow's cadence, not the frame's.**
+/// The map is a kept render image: after any frame has run the caster
+/// pass, later frames may omit step 1 entirely and their lit passes
+/// sample what the last casting frame stored — the frame contract
+/// permits it because the map keeps its contents. Re-render the map
+/// when the light or the casters move; skip it when they have not.
+/// The one obligation is the first frame: nothing may sample a map no
+/// frame has rendered, and the contract refuses it by name.
+///
 /// # Colour is not carried through unchanged
 ///
 /// As [`CameraRenderer`]: this path fades toward a horizon with
@@ -800,11 +1285,35 @@ pub struct ShadowedCameraRenderer {
     shadow_map: renew_rhi::RenderImage,
     atlas_binding: renew_rhi::Binding,
     shadow_binding: renew_rhi::Binding,
+    /// The set the per-frame block is read through.
+    ///
+    /// **The buffer behind it is not held here.** A binding keeps a share
+    /// of the buffer it was built over, and the record path finds that
+    /// buffer through the binding rather than through the caller — so a
+    /// second handle would be a field nothing reads.
+    air_binding: renew_rhi::Binding,
 }
 
 impl ShadowedCameraRenderer {
     /// Build the map at `shadow_size` texels square, both pipelines,
     /// and the bindings, uploading `pixels` as the atlas.
+    ///
+    /// `facing` chooses which side of a triangle the **lit** pass draws.
+    /// `Facing::Both` is what this renderer has always done and is the
+    /// right answer for anything a viewer may see from behind. Geometry
+    /// that is a closed solid — a voxel world's outer shell, a set of
+    /// boxes — pays for its own backs under `Both`: every triangle
+    /// turned away from the camera is rasterised, shaded and depth
+    /// tested before being discarded. `Facing::Front` drops them at the
+    /// rasteriser instead, for free.
+    ///
+    /// **Only if the geometry is wound consistently outward.** A single
+    /// triangle wound the other way disappears the moment this is
+    /// anything but `Both`, and disappears *from one side only*, which
+    /// is a fault that looks like correct rendering half the time.
+    ///
+    /// The **caster** pass is not affected, deliberately — see the
+    /// comment where the two pipelines are built.
     ///
     /// # Errors
     ///
@@ -820,6 +1329,7 @@ impl ShadowedCameraRenderer {
         extent: renew_rhi::Extent,
         pixels: &[u8],
         shadow_size: u32,
+        facing: renew_rhi::Facing,
     ) -> Result<Self, Render3dError> {
         let texture = device
             .create_texture(&renew_rhi::TextureDesc::colour(extent, pixels))
@@ -830,13 +1340,21 @@ impl ShadowedCameraRenderer {
             &sampler,
         ))?;
         let shadow_map = device
-            .create_render_image(&renew_rhi::RenderImageDesc::new(
-                renew_rhi::RenderImageKind::Depth,
-                renew_rhi::Extent {
-                    width: shadow_size,
-                    height: shadow_size,
-                },
-            ))
+            .create_render_image(
+                &renew_rhi::RenderImageDesc::new(
+                    renew_rhi::RenderImageKind::Depth,
+                    renew_rhi::Extent {
+                        width: shadow_size,
+                        height: shadow_size,
+                    },
+                )
+                // Kept, so a consumer may re-render the map on its own
+                // cadence: a frame whose light and casters have not
+                // moved omits the caster pass and the lit pass samples
+                // what the last casting frame stored. See the frame
+                // shape on the type.
+                .kept(),
+            )
             // A depthless adapter refuses the map by name, and that
             // refusal is this crate's own variant rather than a
             // texture failure — the same translation the depth-tested
@@ -858,18 +1376,34 @@ impl ShadowedCameraRenderer {
                 .push_constant_size(SHADOW_PUSH_BYTES)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
+        // **The lit pass takes the caller's cull mode; the caster above
+        // deliberately does not.** They draw the same meshes, so the
+        // temptation is to give them the same state — and it would be
+        // wrong. A shadow map wants every surface that can occlude
+        // light, and which faces those are depends on where the *light*
+        // is, not on where the eye is. Culling the caster by the eye's
+        // rule drops occluders the light can see and punches holes in
+        // shadows that are nowhere near the camera. Culling it by the
+        // light's rule is a real technique — front-face culling is how
+        // peter-panning is usually cured — but it is a *different*
+        // choice with a different failure mode, and folding it into this
+        // argument would make one flag mean two things.
         let lit = device.create_pipeline(
             &PipelineDesc::mesh(builtin::MESH_CAMERA_SHADOW, format, LAYOUT)
                 .push_constant_size(SHADOW_PUSH_BYTES)
+                .uniform_block(AIR_BYTES)
                 .sampled_bindings(2)
+                .facing(facing)
                 .depth_state(renew_rhi::DepthState::read_write()),
         )?;
+        let air_binding = air_binding(device)?;
         Ok(Self {
             caster,
             lit,
             shadow_map,
             atlas_binding,
             shadow_binding,
+            air_binding,
         })
     }
 
@@ -912,7 +1446,8 @@ impl ShadowedCameraRenderer {
         Item::new(&self.lit)
             .mesh(mesh)
             .push_data(camera.bytes())
-            .bindings(&[&self.atlas_binding, &self.shadow_binding])
+            .uniform_data(camera.air())
+            .bindings(&[&self.atlas_binding, &self.shadow_binding, &self.air_binding])
     }
 }
 
@@ -1394,42 +1929,26 @@ mod tests {
         assert!(matches!(depth.store, StoreOp::Discard));
     }
 
-    /// The layout and the packed stride describe the same bytes, checked
-    /// mechanically so only the shader stays coupled by comment. The
-    /// rendering crate asserts this equality at record time; failing it
-    /// here is a great deal easier to read.
-    #[test]
-    fn the_layout_and_the_stride_describe_the_same_bytes() {
-        let packed: u32 = LAYOUT
-            .iter()
-            .map(|attribute| attribute_width(*attribute))
-            .sum();
-        assert_eq!(packed, VERTEX_STRIDE, "the layout and the scene disagree");
-    }
-
-    /// The packed width of one attribute.
+    /// Every attribute reports the width the record is packed at.
     ///
-    /// Named rather than inlined so the exhaustive match is reachable:
-    /// the rendering crate's enum carries no `#[non_exhaustive]`
-    /// precisely so a new format is a compile error here, and a match
-    /// folded into the sum above would leave the arms this layout does
-    /// not use unexecuted.
-    fn attribute_width(attribute: VertexAttribute) -> u32 {
-        match attribute {
-            VertexAttribute::Vec2 | VertexAttribute::Uint32x2 => 8,
-            VertexAttribute::Vec3 => 12,
-            VertexAttribute::Vec4 => 16,
-            VertexAttribute::Uint32 | VertexAttribute::Unorm8x4 => 4,
-        }
-    }
-
+    /// **The equality this file used to check here is a `const` block
+    /// now**, above, along with the order the sum cannot see. What is
+    /// left is the part that has to run: an exhaustive sweep of the
+    /// widths themselves.
+    ///
+    /// It calls `byte_len` rather than a copy of it. There was a copy
+    /// here, kept so the arms this layout does not use would still be
+    /// executed somewhere; it was a second place to write 12 where 16
+    /// belonged, on a value that decides where a shader reads. The enum
+    /// carries no `#[non_exhaustive]`, so a new format is still a compile
+    /// error inside `byte_len`, and this sweep still runs every arm.
     #[test]
     fn every_attribute_reports_its_packed_width() {
-        assert_eq!(attribute_width(VertexAttribute::Vec2), 8);
-        assert_eq!(attribute_width(VertexAttribute::Vec3), 12);
-        assert_eq!(attribute_width(VertexAttribute::Vec4), 16);
-        assert_eq!(attribute_width(VertexAttribute::Uint32), 4);
-        assert_eq!(attribute_width(VertexAttribute::Uint32x2), 8);
-        assert_eq!(attribute_width(VertexAttribute::Unorm8x4), 4);
+        assert_eq!(VertexAttribute::Vec2.byte_len(), 8);
+        assert_eq!(VertexAttribute::Vec3.byte_len(), 12);
+        assert_eq!(VertexAttribute::Vec4.byte_len(), 16);
+        assert_eq!(VertexAttribute::Uint32.byte_len(), 4);
+        assert_eq!(VertexAttribute::Uint32x2.byte_len(), 8);
+        assert_eq!(VertexAttribute::Unorm8x4.byte_len(), 4);
     }
 }

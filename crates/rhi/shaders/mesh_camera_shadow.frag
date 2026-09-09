@@ -26,10 +26,24 @@ layout(location = 3) in vec4 fragment_light_position;
 
 layout(location = 0) out vec4 out_colour;
 
-// See mesh_camera_textured.frag; identical, because two pipelines
-// drawing one world must fade alike or the seam shows.
-const float MAX_FADE = 0.72;
-const vec3 HORIZON = vec3(0.008568126, 0.010329823, 0.015208514);
+// **What distance fades toward, said by whoever is drawing.**
+//
+// It was a pair of compiled-in constants, the colour matched by hand to
+// what this repository's own samples clear to. That made the fade correct
+// for exactly one backdrop: a caller clearing to any other colour got a
+// haze of the wrong one hanging in front of its sky, which reads as dirty
+// glass rather than as distance. Only the caller knows what it clears to.
+//
+// `rgb` is that colour, in the same linear space this mix happens in.
+// `a` is how much of it shows at the far plane — short of one, so
+// geometry at the very back stays faintly visible rather than vanishing
+// into the backdrop, and a room's far wall still reads as a wall.
+//
+// The same block mesh_camera_textured.frag reads, for the same reason:
+// two pipelines drawing one world must fade alike or the seam shows.
+layout(std140, set = 2, binding = 0) uniform Air {
+    vec4 horizon;
+} air;
 
 // How much surface survives in shadow. Well above zero: a shadow is a
 // dimming of a lit world, not a hole in it.
@@ -39,6 +53,23 @@ const float SHADOW_DIM = 0.55;
 // world distance under the orthographic light, so it means the same
 // thing everywhere in the box.
 const float BIAS = 0.003;
+
+// How far the softening taps reach, in shadow-map texels.
+//
+// **One tap drew a hard boundary, and a hard boundary aliases.** The
+// map is a grid; wherever a shadow edge crosses geometry near the
+// light's own sampling scale — a ledge a texel or two tall, a seam
+// between recessed faces — the single test flips per texel and the
+// edge renders as a row of sawteeth marching along the surface. Nine
+// taps one texel apart turn the same boundary into a two-texel
+// gradient: the teeth average into a soft edge instead of being drawn
+// one by one.
+//
+// Deep in the light and deep in the shadow all nine taps agree, so
+// every pixel away from an edge reads exactly as it always has — which
+// is why the arithmetic goldens that probe well inside each region
+// hold without being touched.
+const int SOFT_REACH = 1;
 
 void main() {
     vec4 texel = texture(atlas, fragment_uv);
@@ -57,13 +88,27 @@ void main() {
         && light_ndc.z >= 0.0
         && light_ndc.z <= 1.0;
     if (inside) {
-        float nearest = texture(shadow_map, shadow_uv).r;
         // Reversed-Z: nearer is larger. Lit means this fragment is the
-        // nearest thing the light sees here, within the bias.
-        shade = light_ndc.z >= nearest - BIAS ? 1.0 : SHADOW_DIM;
+        // nearest thing the light sees here, within the bias — asked
+        // nine times, one map texel apart, and averaged. Taps that
+        // land past the map's border clamp to its edge texel, which
+        // reads as more of the same answer the border already gave.
+        vec2 map_texel = 1.0 / vec2(textureSize(shadow_map, 0));
+        float lit = 0.0;
+        for (int down = -SOFT_REACH; down <= SOFT_REACH; ++down) {
+            for (int across = -SOFT_REACH; across <= SOFT_REACH; ++across) {
+                vec2 tap = shadow_uv + vec2(across, down) * map_texel;
+                float nearest = texture(shadow_map, tap).r;
+                lit += light_ndc.z >= nearest - BIAS ? 1.0 : 0.0;
+            }
+        }
+        // The divisor follows the reach, so widening the filter cannot
+        // silently brighten or darken every shadow it draws.
+        float taps = float((2 * SOFT_REACH + 1) * (2 * SOFT_REACH + 1));
+        shade = mix(SHADOW_DIM, 1.0, lit / taps);
     }
     out_colour = vec4(
-        mix(surface * shade, HORIZON, fragment_fade * MAX_FADE),
+        mix(surface * shade, air.horizon.rgb, fragment_fade * air.horizon.a),
         fragment_colour.a * texel.a
     );
 }

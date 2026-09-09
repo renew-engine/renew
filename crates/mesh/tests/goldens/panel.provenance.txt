@@ -1,0 +1,48 @@
+panel.gltf — a glTF 2.0 document, generated, carrying its own buffer as a
+base64 payload so it stands alone: no container, no second file. 2046 bytes.
+
+panel.msh — this crate's canonical form, as `blob::write` produces it from
+`format::detect(panel.gltf).read(..)`. 308 bytes.
+fnv1a-64 of panel.msh: 0xfb501a24ba23b667
+
+all three files written by: crates/mesh/examples/make_import_golden.rs
+the document itself is defined in: crates/mesh/tests/shared/import_golden_source.rs
+refresh with: cargo run -p renew-mesh --example make_import_golden
+
+what the source reaches, deliberately:
+  two primitives in one mesh, so `place::append` runs and each primitive's
+  corners are resolved against its own accessors before being concatenated
+  a node with a translation, so positions arrive somewhere other than
+  where the accessor put them, and the placement path runs
+  indices, so the indexed path runs rather than the implicit one
+  per-corner normals and texture coordinates - the two optional streams a
+  glTF document can carry - so the blob's `present` bitfield is not zero
+  a material, a texture and an image, which change no geometry: they are
+  here so the golden proves they stay out of the canonical form
+
+what it does not reach: per-face normals (no glTF states them), the binary
+container, the implicit unindexed path, byte strides, sparse accessors, and
+component types other than 5126 and 5123.
+
+comparison: exact, and legitimate for THIS document rather than for the path
+in general. Every accessor it reads a coordinate through is componentType
+5126, so each one is copied out with from_le_bytes and never converted or
+normalised - the two index accessors are 5123, and an index selects rather
+than computes. The node states a translation and a scale, both exact powers
+of two, so the composed matrix and its inverse-transpose are exact; and
+every coordinate in the source is a small dyadic rational
+whose product with that matrix rounds to itself. The placement path does
+multiply and add - see crates/mesh/tests/place.rs, which compares within a
+tolerance for exactly that reason - and this fixture is chosen so that it
+need not. What the comparison pins is that a reader which began to
+normalise, average or reorder would move a byte.
+
+endianness: the blob is little-endian on every target, not native -
+`blob::write` writes to_le_bytes and the reader takes from_le_bytes - so
+these bytes are the same on a machine of either endianness.
+
+refresh ritual: none needed. Unlike a rendered golden, where no two adapters
+rasterize alike and candidates are uploaded from a pinned lane and adopted by
+hand, any machine that runs the generator reproduces these files. The gate
+checks that the committed source still matches the code above, so a
+regeneration that was never committed is a failure rather than a surprise.

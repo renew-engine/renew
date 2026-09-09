@@ -165,7 +165,7 @@ $ cargo run --bin renew -- help
 | `build` `test` `bench` `lint` `check` | the workspace, with one canonical command each |
 | `run` `record` `replay` | start a sample, capture the input it saw, play it back and compare |
 | `determinism` | emit this target's digests, or compare several targets' |
-| `asset-pack` `asset-inspect` `ui-compile` | content, built and verified from the command line |
+| `asset-pack` `asset-inspect` `asset-import` `ui-compile` | content, built, imported and verified from the command line |
 | `coverage` `modules` `doctor` `configure` | the state of the tree and the machine it is on |
 
 Every one of them accepts `--json` and answers with a single document carrying a `schema_version`,
@@ -175,19 +175,19 @@ clicking, and the editor, when it arrives, will be one more client of these APIs
 
 ## The engine
 
-Twenty-nine engine crates, five of them core. Everything outside the core is optional and
-removable, and CI proves it *one crate at a time*: twenty-four configurations, each excluding one
+Thirty-one engine crates, five of them core. Everything outside the core is optional and
+removable, and CI proves it *one crate at a time*: twenty-six configurations, each excluding one
 optional crate and everything that depends on it, every one built **and** tested.
-A twenty-fifth builds the minimal core alone and checks that no optional crate reached its graph.
+A twenty-seventh builds the minimal core alone and checks that no optional crate reached its graph.
 
 | Group | Crates |
 |---|---|
 | **Core** | `diag` logging and sinks · `event` the input vocabulary · `math` vectors, matrices, quaternions · `memory` arenas, pools, a counting allocator · `platform` the only doorway to the OS |
 | **Simulation and runtime** | `fixed` Q47.16 arithmetic · `frame` the fixed-timestep loop · `ecs` sparse-set storage · `scene` transform hierarchies · `physics2d` and `physics3d` · `volume` chunked voxels · `particles` · `ui` layout solved in fixed point · `input` state and mapping · `rng` · `jobs` |
 | **Rendering** | `rhi` the GPU doorway · `render2d` sprites · `render3d` indexed geometry · `camera` views and projections · `snapshot` interpolation between ticks · `ui-render` |
-| **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
+| **Content and IO** | `asset` content-addressed packs · `png` encoding with no dependencies · `json` a reader for untrusted metadata · `mesh` readers for the model files other tools write · `audio` mixing and playback · `net` lockstep datagrams · `replay` record a run and play it back · `trace` the recorded-input file format |
 
-Twenty-seven of the twenty-nine are published on [crates.io](https://crates.io/crates/renew-math)
+Twenty-seven of the thirty-one are published on [crates.io](https://crates.io/crates/renew-math)
 at 0.1.1. `cargo run --bin renew -- modules` prints the live list with each crate's declared
 maturity, read from its manifest, so it stays correct as this table ages. Maturity runs `bootstrap` to `internal`
 to `stable`, and nothing has reached `stable` yet.
@@ -213,6 +213,12 @@ the rest run once, on Linux:
 Performance claims arrive with numbers and the configuration that produced them, or they are not
 made. The steady-state frame loop is held to zero heap allocations through the engine's allocators,
 counted in development builds.
+
+Anything that reads bytes the engine did not write is held to [REFUSALS.md](REFUSALS.md): every way
+input can be wrong gets its own named refusal carrying the numbers, a test that provokes it, and a
+recorded corpus replayed on every merge. Two readers in the command-line tool do not meet that bar
+today and are named there rather than left to be discovered — a bar with a recorded exception is a
+bar, and one with a silent exception is a slogan.
 
 ## Contributing
 
