@@ -88,6 +88,29 @@ impl Mode {
         }
     }
 
+    /// What a refusal says when this mode is not the one being
+    /// assembled.
+    ///
+    /// **The triangles arm is reachable only from a test**, because
+    /// `build` asks this exactly when it has established the mode is
+    /// something else. It lives here rather than inline for that reason:
+    /// inline it was a branch nothing could take, which reads as a case
+    /// somebody considered and cannot be exercised by anyone who wants
+    /// to know whether it works. Out here it is a small total function,
+    /// and the arm says what it would say.
+    #[must_use]
+    pub const fn instead_of_triangles(self) -> &'static str {
+        match self {
+            Self::Points => "triangles, and this is points",
+            Self::Lines => "triangles, and this is lines",
+            Self::LineLoop => "triangles, and this is a line loop",
+            Self::LineStrip => "triangles, and this is a line strip",
+            Self::TriangleStrip => "triangles, and this is a triangle strip",
+            Self::TriangleFan => "triangles, and this is a triangle fan",
+            Self::Triangles => "triangles",
+        }
+    }
+
     /// The mode a code names.
     ///
     /// # Errors
@@ -172,15 +195,7 @@ pub fn build(primitive: &Primitive<'_>) -> Result<Mesh, MeshError> {
         // fine and a reader that is narrow, and telling them which is
         // which is the whole value of keeping the other six modes.
         return Err(MeshError::Unsupported {
-            wanted: match primitive.mode {
-                Mode::Points => "triangles, and this is points",
-                Mode::Lines => "triangles, and this is lines",
-                Mode::LineLoop => "triangles, and this is a line loop",
-                Mode::LineStrip => "triangles, and this is a line strip",
-                Mode::TriangleStrip => "triangles, and this is a triangle strip",
-                Mode::TriangleFan => "triangles, and this is a triangle fan",
-                Mode::Triangles => "triangles",
-            },
+            wanted: primitive.mode.instead_of_triangles(),
         });
     }
 
@@ -324,6 +339,27 @@ mod tests {
             assert!(!mode.name().is_empty(), "{mode:?} says nothing");
         }
         assert_eq!(Mode::Triangles.code(), 4);
+
+        // **Every arm of the refusal text, including the one no refusal
+        // routes to.** `build` asks for it only when the mode is not
+        // triangles, so this is the only thing that reaches that arm —
+        // which is the difference between a covered line and an exempted
+        // one.
+        for mode in [
+            Mode::Points,
+            Mode::Lines,
+            Mode::LineLoop,
+            Mode::LineStrip,
+            Mode::TriangleStrip,
+            Mode::TriangleFan,
+        ] {
+            let said = mode.instead_of_triangles();
+            assert!(
+                said.starts_with("triangles, and this is "),
+                "{mode:?}: {said}"
+            );
+        }
+        assert_eq!(Mode::Triangles.instead_of_triangles(), "triangles");
         assert!(Mode::from_code(7).is_err(), "the table stops at six");
         assert!(Mode::from_code(u32::MAX).is_err());
     }

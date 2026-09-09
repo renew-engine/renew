@@ -183,6 +183,13 @@ fn streams_of_different_lengths_are_refused_by_name() {
             found: 3,
         }
     );
+    // Named as well as compared: a refusal a caller cannot key on is
+    // half a refusal, and nothing else here asks this one its name.
+    assert_eq!(refused.name(), "StreamLengthMismatch");
+    assert!(
+        refused.to_string().contains("NORMAL"),
+        "the message names the stream that disagreed: {refused}"
+    );
 
     let two_uvs = floats(&[0.0, 0.0, 1.0, 0.0]);
     let refused = primitive::build(&Primitive {
