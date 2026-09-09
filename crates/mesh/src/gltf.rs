@@ -47,6 +47,29 @@ use crate::{Mesh, glb, place};
 const GLTF_BUFFER: &str = "application/gltf-buffer";
 const OCTET_STREAM: &str = "application/octet-stream";
 
+/// Whether these bytes are a glTF document rather than a container.
+///
+/// **This parses, and that is the point.** Every other format here is
+/// recognised by a magic number or a keyword, and a JSON document has
+/// neither: "starts with `{`" would claim every configuration file in
+/// the world. So the question asked is the one the format answers -- a
+/// glTF document **must** carry an `asset` object with a `version`
+/// string, and nothing that is not one will have that where this looks.
+///
+/// The cost is a parse of the whole document before anything reads it,
+/// which is real and is the right trade: the alternative is a confident
+/// answer about the wrong format, which is the defect a prefix check
+/// produced here once already.
+#[must_use]
+pub fn looks_like(bytes: &[u8]) -> bool {
+    Json::parse(bytes).is_ok_and(|json| {
+        json.root()
+            .get("asset")
+            .and_then(|asset| asset.get("version"))
+            .is_some_and(|version| version.as_str().is_ok())
+    })
+}
+
 /// Every way a document can fail to describe geometry this can read.
 ///
 /// **Four of these carry another layer's refusal**, and that is the
@@ -723,10 +746,29 @@ fn mesh_at(
 /// A [`GltfError`] naming the layer that refused and carrying its
 /// numbers.
 pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
-    let container = glb::read(bytes).map_err(GltfError::Container)?;
-    let json = parse(container.json)?;
-    let root = json.root();
-    let source = Source::of(root, container.binary)?;
+    // **Either shape of the same asset.** A binary glTF wraps its
+    // document in a container beside a chunk of geometry; a `.gltf` is
+    // that document on its own, carrying its geometry as embedded
+    // payloads. The layers below this line cannot tell the difference
+    // and do not need to: one of them has a chunk to offer and the
+    // other has none.
+    if glb::looks_like(bytes) {
+        let container = glb::read(bytes).map_err(GltfError::Container)?;
+        let json = parse(container.json)?;
+        return document(json.root(), container.binary);
+    }
+    let json = parse(bytes)?;
+    document(json.root(), None)
+}
+
+/// Read a parsed document, with the container's chunk if there was one.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the layer that refused and carrying its
+/// numbers.
+pub fn document(root: Value<'_>, binary: Option<&[u8]>) -> Result<Mesh, GltfError> {
+    let source = Source::of(root, binary)?;
 
     // **A document with no scenes is a library rather than a model**,
     // which is the format's own reading of it, and a caller asking for

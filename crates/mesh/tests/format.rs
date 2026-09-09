@@ -197,6 +197,48 @@ fn a_file_that_says_nothing_an_obj_says_is_declined() {
 /// hole is one line wide and is written down here rather than left for
 /// somebody to find, which is the same bargain the MTL census makes
 /// when it writes a sentence per unreachable variant.
+/// **A document is detected by what the format requires, not by a
+/// prefix.**
+///
+/// Before this arm existed a `.gltf` fell through to the fallback and
+/// came back refused as a truncated STL: a confident answer about the
+/// wrong format, which is the defect the PLY magic check was tightened
+/// to cure. The check is a parse, so the tests below are in both
+/// directions -- what must be recognised, and what must not be.
+#[test]
+fn a_document_is_recognised_by_the_member_the_format_requires() {
+    let document = br#"{"asset":{"version":"2.0"},"scenes":[]}"#;
+    assert_eq!(format::detect(document), Format::Gltf);
+    assert_eq!(Format::Gltf.name(), "gltf");
+    assert!(Format::Gltf.carries_geometry());
+}
+
+/// **JSON that is not a glTF document is not claimed.**
+///
+/// The arm asks for an `asset` object with a `version` string, which is
+/// what the format requires of every document. Anything else is somebody
+/// else's file, and a detector that took it would be the prefix test
+/// this arm exists to avoid.
+#[test]
+fn json_that_is_not_a_document_is_not_claimed() {
+    for other in [
+        &br#"{"name":"a configuration file","version":"2.0"}"#[..],
+        &br#"{"asset":"2.0"}"#[..],
+        &br#"{"asset":{"generator":"something"}}"#[..],
+        &br#"{"asset":{"version":2}}"#[..],
+        &br#"[{"asset":{"version":"2.0"}}]"#[..],
+        &b"{"[..],
+        &b"not json at all"[..],
+    ] {
+        assert_ne!(
+            format::detect(other),
+            Format::Gltf,
+            "{:?} is not a document",
+            core::str::from_utf8(other).unwrap_or("<bytes>")
+        );
+    }
+}
+
 #[test]
 fn every_format_has_its_own_stable_name() {
     let all = [
@@ -206,6 +248,7 @@ fn every_format_has_its_own_stable_name() {
         Format::Ply,
         Format::Blob,
         Format::Glb,
+        Format::Gltf,
     ];
 
     for format in all {
@@ -219,6 +262,7 @@ fn every_format_has_its_own_stable_name() {
             Format::Ply => "ply",
             Format::Blob => "blob",
             Format::Glb => "glb",
+            Format::Gltf => "gltf",
         };
         assert_eq!(
             format.name(),
@@ -232,7 +276,10 @@ fn every_format_has_its_own_stable_name() {
     let distinct = names.len();
     names.dedup();
     assert_eq!(names.len(), distinct, "two formats share a name: {names:?}");
-    assert_eq!(names, vec!["blob", "glb", "mtl", "obj", "ply", "stl"]);
+    assert_eq!(
+        names,
+        vec!["blob", "glb", "gltf", "mtl", "obj", "ply", "stl"]
+    );
 }
 
 /// **Whether a format carries geometry is asked of every one of them.**
@@ -251,10 +298,13 @@ fn only_a_material_library_carries_no_geometry() {
         Format::Ply,
         Format::Blob,
         Format::Glb,
+        Format::Gltf,
     ] {
         let expected = match format {
             Format::Mtl => false,
-            Format::Obj | Format::Stl | Format::Ply | Format::Blob | Format::Glb => true,
+            Format::Obj | Format::Stl | Format::Ply | Format::Blob | Format::Glb | Format::Gltf => {
+                true
+            }
         };
         assert_eq!(
             format.carries_geometry(),

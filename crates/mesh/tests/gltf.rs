@@ -12,6 +12,13 @@
 use renew_mesh::accessor::{Component, Shape};
 use renew_mesh::gltf::{self, GltfError};
 
+// The encoder the seeds and the URI suite share, included the way four
+// other targets include it: a document that embeds its geometry has to
+// spell it, and spelling it by hand in a fixture is how a fixture stops
+// meaning what its name says.
+#[path = "shared/base64_encode.rs"]
+mod base64_encode;
+
 /// Parse a document and hand back its root, panicking on text this test
 /// wrote itself and cannot read back.
 fn document(text: &str) -> renew_json::Json<'_> {
@@ -577,6 +584,65 @@ fn buffer_provocations() -> Vec<(&'static str, GltfError)> {
     ]
 }
 
+/// **A document read on its own, with its geometry embedded.**
+///
+/// The self-contained form of the same asset: no container, no chunk,
+/// and the buffer carrying its bytes as a payload the document spells
+/// out. Everything below the buffers table reads it identically.
+#[test]
+fn a_document_on_its_own_reads_its_embedded_geometry() {
+    // The same triangle the container fixtures use, as base64.
+    let payload = base64_encode::encode(&three_positions());
+    let text = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],
+          "nodes":[{{"mesh":0}}],
+          "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+          "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}}],
+          "buffers":[{{"byteLength":36,
+            "uri":"data:application/octet-stream;base64,{payload}"}}],
+          "bufferViews":[{{"byteLength":36}}]}}"#
+    );
+
+    let mesh = gltf::read(text.as_bytes()).expect("a document that carries its own geometry");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.positions.len(), 3);
+
+    // **The same document in a container reads to the same geometry.**
+    // Its buffer carries its own payload, so the chunk beside it is
+    // beside the point -- which is the claim worth pinning: the shape
+    // the asset arrived in does not change what it means.
+    let packed = container(&text, &[]);
+    let wrapped = gltf::read(&packed).expect("the same document, wrapped");
+    assert_eq!(wrapped.positions, mesh.positions);
+    assert_eq!(wrapped.triangles(), mesh.triangles());
+}
+
+/// **A document with no container and a buffer wanting one is refused.**
+///
+/// This is the ordinary way to meet `NoBinaryChunk`: a `.gltf` saved
+/// beside a `.bin` that the exporter forgot to write into the buffer.
+#[test]
+fn a_document_on_its_own_whose_buffer_wants_a_chunk_is_refused() {
+    let text = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+      "nodes":[{"mesh":0}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+      "buffers":[{"byteLength":36}],
+      "bufferViews":[{"byteLength":36}]}"#;
+    assert_eq!(
+        gltf::read(text.as_bytes()).expect_err("no container, no chunk"),
+        GltfError::NoBinaryChunk
+    );
+}
+
+/// **Bytes that are neither a container nor a document are refused as a
+/// document**, because that is what they most nearly are.
+#[test]
+fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
+    let refused = gltf::read(b"not a container and not a document").expect_err("neither shape");
+    assert_eq!(refused.name(), "Document");
+}
+
 /// The census and the documents agree, and every refusal says something.
 #[test]
 fn the_census_and_the_documents_agree() {
@@ -593,8 +659,10 @@ fn the_census_and_the_documents_agree() {
         }] }"#,
     );
 
-    let mut wrong_magic = container(ONE_NODE, &three_positions());
-    wrong_magic[0] = b'X';
+    // The magic stays intact: bytes that do not announce themselves as a
+    // container are not one, and are tried as a document instead.
+    let mut bad_version = container(ONE_NODE, &three_positions());
+    bad_version[4] = 9;
     let cycle = container(
         &ONE_NODE.replace(
             r#""nodes": [{ "mesh": 0 }]"#,
@@ -638,7 +706,7 @@ fn the_census_and_the_documents_agree() {
         ),
         (
             "Container",
-            gltf::read(&wrong_magic).expect_err("not a container"),
+            gltf::read(&bad_version).expect_err("version 9 is not version 2"),
         ),
         (
             "NodeCycle",
@@ -1230,13 +1298,35 @@ fn a_scene_that_places_nothing_has_no_geometry() {
 
 /// **A container fault arrives as a container fault**, not as a
 /// document one.
+///
+/// The magic is left intact deliberately. These bytes announce
+/// themselves as a container and then fail to be one, which is the case
+/// this claim is about; bytes whose magic is *wrong* are not a container
+/// at all, and the test below says what happens to those.
 #[test]
 fn a_malformed_container_is_a_container_refusal() {
     let mut bytes = container(ONE_NODE, &three_positions());
-    bytes[0] = b'X';
-    let refused = gltf::read(&bytes).expect_err("not a container");
+    bytes[4] = 9; // a container version this build does not read
+    let refused = gltf::read(&bytes).expect_err("version 9 is not version 2");
     assert_eq!(refused.name(), "Container");
-    assert!(refused.to_string().contains("glTF"), "{refused}");
+    assert!(refused.to_string().contains("version"), "{refused}");
+}
+
+/// **Bytes whose magic is wrong are tried as a document.**
+///
+/// A reader that takes two shapes has to choose, and the magic is what
+/// chooses: four bytes that either say `glTF` or do not. Something that
+/// does not say it is not a container, so the remaining question is
+/// whether it is a document -- and when it is not one either, the
+/// document layer is what refused, because it is what was asked.
+#[test]
+fn bytes_whose_magic_is_wrong_are_tried_as_a_document() {
+    let mut bytes = container(ONE_NODE, &three_positions());
+    bytes[0] = b'X';
+    assert_eq!(
+        gltf::read(&bytes).expect_err("neither shape").name(),
+        "Document"
+    );
 }
 
 /// Several primitives under one node are joined into one mesh.

@@ -180,13 +180,86 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
 }
 
 /// One container per refusal, each wrong in exactly one way.
+/// Canonical base64, so a document can carry its own geometry.
+///
+/// The same encoder four other targets share, included rather than
+/// copied: a seed that embeds a payload has to spell it, and a payload
+/// spelled by hand is a fixture that stops meaning what its name says.
+#[path = "../tests/shared/base64_encode.rs"]
+mod base64_encode;
+
+/// Documents that arrive on their own, with no container around them.
+///
+/// **The corpus had none of this shape.** Every seed was a container, so
+/// the path a `.gltf` takes -- no chunk, geometry embedded in the
+/// document as payloads -- was reachable only by a mutation that
+/// destroyed the magic, and a mutation that destroys the magic usually
+/// destroys everything after it too. These start inside that path.
+fn document_seeds() -> Vec<(String, Vec<u8>)> {
+    let payload = base64_encode::encode(&triangle());
+    let embedded = SIMPLEST.replace(
+        r#""buffers":[{"byteLength":36}]"#,
+        &format!(
+            r#""buffers":[{{"byteLength":36,"uri":"data:application/octet-stream;base64,{payload}"}}]"#
+        ),
+    );
+
+    vec![
+        // The whole point of the shape: one file, geometry included.
+        (
+            "document-embedded".to_owned(),
+            embedded.clone().into_bytes(),
+        ),
+        // The same document wanting a chunk that a lone document can
+        // never have, which is what an exporter that split its output
+        // and forgot to say so produces.
+        (
+            "document-wants-a-chunk".to_owned(),
+            SIMPLEST.as_bytes().to_vec(),
+        ),
+        // A document naming a file beside it, which this reader will not
+        // open and says so.
+        (
+            "document-names-a-file".to_owned(),
+            SIMPLEST
+                .replace(
+                    r#""buffers":[{"byteLength":36}]"#,
+                    r#""buffers":[{"byteLength":36,"uri":"geometry.bin"}]"#,
+                )
+                .into_bytes(),
+        ),
+        // JSON that parses and is not a document, which the detector
+        // must not claim and the reader must refuse by name.
+        (
+            "json-that-is-not-a-document".to_owned(),
+            br#"{"name":"something else","version":"2.0"}"#.to_vec(),
+        ),
+        // A payload whose media type is not one a buffer may declare.
+        (
+            "document-wrong-media-type".to_owned(),
+            embedded
+                .replace("application/octet-stream", "image/png")
+                .into_bytes(),
+        ),
+    ]
+}
+
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
     wrong_magic[0] = b'X';
 
+    // **The magic left intact, the version broken.** A seed whose magic
+    // is wrong is not a container at all and is tried as a document
+    // instead, so without this one nothing in the corpus reaches the
+    // container layer's refusals -- which is a hole the document seeds
+    // opened, because they took the only seed that used to reach it.
+    let mut bad_version = container(SIMPLEST, &triangle());
+    bad_version[4] = 9;
+
     vec![
         ("not-a-container".to_owned(), b"solid teapot\n".to_vec()),
         ("wrong-magic".to_owned(), wrong_magic),
+        ("container-version".to_owned(), bad_version),
         (
             "not-a-document".to_owned(),
             container(r#"{"asset":"#, &triangle()),
@@ -285,7 +358,11 @@ fn main() -> ExitCode {
 
     let mut written = 0usize;
     let mut kept = 0usize;
-    for (name, bytes) in readable_seeds().into_iter().chain(refused_seeds()) {
+    for (name, bytes) in readable_seeds()
+        .into_iter()
+        .chain(refused_seeds())
+        .chain(document_seeds())
+    {
         let path = dir.join(format!("{name}.glb"));
         if path.exists() {
             kept += 1;

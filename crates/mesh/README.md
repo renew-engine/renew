@@ -296,6 +296,26 @@ row that is not there is the commonest thing wrong with a hand-edited or
 truncated document, so it has one refusal that carries the table, the
 index, and how many rows there were.
 
+**A document reads every buffer it names.** A buffer with no source is
+the container's own chunk, and only the first may be: the specification
+leaves any other sourceless buffer undefined, and undefined is refused
+here rather than guessed at. A buffer may instead embed its payload as a
+`data:` URI, which is decoded in place. Anything else names a second
+file, which this crate will not open.
+
+**A buffer is its resource cut to the length it declares.** The
+specification allows the resource to be longer and says only the first
+`byteLength` bytes belong to the buffer — and that is not a
+technicality, because the container pads its binary chunk to a four-byte
+boundary, so the chunk is routinely longer than the buffer inside it.
+Cutting is what stops a view reaching past the buffer into that padding.
+
+**Both shapes of the format read through the same layers.** A binary
+glTF wraps its document in a container beside a chunk of geometry; a
+`.gltf` is that document on its own, carrying its geometry as embedded
+payloads. `read` takes either, choosing on the four-byte magic, and
+everything below that line is identical.
+
 **Its refusals name the layer that failed**, not just the fault: a
 `GltfError` says whether the container, the document, an accessor or the
 geometry objected, and the inner refusal's own numbers are one call away

@@ -2273,6 +2273,7 @@ fn asset_import_reads_a_container() -> std::io::Result<()> {
     let document = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36}],
 "bufferViews":[{"byteLength":36}]}"#;
     let mut json = document.to_vec();
     while !json.len().is_multiple_of(4) {

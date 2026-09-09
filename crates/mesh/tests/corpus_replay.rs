@@ -1207,14 +1207,14 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 18;
+const GLTF_LOW_WATER: usize = 24;
 
 /// How many distinct outcomes the container seeds must still reach.
 ///
 /// **Measured, not guessed** — `gltf_census` below prints it. The outer
 /// vocabulary is what is counted: a caller keys on which *layer* refused,
 /// and the inner refusal's own name is one call away through the value.
-const GLTF_DISTINCT_OUTCOMES: usize = 6;
+const GLTF_DISTINCT_OUTCOMES: usize = 11;
 
 /// Refusals a container seed must provoke.
 ///
@@ -1225,7 +1225,19 @@ const GLTF_DISTINCT_OUTCOMES: usize = 6;
 ///   a view past its buffer — and the layer a wrong bound would show in.
 /// * `Geometry` is everything the assembly and placement layers refuse,
 ///   reached here through six layers of document rather than directly.
-const GLTF_REQUIRED: [&str; 4] = ["Container", "Document", "Accessor", "Geometry"];
+/// * The buffer layer's own three are here because a document that
+///   carries its geometry rather than sitting beside a chunk is the
+///   whole second shape of this format, and a corpus of containers
+///   alone never enters it.
+const GLTF_REQUIRED: [&str; 7] = [
+    "Container",
+    "Document",
+    "Accessor",
+    "Geometry",
+    "NoBinaryChunk",
+    "ExternalResource",
+    "WrongMediaType",
+];
 
 fn gltf_corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/gltf_read")
