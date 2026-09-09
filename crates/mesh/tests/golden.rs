@@ -18,13 +18,16 @@
 //!
 //! Not for the path in general, and the difference matters.
 //!
-//! This document's accessors are all `componentType: 5126`, so
-//! `View::float` copies each coordinate out with `from_le_bytes` and
-//! never converts or normalises - a document of `5121` would take a
-//! division instead. Its node states a translation only, so the composed
-//! matrix and the inverse-transpose that carries the normals are exact.
-//! And every coordinate in the source is a small dyadic rational whose
-//! product with that matrix rounds to itself.
+//! Every accessor this document reads a *coordinate* through is
+//! `componentType: 5126`, so `View::float` copies each one out with
+//! `from_le_bytes` and never converts or normalises - a document of
+//! `5121` would take a division instead. (The two index accessors are
+//! `5123`, and an index is not a coordinate: it selects, it is not
+//! arithmetic.) Its node states a translation and a scale, both of
+//! them exact powers of two, so the composed matrix and the
+//! inverse-transpose that carries the normals are exact. And every
+//! coordinate in the source is a small dyadic rational whose product
+//! with that matrix rounds to itself.
 //!
 //! **The placement path does multiply and add** - a 4x4 product per
 //! node, twelve multiplies and nine adds per vertex, and a reciprocal
@@ -88,6 +91,31 @@ fn goldens() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens")
 }
 
+/// Compare two byte strings, and name the first place they differ.
+///
+/// **Never `assert_eq!` on the whole pair.** The standard macro prints
+/// both sides, so a one-byte disagreement in a megabyte artifact buys
+/// nine megabytes of log that says nothing the offset does not -- and
+/// the merge gate runs this binary twenty-eight times, once per
+/// removability cell that keeps this crate, so the log is paid over and
+/// over. Measured on today's artifacts the difference is 235 bytes
+/// against 2,946.
+fn first_difference(got: &[u8], want: &[u8], what: &str) {
+    for (index, (got, want)) in got.iter().zip(want).enumerate() {
+        assert_eq!(
+            got, want,
+            "byte {index} of {what} is {got}, committed as {want}"
+        );
+    }
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{what}: {} bytes against {} committed, and every shared byte agrees",
+        got.len(),
+        want.len()
+    );
+}
+
 /// Compare coordinates by bits.
 ///
 /// **The honest comparison for this fixture, and not a way around the
@@ -143,14 +171,7 @@ fn the_committed_model_reads_to_the_committed_bytes() {
         actual.len(),
         expected.len()
     );
-    // Compared by index rather than as two slices, so a failure names
-    // the first byte that differs instead of printing two blobs.
-    for (index, (got, want)) in actual.iter().zip(&expected).enumerate() {
-        assert_eq!(
-            got, want,
-            "byte {index} of the canonical form is {got}, committed as {want}"
-        );
-    }
+    first_difference(&actual, &expected, "the canonical form");
 }
 
 /// **The golden is not vacuous**, which a byte comparison alone cannot
@@ -256,11 +277,11 @@ fn the_tables_are_read_from_the_same_document_and_stay_out_of_the_blob() {
 fn the_committed_source_is_still_the_one_this_code_describes() {
     let committed = read("panel.gltf");
     let described = import_golden_source::source();
-    assert_eq!(
-        String::from_utf8_lossy(&committed),
-        described,
-        "`panel.gltf` and the code that describes it disagree. Rerun the generator and \
-         commit what it writes."
+    first_difference(
+        &committed,
+        described.as_bytes(),
+        "`panel.gltf` against the code that describes it. Rerun the generator and commit \
+         what it writes",
     );
 }
 
@@ -388,9 +409,9 @@ fn the_committed_bytes_decode_to_the_model_they_should() {
 fn the_committed_blob_round_trips() {
     let expected = read("panel.msh");
     let mesh = blob::read(&expected).expect("the committed blob reads");
-    assert_eq!(
-        blob::write(&mesh),
-        expected,
-        "writing what was read gives the bytes back"
+    first_difference(
+        &blob::write(&mesh),
+        &expected,
+        "writing what was read gives the bytes back",
     );
 }

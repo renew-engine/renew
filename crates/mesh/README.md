@@ -194,10 +194,11 @@ form.
 
 **Exact comparison is legitimate for that document rather than for the
 path in general**, and the provenance file says exactly why: its
-accessors are all `componentType: 5126`, so coordinates are copied out
-with `from_le_bytes` and never converted; its node states a translation
-only; and every coordinate is a small dyadic rational whose product with
-that matrix rounds to itself. The placement path does multiply and add —
+every accessor it reads a coordinate through is `componentType: 5126`,
+so those are copied out with `from_le_bytes` and never converted; its
+node states a translation and a scale, both exact powers of two; and
+every coordinate is a small dyadic rational whose product with that
+matrix rounds to itself. The placement path does multiply and add —
 `tests/place.rs` uses a tolerance for that reason — and this fixture is
 chosen so it need not. The bytes travel between machines because
 `blob::write` converts endianness explicitly, not because memory layout

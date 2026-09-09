@@ -25,10 +25,12 @@ container, the implicit unindexed path, byte strides, sparse accessors, and
 component types other than 5126 and 5123.
 
 comparison: exact, and legitimate for THIS document rather than for the path
-in general. Its accessors are all componentType 5126, so each coordinate is
-copied out with from_le_bytes and never converted or normalised; the node
-states a translation only, so the composed matrix and its inverse-transpose
-are exact; and every coordinate in the source is a small dyadic rational
+in general. Every accessor it reads a coordinate through is componentType
+5126, so each one is copied out with from_le_bytes and never converted or
+normalised - the two index accessors are 5123, and an index selects rather
+than computes. The node states a translation and a scale, both exact powers
+of two, so the composed matrix and its inverse-transpose are exact; and
+every coordinate in the source is a small dyadic rational
 whose product with that matrix rounds to itself. The placement path does
 multiply and add - see crates/mesh/tests/place.rs, which compares within a
 tolerance for exactly that reason - and this fixture is chosen so that it

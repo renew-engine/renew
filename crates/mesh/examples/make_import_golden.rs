@@ -75,10 +75,12 @@ fn provenance(document: &str, blob_bytes: &[u8]) -> String {
          component types other than 5126 and 5123.\n\
          \n\
          comparison: exact, and legitimate for THIS document rather than for the path\n\
-         in general. Its accessors are all componentType 5126, so each coordinate is\n\
-         copied out with from_le_bytes and never converted or normalised; the node\n\
-         states a translation only, so the composed matrix and its inverse-transpose\n\
-         are exact; and every coordinate in the source is a small dyadic rational\n\
+         in general. Every accessor it reads a coordinate through is componentType\n\
+         5126, so each one is copied out with from_le_bytes and never converted or\n\
+         normalised - the two index accessors are 5123, and an index selects rather\n\
+         than computes. The node states a translation and a scale, both exact powers\n\
+         of two, so the composed matrix and its inverse-transpose are exact; and\n\
+         every coordinate in the source is a small dyadic rational\n\
          whose product with that matrix rounds to itself. The placement path does\n\
          multiply and add - see crates/mesh/tests/place.rs, which compares within a\n\
          tolerance for exactly that reason - and this fixture is chosen so that it\n\
