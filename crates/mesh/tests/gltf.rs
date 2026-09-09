@@ -1117,6 +1117,57 @@ fn an_image_that_states_no_type_anywhere_reports_none() {
     assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
 }
 
+/// **A texture says which image it draws from, and that is a step.**
+///
+/// A material names a texture and a texture names a source, so the two
+/// indices are not the same number and a caller pairing them directly
+/// is wrong whenever they differ. This is the table that joins them.
+#[test]
+fn a_texture_names_the_image_it_draws_from() {
+    let json = document(r#"{ "textures": [{ "source": 2 }, { "sampler": 0 }, { "source": 0 }] }"#);
+    let read = gltf::textures(json.root()).expect("three textures");
+    assert_eq!(read, [Some(2), None, Some(0)]);
+}
+
+/// **A texture with no source is `None`, not zero.**
+///
+/// The format leaves `source` optional because an extension may supply
+/// the image instead. Defaulting it to zero would point every such
+/// texture at whichever image happened to be first.
+#[test]
+fn a_texture_without_a_source_is_not_texture_zero() {
+    let json = document(r#"{ "textures": [{}] }"#);
+    assert_eq!(gltf::textures(json.root()).expect("one texture"), [None]);
+}
+
+/// A document with no texture table has none, which is not a refusal.
+#[test]
+fn a_document_with_no_textures_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    assert!(gltf::textures(json.root()).expect("no textures").is_empty());
+}
+
+/// **A texture is an object**, and one that is not is refused for that
+/// rather than read as naming no source.
+#[test]
+fn a_texture_that_is_not_an_object_is_refused() {
+    let json = document(r#"{ "textures": [5] }"#);
+    assert_eq!(
+        gltf::textures(json.root())
+            .expect_err("a number is not a texture")
+            .name(),
+        "Document"
+    );
+
+    let source = document(r#"{ "textures": [{ "source": "first" }] }"#);
+    assert_eq!(
+        gltf::textures(source.root())
+            .expect_err("a name is not an index")
+            .name(),
+        "Document"
+    );
+}
+
 /// **The tables read from either shape of the same asset.**
 ///
 /// The whole reason this entry point exists: a caller would otherwise
@@ -1126,11 +1177,13 @@ fn an_image_that_states_no_type_anywhere_reports_none() {
 fn the_tables_read_from_a_document_and_from_a_container() {
     let text = r#"{"asset":{"version":"2.0"},
 "materials":[{"name":"brass","metallicFactor":1.0,"roughnessFactor":0.25}],
+"textures":[{"source":0}],
 "images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]}"#;
 
     let alone = gltf::tables(text.as_bytes()).expect("a document on its own");
     assert_eq!(alone.materials.len(), 1);
     assert_eq!(alone.materials[0].name.as_deref(), Some("brass"));
+    assert_eq!(alone.textures, [Some(0)]);
     assert_eq!(alone.images.len(), 1);
     assert_eq!(alone.images[0].name.as_deref(), Some("grain"));
     assert_eq!(&*alone.images[0].bytes, &[1, 2, 3, 4]);

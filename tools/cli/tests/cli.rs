@@ -2331,6 +2331,22 @@ fn a_table_that_will_not_read_does_not_stop_the_import() -> std::io::Result<()> 
         String::from_utf8_lossy(&asked.stdout).contains("\"refusal\":\"Gltf\""),
         "named the way this tool names every reader refusal"
     );
+
+    // **And the prose arm says it too.** Two output modes are two pieces
+    // of code, and a caller who does not pass `--json` is entitled to
+    // learn that the tables were not read rather than to see nothing.
+    let spoken = run(&[
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(spoken.status.success(), "it imports without --json too");
+    assert!(
+        String::from_utf8_lossy(&spoken.stdout).contains("its materials and images were not read"),
+        "and says why it is reporting none"
+    );
     Ok(())
 }
 
