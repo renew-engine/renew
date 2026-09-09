@@ -884,25 +884,6 @@ pub fn images<'s>(root: Value<'_>, source: &'s Source<'_>) -> Result<Vec<Image<'
     Ok(out)
 }
 
-impl Image<'_> {
-    /// Take ownership of the bytes, so the image outlives the document.
-    ///
-    /// **The way out of the borrow that does not rebuild the value, and
-    /// it is a copy where the bytes came from a buffer.** An image read from a `bufferView`
-    /// borrows the document's own memory; a caller that wants to hold
-    /// it after the document is dropped -- to write it to a file, say --
-    /// has to pay for that once. An image decoded from a payload already
-    /// owns its bytes and pays nothing.
-    #[must_use]
-    pub fn into_owned(self) -> Image<'static> {
-        Image {
-            name: self.name,
-            media_type: self.media_type,
-            bytes: Cow::Owned(self.bytes.into_owned()),
-        }
-    }
-}
-
 /// What a document says beyond its geometry.
 ///
 /// **Two tables that travel together because one caller wants both.**
@@ -922,8 +903,55 @@ pub struct Tables {
     /// format, because an extension may supply the image instead, and a
     /// texture that names none reads as `None` rather than as zero.
     pub textures: Vec<Option<u32>>,
-    /// Every image, holding its own bytes.
-    pub images: Vec<Image<'static>>,
+    /// Every image the document carries.
+    pub images: Vec<Stored>,
+}
+
+/// An image a caller can hold after the document is gone.
+///
+/// **Separate from [`Image`] because owning is a different thing from
+/// borrowing, not a mode of it.** An `Image` points into the document
+/// that produced it and costs nothing; this outlives that document, and
+/// for an image stored in a `bufferView` that means a copy. Making it a
+/// second type rather than a flag on the first keeps the cost where a
+/// reader can see it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stored {
+    /// What the document called it, if it called it anything.
+    pub name: Option<String>,
+    /// The media type the document states for these bytes, if it states
+    /// one. See [`Image::media_type`] for how the two possible
+    /// statements are reconciled.
+    pub media_type: Option<String>,
+    /// How long the image is, whether or not its bytes were kept.
+    ///
+    /// **The length is free and the bytes are not.** A caller reporting
+    /// what a model carries wants this and nothing else, so it is stated
+    /// separately rather than being read off a `bytes` that may not be
+    /// there.
+    pub len: usize,
+    /// The bytes, when [`ImageBytes::Kept`] asked for them.
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// Whether a caller wants an image's bytes or only the fact of it.
+///
+/// **A copy is the only way out of the borrow, so it has to be asked
+/// for.** An image read from a `bufferView` points into the document,
+/// and a `Tables` outlives the parse that produced it -- so keeping the
+/// bytes means copying them. A caller reporting what a model carries
+/// needs the name, the type and the length, and none of those need the
+/// bytes; a caller writing files needs all of it.
+///
+/// Stated at the call site rather than inferred, because the cost is
+/// the whole cost of the call: on a four-megabyte texture the copy
+/// measured at 99% of the time and 99.9% of the bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageBytes {
+    /// Copy them, because they are going somewhere.
+    Kept,
+    /// Report the length and drop them.
+    Counted,
 }
 
 /// Read what a document says beyond its geometry, in either shape.
@@ -947,7 +975,7 @@ pub struct Tables {
 ///
 /// A [`GltfError`] naming the layer that refused and carrying its
 /// numbers.
-pub fn tables(bytes: &[u8]) -> Result<Tables, GltfError> {
+pub fn tables(bytes: &[u8], wanted: ImageBytes) -> Result<Tables, GltfError> {
     let (document, chunk) = if glb::looks_like(bytes) {
         let container = glb::read(bytes).map_err(GltfError::Container)?;
         (container.json, container.binary)
@@ -958,13 +986,43 @@ pub fn tables(bytes: &[u8]) -> Result<Tables, GltfError> {
     let json = parse(document)?;
     let root = json.root();
     let source = Source::of(root, chunk)?;
+    // **Owning the bytes is the one thing here that can amplify**, and
+    // it is bounded by the same ceiling geometry and materials answer
+    // to. An image from a `bufferView` borrows until this line; a
+    // document that points a thousand images at one shared megabyte
+    // costs two bytes an entry to write and a gigabyte to hold, which
+    // is the shape the rest of this crate already refuses.
+    let mut held = 0_usize;
+    let mut owned = Vec::new();
+    for image in images(root, &source)? {
+        let len = image.bytes.len();
+        let bytes = match wanted {
+            ImageBytes::Counted => None,
+            ImageBytes::Kept => {
+                // **The one line here that can amplify, and the ceiling
+                // it answers to.** Nothing says two images must name two
+                // views: a document may point a thousand of them at one
+                // shared megabyte, paying about thirty bytes an entry to
+                // do it. Measured before this existed, that reached
+                // nearly three thousand times the input and grew as its
+                // square.
+                crate::refuse_over_image_ceiling(held, len).map_err(GltfError::Geometry)?;
+                held += len;
+                Some(image.bytes.into_owned())
+            }
+        };
+        owned.push(Stored {
+            name: image.name,
+            media_type: image.media_type,
+            len,
+            bytes,
+        });
+    }
+
     Ok(Tables {
         materials: materials(root)?,
         textures: textures(root)?,
-        images: images(root, &source)?
-            .into_iter()
-            .map(Image::into_owned)
-            .collect(),
+        images: owned,
     })
 }
 

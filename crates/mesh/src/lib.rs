@@ -147,6 +147,26 @@ pub(crate) fn refuse_over_material_ceiling(have: usize) -> Result<(), MeshError>
     Ok(())
 }
 
+/// Refuse before the next image's bytes are copied rather than after.
+///
+/// **The amplification rule applied to the one place that copies.** An
+/// image read out of a `bufferView` borrows the document's own memory,
+/// and taking ownership of it copies. Nothing says two images must name
+/// two views: a document may point a thousand images at one megabyte and
+/// pay two bytes an entry for it, which measured at **over a thousand
+/// times the input** before this existed. The bytes are what to count,
+/// not the entries, because one image can be the whole ceiling on its
+/// own and a thousand tiny ones are harmless.
+pub(crate) fn refuse_over_image_ceiling(have: usize, adding: usize) -> Result<(), MeshError> {
+    if have.saturating_add(adding) > MAX_GEOMETRY_BYTES {
+        return Err(MeshError::TooLarge {
+            field: "images",
+            value: MAX_GEOMETRY_BYTES as u64,
+        });
+    }
+    Ok(())
+}
+
 /// Refuse before the geometry arrives rather than after it.
 ///
 /// `have` is what has been emitted, `adding` what the next face would

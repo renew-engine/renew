@@ -1180,17 +1180,19 @@ fn the_tables_read_from_a_document_and_from_a_container() {
 "textures":[{"source":0}],
 "images":[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]}"#;
 
-    let alone = gltf::tables(text.as_bytes()).expect("a document on its own");
+    let alone =
+        gltf::tables(text.as_bytes(), gltf::ImageBytes::Kept).expect("a document on its own");
     assert_eq!(alone.materials.len(), 1);
     assert_eq!(alone.materials[0].name.as_deref(), Some("brass"));
     assert_eq!(alone.textures, [Some(0)]);
     assert_eq!(alone.images.len(), 1);
     assert_eq!(alone.images[0].name.as_deref(), Some("grain"));
-    assert_eq!(&*alone.images[0].bytes, &[1, 2, 3, 4]);
+    assert_eq!(alone.images[0].bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
 
     // The same document wrapped, which the layers below cannot tell
     // apart and this one must.
-    let wrapped = gltf::tables(&container(text, &[])).expect("the same document, wrapped");
+    let wrapped = gltf::tables(&container(text, &[]), gltf::ImageBytes::Kept)
+        .expect("the same document, wrapped");
     assert_eq!(wrapped, alone);
 }
 
@@ -1207,16 +1209,64 @@ fn an_image_stored_in_a_chunk_survives_the_document() {
 "bufferViews":[{"buffer":0,"byteLength":4}],
 "images":[{"bufferView":0,"mimeType":"image/png"}]}"#;
 
-    let read = gltf::tables(&container(text, &[9, 8, 7, 6])).expect("one image, from the chunk");
+    let read = gltf::tables(&container(text, &[9, 8, 7, 6]), gltf::ImageBytes::Kept)
+        .expect("one image, from the chunk");
     assert_eq!(read.images.len(), 1);
-    assert_eq!(&*read.images[0].bytes, &[9, 8, 7, 6]);
+    assert_eq!(read.images[0].bytes.as_deref(), Some(&[9, 8, 7, 6][..]));
     assert_eq!(read.images[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **Many images may name one view, and asking for their bytes copies
+/// each one.**
+///
+/// Nothing in the format says two images must name two views. A
+/// document that points a thousand of them at one shared region pays
+/// about thirty bytes an entry to write and a gigabyte to hold, which
+/// measured at nearly three thousand times the input and grew as its
+/// square. Counting them instead costs nothing, and that is what a
+/// caller reporting a model wants.
+#[test]
+fn images_that_share_one_view_are_counted_without_being_copied() {
+    let mut aliased = String::from(
+        r#"{"asset":{"version":"2.0"},
+"buffers":[{"byteLength":4}],
+"bufferViews":[{"buffer":0,"byteLength":4}],
+"images":["#,
+    );
+    for index in 0..64 {
+        if index > 0 {
+            aliased.push(',');
+        }
+        aliased.push_str(r#"{"bufferView":0,"mimeType":"image/png"}"#);
+    }
+    aliased.push_str("]}");
+    let packed = container(&aliased, &[1, 2, 3, 4]);
+
+    let counted = gltf::tables(&packed, gltf::ImageBytes::Counted).expect("counted");
+    assert_eq!(counted.images.len(), 64);
+    for image in &counted.images {
+        // **The length is known and the bytes are not held.** A caller
+        // reporting what a model carries needs exactly this much.
+        assert_eq!(image.len, 4);
+        assert_eq!(image.bytes, None);
+    }
+
+    let kept = gltf::tables(&packed, gltf::ImageBytes::Kept).expect("kept");
+    for image in &kept.images {
+        assert_eq!(image.bytes.as_deref(), Some(&[1, 2, 3, 4][..]));
+    }
+    // The two answer the same about everything but the bytes.
+    assert_eq!(
+        counted.images.iter().map(|image| image.len).sum::<usize>(),
+        kept.images.iter().map(|image| image.len).sum::<usize>()
+    );
 }
 
 /// A document with neither table has neither, which is not a refusal.
 #[test]
 fn a_document_with_no_tables_has_none() {
-    let read = gltf::tables(br#"{"asset":{"version":"2.0"}}"#).expect("nothing is not a refusal");
+    let read = gltf::tables(br#"{"asset":{"version":"2.0"}}"#, gltf::ImageBytes::Kept)
+        .expect("nothing is not a refusal");
     assert_eq!(read, gltf::Tables::default());
 }
 
@@ -1224,8 +1274,11 @@ fn a_document_with_no_tables_has_none() {
 /// the layer that made it rather than by this one.
 #[test]
 fn a_table_that_refuses_refuses_the_call() {
-    let refused = gltf::tables(br#"{"asset":{"version":"2.0"},"images":[{"uri":"grain.png"}]}"#)
-        .expect_err("a second file is not opened");
+    let refused = gltf::tables(
+        br#"{"asset":{"version":"2.0"},"images":[{"uri":"grain.png"}]}"#,
+        gltf::ImageBytes::Kept,
+    )
+    .expect_err("a second file is not opened");
     assert_eq!(refused, GltfError::ExternalResource);
 }
 

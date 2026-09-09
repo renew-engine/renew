@@ -2234,9 +2234,12 @@ fn an_empty_images_path_is_refused() -> std::io::Result<()> {
         "",
     ])?;
     assert!(!output.status.success(), "an empty path is not a directory");
+    let said = String::from_utf8_lossy(&output.stderr);
+    // Same trap as the rule above: the usage block always names the
+    // flag, so only the sentence proves the guard ran.
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("--images"),
-        "and the caller hears about the flag they typed"
+        said.contains("`--images` needs a value"),
+        "the caller hears why, not just the usage text: {said:?}"
     );
     Ok(())
 }
@@ -2557,6 +2560,31 @@ fn asset_import_reports_the_tables_without_writing_them() -> std::io::Result<()>
             && reported.contains("\"media_type\":\"image/jpeg\""),
         "both images are reported with the types the document stated: {reported:?}"
     );
+
+    // **The whole payload, by value.** Asserting on a hand-picked
+    // substring leaves every number free: a report that swapped metallic
+    // for roughness, negated `double_sided`, relabelled every texture
+    // role, or said a four-byte image was zero bytes long would pass a
+    // test that only looked for a name. So the material and the images
+    // are compared as written, in full.
+    let material = concat!(
+        r#"{"name":"brass","base_color":[0.5,0.25,0.125,1.0],"metallic":1.0,"#,
+        r#""roughness":0.25,"emissive":[0.0,0.0,0.25],"double_sided":true,"#,
+        r#""alpha_mode":"MASK","alpha_cutoff":0.75,"#,
+        r#""textures":[{"role":"base_color","texture":0,"uv_set":0}]}"#
+    );
+    assert!(
+        reported.contains(material),
+        "the material reads back exactly as the document stated it: {reported:?}"
+    );
+    let carried = concat!(
+        r#""images":[{"name":"grain","media_type":"image/png","bytes":4},"#,
+        r#"{"name":null,"media_type":"image/jpeg","bytes":4}]"#
+    );
+    assert!(
+        reported.contains(carried),
+        "and so do both images, names and lengths included: {reported:?}"
+    );
     assert!(
         reported.contains("\"images_written\":[]"),
         "and none were written, because none were asked for: {reported:?}"
@@ -2728,9 +2756,14 @@ fn images_is_refused_on_another_subcommand() -> std::io::Result<()> {
     let output = run(&["asset-pack", "--images", "textures"])?;
     assert!(!output.status.success(), "it is not that command's flag");
     let said = String::from_utf8_lossy(&output.stderr);
+    // **Not `contains("--images")`.** Every parse error prints the usage
+    // block, and the usage block lists `--images`, so that assertion
+    // passes however the guard behaves -- which is a test that cannot
+    // fail. The sentence naming the unexpected argument is the thing
+    // this rule actually produces.
     assert!(
-        said.contains("--images"),
-        "and the caller hears about the flag they typed: {said:?}"
+        said.contains("unexpected argument `--images`"),
+        "the caller hears about the flag they typed, not the usage text: {said:?}"
     );
     Ok(())
 }

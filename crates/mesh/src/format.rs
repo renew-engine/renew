@@ -156,12 +156,19 @@ impl Format {
     /// Exhaustive on purpose, like [`read`](Self::read): a format added
     /// to this enum has to answer this question before it compiles,
     /// which is the compile-time check a wildcard would throw away.
+    ///
+    /// `wanted` decides whether an image's bytes are copied out of the
+    /// document or only measured; see [`gltf::ImageBytes`].
     #[must_use]
-    pub fn tables(self, bytes: &[u8]) -> Option<Result<gltf::Tables, MeshError>> {
+    pub fn tables(
+        self,
+        bytes: &[u8],
+        wanted: gltf::ImageBytes,
+    ) -> Option<Result<gltf::Tables, MeshError>> {
         match self {
-            Self::Glb | Self::Gltf => {
-                Some(gltf::tables(bytes).map_err(|refusal| MeshError::Gltf(Box::new(refusal))))
-            }
+            Self::Glb | Self::Gltf => Some(
+                gltf::tables(bytes, wanted).map_err(|refusal| MeshError::Gltf(Box::new(refusal))),
+            ),
             Self::Obj | Self::Mtl | Self::Stl | Self::Ply | Self::Blob => None,
         }
     }

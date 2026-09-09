@@ -559,7 +559,7 @@ fn extension_for(media_type: &str) -> Option<&'static str> {
 /// own address for the image, so a caller reading the JSON can match a
 /// material's texture reference to a file without guessing.
 fn write_images(
-    images: &[renew_mesh::gltf::Image<'static>],
+    images: &[renew_mesh::gltf::Stored],
     directory: &str,
 ) -> Result<Vec<String>, ImportFailure> {
     // **Every name settled before the first byte is written.** Checking
@@ -610,8 +610,19 @@ fn write_images(
 
     let mut written = Vec::with_capacity(names.len());
     for (name, image) in names.iter().zip(images) {
+        // **Asked for and therefore present.** `ImageBytes::Kept` is
+        // what puts them here, and it is chosen by the same flag that
+        // reaches this function -- so an absence would be a caller
+        // asking for files without asking for bytes, which is a mistake
+        // in this file rather than anything a document can cause.
+        let Some(bytes) = image.bytes.as_deref() else {
+            return Err(ImportFailure {
+                message: format!("image {name} was measured rather than read"),
+                refusal: None,
+            });
+        };
         let path = root.join(name);
-        if let Err(error) = std::fs::write(&path, &*image.bytes) {
+        if let Err(error) = std::fs::write(&path, bytes) {
             return Err(ImportFailure {
                 message: format!("cannot write {}: {error}", path.display()),
                 refusal: None,
@@ -725,7 +736,7 @@ fn material_json(material: &renew_mesh::pbr::Material) -> Value {
 /// The bytes themselves are never put in the envelope: they are a
 /// texture, the JSON is a report, and base64 in a status line would make
 /// a megabyte of output nobody reads.
-fn image_json(image: &renew_mesh::gltf::Image<'static>) -> Value {
+fn image_json(image: &renew_mesh::gltf::Stored) -> Value {
     Value::Object(vec![
         (
             "name".to_string(),
@@ -743,9 +754,71 @@ fn image_json(image: &renew_mesh::gltf::Image<'static>) -> Value {
         ),
         (
             "bytes".to_string(),
-            Value::Number(i64::try_from(image.bytes.len()).unwrap_or(i64::MAX)),
+            Value::Number(i64::try_from(image.len).unwrap_or(i64::MAX)),
         ),
     ])
+}
+
+/// What a document says beyond its shape, and why it might say nothing.
+struct Beyond {
+    tables: Option<renew_mesh::gltf::Tables>,
+    unreadable: Option<(&'static str, String)>,
+}
+
+/// Read the material and image tables, or explain their absence.
+///
+/// **The format decides whether there is an answer at all**: one that
+/// states no materials in this vocabulary answers `None`, which is not
+/// the same as answering that it has none.
+///
+/// **A table that will not read does not take the geometry down with
+/// it, unless the caller asked for the images.** Reading a model is what
+/// this command is for, and the commonest glTF in the world keeps its
+/// textures in files beside itself -- which this reader will not open,
+/// and which says nothing about whether the geometry is sound. So the
+/// refusal is reported and the import proceeds. Where `--images` was
+/// given the caller asked for something that cannot be delivered, and
+/// then it is fatal.
+///
+/// # Errors
+///
+/// The reader's own refusal, when the caller asked for images and the
+/// tables holding them would not read.
+fn beyond_geometry(
+    found: renew_mesh::format::Format,
+    bytes: &[u8],
+    images_dir: Option<&str>,
+) -> Result<Beyond, renew_mesh::MeshError> {
+    // **The bytes are copied only where they are going somewhere.** An
+    // image stored in a buffer view points into the document, so keeping
+    // it means copying it -- and a caller who did not ask for files has
+    // no use for the copy. On a four-megabyte texture that copy measured
+    // at ninety-nine per cent of the whole call.
+    let wanted = if images_dir.is_some() {
+        renew_mesh::gltf::ImageBytes::Kept
+    } else {
+        renew_mesh::gltf::ImageBytes::Counted
+    };
+
+    match found.tables(bytes, wanted) {
+        None => Ok(Beyond {
+            tables: None,
+            unreadable: None,
+        }),
+        Some(Ok(tables)) => Ok(Beyond {
+            tables: Some(tables),
+            unreadable: None,
+        }),
+        Some(Err(refusal)) => {
+            if images_dir.is_some() {
+                return Err(refusal);
+            }
+            Ok(Beyond {
+                tables: None,
+                unreadable: Some((refusal.name(), refusal.to_string())),
+            })
+        }
+    }
 }
 
 fn run_asset_import(
@@ -788,13 +861,6 @@ fn run_asset_import(
 
     let found = renew_mesh::format::detect(&bytes);
     let format = found.name();
-    // Set when a table refused and the refusal was not fatal, so the
-    // envelope can say why it is reporting nothing rather than leaving
-    // a caller to read an absence as an emptiness. **The name and the
-    // sentence both**, for the same reason the failure envelope carries
-    // both: a name is for a program and a sentence is for a person, and
-    // this one never reaches `stderr` because the run succeeded.
-    let mut unreadable: Option<(&'static str, String)> = None;
     let Some(read) = found.read(&bytes) else {
         // A material library is not a broken mesh, and saying so is this
         // tool's judgement rather than a reader's refusal: no reader was
@@ -823,36 +889,18 @@ fn run_asset_import(
         }
     };
 
-    // **What the document says beyond its shape**, read from the same
-    // bytes before they are dropped. The format decides whether there is
-    // an answer at all: a format that states no materials in this
-    // vocabulary answers `None`, which is not the same as answering that
-    // it has none.
-    //
-    // **A table that will not read does not take the geometry down with
-    // it, unless the caller asked for the images.** Reading a model is
-    // what this command is for, and the commonest glTF in the world
-    // keeps its textures in files beside itself -- which this reader
-    // will not open, and which has nothing to do with whether the
-    // geometry is sound. So the refusal is *reported* and the import
-    // proceeds. Where `--images` was given the caller asked for
-    // something that cannot be delivered, and then it is fatal.
-    let tables = match found.tables(&bytes) {
-        None => None,
-        Some(Ok(tables)) => Some(tables),
-        Some(Err(refusal)) => {
-            if images_dir.is_some() {
-                return import_failure(
-                    &format!("{from}: {refusal}"),
-                    Some(refusal.name()),
-                    json_mode,
-                    started,
-                );
-            }
-            unreadable = Some((refusal.name(), refusal.to_string()));
-            None
+    let beyond = match beyond_geometry(found, &bytes, images_dir) {
+        Ok(beyond) => beyond,
+        Err(refusal) => {
+            return import_failure(
+                &format!("{from}: {refusal}"),
+                Some(refusal.name()),
+                json_mode,
+                started,
+            );
         }
     };
+    let (tables, unreadable) = (beyond.tables, beyond.unreadable);
 
     // The file is not read again after this, and it can be as large as
     // the model: holding it across the write was a quarter of this
