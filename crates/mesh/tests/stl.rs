@@ -167,6 +167,9 @@ endsolid x",
 /// finding. A reason the test prints is a reason somebody reads.
 fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::StreamLengthMismatch { .. } => Some(
+            "this format has one stream and repeats every corner into it, so there is no\n             second stream that could disagree with a first",
+        ),
         // Reachable, and each is provoked by a file in this suite.
         MeshError::NotThisFormat { .. } => Some(
             "this format has no magic at all: a binary STL opens with eighty bytes of whatever its exporter wrote, which is exactly why detection falls back to STL rather than dispatching to it",

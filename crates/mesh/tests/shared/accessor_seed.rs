@@ -32,10 +32,33 @@
     reason = "each of the three includers uses a different half of this"
 )]
 
+use renew_mesh::Mesh;
+pub use renew_mesh::accessor::BufferView;
 use renew_mesh::accessor::{Accessor, AccessorError, Component, Shape};
+use renew_mesh::primitive::{self, Mode, Primitive};
 
-/// The fixed head: parameters, then the region.
-pub const HEAD: usize = 9;
+/// The fixed head: parameters, then the buffer.
+///
+/// **Seventeen bytes, grown twice from nine.** Four carry a buffer view
+/// and four carry an index stream, so one corpus reaches three layers: a
+/// seed can hand its bytes to an accessor directly, resolve a region out
+/// of them first, or assemble positions and indices out of the same
+/// buffer into geometry. Widening the head reshuffles every committed
+/// seed, which costs nothing here because every one of them is
+/// generated.
+///
+/// # What the assembly half deliberately does not reach
+///
+/// A seed that assembles forces three-component float positions and
+/// triangles, and carries no normals or texture coordinates. **The
+/// refusals it therefore cannot provoke — a stream of the wrong shape, a
+/// mode this reader does not draw, two streams of different lengths —
+/// are structural rather than arithmetic**, and the suite beside the
+/// crate provokes every one of them deterministically. What a fuzzer
+/// adds here is the de-indexing loop: index values are attacker-chosen
+/// numbers used to address another stream, and that is the one place at
+/// this layer where a wrong comparison reads out of bounds.
+pub const HEAD: usize = 17;
 
 /// The parameters as the head spells them, before anything judges them.
 ///
@@ -56,6 +79,24 @@ pub struct Seed<'a> {
     pub byte_stride: Option<usize>,
     /// Whether integers are fractions of their own range.
     pub normalized: bool,
+    /// The view to resolve out of the bytes first, when the head asks
+    /// for one.
+    ///
+    /// `None` hands the bytes to the accessor directly, which is what
+    /// every seed did before this field existed. `Some` puts the layer
+    /// that decides whether a region is really inside its buffer in
+    /// front of the layer that decides whether elements are really
+    /// inside a region — the two claims catalogue entry 23 keeps apart.
+    pub view: Option<BufferView>,
+    /// The index stream to assemble geometry with, when the head asks
+    /// for one.
+    ///
+    /// `Some(count)` builds a primitive out of the same buffer: the
+    /// accessor's own parameters become the positions, and `count`
+    /// unsigned sixteen-bit indices are read from `index_offset`.
+    pub assemble: Option<usize>,
+    /// Where the index stream starts, when there is one.
+    pub index_offset: usize,
     /// Whether to read the region as element addresses rather than as
     /// attributes.
     ///
@@ -90,13 +131,28 @@ pub fn decode(bytes: &[u8]) -> Option<Seed<'_>> {
     let byte_offset = usize::from(u16::from_le_bytes([head[4], head[5]]));
     let stride = usize::from(u16::from_le_bytes([head[6], head[7]]));
     let flags = head[8];
+    let view_offset = usize::from(u16::from_le_bytes([head[9], head[10]]));
+    let view_length = usize::from(u16::from_le_bytes([head[11], head[12]]));
+    let index_count = usize::from(u16::from_le_bytes([head[13], head[14]]));
+    let index_offset = usize::from(u16::from_le_bytes([head[15], head[16]]));
+    let byte_stride = (flags & 1 != 0).then_some(stride);
 
     Some(Seed {
         code,
         shape,
         count,
         byte_offset,
-        byte_stride: (flags & 1 != 0).then_some(stride),
+        byte_stride,
+        // The view shares the accessor's stride, because that is where
+        // the format puts it and where a caller assembling from a
+        // document would copy it from.
+        view: (flags & 8 != 0).then_some(BufferView {
+            byte_offset: view_offset,
+            byte_length: view_length,
+            byte_stride,
+        }),
+        assemble: (flags & 16 != 0).then_some(index_count),
+        index_offset,
         normalized: flags & 2 != 0,
         as_indices: flags & 4 != 0,
         region,
@@ -140,7 +196,38 @@ pub fn encode(seed: &Seed<'_>) -> Vec<u8> {
     if seed.as_indices {
         flags |= 4;
     }
+    if seed.view.is_some() {
+        flags |= 8;
+    }
+    if seed.assemble.is_some() {
+        flags |= 16;
+    }
     out.push(flags);
+    let view = seed.view.unwrap_or(BufferView {
+        byte_offset: 0,
+        byte_length: 0,
+        byte_stride: None,
+    });
+    out.extend_from_slice(
+        &u16::try_from(view.byte_offset)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u16::try_from(view.byte_length)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u16::try_from(seed.assemble.unwrap_or(0))
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u16::try_from(seed.index_offset)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
     out.extend_from_slice(seed.region);
     out
 }
@@ -166,22 +253,98 @@ impl Seed<'_> {
     }
 }
 
+impl<'a> Seed<'a> {
+    /// The bytes the accessor is checked against: the whole region, or
+    /// the part of it this seed's view resolves to.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`BufferView::resolve`] refuses, when there is a view.
+    pub fn bytes(&self) -> Result<&'a [u8], AccessorError> {
+        match self.view {
+            Some(view) => view.resolve(self.region),
+            None => Ok(self.region),
+        }
+    }
+}
+
+impl Seed<'_> {
+    /// Assemble this seed's buffer into geometry.
+    ///
+    /// Positions are forced to three-component floats and the mode to
+    /// triangles, so the fuzzer spends its time on index values rather
+    /// than bouncing off a shape refusal it can reach in one byte.
+    ///
+    /// # Errors
+    ///
+    /// The **name** of whatever the accessor, the index accessor or the
+    /// assembly refuses. A name rather than a refusal because the three
+    /// layers speak two different vocabularies on purpose, and inventing
+    /// a conversion between them so that a harness could hold one value
+    /// would put a harness's convenience into the crate's public API.
+    pub fn assembled(&self, region: &[u8]) -> Result<Mesh, &'static str> {
+        let count = self.assemble.unwrap_or_default();
+        let positions = Accessor {
+            component: Component::F32,
+            shape: Shape::Vec3,
+            count: self.count,
+            byte_offset: self.byte_offset,
+            byte_stride: self.byte_stride,
+            normalized: false,
+        }
+        .view(region)
+        .map_err(AccessorError::name)?;
+
+        let order = Accessor {
+            component: Component::U16,
+            shape: Shape::Scalar,
+            count,
+            byte_offset: self.index_offset,
+            byte_stride: None,
+            normalized: false,
+        }
+        .indices(region)
+        .map_err(AccessorError::name)?;
+
+        primitive::build(&Primitive {
+            mode: Mode::Triangles,
+            positions,
+            normals: None,
+            texcoords: None,
+            indices: Some(order),
+        })
+        .map_err(|refusal| refusal.name())
+    }
+}
+
 /// The answer a seed gets, as a name.
 ///
 /// `Ok` for a claim the reader accepts, `NoHead` for bytes too short to
-/// carry parameters at all, and the refusal's own name otherwise.
+/// carry parameters at all, and the refusal's own name otherwise —
+/// **including a view's**, which is the layer in front of the accessor
+/// rather than a different kind of answer.
 #[must_use]
 pub fn outcome(bytes: &[u8]) -> &'static str {
     let Some(seed) = decode(bytes) else {
         return "NoHead";
     };
+    let region = match seed.bytes() {
+        Ok(region) => region,
+        Err(refusal) => return refusal.name(),
+    };
+    if seed.assemble.is_some() {
+        return match seed.assembled(region) {
+            Err(name) => name,
+            Ok(_) => "Ok",
+        };
+    }
     match seed.accessor() {
         Err(refusal) => refusal.name(),
-        Ok(accessor) if seed.as_indices => match accessor.indices(seed.region) {
+        Ok(accessor) if seed.as_indices => match accessor.indices(region) {
             Err(refusal) => refusal.name(),
             Ok(_) => "Ok",
         },
-        Ok(accessor) => match accessor.view(seed.region) {
+        Ok(accessor) => match accessor.view(region) {
             Err(refusal) => refusal.name(),
             Ok(_) => "Ok",
         },

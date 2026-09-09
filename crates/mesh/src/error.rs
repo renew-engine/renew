@@ -222,6 +222,28 @@ pub enum MeshError {
         wanted: &'static str,
     },
 
+    /// Two streams describing the same vertices, and different numbers
+    /// of them.
+    ///
+    /// **The refusal a format with one payload never needs.** Every
+    /// other reader in this crate has a single stream whose length must
+    /// divide; a model has several, and the constraint between them is
+    /// equality rather than divisibility. Nothing downstream can catch
+    /// it either: whatever interleaves these arrays is the last thing
+    /// that knows they were separate, so reading past the end of the
+    /// short one is that code's own bug rather than the file's.
+    ///
+    /// Carries the stream's name as the file spells it, so a caller can
+    /// search the file for the one that disagreed.
+    StreamLengthMismatch {
+        /// The attribute, in the file's own vocabulary.
+        stream: &'static str,
+        /// How many the authoritative stream held.
+        expected: usize,
+        /// How many this one held.
+        found: usize,
+    },
+
     /// A file that declares no geometry at all.
     ///
     /// **A refusal rather than an empty mesh**, and the distinction is
@@ -259,6 +281,7 @@ impl MeshError {
             Self::IndexZero { .. } => "IndexZero",
             Self::NotAFace { .. } => "NotAFace",
             Self::Unsupported { .. } => "Unsupported",
+            Self::StreamLengthMismatch { .. } => "StreamLengthMismatch",
             Self::NoGeometry => "NoGeometry",
         }
     }
@@ -320,6 +343,14 @@ impl fmt::Display for MeshError {
             Self::Unsupported { wanted } => write!(
                 f,
                 "this file is well-formed and this reader cannot use it: no `{wanted}`"
+            ),
+            Self::StreamLengthMismatch {
+                stream,
+                expected,
+                found,
+            } => write!(
+                f,
+                "`{stream}` holds {found} and the positions hold {expected}"
             ),
             Self::NoGeometry => write!(
                 f,
@@ -470,13 +501,18 @@ mod tests {
                 corners: 2,
             },
             MeshError::Unsupported { wanted: "vertex" },
+            MeshError::StreamLengthMismatch {
+                stream: "NORMAL",
+                expected: 512,
+                found: 511,
+            },
             MeshError::NoGeometry,
             MeshError::NotThisFormat { expected: "ply" },
         ];
 
         // One per variant. Raise it when the enum grows, in the same
         // change that writes the new arm below.
-        assert_eq!(all.len(), 12, "a variant is missing an instance here");
+        assert_eq!(all.len(), 13, "a variant is missing an instance here");
 
         for refusal in &all {
             let shown = refusal.to_string();
@@ -485,6 +521,7 @@ mod tests {
             // editor for are in the message.
             let numbers: Vec<&str> = match refusal {
                 MeshError::NotThisFormat { .. } => vec!["ply"],
+                MeshError::StreamLengthMismatch { .. } => vec!["NORMAL", "512", "511"],
                 MeshError::TooShortForHeader { .. } => vec!["84", "3"],
                 MeshError::CountMismatch { .. } => vec!["134", "90", "1"],
                 MeshError::TooLarge { .. } => vec!["element count", "4000000000"],

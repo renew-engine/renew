@@ -63,6 +63,7 @@ pub mod glb;
 pub mod mtl;
 pub mod obj;
 pub mod ply;
+pub mod primitive;
 pub mod stl;
 
 /// The most geometry this reader will build out of one file, in bytes.
@@ -136,9 +137,10 @@ pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), Mesh
     Ok(())
 }
 
-pub use accessor::{Accessor, AccessorError, Component, Shape};
+pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
+pub use primitive::{Mode, Primitive};
 
 /// Triangles read out of a file, in the order the file stored them.
 ///

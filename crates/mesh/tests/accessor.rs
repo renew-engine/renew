@@ -12,7 +12,7 @@
 // not reach it.
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
-use renew_mesh::accessor::{Accessor, AccessorError, Component, Shape};
+use renew_mesh::accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 
 /// A tightly packed accessor over `count` elements.
 fn packed(component: Component, shape: Shape, count: usize) -> Accessor {
@@ -388,6 +388,143 @@ fn a_count_that_overflows_the_span_is_refused() {
     );
 }
 
+/// A view hands back its own region of a buffer, and nothing else.
+#[test]
+fn a_view_borrows_exactly_its_own_region() {
+    let buffer: Vec<u8> = (0u8..64).collect();
+    let view = BufferView {
+        byte_offset: 8,
+        byte_length: 16,
+        byte_stride: None,
+    };
+    let region = view.resolve(&buffer).expect("8 + 16 is inside 64");
+    assert_eq!(region.len(), 16);
+    assert_eq!(region[0], 8, "it starts where the offset says");
+    assert_eq!(region[15], 23, "and ends where the length says");
+}
+
+/// **A region that is not inside its buffer, which is the claim an
+/// accessor cannot make on its own.**
+///
+/// An accessor is checked against the region it is handed; nothing in
+/// that check can tell whether the region was really there. This is
+/// catalogue entry 23's third claim, and the reason a view is its own
+/// type.
+#[test]
+fn a_view_past_the_end_of_its_buffer_is_refused() {
+    let buffer = [0u8; 32];
+
+    let over = BufferView {
+        byte_offset: 24,
+        byte_length: 16,
+        byte_stride: None,
+    };
+    assert_eq!(
+        over.resolve(&buffer).expect_err("24 + 16 is past 32"),
+        AccessorError::ViewOutOfRange {
+            needs: 40,
+            available: 32,
+        }
+    );
+
+    // Exactly reaching the end is inside it, which is the boundary the
+    // refusal above would get wrong in the other direction.
+    let exact = BufferView {
+        byte_offset: 16,
+        byte_length: 16,
+        byte_stride: None,
+    };
+    assert_eq!(exact.resolve(&buffer).expect("16 + 16 is 32").len(), 16);
+}
+
+/// A stride wider than the region that declares it.
+#[test]
+fn a_stride_wider_than_its_view_is_refused() {
+    let buffer = [0u8; 64];
+    let view = BufferView {
+        byte_offset: 0,
+        byte_length: 16,
+        byte_stride: Some(32),
+    };
+    assert_eq!(
+        view.resolve(&buffer)
+            .expect_err("32 cannot separate anything inside 16"),
+        AccessorError::StrideExceedsView {
+            stride: 32,
+            length: 16,
+        }
+    );
+
+    // Equal is legal: a stride the width of the region separates one
+    // element from nothing, which is what a single-element view is.
+    let equal = BufferView {
+        byte_stride: Some(16),
+        ..view
+    };
+    assert!(equal.resolve(&buffer).is_ok());
+}
+
+/// **A zero-length view resolves, and the accessor over it refuses with
+/// the numbers.**
+///
+/// Deliberate rather than an omission: a refusal at the view would be a
+/// second answer to a question the accessor already answers better,
+/// because an accessor holds at least one element and says how many
+/// bytes that needed.
+#[test]
+fn a_zero_length_view_is_left_for_the_accessor_to_refuse() {
+    let buffer = [0u8; 32];
+    let empty = BufferView {
+        byte_offset: 4,
+        byte_length: 0,
+        byte_stride: None,
+    };
+    let region = empty.resolve(&buffer).expect("an empty region is a region");
+    assert!(region.is_empty());
+
+    assert_eq!(
+        refusal(packed(Component::F32, Shape::Vec3, 1), region),
+        AccessorError::OutOfRange {
+            needs: 12,
+            available: 0,
+        }
+    );
+}
+
+/// **The stride travels from the view to the accessors over it**, which
+/// is the relationship a caller assembling from a document has to
+/// preserve.
+///
+/// Pinned because it is one number in two places. If it ever arrives
+/// wrong, the fix is to take the field off the accessor rather than to
+/// check the two against each other.
+#[test]
+fn the_stride_comes_from_the_view() {
+    let buffer = [0u8; 128];
+    let view = BufferView {
+        byte_offset: 0,
+        byte_length: 44,
+        byte_stride: Some(32),
+    };
+    let region = view.resolve(&buffer).expect("inside the buffer");
+
+    let accessor = Accessor {
+        byte_stride: view.byte_stride,
+        ..packed(Component::F32, Shape::Vec3, 2)
+    };
+    assert_eq!(accessor.stride(), 32, "the view's number, not a default");
+    assert_eq!(
+        accessor.view(region).expect("44 is exactly enough").len(),
+        2
+    );
+
+    // The same accessor without it reads the same region as tightly
+    // packed, and fits — which is why the two must not disagree.
+    let packed_instead = packed(Component::F32, Shape::Vec3, 2);
+    assert_eq!(packed_instead.stride(), 12);
+    assert!(packed_instead.view(region).is_ok());
+}
+
 /// **Every refusal this layer can make is reachable, and every one it
 /// cannot make says why.**
 ///
@@ -404,12 +541,44 @@ fn accessor_cannot_reach(refusal: &AccessorError) -> Option<&'static str> {
         | AccessorError::OffsetNotAligned { .. }
         | AccessorError::OutOfRange { .. }
         | AccessorError::NotAnIndexType { .. }
+        | AccessorError::ViewOutOfRange { .. }
+        | AccessorError::StrideExceedsView { .. }
         | AccessorError::NormalizedIndices => None,
         AccessorError::TooLarge { .. } => Some(
             "the arithmetic that would overflow is 64-bit, and on a 64-bit target the region \
              check refuses first; the test above accepts either answer for that reason",
         ),
     }
+}
+
+/// The two a view refuses, which are a layer in front of the rest.
+///
+/// Their own function because they are about a different claim — whether
+/// a region is inside its buffer at all — and because the list below hit
+/// the line limit, which is the linter noticing the same thing.
+fn view_provocations() -> [(&'static str, AccessorError); 2] {
+    [
+        (
+            "ViewOutOfRange",
+            BufferView {
+                byte_offset: 24,
+                byte_length: 16,
+                byte_stride: None,
+            }
+            .resolve(&[0u8; 32])
+            .expect_err("past the buffer"),
+        ),
+        (
+            "StrideExceedsView",
+            BufferView {
+                byte_offset: 0,
+                byte_length: 16,
+                byte_stride: Some(32),
+            }
+            .resolve(&[0u8; 64])
+            .expect_err("wider than the region"),
+        ),
+    ]
 }
 
 /// One claim per refusal, each wrong in exactly one way.
@@ -505,7 +674,7 @@ fn provocations() -> [(&'static str, AccessorError); 10] {
 /// The census and the claims agree, and every refusal says something.
 #[test]
 fn the_census_and_the_claims_agree() {
-    for (name, refused) in &provocations() {
+    for (name, refused) in provocations().iter().chain(&view_provocations()) {
         assert!(
             accessor_cannot_reach(refused).is_none(),
             "`{name}` is provoked here and the census calls it unreachable"

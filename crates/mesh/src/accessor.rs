@@ -285,6 +285,32 @@ pub enum AccessorError {
         found: u32,
     },
 
+    /// A buffer view that runs past the buffer carrying it.
+    ///
+    /// The first of the three claims catalogue entry 23 names, and the
+    /// one an accessor cannot make on its own: an accessor is checked
+    /// against the region it is handed, and this is what decides that
+    /// the region is really there.
+    ViewOutOfRange {
+        /// Bytes the view's own offset and length require.
+        needs: u64,
+        /// Bytes the buffer has.
+        available: usize,
+    },
+
+    /// A stride wider than the view that declares it.
+    ///
+    /// The format states this on the view rather than on an accessor,
+    /// and it is the one stride rule that is about the view: a stride
+    /// larger than the whole region could not separate two of anything
+    /// inside it.
+    StrideExceedsView {
+        /// The stride the view declared.
+        stride: usize,
+        /// The view's own length.
+        length: usize,
+    },
+
     /// An index accessor marked normalised.
     ///
     /// Separate from the meaningless-normalisation refusal above,
@@ -311,6 +337,8 @@ impl AccessorError {
             Self::TooLarge { .. } => "TooLarge",
             Self::NotAnIndexType { .. } => "NotAnIndexType",
             Self::NormalizedIndices => "NormalizedIndices",
+            Self::ViewOutOfRange { .. } => "ViewOutOfRange",
+            Self::StrideExceedsView { .. } => "StrideExceedsView",
         }
     }
 }
@@ -356,6 +384,14 @@ impl fmt::Display for AccessorError {
             Self::NormalizedIndices => write!(
                 out,
                 "indices marked normalised would be fractions, and nothing is at element 0.5"
+            ),
+            Self::ViewOutOfRange { needs, available } => write!(
+                out,
+                "this view needs {needs} bytes of buffer and {available} are present"
+            ),
+            Self::StrideExceedsView { stride, length } => write!(
+                out,
+                "a stride of {stride} cannot separate anything inside {length} bytes"
             ),
         }
     }
@@ -517,6 +553,91 @@ impl Accessor {
             accessor: self,
             bytes,
         })
+    }
+}
+
+/// A span of a buffer, and the stride the accessors over it share.
+///
+/// **The layer between a buffer and an accessor, and the reason it is
+/// its own type.** An accessor is checked against the region it is
+/// handed; nothing in that check can tell whether the region was really
+/// inside the buffer it came from. Catalogue entry 23 names three claims
+/// — the count, the stride, and the region — and this is the third.
+///
+/// # Where the stride lives, and where it is checked
+///
+/// The format puts `byteStride` on the view, because two attributes
+/// interleaved in one region share it. So does this type. **The rule
+/// that is about the view is checked here** — a stride wider than the
+/// region could not separate two of anything inside it — and the rules
+/// that are about a stride's own value, that it is a multiple of four
+/// and between four and two hundred and fifty-two, stay on
+/// [`Accessor`], where every stride passes whether it came from a view
+/// or from a caller.
+///
+/// A caller assembling from a document copies this view's stride into
+/// the accessors over it. That is one number in two places, which is a
+/// shape worth watching: if it ever arrives wrong, the fix is to take
+/// the field off the accessor rather than to check the two against each
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferView {
+    /// Where the region starts in the buffer.
+    pub byte_offset: usize,
+    /// How long it is.
+    pub byte_length: usize,
+    /// The stride accessors over this region use, when it is shared.
+    pub byte_stride: Option<usize>,
+}
+
+impl BufferView {
+    /// Borrow this view's region of `buffer`.
+    ///
+    /// **A zero-length view is not refused here**, and that is
+    /// deliberate rather than an omission: it resolves to an empty
+    /// region, and every accessor over an empty region is refused by
+    /// [`AccessorError::OutOfRange`] with the numbers, because an
+    /// accessor holds at least one element. A refusal here would be a
+    /// second answer to a question already answered better.
+    ///
+    /// # Errors
+    ///
+    /// [`AccessorError::ViewOutOfRange`] when the region is not inside
+    /// the buffer, and [`AccessorError::StrideExceedsView`] when the
+    /// declared stride is wider than the region.
+    pub fn resolve<'a>(&self, buffer: &'a [u8]) -> Result<&'a [u8], AccessorError> {
+        if let Some(stride) = self.byte_stride
+            && stride > self.byte_length
+        {
+            return Err(AccessorError::StrideExceedsView {
+                stride,
+                length: self.byte_length,
+            });
+        }
+
+        // Widened before the sum, so a hostile offset cannot wrap on a
+        // 32-bit target and land back inside the buffer.
+        let needs = (self.byte_offset as u64)
+            .checked_add(self.byte_length as u64)
+            .ok_or(AccessorError::TooLarge {
+                field: "view offset plus length",
+                value: self.byte_offset as u64,
+            })?;
+        if needs > buffer.len() as u64 {
+            return Err(AccessorError::ViewOutOfRange {
+                needs,
+                available: buffer.len(),
+            });
+        }
+
+        // In range: the sum was just compared against the length.
+        let end = self.byte_offset.saturating_add(self.byte_length);
+        buffer
+            .get(self.byte_offset..end)
+            .ok_or(AccessorError::ViewOutOfRange {
+                needs,
+                available: buffer.len(),
+            })
     }
 }
 
