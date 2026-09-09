@@ -64,6 +64,7 @@ pub mod glb;
 pub mod gltf;
 pub mod mtl;
 pub mod obj;
+pub mod pbr;
 pub mod place;
 pub mod ply;
 pub mod primitive;
@@ -144,6 +145,7 @@ pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
 pub use data_uri::{DataUri, DataUriError};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
+pub use pbr::{Alpha, Material, NormalTexture, OcclusionTexture, TextureRef};
 pub use primitive::{Mode, Primitive};
 
 /// Triangles read out of a file, in the order the file stored them.

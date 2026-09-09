@@ -39,6 +39,15 @@ use libfuzzer_sys::fuzz_target;
 use renew_mesh::gltf;
 
 fuzz_target!(|data: &[u8]| {
+    // **The material table is read from the same bytes, and separately.**
+    // `read` builds geometry and never looks at a material, so a document
+    // that reaches this target exercises that table only if something
+    // asks for it. Asking here costs one parse and covers a layer the
+    // geometry path cannot reach at all -- including for the inputs that
+    // are refused below, which is where a table this reader must not
+    // trust is likeliest to be.
+    materials_answer(data);
+
     let Ok(mesh) = gltf::read(data) else {
         // A refusal is an answer. Which refusal is the suite's business
         // beside the crate; that the call returned at all is this
@@ -105,3 +114,65 @@ fuzz_target!(|data: &[u8]| {
     let again = gltf::read(data).expect("what read once reads again");
     assert_eq!(again, mesh, "the same bytes read to the same geometry");
 });
+
+/// Read the material table, and hold it to what the format states.
+///
+/// Separate from the geometry above because the two share only their
+/// bytes: a document may carry materials and no geometry, or the reverse,
+/// and a target that only asked for one would leave the other's
+/// arithmetic unattacked.
+fn materials_answer(data: &[u8]) {
+    // The table is reached through the document rather than the
+    // container, so bytes that are not a document have nothing to say
+    // here and the container's own shape is the geometry path's business.
+    let Ok(json) = gltf::parse(data) else {
+        return;
+    };
+    let root = json.root();
+
+    let Ok(materials) = gltf::materials(root) else {
+        return;
+    };
+
+    for material in &materials {
+        // **Every factor the format bounds, still inside its bound.** A
+        // reader that let one through would be handing a renderer a
+        // multiplier the document was refused for stating.
+        for component in material
+            .base_color
+            .iter()
+            .chain(&material.emissive)
+            .chain(core::slice::from_ref(&material.metallic))
+            .chain(core::slice::from_ref(&material.roughness))
+        {
+            assert!(
+                (0.0..=1.0).contains(component),
+                "a factor outside the range the format states reached a caller: {component}"
+            );
+        }
+
+        // A cutoff is bounded below and finite; the format states no
+        // upper bound, so none is asserted.
+        if let renew_mesh::pbr::Alpha::Mask { cutoff } = material.alpha {
+            assert!(
+                cutoff >= 0.0 && cutoff.is_finite(),
+                "a cutoff below the stated minimum reached a caller: {cutoff}"
+            );
+        }
+
+        // The unbounded ones are still numbers.
+        if let Some(normal) = material.normal_map {
+            assert!(normal.scale.is_finite(), "a normal scale that is not a number");
+        }
+        if let Some(occlusion) = material.occlusion_map {
+            assert!(
+                (0.0..=1.0).contains(&occlusion.strength),
+                "an occlusion strength outside its stated range"
+            );
+        }
+    }
+
+    // Reading twice answers the same, as everywhere else here.
+    let again = gltf::materials(root).expect("what read once reads again");
+    assert_eq!(again, materials, "the same bytes read to the same materials");
+}

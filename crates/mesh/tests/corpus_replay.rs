@@ -1207,7 +1207,7 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 26;
+const GLTF_LOW_WATER: usize = 32;
 
 /// How many distinct outcomes the glTF seeds must still reach.
 ///
@@ -1363,6 +1363,29 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
         readable.iter().any(|bytes| !bytes.starts_with(b"glTF")),
         "every seed that reads is a container, so the shape that carries its own geometry is \
          exercised by nothing"
+    );
+
+    // **Seeds that carry a material.** The geometry path never reads one,
+    // so a corpus without them leaves that table's factors, ranges and
+    // modes attacked by nothing at all -- and no floor above would
+    // notice, because a material changes no geometry.
+    let with_materials = distinct
+        .iter()
+        .filter(|bytes| {
+            gltf::parse(bytes)
+                .is_ok_and(|json| gltf::materials(json.root()).is_ok_and(|read| !read.is_empty()))
+        })
+        .count();
+    assert!(
+        with_materials >= 3,
+        "the corpus holds {with_materials} seeds carrying a material, and the table is reached \
+         only by asking for it"
+    );
+    assert!(
+        distinct.iter().any(|bytes| {
+            gltf::parse(bytes).is_ok_and(|json| gltf::materials(json.root()).is_err())
+        }),
+        "no seed provokes the material layer's own refusals"
     );
 }
 

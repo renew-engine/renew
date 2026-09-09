@@ -38,6 +38,7 @@ use crate::accessor::{Accessor, AccessorError, BufferView, Component, Indices, S
 use crate::data_uri::{self, DataUriError};
 use crate::error::MeshError;
 use crate::glb::GlbError;
+use crate::pbr::{Alpha, Material, NormalTexture, OcclusionTexture, TextureRef};
 use crate::primitive::{self, Mode, Primitive};
 use crate::{Mesh, glb, place};
 
@@ -185,6 +186,24 @@ pub enum GltfError {
         available: usize,
     },
 
+    /// A material factor outside the range the format states for it.
+    ///
+    /// **The member is named and the value is not carried**, which is a
+    /// trade rather than an oversight: a factor is a float, this
+    /// vocabulary is compared for equality, and a float would cost every
+    /// refusal in it that property — including the geometry ones,
+    /// which have no materials in them at all. The message states the
+    /// range, and the member names where to look.
+    ///
+    /// Refused rather than clamped, unlike the material library's
+    /// specular exponent, and the two differ because the formats do: that
+    /// range is a convention files exceed, this one is stated by the
+    /// schema.
+    FactorOutOfRange {
+        /// Which member, spelled as the document spells it.
+        field: &'static str,
+    },
+
     /// A node that is its own ancestor, or that two parents claim.
     ///
     /// **The one refusal here whose absence is a hang rather than a
@@ -239,6 +258,7 @@ impl GltfError {
             Self::NoBinaryChunk => "NoBinaryChunk",
             Self::WrongMediaType { .. } => "WrongMediaType",
             Self::BufferTooShort { .. } => "BufferTooShort",
+            Self::FactorOutOfRange { .. } => "FactorOutOfRange",
             Self::NodeCycle { .. } => "NodeCycle",
             Self::Unsupported { .. } => "Unsupported",
         }
@@ -285,6 +305,9 @@ impl core::fmt::Display for GltfError {
                 f,
                 "buffer {buffer} declares {declared} bytes and its resource holds {available}"
             ),
+            Self::FactorOutOfRange { field } => {
+                write!(f, "`{field}` is outside the range the format states for it")
+            }
             Self::NodeCycle { node } => write!(
                 f,
                 "node {node} is reached twice, and this hierarchy is a tree"
@@ -494,6 +517,193 @@ pub fn buffers<'a>(
         });
     }
     Ok(out)
+}
+
+/// A number that must sit inside the range the format states.
+fn factor(object: Value<'_>, key: &'static str, default: f32) -> Result<f32, GltfError> {
+    let Some(value) = object.get(key) else {
+        return Ok(default);
+    };
+    let found = value.as_f32()?;
+    if !(0.0..=1.0).contains(&found) {
+        return Err(GltfError::FactorOutOfRange { field: key });
+    }
+    Ok(found)
+}
+
+/// A fixed-length array of factors, each inside the stated range.
+fn factors<const N: usize>(
+    object: Value<'_>,
+    key: &'static str,
+    default: [f32; N],
+) -> Result<[f32; N], GltfError> {
+    let read = numbers::<N>(object, key, default)?;
+    for component in read {
+        if !(0.0..=1.0).contains(&component) {
+            return Err(GltfError::FactorOutOfRange { field: key });
+        }
+    }
+    Ok(read)
+}
+
+/// One texture reference: which texture, and which coordinate set.
+fn texture_ref(object: Value<'_>, key: &str) -> Result<Option<TextureRef>, GltfError> {
+    let Some(info) = object.get(key) else {
+        return Ok(None);
+    };
+    // **`index` is required on every one of these.** The normal and
+    // occlusion kinds inherit it rather than restating it, which is a
+    // schema arrangement and not a licence to leave it out.
+    Ok(Some(TextureRef {
+        texture: required(info, "index")?.as_u32()? as usize,
+        uv_set: number_or(info, "texCoord", 0)? as usize,
+    }))
+}
+
+/// Read the document's materials, in the vocabulary glTF states them.
+///
+/// A material object has no required members, so an empty one is legal
+/// and means every default — which is why this reads defaults rather
+/// than refusing absence.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the member that was the wrong type, named a
+/// texture without saying which, spelled an alpha mode this format does
+/// not have, or carried a factor outside the range stated for it.
+pub fn materials(root: Value<'_>) -> Result<Vec<Material>, GltfError> {
+    let Some(table) = root.get("materials") else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for entry in table.elements().map_err(GltfError::Document)? {
+        let pbr = entry.get("pbrMetallicRoughness");
+        let shading = pbr.unwrap_or(entry);
+
+        // **The alpha mode carries its cutoff or it does not.** The
+        // document states the number whatever the mode is; putting it on
+        // the one variant that uses it is what stops a caller reading a
+        // threshold that means nothing.
+        let alpha = match entry.get("alphaMode") {
+            None => Alpha::Opaque,
+            Some(mode) => {
+                let spelled = mode.as_str()?.decode();
+                match spelled.as_str() {
+                    "OPAQUE" => Alpha::Opaque,
+                    "BLEND" => Alpha::Blend,
+                    "MASK" => Alpha::Mask {
+                        // Bounded below by zero and above by nothing,
+                        // which is what the schema states.
+                        cutoff: match entry.get("alphaCutoff") {
+                            None => 0.5,
+                            Some(value) => {
+                                let found = value.as_f32()?;
+                                if found < 0.0 || !found.is_finite() {
+                                    return Err(GltfError::FactorOutOfRange {
+                                        field: "alphaCutoff",
+                                    });
+                                }
+                                found
+                            }
+                        },
+                    },
+                    _ => {
+                        return Err(GltfError::Unsupported { found: "alphaMode" });
+                    }
+                }
+            }
+        };
+
+        out.push(Material {
+            name: match entry.get("name") {
+                None => None,
+                Some(value) => Some(value.as_str()?.decode()),
+            },
+            base_color: if pbr.is_some() {
+                factors(shading, "baseColorFactor", [1.0; 4])?
+            } else {
+                [1.0; 4]
+            },
+            metallic: if pbr.is_some() {
+                factor(shading, "metallicFactor", 1.0)?
+            } else {
+                1.0
+            },
+            roughness: if pbr.is_some() {
+                factor(shading, "roughnessFactor", 1.0)?
+            } else {
+                1.0
+            },
+            emissive: factors(entry, "emissiveFactor", [0.0; 3])?,
+            alpha,
+            double_sided: match entry.get("doubleSided") {
+                None => false,
+                Some(value) => value.as_bool()?,
+            },
+            base_color_map: if pbr.is_some() {
+                texture_ref(shading, "baseColorTexture")?
+            } else {
+                None
+            },
+            metallic_roughness_map: if pbr.is_some() {
+                texture_ref(shading, "metallicRoughnessTexture")?
+            } else {
+                None
+            },
+            normal_map: match texture_ref(entry, "normalTexture")? {
+                None => None,
+                Some(map) => Some(NormalTexture {
+                    map,
+                    // Unbounded: the schema states no range for it.
+                    scale: match entry
+                        .get("normalTexture")
+                        .and_then(|info| info.get("scale"))
+                    {
+                        None => 1.0,
+                        Some(value) => value.as_f32()?,
+                    },
+                }),
+            },
+            occlusion_map: match texture_ref(entry, "occlusionTexture")? {
+                None => None,
+                Some(map) => Some(OcclusionTexture {
+                    map,
+                    strength: match entry.get("occlusionTexture") {
+                        None => 1.0,
+                        Some(info) => factor(info, "strength", 1.0)?,
+                    },
+                }),
+            },
+            emissive_map: texture_ref(entry, "emissiveTexture")?,
+        });
+    }
+    Ok(out)
+}
+
+/// Which material a primitive names, if it names one.
+///
+/// **Reported rather than stored.** A [`Mesh`] carries geometry and has
+/// nowhere to put a material index; giving it one would change the
+/// canonical form, its version question and everything that reads it, for
+/// a value nothing in this engine can yet use. A caller that wants the
+/// pairing asks for it here.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the table an index missed, or the member that
+/// was the wrong type.
+pub fn primitive_material(
+    root: Value<'_>,
+    mesh: usize,
+    index: usize,
+) -> Result<Option<usize>, GltfError> {
+    let entry_row = entry(root.get("meshes"), "meshes", mesh)?;
+    let found = entry(entry_row.get("primitives"), "primitives", index)?;
+    match found.get("material") {
+        None => Ok(None),
+        Some(value) => Ok(Some(value.as_u32()? as usize)),
+    }
 }
 
 /// Read the document's accessors.

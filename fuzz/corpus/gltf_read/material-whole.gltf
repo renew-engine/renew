@@ -1,0 +1,13 @@
+{"asset":{"version":"2.0"},"materials":[{"name":"brushed",
+                "pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1],
+                "metallicFactor":0.75,"roughnessFactor":0.25,
+                "baseColorTexture":{"index":0,"texCoord":1},
+                "metallicRoughnessTexture":{"index":1}},
+                "normalTexture":{"index":2,"scale":2.5},
+                "occlusionTexture":{"index":3,"strength":0.5},
+                "emissiveTexture":{"index":4},"emissiveFactor":[0.1,0.2,0.3],
+                "alphaMode":"MASK","alphaCutoff":0.25,"doubleSided":true}],"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36}],
+"bufferViews":[{"buffer":0,"byteLength":36}]}
