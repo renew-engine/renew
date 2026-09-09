@@ -206,27 +206,28 @@ fn a_member_of_the_wrong_type_is_the_documents_refusal() {
     );
 }
 
-/// **Every refusal this layer can make is reachable, and every one it
-/// cannot make says why.**
+/// **Every refusal this layer can make is reachable, and it took the
+/// whole reader to make that true.**
+///
+/// This census was written when only the tables existed, and four of its
+/// arms said why a refusal could not be reached from them — the
+/// container's, the geometry's, the cycle's, and an index past a table.
+/// **Every one of those reasons went stale the moment `read` existed**,
+/// and the wildcard-free match is what said so: adding `NodeCycle`
+/// stopped this file compiling until the list was looked at again.
+///
+/// No wildcard arm, so the next refusal added does the same.
 fn gltf_cannot_reach(refusal: &GltfError) -> Option<&'static str> {
     match refusal {
-        GltfError::Document(_)
+        GltfError::Container(_)
+        | GltfError::Document(_)
         | GltfError::Accessor(_)
+        | GltfError::Geometry(_)
         | GltfError::MissingField { .. }
+        | GltfError::NoSuchEntry { .. }
         | GltfError::ExternalResource
+        | GltfError::NodeCycle { .. }
         | GltfError::Unsupported { .. } => None,
-        GltfError::Container(_) => Some(
-            "the tables are read from a document that has already been taken out of its \
-             container; the container's own refusals belong to whatever opened it",
-        ),
-        GltfError::Geometry(_) => Some(
-            "no geometry is built here: these functions produce the numbers a later step \
-             assembles from",
-        ),
-        GltfError::NoSuchEntry { .. } => Some(
-            "these functions walk their own tables from zero, so an index past the end is \
-             unreachable until something follows a number the document wrote",
-        ),
     }
 }
 
@@ -246,7 +247,28 @@ fn the_census_and_the_documents_agree() {
         }] }"#,
     );
 
-    let provocations: [(&str, GltfError); 5] = [
+    let mut wrong_magic = container(ONE_NODE, &three_positions());
+    wrong_magic[0] = b'X';
+    let cycle = container(
+        &ONE_NODE.replace(
+            r#""nodes": [{ "mesh": 0 }]"#,
+            r#""nodes": [{ "children": [0], "mesh": 0 }]"#,
+        ),
+        &three_positions(),
+    );
+    let empty_scene = container(
+        r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#,
+        &[],
+    );
+    let past_a_table = document(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
+        }"#,
+    );
+
+    let provocations: [(&str, GltfError); 9] = [
         (
             "Document",
             gltf::buffer_views(bad_type.root()).expect_err("a length is a number"),
@@ -267,6 +289,30 @@ fn the_census_and_the_documents_agree() {
             "Unsupported",
             gltf::accessors(sparse.root()).expect_err("sparse"),
         ),
+        (
+            "Container",
+            gltf::read(&wrong_magic).expect_err("not a container"),
+        ),
+        (
+            "NodeCycle",
+            gltf::read(&cycle).expect_err("0 is its own child"),
+        ),
+        (
+            "Geometry",
+            gltf::read(&empty_scene).expect_err("a scene placing nothing"),
+        ),
+        (
+            "NoSuchEntry",
+            gltf::primitive(
+                past_a_table.root(),
+                &gltf::buffer_views(past_a_table.root()).expect("one view"),
+                &gltf::accessors(past_a_table.root()).expect("one accessor"),
+                &three_positions(),
+                0,
+                0,
+            )
+            .expect_err("accessor 7 of one"),
+        ),
     ];
 
     for (name, refused) in &provocations {
@@ -278,21 +324,12 @@ fn the_census_and_the_documents_agree() {
         assert!(!refused.to_string().is_empty(), "{refused:?} says nothing");
     }
 
-    // The three the census calls unreachable still say something, and
-    // still answer to their names, because a later step provokes them.
-    for refusal in [
-        GltfError::Container(renew_mesh::glb::GlbError::NoChunks),
-        GltfError::Geometry(renew_mesh::MeshError::NoGeometry),
-        GltfError::NoSuchEntry {
-            table: "accessors",
-            index: 7,
-            count: 2,
-        },
-    ] {
-        assert!(gltf_cannot_reach(&refusal).is_some());
-        assert!(!refusal.name().is_empty());
-        assert!(!refusal.to_string().is_empty());
+    let mut named: Vec<&str> = Vec::new();
+    for (name, _) in &provocations {
+        assert!(!named.contains(name), "`{name}` is provoked twice");
+        named.push(name);
     }
+    assert_eq!(named.len(), 9, "one provocation per refusal");
 }
 
 // ---------------------------------------------------------------------
@@ -605,4 +642,241 @@ fn a_view_past_the_chunk_is_refused() {
     .expect_err("24 + 36 is past 36");
     assert_eq!(refused.name(), "Accessor");
     assert!(refused.to_string().contains("60"), "{refused}");
+}
+
+// ---------------------------------------------------------------------
+// Whole containers, read end to end.
+//
+// **The test this section exists for is the cycle**, and it is the one
+// that cannot be a corpus seed. A reader that followed parent links
+// without remembering where it had been would walk forever, and a hang
+// is the one failure a fuzz harness has no way to report — so the guard
+// is checked by construction and pinned here.
+// ---------------------------------------------------------------------
+
+/// Wrap a document and a binary payload in a container.
+fn container(json: &str, binary: &[u8]) -> Vec<u8> {
+    let mut document = json.as_bytes().to_vec();
+    while !document.len().is_multiple_of(4) {
+        document.push(b' ');
+    }
+    let mut payload = binary.to_vec();
+    while !payload.len().is_multiple_of(4) {
+        payload.push(0);
+    }
+
+    let mut out = b"glTF".to_vec();
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(document.len())
+            .expect("a fixture is small")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    out.extend_from_slice(&document);
+    if !payload.is_empty() {
+        out.extend_from_slice(&u32::try_from(payload.len()).expect("small").to_le_bytes());
+        out.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        out.extend_from_slice(&payload);
+    }
+    let total = u32::try_from(out.len()).expect("a fixture is small");
+    out[8..12].copy_from_slice(&total.to_le_bytes());
+    out
+}
+
+/// One triangle, one node, one scene.
+const ONE_NODE: &str = r#"{
+  "asset": { "version": "2.0" },
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+  "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+  "bufferViews": [{ "byteLength": 36 }]
+}"#;
+
+/// **A container reads end to end.**
+#[test]
+fn a_container_reads_into_geometry() {
+    let bytes = container(ONE_NODE, &three_positions());
+    let mesh = gltf::read(&bytes).expect("one triangle under one node");
+    assert_eq!(mesh.triangles(), 1);
+    same(&mesh.positions[1], &[1.0, 0.0, 0.0], "the second corner");
+}
+
+/// **A node's transform reaches its geometry**, by the composition order
+/// the format states.
+#[test]
+fn a_nodes_transform_moves_its_geometry() {
+    let json = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "translation": [10.0, 0.0, 0.0], "scale": [2.0, 1.0, 1.0] }"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("a placed triangle");
+    // Scale first, then translate, which is the order the format names.
+    same(&mesh.positions[0], &[10.0, 0.0, 0.0], "the origin corner");
+    same(&mesh.positions[1], &[12.0, 0.0, 0.0], "scaled then moved");
+}
+
+/// A matrix says the same thing as the three parts that compose it.
+#[test]
+fn a_matrix_and_its_parts_agree() {
+    let parts = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "translation": [1.0, 2.0, 3.0], "scale": [2.0, 2.0, 2.0] }"#,
+    );
+    // The same transform, column-major, as the file stores it.
+    let matrix = ONE_NODE.replace(
+        r#"{ "mesh": 0 }"#,
+        r#"{ "mesh": 0, "matrix": [2,0,0,0, 0,2,0,0, 0,0,2,0, 1,2,3,1] }"#,
+    );
+    let from_parts = gltf::read(&container(&parts, &three_positions())).expect("parts");
+    let from_matrix = gltf::read(&container(&matrix, &three_positions())).expect("matrix");
+    same(
+        &from_parts.positions.concat(),
+        &from_matrix.positions.concat(),
+        "a matrix and the parts it composes",
+    );
+}
+
+/// A parent's transform reaches a child's geometry.
+#[test]
+fn a_parents_transform_reaches_its_children() {
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [
+              { "children": [1], "translation": [10.0, 0.0, 0.0] },
+              { "mesh": 0, "translation": [0.0, 5.0, 0.0] }
+            ]"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("a child under a parent");
+    same(
+        &mesh.positions[0],
+        &[10.0, 5.0, 0.0],
+        "the parent's translation composed with the child's",
+    );
+}
+
+/// **A node that is its own ancestor is refused, and the walk does not
+/// hang.**
+///
+/// The refusal this reader could not have got from a fuzzer: a corpus
+/// seed carrying a cycle would wedge the harness rather than fail it, so
+/// the guard is checked by construction and pinned here.
+#[test]
+fn a_cycle_in_the_hierarchy_is_refused() {
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [{ "children": [1] }, { "children": [0], "mesh": 0 }]"#,
+    );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("0 is its own grandparent"),
+        GltfError::NodeCycle { node: 0 }
+    );
+
+    // A node that is its own child, which is the shortest cycle there
+    // is and the one an off-by-one guard would miss.
+    let json = ONE_NODE.replace(
+        r#""nodes": [{ "mesh": 0 }]"#,
+        r#""nodes": [{ "children": [0], "mesh": 0 }]"#,
+    );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("0 is its own child"),
+        GltfError::NodeCycle { node: 0 }
+    );
+}
+
+/// A node claimed by two parents is refused by the same guard.
+#[test]
+fn a_node_with_two_parents_is_refused() {
+    let json = ONE_NODE
+        .replace(r#""nodes": [0]"#, r#""nodes": [0, 1]"#)
+        .replace(
+            r#""nodes": [{ "mesh": 0 }]"#,
+            r#""nodes": [
+              { "children": [2] },
+              { "children": [2] },
+              { "mesh": 0 }
+            ]"#,
+        );
+    assert_eq!(
+        gltf::read(&container(&json, &three_positions())).expect_err("two parents claim node 2"),
+        GltfError::NodeCycle { node: 2 }
+    );
+}
+
+/// **A document with no scenes is a library, not a model.**
+#[test]
+fn a_document_with_no_scenes_is_refused() {
+    let json = r#"{
+      "asset": { "version": "2.0" },
+      "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+      "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+      "bufferViews": [{ "byteLength": 36 }]
+    }"#;
+    assert_eq!(
+        gltf::read(&container(json, &three_positions())).expect_err("no scene places anything"),
+        GltfError::MissingField { path: "scenes" }
+    );
+}
+
+/// A scene naming no geometry has none, and says so.
+#[test]
+fn a_scene_that_places_nothing_has_no_geometry() {
+    let json = r#"{ "asset": { "version": "2.0" }, "scenes": [{ "nodes": [] }] }"#;
+    let refused = gltf::read(&container(json, &[])).expect_err("an empty scene");
+    assert_eq!(refused.name(), "Geometry");
+    assert!(refused.to_string().contains("no geometry"), "{refused}");
+}
+
+/// **A container fault arrives as a container fault**, not as a
+/// document one.
+#[test]
+fn a_malformed_container_is_a_container_refusal() {
+    let mut bytes = container(ONE_NODE, &three_positions());
+    bytes[0] = b'X';
+    let refused = gltf::read(&bytes).expect_err("not a container");
+    assert_eq!(refused.name(), "Container");
+    assert!(refused.to_string().contains("glTF"), "{refused}");
+}
+
+/// Several primitives under one node are joined into one mesh.
+#[test]
+fn several_primitives_are_joined() {
+    let json = ONE_NODE.replace(
+        r#""primitives": [{ "attributes": { "POSITION": 0 } }]"#,
+        r#""primitives": [
+          { "attributes": { "POSITION": 0 } },
+          { "attributes": { "POSITION": 0 } }
+        ]"#,
+    );
+    let mesh = gltf::read(&container(&json, &three_positions())).expect("two primitives");
+    assert_eq!(mesh.triangles(), 2, "joined rather than replaced");
+}
+
+/// **A transform that flattens geometry carrying normals is refused, and
+/// the refusal comes from the placement layer.**
+#[test]
+fn a_flattening_transform_over_normals_is_a_geometry_refusal() {
+    let mut binary = three_positions();
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    let json = r#"{
+      "asset": { "version": "2.0" },
+      "scenes": [{ "nodes": [0] }],
+      "nodes": [{ "mesh": 0, "scale": [1.0, 0.0, 1.0] }],
+      "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0, "NORMAL": 1 } }] }],
+      "accessors": [
+        { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+        { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" }
+      ],
+      "bufferViews": [
+        { "byteLength": 36, "byteOffset": 0 },
+        { "byteLength": 36, "byteOffset": 36 }
+      ]
+    }"#;
+    let refused = gltf::read(&container(json, &binary)).expect_err("no inverse to transpose");
+    assert_eq!(refused.name(), "Geometry");
+    assert!(refused.to_string().contains("flattens space"), "{refused}");
 }

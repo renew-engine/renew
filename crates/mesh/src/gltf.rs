@@ -29,12 +29,13 @@
 //! is how a self-contained binary glTF stores its geometry.
 
 use renew_json::{Json, JsonError, Value};
+use renew_math::{Mat4, Quat, Vec3, Vec4};
 
-use crate::Mesh;
 use crate::accessor::{Accessor, AccessorError, BufferView, Component, Indices, Shape, View};
 use crate::error::MeshError;
 use crate::glb::GlbError;
 use crate::primitive::{self, Mode, Primitive};
+use crate::{Mesh, glb, place};
 
 /// Every way a document can fail to describe geometry this can read.
 ///
@@ -87,6 +88,24 @@ pub enum GltfError {
     /// saying so.
     ExternalResource,
 
+    /// A node that is its own ancestor, or that two parents claim.
+    ///
+    /// **The one refusal here whose absence is a hang rather than a
+    /// wrong answer.** A reader that followed parent links without
+    /// remembering where it had been would walk a cycle forever, and a
+    /// fuzzer cannot catch that: a hang is the one failure a harness has
+    /// no way to report. So this is checked by construction — every node
+    /// is entered at most once — and pinned by a test rather than by a
+    /// corpus seed.
+    ///
+    /// It catches two faults at once, and both are invalid: a cycle, and
+    /// a node reached from two parents. The format's hierarchy is a
+    /// strict forest, so a second visit is wrong either way.
+    NodeCycle {
+        /// The node entered twice.
+        node: usize,
+    },
+
     /// A construct the format defines and this reader does not
     /// implement.
     ///
@@ -118,6 +137,7 @@ impl GltfError {
             Self::MissingField { .. } => "MissingField",
             Self::NoSuchEntry { .. } => "NoSuchEntry",
             Self::ExternalResource => "ExternalResource",
+            Self::NodeCycle { .. } => "NodeCycle",
             Self::Unsupported { .. } => "Unsupported",
         }
     }
@@ -139,6 +159,10 @@ impl core::fmt::Display for GltfError {
             Self::ExternalResource => write!(
                 f,
                 "this document keeps its geometry somewhere else, and this reader takes bytes"
+            ),
+            Self::NodeCycle { node } => write!(
+                f,
+                "node {node} is reached twice, and this hierarchy is a tree"
             ),
             Self::Unsupported { found } => {
                 write!(f, "`{found}` is in the format and not in this reader")
@@ -421,6 +445,165 @@ pub fn primitive(
         texcoords: optional_stream(attributes, views, accessors, binary, "TEXCOORD_0")?,
         indices,
     })?)
+}
+
+/// A fixed-length array of numbers, or the default the format gives.
+fn numbers<const N: usize>(
+    object: Value<'_>,
+    key: &'static str,
+    default: [f32; N],
+) -> Result<[f32; N], GltfError> {
+    let Some(array) = object.get(key) else {
+        return Ok(default);
+    };
+    let mut out = default;
+    for (index, slot) in out.iter_mut().enumerate() {
+        *slot = entry(Some(array), key, index)?.as_f32()?;
+    }
+    Ok(out)
+}
+
+/// One node's own transform, before its parent's is applied.
+///
+/// **Either a matrix or the three parts, never both halves of each.**
+/// The format allows a node to give a matrix or to give translation,
+/// rotation and scale; when it gives a matrix that matrix is already the
+/// composition, and when it gives the parts they compose as
+/// `translation * rotation * scale` — the order the format states, and
+/// the order that scales a vertex before it is turned.
+fn node_transform(node: Value<'_>) -> Result<Mat4, GltfError> {
+    if node.get("matrix").is_some() {
+        // Column-major, sixteen numbers, in the order the file stores
+        // them.
+        let m = numbers::<16>(node, "matrix", [0.0; 16])?;
+        return Ok(Mat4::from_cols(
+            Vec4::new(m[0], m[1], m[2], m[3]),
+            Vec4::new(m[4], m[5], m[6], m[7]),
+            Vec4::new(m[8], m[9], m[10], m[11]),
+            Vec4::new(m[12], m[13], m[14], m[15]),
+        ));
+    }
+
+    let t = numbers::<3>(node, "translation", [0.0; 3])?;
+    let r = numbers::<4>(node, "rotation", [0.0, 0.0, 0.0, 1.0])?;
+    let s = numbers::<3>(node, "scale", [1.0; 3])?;
+    Ok(Mat4::from_translation(Vec3::new(t[0], t[1], t[2]))
+        * Mat4::from_quat(Quat::new(r[0], r[1], r[2], r[3]))
+        * Mat4::from_scale(Vec3::new(s[0], s[1], s[2])))
+}
+
+/// Every primitive of one mesh, placed and joined.
+fn mesh_at(
+    root: Value<'_>,
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &[u8],
+    index: usize,
+    world: Mat4,
+    out: &mut Mesh,
+) -> Result<(), GltfError> {
+    let count = entry(root.get("meshes"), "meshes", index)?
+        .get("primitives")
+        .map_or(0, Value::len);
+    for which in 0..count {
+        let mut piece = primitive(root, views, accessors, binary, index, which)?;
+        place::place(&mut piece, world)?;
+        if out.positions.is_empty() {
+            *out = piece;
+        } else {
+            place::append(out, &piece)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read a whole binary glTF into one mesh.
+///
+/// # The walk cannot hang, by construction
+///
+/// Every node is entered at most once, which is checked before its
+/// children are pushed. That is what makes a cycle a refusal rather than
+/// a loop — and it matters more than it looks, because a hang is the one
+/// failure a fuzz harness cannot report, so this guard has to be right
+/// without a fuzzer's help.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the layer that refused and carrying its
+/// numbers.
+pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
+    let container = glb::read(bytes).map_err(GltfError::Container)?;
+    let json = parse(container.json)?;
+    let root = json.root();
+    let binary = container.binary.unwrap_or_default();
+
+    let views = buffer_views(root)?;
+    let accessors = accessors(root)?;
+
+    // **A document with no scenes is a library rather than a model**,
+    // which is the format's own reading of it, and a caller asking for
+    // geometry is asking the wrong question of it.
+    let scenes = root
+        .get("scenes")
+        .ok_or(GltfError::MissingField { path: "scenes" })?;
+    // `scene` says which one to show and is optional; when it is absent
+    // a client may choose, and this chooses the first.
+    let scene = entry(
+        Some(scenes),
+        "scenes",
+        number_or(root, "scene", 0)? as usize,
+    )?;
+
+    let nodes = root.get("nodes");
+    let node_count = nodes.map_or(0, Value::len);
+    let mut seen = vec![false; node_count];
+    let mut stack: Vec<(usize, Mat4)> = Vec::new();
+
+    if let Some(roots) = scene.get("nodes") {
+        for index in (0..roots.len()).rev() {
+            stack.push((
+                entry(Some(roots), "nodes", index)?.as_u32()? as usize,
+                Mat4::IDENTITY,
+            ));
+        }
+    }
+
+    let mut out = Mesh::default();
+    while let Some((index, parent)) = stack.pop() {
+        let node = entry(nodes, "nodes", index)?;
+        // Checked before the children are pushed, so a cycle is a
+        // refusal rather than a walk that never ends.
+        if *seen.get(index).unwrap_or(&true) {
+            return Err(GltfError::NodeCycle { node: index });
+        }
+        seen[index] = true;
+
+        let world = parent * node_transform(node)?;
+        if let Some(mesh) = node.get("mesh") {
+            mesh_at(
+                root,
+                &views,
+                &accessors,
+                binary,
+                mesh.as_u32()? as usize,
+                world,
+                &mut out,
+            )?;
+        }
+        if let Some(children) = node.get("children") {
+            for child in (0..children.len()).rev() {
+                stack.push((
+                    entry(Some(children), "children", child)?.as_u32()? as usize,
+                    world,
+                ));
+            }
+        }
+    }
+
+    if out.positions.is_empty() {
+        return Err(GltfError::Geometry(MeshError::NoGeometry));
+    }
+    Ok(out)
 }
 
 /// Parse the document out of a container's JSON chunk.
