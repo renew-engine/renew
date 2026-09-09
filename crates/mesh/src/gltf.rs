@@ -388,15 +388,11 @@ fn optional_stream<'a>(
     binary: &'a [u8],
     name: &str,
 ) -> Result<Option<View<'a>>, GltfError> {
-    match attributes.get(name) {
-        None => Ok(None),
-        Some(value) => Ok(Some(stream(
-            views,
-            accessors,
-            binary,
-            value.as_u32()? as usize,
-        )?)),
-    }
+    let Some(value) = attributes.get(name) else {
+        return Ok(None);
+    };
+    let index = value.as_u32()? as usize;
+    Ok(Some(stream(views, accessors, binary, index)?))
 }
 
 /// Assemble one primitive of one mesh.
@@ -548,11 +544,8 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
         .ok_or(GltfError::MissingField { path: "scenes" })?;
     // `scene` says which one to show and is optional; when it is absent
     // a client may choose, and this chooses the first.
-    let scene = entry(
-        Some(scenes),
-        "scenes",
-        number_or(root, "scene", 0)? as usize,
-    )?;
+    let which = number_or(root, "scene", 0)? as usize;
+    let scene = entry(Some(scenes), "scenes", which)?;
 
     let nodes = root.get("nodes");
     let node_count = nodes.map_or(0, Value::len);
@@ -561,10 +554,8 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
 
     if let Some(roots) = scene.get("nodes") {
         for index in (0..roots.len()).rev() {
-            stack.push((
-                entry(Some(roots), "nodes", index)?.as_u32()? as usize,
-                Mat4::IDENTITY,
-            ));
+            let node = entry(Some(roots), "nodes", index)?.as_u32()? as usize;
+            stack.push((node, Mat4::IDENTITY));
         }
     }
 

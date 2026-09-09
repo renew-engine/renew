@@ -278,6 +278,50 @@ fn a_member_of_the_wrong_type_is_refused_wherever_it_is_read() {
     );
 }
 
+/// **An optional attribute naming a row that is not there is refused,
+/// and so is a scene selector naming one.**
+///
+/// Both are the same fault one level apart, and both were paths nothing
+/// travelled: a document may name any accessor for `NORMAL` and any
+/// scene for `scene`, and neither number is checked by anything until it
+/// is used.
+#[test]
+fn an_optional_attribute_or_a_scene_past_its_table_is_refused() {
+    let json = document(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": 9 }
+          }] }]
+        }"#,
+    );
+    let views = gltf::buffer_views(json.root()).expect("one view");
+    let accessors = gltf::accessors(json.root()).expect("one accessor");
+    assert_eq!(
+        gltf::primitive(json.root(), &views, &accessors, &three_positions(), 0, 0)
+            .expect_err("accessor 9 of one"),
+        GltfError::NoSuchEntry {
+            table: "accessors",
+            index: 9,
+            count: 1,
+        }
+    );
+
+    let selector = container(
+        &ONE_NODE.replace(r#""scenes""#, r#""scene": 4, "scenes""#),
+        &three_positions(),
+    );
+    assert_eq!(
+        gltf::read(&selector).expect_err("scene 4 of one"),
+        GltfError::NoSuchEntry {
+            table: "scenes",
+            index: 4,
+            count: 1,
+        }
+    );
+}
+
 /// **A normalised attribute travels the whole way**, from the flag in
 /// the document to the fraction the accessor layer produces.
 #[test]
