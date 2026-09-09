@@ -965,6 +965,9 @@ fn crowded_schema() -> String {
 /// a failure prints why this format was thought unable to get here.
 fn ply_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::Gltf(_) => Some(
+            "a PLY carries its own schema and names no second file; nothing about it is\n             read through a document",
+        ),
         MeshError::TransformNotInvertible => Some(
             "nothing in this format carries a transform: a PLY names coordinates and this\n             reader returns them where the file put them",
         ),

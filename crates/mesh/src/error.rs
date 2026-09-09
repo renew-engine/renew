@@ -256,6 +256,24 @@ pub enum MeshError {
     /// would produce a bad value out of a file that contained none.
     TransformNotInvertible,
 
+    /// A document-shaped format's refusal, whichever layer made it.
+    ///
+    /// **Boxed, and the box is not an optimisation.** The inner type
+    /// carries a `MeshError` of its own for the geometry it assembles,
+    /// so without a box the two would be infinitely sized. That
+    /// recursion is the shape of the thing rather than an accident: a
+    /// glTF failing to be geometry can fail *as* geometry, several
+    /// layers down, and the outer answer says which layer while the
+    /// inner one says what.
+    ///
+    /// **Why one variant rather than five.** The alternative was
+    /// widening this enum with the container's, the document's and the
+    /// accessor's vocabularies — thirty-odd variants, each of which
+    /// every reader's refusal census would have to explain it cannot
+    /// reach. One variant costs five arms and keeps each layer's
+    /// vocabulary where the layer is.
+    Gltf(Box<crate::gltf::GltfError>),
+
     /// A file that declares no geometry at all.
     ///
     /// **A refusal rather than an empty mesh**, and the distinction is
@@ -295,6 +313,7 @@ impl MeshError {
             Self::Unsupported { .. } => "Unsupported",
             Self::StreamLengthMismatch { .. } => "StreamLengthMismatch",
             Self::TransformNotInvertible => "TransformNotInvertible",
+            Self::Gltf(_) => "Gltf",
             Self::NoGeometry => "NoGeometry",
         }
     }
@@ -369,6 +388,7 @@ impl fmt::Display for MeshError {
                 f,
                 "this transform flattens space, and a normal needs an inverse to be transposed"
             ),
+            Self::Gltf(inner) => write!(f, "{inner}"),
             Self::NoGeometry => write!(
                 f,
                 "the file declares no geometry, which every way of arriving at is a mistake \
@@ -524,13 +544,16 @@ mod tests {
                 found: 511,
             },
             MeshError::TransformNotInvertible,
+            MeshError::Gltf(Box::new(crate::gltf::GltfError::MissingField {
+                path: "scenes",
+            })),
             MeshError::NoGeometry,
             MeshError::NotThisFormat { expected: "ply" },
         ];
 
         // One per variant. Raise it when the enum grows, in the same
         // change that writes the new arm below.
-        assert_eq!(all.len(), 14, "a variant is missing an instance here");
+        assert_eq!(all.len(), 15, "a variant is missing an instance here");
 
         // **Every variant is asked its name here, and that is a fix for
         // a gap that has now appeared three times.** A refusal added to
@@ -564,6 +587,10 @@ mod tests {
                 // send anybody to a hex editor for. The message names
                 // the consequence instead.
                 MeshError::TransformNotInvertible => vec!["normal"],
+                // The message is the inner refusal's, whole: an outer
+                // wrapper that restated it would be a second sentence
+                // for one fault.
+                MeshError::Gltf(_) => vec!["scenes"],
                 MeshError::TooShortForHeader { .. } => vec!["84", "3"],
                 MeshError::CountMismatch { .. } => vec!["134", "90", "1"],
                 MeshError::TooLarge { .. } => vec!["element count", "4000000000"],

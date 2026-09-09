@@ -60,6 +60,7 @@ pub mod blob;
 mod error;
 pub mod format;
 pub mod glb;
+pub mod gltf;
 pub mod mtl;
 pub mod obj;
 pub mod place;

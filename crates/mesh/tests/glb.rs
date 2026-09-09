@@ -361,19 +361,29 @@ fn a_container_is_detected_as_one() {
     assert!(Format::Glb.carries_geometry());
 }
 
-/// Detection says which format, and reading says the geometry is not
-/// read yet — which is honest, and is not the same as refusing the file.
+/// **Detection finds the format and reading reads it, and a refusal
+/// names the layer that made it.**
+///
+/// This test asserted the opposite until there was a reader: that the
+/// geometry inside a container had none, which was honest then and false
+/// now. The minimal container here carries a document with no scenes —
+/// a library of entities rather than a model — so the refusal comes from
+/// the *document*, and says so.
 #[test]
-fn a_detected_container_says_its_geometry_is_unread_rather_than_malformed() {
+fn a_detected_container_is_read_and_refuses_by_layer() {
     let bytes = minimal();
     let answer = Format::Glb
         .read(&bytes)
         .expect("this format carries geometry");
-    let refused = answer.expect_err("no reader for it yet");
-    assert_eq!(refused.name(), "Unsupported");
+    let refused = answer.expect_err("this document places nothing");
+    assert_eq!(
+        refused.name(),
+        "Gltf",
+        "the outer name says a document-shaped format refused"
+    );
     assert!(
-        refused.to_string().contains("binary glTF"),
-        "the message says which reader is missing: `{refused}`"
+        refused.to_string().contains("scenes"),
+        "and the inner refusal says which member: `{refused}`"
     );
 }
 

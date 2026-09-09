@@ -204,7 +204,8 @@ the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_obj_corpus.rs` the 25 OBJ ones and
 `examples/make_mtl_corpus.rs` the 21 MTL ones and
 `examples/make_glb_corpus.rs` the 20 container ones and
-`examples/make_accessor_corpus.rs` the 21 accessor ones; between them
+`examples/make_accessor_corpus.rs` the 21 accessor ones and
+`examples/make_gltf_corpus.rs` the 19 whole-container ones; between them
 every committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites

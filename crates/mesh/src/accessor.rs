@@ -177,6 +177,26 @@ impl Shape {
         }
     }
 
+    /// The shape a name spells.
+    ///
+    /// # Errors
+    ///
+    /// [`AccessorError::UnknownShape`] for a name outside the four this
+    /// reads. **The table and its refusal live together**, beside the
+    /// names rather than with whichever caller read the string, so a
+    /// second copy of the list cannot drift from this one. The matrix
+    /// names the format defines reach here and are refused by name,
+    /// which is a better answer than a missing case.
+    pub fn from_name(name: &str) -> Result<Self, AccessorError> {
+        match name {
+            "SCALAR" => Ok(Self::Scalar),
+            "VEC2" => Ok(Self::Vec2),
+            "VEC3" => Ok(Self::Vec3),
+            "VEC4" => Ok(Self::Vec4),
+            _ => Err(AccessorError::UnknownShape),
+        }
+    }
+
     /// How many components one element holds.
     #[must_use]
     pub const fn components(self) -> usize {
@@ -311,6 +331,14 @@ pub enum AccessorError {
         length: usize,
     },
 
+    /// An element shape outside the four this reads.
+    ///
+    /// The format also defines `MAT2`, `MAT3` and `MAT4`, whose columns
+    /// are padded to four-byte boundaries and which carry inverse bind
+    /// matrices. They are skinning, which nothing here reads, and they
+    /// arrive at this refusal rather than at a missing case.
+    UnknownShape,
+
     /// An index accessor marked normalised.
     ///
     /// Separate from the meaningless-normalisation refusal above,
@@ -337,6 +365,7 @@ impl AccessorError {
             Self::TooLarge { .. } => "TooLarge",
             Self::NotAnIndexType { .. } => "NotAnIndexType",
             Self::NormalizedIndices => "NormalizedIndices",
+            Self::UnknownShape => "UnknownShape",
             Self::ViewOutOfRange { .. } => "ViewOutOfRange",
             Self::StrideExceedsView { .. } => "StrideExceedsView",
         }
@@ -385,6 +414,9 @@ impl fmt::Display for AccessorError {
                 out,
                 "indices marked normalised would be fractions, and nothing is at element 0.5"
             ),
+            Self::UnknownShape => {
+                write!(out, "an element shape outside SCALAR, VEC2, VEC3 and VEC4")
+            }
             Self::ViewOutOfRange { needs, available } => write!(
                 out,
                 "this view needs {needs} bytes of buffer and {available} are present"

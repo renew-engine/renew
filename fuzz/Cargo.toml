@@ -140,3 +140,10 @@ path = "fuzz_targets/accessor_view.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gltf_read"
+path = "fuzz_targets/gltf_read.rs"
+test = false
+doc = false
+bench = false

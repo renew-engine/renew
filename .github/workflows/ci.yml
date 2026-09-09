@@ -428,15 +428,19 @@ jobs:
           cargo test $sel
           RENEW_GRAPH_EDGES="normal,build" bash "$RUNNER_TEMP/absent-from-graph.sh" renew-png -p renew-sample-cube
           cargo build -p renew-sample-cube
-      # The JSON reader. Nothing depends on it yet, so the exclude list
-      # is one name -- and that is exactly when a cell is worth writing
-      # rather than deferring: the first crate to depend on it should
-      # discover the obligation from a red lane here, the way the
-      # fixed-point cell below has caught three dependents in turn,
-      # rather than from nobody.
+      # The JSON reader. This cell was written while nothing in the tree
+      # depended on it, on the argument that the first crate to depend
+      # on it should discover the obligation from a red lane here rather
+      # than from nobody -- and that is what happened: the mesh readers
+      # took an edge to read the document inside a container, this cell
+      # went red for a list that was no longer upward-closed, and the
+      # two exclusions below are the answer. The mesh crate brings the
+      # command-line tool with it, which is why that name is here too.
+      # Same shape as the pack format's cell above and the fixed-point
+      # cell below, which has now caught three dependents in turn.
       - name: Build and test without the JSON reader
         run: |
-          sel="--workspace --exclude renew-json"
+          sel="--workspace --exclude renew-json --exclude renew-mesh --exclude renew-cli"
           bash "$RUNNER_TEMP/absent-from-graph.sh" renew-json $sel
           cargo build $sel
           cargo test $sel
