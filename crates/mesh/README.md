@@ -206,7 +206,7 @@ the 25 STL seeds, `examples/make_ply_corpus.rs` the 24 PLY ones,
 `examples/make_mtl_corpus.rs` the 21 MTL ones and
 `examples/make_glb_corpus.rs` the 20 container ones and
 `examples/make_accessor_corpus.rs` the 21 accessor ones and
-`examples/make_gltf_corpus.rs` the 26 document-and-container ones; between them
+`examples/make_gltf_corpus.rs` the 43 document-and-container ones; between them
 every committed seed is built here rather than found. **The blob's 25 seeds
 need no such argument at all**, because the format is this crate's own
 and `examples/make_blob_corpus.rs` gets every byte from `blob::write`. **For OBJ that rule bites
@@ -321,7 +321,7 @@ chunk to offer and the other has none.
 
 **Its refusals name the layer that failed**, not just the fault: a
 `GltfError` says whether the container, the document, a buffer, an
-embedded payload, an accessor, a material or the geometry objected, and the inner refusal's own numbers are one call away
+embedded payload, an accessor, a material, an image or the geometry objected, and the inner refusal's own numbers are one call away
 through the value. A caller that only wants geometry can go
 through `format::detect` and then `Format::read`, which wraps the same
 answer in `MeshError`.
@@ -361,7 +361,7 @@ what a mesh is.
 ## An image is bytes and one name for what they are
 
 `gltf::images` reads the image table to the bytes a document carried and
-the type it stated for them. **It decodes nothing** — what those bytes
+the type it stated for them. **It decodes no image** — what those bytes
 are is the caller's question, and answering it here would mean an image
 decoder this layer has no need of.
 

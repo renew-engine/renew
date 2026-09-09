@@ -525,13 +525,13 @@ fn gltf_cannot_reach(refusal: &GltfError) -> Option<&'static str> {
         | GltfError::BufferTooShort { .. }
         | GltfError::FactorOutOfRange { .. }
         | GltfError::UnknownAlphaMode { .. }
-        | GltfError::ImageSource { .. }
-        | GltfError::MediaTypeDisagrees => None,
+        | GltfError::ImageSource { .. } => None,
     }
 }
 
 /// The refusals split out of the census below, each provoked by a
-/// document: the buffer layer's five, and the material layer's two.
+/// document: the buffer layer's five, the material layer's two, and the
+/// image layer's one.
 ///
 /// Split out of the census below rather than listed inside it: five
 /// refusals arrived at once when a document learned to read more than
@@ -579,14 +579,6 @@ fn buffer_provocations() -> Vec<(&'static str, GltfError)> {
             let json = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
             let source = gltf::Source::of(json.root(), None).expect("no tables");
             gltf::images(json.root(), &source).expect_err("neither source")
-        }),
-        ("MediaTypeDisagrees", {
-            let json = document(
-                r#"{ "images": [{ "mimeType": "image/png",
-                       "uri": "data:image/jpeg;base64,AQIDBA==" }] }"#,
-            );
-            let source = gltf::Source::of(json.root(), None).expect("no tables");
-            gltf::images(json.root(), &source).expect_err("one resource, two names")
         }),
         (
             "UnknownAlphaMode",
@@ -865,12 +857,6 @@ fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
 }
 
 // ---------------------------------------------------------------------
-// Materials.
-//
-// The vocabulary is glTF's own, and every member of it has a default, so
-// most of what follows is about what a document that says nothing means.
-
-// ---------------------------------------------------------------------
 // Images.
 //
 // An image is bytes and a name for what they are. This layer decodes
@@ -900,7 +886,7 @@ fn an_embedded_image_is_read_to_its_bytes() {
     let read = gltf::images(json.root(), &source).expect("one image");
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].name.as_deref(), Some("grain"));
-    assert_eq!(read[0].media_type, "image/png");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
     assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
 }
 
@@ -946,14 +932,14 @@ fn an_image_names_exactly_one_source() {
     let source = gltf::Source::of(both.root(), Some(&[1, 2, 3, 4])).expect("tables");
     assert_eq!(
         gltf::images(both.root(), &source).expect_err("both sources"),
-        GltfError::ImageSource { named: 2 }
+        GltfError::ImageSource { both: true }
     );
 
     let neither = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
     let empty = gltf::Source::of(neither.root(), None).expect("no tables");
     assert_eq!(
         gltf::images(neither.root(), &empty).expect_err("neither source"),
-        GltfError::ImageSource { named: 0 }
+        GltfError::ImageSource { both: false }
     );
 }
 
@@ -987,40 +973,232 @@ fn a_payload_without_a_type_takes_the_images_own() {
     );
     let source = gltf::Source::of(json.root(), None).expect("no tables");
     let read = gltf::images(json.root(), &source).expect("one image");
-    assert_eq!(read[0].media_type, "image/png");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
 }
 
-/// **Two statements of one image's type must agree.**
+/// **Every image in the table is read, not the first one.**
 ///
-/// A payload carries a media type and the image may state one; both
-/// describe the same bytes. Reporting two answers would push a
-/// contradiction the document created onto every caller, which is the
-/// trade the decoder one layer down already refuses to make.
+/// Until this test each fixture and each seed held exactly one image, so
+/// a reader that stopped after the first would have passed the whole
+/// suite -- and would have dropped every texture of every real asset,
+/// which carry one image per map.
 #[test]
-fn two_statements_of_one_images_type_must_agree() {
+fn every_image_in_the_table_is_read() {
+    let json = document(
+        r#"{ "images": [
+          { "name": "first", "uri": "data:image/png;base64,AQIDBA==" },
+          { "name": "second", "uri": "data:image/jpeg;base64,BQYHCA==" },
+          { "name": "third", "uri": "data:image/tiff;base64,CQoLDA==" }
+        ] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("three images");
+    assert_eq!(read.len(), 3);
+    let names: Vec<_> = read.iter().map(|image| image.name.as_deref()).collect();
+    assert_eq!(names, [Some("first"), Some("second"), Some("third")]);
+    assert_eq!(&*read[2].bytes, &[9, 10, 11, 12]);
+
+    // **A bad image anywhere refuses the document**, not just a bad
+    // first one: a reader that checked only what it read first would
+    // hand back two images and swallow the third.
+    let last_is_wrong = document(
+        r#"{ "images": [
+          { "uri": "data:image/png;base64,AQIDBA==" },
+          { "mimeType": "image/png" }
+        ] }"#,
+    );
+    let source = gltf::Source::of(last_is_wrong.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(last_is_wrong.root(), &source).expect_err("the second names nothing"),
+        GltfError::ImageSource { both: false }
+    );
+}
+
+/// **A view-sourced image reports the type stated beside it.**
+///
+/// The helper the other view tests use throws everything but the bytes
+/// away, so a reader that reported an empty type for every image read
+/// out of a buffer would have passed all of them.
+#[test]
+fn an_image_read_from_a_view_reports_its_stated_type() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "name": "stored", "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read[0].name.as_deref(), Some("stored"));
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **A payload that will not decode is refused as a payload.**
+///
+/// The refusal this layer promises for the case, rather than the one it
+/// gives a URI naming somewhere else: which of the two a caller gets
+/// decides whether the document is malformed or merely incomplete.
+#[test]
+fn an_image_payload_that_will_not_decode_is_refused_as_one() {
+    let json = document(r#"{ "images": [{ "uri": "data:image/png;base64,AQID!A==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let refused = gltf::images(json.root(), &source).expect_err("`!` is not base64");
+    assert_eq!(refused.name(), "Payload");
+    assert!(matches!(refused, GltfError::Payload(_)));
+}
+
+/// **An empty `mimeType` is a document saying nothing**, which beside a
+/// view is the one thing the format does not allow.
+///
+/// The schema's `mimeType` ends in a permissive `string`, so `""` is a
+/// conformant spelling of it. Treating it as a value would put a type
+/// nobody can name into every caller's hands.
+#[test]
+fn an_empty_media_type_says_nothing() {
+    let beside_a_view = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "" }]
+        }"#,
+    );
+    let source = gltf::Source::of(beside_a_view.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(beside_a_view.root(), &source).expect_err("a view still says nothing"),
+        GltfError::MissingField { path: "mimeType" }
+    );
+
+    // Beside a URI it is an absence too, so the payload's own is what is
+    // left -- and the image never reports `Some("")`.
+    let beside_a_uri =
+        document(r#"{ "images": [{ "mimeType": "", "uri": "data:image/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(beside_a_uri.root(), None).expect("no tables");
+    let read = gltf::images(beside_a_uri.root(), &source).expect("the payload says what it is");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+}
+
+/// **`mimeType` is the document's answer when it gives one.**
+///
+/// A payload carries a media type and the image may state one, and the
+/// format relates neither to the other: its rule is that a payload's
+/// type match its *content*, which nothing here can check because
+/// nothing here decodes. Refusing a disagreement would refuse
+/// conformant documents -- a PNG carried as `application/octet-stream`
+/// is ordinary -- so the one the format makes mandatory beside a view
+/// wins, and the payload's is what is left when there is no other.
+#[test]
+fn the_images_own_type_wins_over_its_payloads() {
     let json = document(
         r#"{ "images": [{
           "mimeType": "image/png",
-          "uri": "data:image/jpeg;base64,AQIDBA=="
+          "uri": "data:application/octet-stream;base64,AQIDBA=="
         }] }"#,
     );
     let source = gltf::Source::of(json.root(), None).expect("no tables");
-    assert_eq!(
-        gltf::images(json.root(), &source).expect_err("one resource, two names"),
-        GltfError::MediaTypeDisagrees
-    );
+    let read = gltf::images(json.root(), &source).expect("a carrier is not a contradiction");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
 
-    // Agreeing is not a refusal, which is the other half of the claim.
-    let agrees = document(
-        r#"{ "images": [{
-          "mimeType": "image/png",
-          "uri": "data:image/png;base64,AQIDBA=="
-        }] }"#,
+/// **Nothing said is not the same as an empty statement.**
+///
+/// A payload may carry no media type at all, and an image beside a URI
+/// need not state one either. The reader reports the absence rather
+/// than inventing RFC 2397's `text/plain` default or handing back an
+/// empty string that reads like a type nobody can name.
+#[test]
+fn an_image_that_states_no_type_anywhere_reports_none() {
+    let json = document(r#"{ "images": [{ "uri": "data:;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("bytes without a name are bytes");
+    assert_eq!(read[0].media_type, None);
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **A URI spelled with escapes is the URI it spells.**
+///
+/// JSON lets a document write `/` as `\/`, and a `data:` payload is
+/// mostly slashes -- the media type carries one and base64 uses one as
+/// a digit. The reader resolves escapes only when there are any, so
+/// this is the path that proves the shortcut has not changed what a
+/// document means.
+#[test]
+fn an_image_uri_written_with_escapes_reads_the_same() {
+    let escaped = document(r#"{ "images": [{ "uri": "data:image\/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(escaped.root(), None).expect("no tables");
+    let read = gltf::images(escaped.root(), &source).expect("an escape is not a difference");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+
+    // The same image spelled plainly, which is the branch that skips the
+    // copy -- both spellings, one answer.
+    let plain = document(r#"{ "images": [{ "uri": "data:image/png;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(plain.root(), None).expect("no tables");
+    let same = gltf::images(plain.root(), &source).expect("one image");
+    assert_eq!(same, read);
+}
+
+/// **A stride is a rule about elements, and an image is not elements.**
+///
+/// The format states that a view carrying anything but vertex or index
+/// data must not define one. The accessor layer only refuses a stride
+/// wider than the region it sits in, which is a different rule and
+/// would let this document through.
+#[test]
+fn an_image_in_a_view_that_declares_a_stride_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 8 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 8, "byteStride": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
     );
-    let source = gltf::Source::of(agrees.root(), None).expect("no tables");
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4, 5, 6, 7, 8])).expect("tables");
     assert_eq!(
-        gltf::images(agrees.root(), &source).expect("they agree")[0].media_type,
-        "image/png"
+        gltf::images(json.root(), &source).expect_err("an image is not elements"),
+        GltfError::Unsupported {
+            found: "byteStride on an image"
+        }
+    );
+}
+
+/// **A view of no bytes is refused where the table is read.**
+///
+/// The schema states a minimum of one. Every accessor over an empty
+/// region was already refused a layer down, so nothing needed the rule
+/// until an image -- the first reader with no accessor over its bytes
+/// -- could otherwise have handed back a zero-byte PNG.
+#[test]
+fn a_view_of_no_bytes_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 0 }]
+        }"#,
+    );
+    assert_eq!(
+        gltf::buffer_views(json.root()).expect_err("a view of nothing is not a view"),
+        GltfError::FactorOutOfRange {
+            field: "byteLength"
+        }
+    );
+}
+
+/// **An image naming a view the document does not have is refused**, and
+/// says which table it looked in.
+#[test]
+fn an_image_naming_a_view_that_is_not_there_is_refused() {
+    let json = document(r#"{ "images": [{ "bufferView": 3, "mimeType": "image/png" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("there are no views"),
+        GltfError::NoSuchEntry {
+            table: "bufferViews",
+            index: 3,
+            count: 0
+        }
     );
 }
 
@@ -1046,7 +1224,7 @@ fn a_media_type_this_engine_cannot_decode_is_still_reported() {
     let json = document(r#"{ "images": [{ "uri": "data:image/tiff;base64,AQIDBA==" }] }"#);
     let source = gltf::Source::of(json.root(), None).expect("no tables");
     let read = gltf::images(json.root(), &source).expect("bytes are bytes");
-    assert_eq!(read[0].media_type, "image/tiff");
+    assert_eq!(read[0].media_type.as_deref(), Some("image/tiff"));
     assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
 }
 
@@ -1095,6 +1273,12 @@ fn an_image_whose_view_runs_past_its_buffer_is_refused() {
         "Accessor"
     );
 }
+
+// ---------------------------------------------------------------------
+// Materials.
+//
+// The vocabulary is glTF's own, and every member of it has a default, so
+// most of what follows is about what a document that says nothing means.
 
 /// **An empty material is every default, because the format says so.**
 ///
@@ -1692,7 +1876,7 @@ fn the_census_and_the_documents_agree() {
         assert!(!named.contains(name), "`{name}` is provoked twice");
         named.push(name);
     }
-    assert_eq!(named.len(), 18, "one provocation per refusal");
+    assert_eq!(named.len(), 17, "one provocation per refusal");
 }
 
 // ---------------------------------------------------------------------

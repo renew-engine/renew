@@ -39,14 +39,15 @@ use libfuzzer_sys::fuzz_target;
 use renew_mesh::{glb, gltf};
 
 fuzz_target!(|data: &[u8]| {
-    // **The material table is read from the same bytes, and separately.**
+    // **The tables beyond geometry are read from the same bytes, and
+    // separately.**
     // `read` builds geometry and never looks at a material, so a document
     // that reaches this target exercises that table only if something
     // asks for it. Asking here costs one parse and covers a layer the
     // geometry path cannot reach at all -- including for the inputs that
     // are refused below, which is where a table this reader must not
     // trust is likeliest to be.
-    materials_answer(data);
+    tables_answer(data);
 
     let Ok(mesh) = gltf::read(data) else {
         // A refusal is an answer. Which refusal is the suite's business
@@ -115,7 +116,14 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(again, mesh, "the same bytes read to the same geometry");
 });
 
-/// Read the material table, and hold it to what the format states.
+/// Read the material and image tables, and hold each to what the format
+/// states.
+///
+/// **It costs about 44% more per input**, measured over the committed
+/// seeds: a third `Source` is built where geometry already builds two,
+/// which decodes every buffer's payload again. Paid deliberately -- the
+/// tables it reaches are unreachable from the geometry path at any
+/// price, and a table nothing attacks is a table nothing has checked.
 ///
 /// Separate from the geometry above because the two share only their
 /// bytes: a document may carry materials and no geometry, or the reverse,
@@ -126,7 +134,7 @@ fuzz_target!(|data: &[u8]| {
 /// parsed the raw bytes, so every container went straight past it -- and
 /// a container is what most of this corpus is, and what most real assets
 /// are. The dispatch here is the reader's own.
-fn materials_answer(data: &[u8]) {
+fn tables_answer(data: &[u8]) {
     let container = glb::looks_like(data).then(|| glb::read(data)).transpose();
     let Ok(container) = container else {
         // The container layer's own refusals are the geometry half's
@@ -225,25 +233,23 @@ fn materials_answer(data: &[u8]) {
     if let Ok(source) = gltf::Source::of(root, chunk)
         && let Ok(images) = gltf::images(root, &source)
     {
-        {
-            for image in &images {
-                // Whatever came back is bytes the document carried, and
-                // an image with no bytes is not one this reader builds.
-                assert!(
-                    image.bytes.len() <= document.len(),
-                    "an image larger than the document it came from: {} of {}",
-                    image.bytes.len(),
-                    document.len()
-                );
-            }
-
-            let again = gltf::images(root, &source).expect("what read once reads again");
-            assert_eq!(
-                again.len(),
-                images.len(),
-                "the same bytes read to the same images"
+        // **Both halves, because a container has two.** An image named by
+        // a view is served out of the binary chunk, which is a separate
+        // slice from the JSON this document arrived as -- so bounding the
+        // bytes by the JSON alone would fire on a well-formed GLB whose
+        // chunk is larger than its document, and a crash that is the
+        // harness's own arithmetic is the expensive kind of crash.
+        let carried = document.len() + chunk.map_or(0, <[u8]>::len);
+        for image in &images {
+            assert!(
+                image.bytes.len() <= carried,
+                "an image larger than the bytes it came from: {} of {carried}",
+                image.bytes.len(),
             );
         }
+
+        let again = gltf::images(root, &source).expect("what read once reads again");
+        assert_eq!(again, images, "the same bytes read to the same images");
     }
 
     // Reading twice answers the same, as everywhere else here.

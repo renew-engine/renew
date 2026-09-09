@@ -335,9 +335,9 @@ fn material_seeds() -> Vec<(String, Vec<u8>)> {
 /// Documents carrying images, which no other seed reaches.
 ///
 /// An image table is read only by asking for it, and it is where two
-/// layers meet that otherwise never touch: the buffer bytes an accessor
-/// addresses, and the payload decoding a buffer's own URI uses. These
-/// carry one, in the shapes that decide the answer.
+/// layers meet under a table with no geometry in it: the buffer bytes an
+/// accessor addresses, and the payload decoding a buffer's own URI uses.
+/// These carry one, in the shapes that decide the answer.
 fn image_seeds() -> Vec<(String, Vec<u8>)> {
     // **Built from nothing rather than from the geometry document.** A
     // seed that reused it would carry a buffer wanting a container chunk
@@ -387,10 +387,26 @@ fn image_seeds() -> Vec<(String, Vec<u8>)> {
             "image-view-untyped".to_owned(),
             stored(r#"[{"bufferView":0}]"#),
         ),
-        // One resource, two names for it.
+        // One resource, two names for it, which is not a refusal: the
+        // one beside the image wins and the payload's carries the bytes.
         (
-            "image-type-disagrees".to_owned(),
-            with(r#"[{"mimeType":"image/png","uri":"data:image/jpeg;base64,AQIDBA=="}]"#),
+            "image-type-differs".to_owned(),
+            with(
+                r#"[{"mimeType":"image/png","uri":"data:application/octet-stream;base64,AQIDBA=="}]"#,
+            ),
+        ),
+        // More than one, which every fixture used to lack.
+        (
+            "image-two".to_owned(),
+            with(
+                r#"[{"uri":"data:image/png;base64,AQIDBA=="},{"uri":"data:image/jpeg;base64,BQYHCA=="}]"#,
+            ),
+        ),
+        // A payload the decoder refuses, reached through an image rather
+        // than through a buffer.
+        (
+            "image-payload-broken".to_owned(),
+            with(r#"[{"uri":"data:image/png;base64,AQID!A=="}]"#),
         ),
         // A second file, which this crate will not open.
         (
