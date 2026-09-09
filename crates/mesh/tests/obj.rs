@@ -563,6 +563,9 @@ fn the_names_returned_never_outweigh_the_file_they_came_from() {
 /// the STL reader that no input on any target could produce.
 fn obj_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::TransformNotInvertible => Some(
+            "this format has no node hierarchy, so there is no transform for this reader\n             to be handed and none to be singular",
+        ),
         MeshError::StreamLengthMismatch { .. } => Some(
             "each face names its own attribute indices, so a normal this file does not have\n             is an index out of range rather than a stream that came up short",
         ),

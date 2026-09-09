@@ -25,8 +25,17 @@ simulation = false
 # filesystem, and leaves the size bound on a whole-file read where it can
 # actually be enforced -- with the caller doing the reading.
 [dependencies]
+# **The first thing this crate depends on**, and the alternative was
+# worse. Placing geometry under a node transform needs a matrix and the
+# inverse transpose a normal is moved by; writing a second four-by-four
+# multiply here to keep the dependency list empty would be two copies of
+# one fact. An empty list was a description, not a promise.
+renew-math = { version = "0.1.1", path = "../core/math", default-features = false }
 
 [dev-dependencies]
+# The suite for placement builds transforms with the same types the
+# library takes, so the matrix crate is here as well as above.
+renew-math = { version = "0.1.1", path = "../core/math", default-features = false }
 proptest = "1.11"
 
 [lints]

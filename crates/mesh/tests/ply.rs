@@ -965,6 +965,9 @@ fn crowded_schema() -> String {
 /// a failure prints why this format was thought unable to get here.
 fn ply_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::TransformNotInvertible => Some(
+            "nothing in this format carries a transform: a PLY names coordinates and this\n             reader returns them where the file put them",
+        ),
         MeshError::StreamLengthMismatch { .. } => Some(
             "a schema names one element per stream and the count comes from that element,\n             so two streams cannot claim different lengths for the same vertices",
         ),

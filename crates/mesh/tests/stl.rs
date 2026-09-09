@@ -167,6 +167,9 @@ endsolid x",
 /// finding. A reason the test prints is a reason somebody reads.
 fn stl_cannot_reach(refusal: &MeshError) -> Option<&'static str> {
     match refusal {
+        MeshError::TransformNotInvertible => Some(
+            "a reader is handed bytes and returns geometry in the file's own space;\n             placing it somewhere else is a later step with its own refusals",
+        ),
         MeshError::StreamLengthMismatch { .. } => Some(
             "this format has one stream and repeats every corner into it, so there is no\n             second stream that could disagree with a first",
         ),

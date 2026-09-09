@@ -244,6 +244,18 @@ pub enum MeshError {
         found: usize,
     },
 
+    /// A transform with no inverse, applied to geometry that carries
+    /// normals.
+    ///
+    /// **Refused only when there are normals**, and the distinction is
+    /// the whole content of the refusal. A scale of zero on one axis is
+    /// how a modelling tool flattens something and is a legal thing for
+    /// a file to ask: the positions land on a plane, which is what was
+    /// asked. What cannot be done is transforming a **normal**, because
+    /// there is no inverse to transpose — and a reader that pressed on
+    /// would produce a bad value out of a file that contained none.
+    TransformNotInvertible,
+
     /// A file that declares no geometry at all.
     ///
     /// **A refusal rather than an empty mesh**, and the distinction is
@@ -282,6 +294,7 @@ impl MeshError {
             Self::NotAFace { .. } => "NotAFace",
             Self::Unsupported { .. } => "Unsupported",
             Self::StreamLengthMismatch { .. } => "StreamLengthMismatch",
+            Self::TransformNotInvertible => "TransformNotInvertible",
             Self::NoGeometry => "NoGeometry",
         }
     }
@@ -351,6 +364,10 @@ impl fmt::Display for MeshError {
             } => write!(
                 f,
                 "`{stream}` holds {found} and the positions hold {expected}"
+            ),
+            Self::TransformNotInvertible => write!(
+                f,
+                "this transform flattens space, and a normal needs an inverse to be transposed"
             ),
             Self::NoGeometry => write!(
                 f,
@@ -506,13 +523,14 @@ mod tests {
                 expected: 512,
                 found: 511,
             },
+            MeshError::TransformNotInvertible,
             MeshError::NoGeometry,
             MeshError::NotThisFormat { expected: "ply" },
         ];
 
         // One per variant. Raise it when the enum grows, in the same
         // change that writes the new arm below.
-        assert_eq!(all.len(), 13, "a variant is missing an instance here");
+        assert_eq!(all.len(), 14, "a variant is missing an instance here");
 
         for refusal in &all {
             let shown = refusal.to_string();
@@ -522,6 +540,11 @@ mod tests {
             let numbers: Vec<&str> = match refusal {
                 MeshError::NotThisFormat { .. } => vec!["ply"],
                 MeshError::StreamLengthMismatch { .. } => vec!["NORMAL", "512", "511"],
+                // No numbers: the fault is a matrix a caller passed in
+                // rather than bytes in a file, so there is nothing to
+                // send anybody to a hex editor for. The message names
+                // the consequence instead.
+                MeshError::TransformNotInvertible => vec!["normal"],
                 MeshError::TooShortForHeader { .. } => vec!["84", "3"],
                 MeshError::CountMismatch { .. } => vec!["134", "90", "1"],
                 MeshError::TooLarge { .. } => vec!["element count", "4000000000"],
