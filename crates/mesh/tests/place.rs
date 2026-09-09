@@ -15,10 +15,13 @@ use renew_mesh::{Mesh, MeshError, place};
 
 /// Compare coordinates by value, within the tolerance a transform earns.
 ///
-/// **Not by bits here, unlike the assembly suite**: placement multiplies
-/// and adds, so the result is the arithmetic's, not the file's, and an
-/// exact comparison would be asserting something about rounding rather
-/// than about the transform.
+/// **Not by bits here, unlike the assembly suite and the import
+/// golden**: those compare fixtures whose operands make the arithmetic
+/// exact, and this suite deliberately uses a non-uniform scale and a
+/// rotation, where it is not. Placement multiplies and adds, so the
+/// result is the arithmetic's rather than the file's, and an exact
+/// comparison would be asserting something about rounding rather than
+/// about the transform.
 fn near(got: [f32; 3], want: [f32; 3], what: &str) {
     for (index, (left, right)) in got.iter().zip(&want).enumerate() {
         assert!(
@@ -33,7 +36,11 @@ fn furnished() -> Mesh {
     Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         face_normals: vec![[0.0, 0.0, 1.0]],
-        corner_normals: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+        // **Three different normals, not three copies of one.** A
+        // fixture that repeats a value cannot see a reader that permutes
+        // it, and this suite had three copies until a mutation walked
+        // through it untouched.
+        corner_normals: vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
         corner_texcoords: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
     }
 }
@@ -58,7 +65,13 @@ fn a_translation_moves_points_and_not_normals() {
     near(mesh.positions[0], [10.0, 20.0, 30.0], "the first corner");
     near(mesh.positions[1], [11.0, 20.0, 30.0], "the second");
     near(mesh.face_normals[0], [0.0, 0.0, 1.0], "the face normal");
-    near(mesh.corner_normals[2], [0.0, 0.0, 1.0], "a corner normal");
+    near(
+        mesh.corner_normals[0],
+        [0.0, 0.0, 1.0],
+        "the first corner normal",
+    );
+    near(mesh.corner_normals[1], [0.0, 1.0, 0.0], "the second");
+    near(mesh.corner_normals[2], [1.0, 0.0, 0.0], "the third");
 }
 
 /// **A non-uniform scale is the case that tells the two ways of moving a
@@ -103,6 +116,38 @@ fn a_non_uniform_scale_tilts_a_normal_the_other_way() {
         (normal[0] - 0.5).abs() < 1e-5,
         "the inverse transpose halves x where the matrix doubles it: {normal:?}"
     );
+}
+
+/// **A corner normal goes through the same inverse transpose**, and
+/// nothing here proved it until a mutation said otherwise.
+///
+/// The suite exercised the inverse transpose on `face_normals` under a
+/// scale and a rotation, and touched `corner_normals` only under a
+/// translation -- where leaving them alone is the correct answer. So a
+/// reader that transformed the face normals and copied the corner
+/// normals through unchanged passed every test in this crate.
+#[test]
+fn a_non_uniform_scale_tilts_a_corner_normal_too() {
+    let mut mesh = Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [-1.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        // Three distinct normals, each of which the matrix moves, so a
+        // permutation of them is visible as well as a skipped transform.
+        corner_normals: vec![[1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.0, 1.0]],
+        ..Mesh::default()
+    };
+    place::place(&mut mesh, Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0)))
+        .expect("a scale is invertible");
+
+    // The inverse transpose halves x where the matrix doubles it, which
+    // is the whole difference between transforming a normal and
+    // transforming a direction.
+    near(
+        mesh.corner_normals[0],
+        [0.5, 1.0, 0.0],
+        "the first corner normal",
+    );
+    near(mesh.corner_normals[1], [1.0, 0.0, 0.0], "the second");
+    near(mesh.corner_normals[2], [0.5, 0.0, 1.0], "the third");
 }
 
 /// Under a rotation the two ways agree, which is what hides the bug.

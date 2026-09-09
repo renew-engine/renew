@@ -22,3 +22,7 @@ fuzz/corpus/** -text
 # produce is a library that loads on one machine and not another, found
 # at link time on a platform nobody here can debug.
 third_party/moltenvk/**/*.dylib binary
+
+# The import golden. Committed bytes compared exactly, so a line-ending
+# translation would break the comparison rather than merely annoy it.
+crates/mesh/tests/goldens/** -text

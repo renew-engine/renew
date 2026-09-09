@@ -174,6 +174,43 @@ the material it belongs to, two reciprocal spellings of one factor, a
 map line whose options run past its file name. `tests/properties.rs` round-trips generated meshes through both
 STL spellings and asserts that every byte string gets an answer.
 
+**`tests/golden.rs` pins the whole path in one artifact.** The value
+assertions in `tests/gltf.rs` each hold one layer to a fixture written
+in the same file; this holds every layer at once to bytes that were
+*committed*, so a change no single assertion covers still moves a byte.
+What it catches that the corpus gates cannot is a reader that answers
+confidently and wrongly: a document coming back with its second
+primitive dropped, or its texture coordinates attributed to the wrong
+corners, answers perfectly well.
+
+So one generated model sits in `tests/goldens/` beside the exact bytes it
+reads to. It reaches every layer of the document path this golden is
+about: two primitives in one mesh so the appending path runs and each
+primitive's corners resolve against its own accessors, a node transform
+so positions move, indices, and the two optional streams a glTF document
+can carry. It also states a material, a texture and an image, which
+change no geometry — so the golden proves they stay out of the canonical
+form.
+
+**Exact comparison is legitimate for that document rather than for the
+path in general**, and the provenance file says exactly why: its
+every accessor it reads a coordinate through is `componentType: 5126`,
+so those are copied out with `from_le_bytes` and never converted; its
+node states a translation and a scale, both exact powers of two; and
+every coordinate is a small dyadic rational whose product with that
+matrix rounds to itself. The placement path does multiply and add —
+`tests/place.rs` uses a tolerance for that reason — and this fixture is
+chosen so it need not. The bytes travel between machines because
+`blob::write` converts endianness explicitly, not because memory layout
+is universal.
+
+Refreshing it is one command — `cargo run -p renew-mesh --example
+make_import_golden` — because unlike a rendered golden, where no two
+adapters rasterize alike and candidates have to be adopted from a pinned
+lane, any machine reproduces these files. **And that is checked**: the
+gate holds the committed source to the code that describes it, so a
+regeneration nobody committed fails rather than surprises.
+
 **Each reader's census is a test, not a comment.** All five suites map
 every `MeshError` variant to either a file in the suite that provokes it
 or a sentence saying why this format cannot reach it, with no wildcard
