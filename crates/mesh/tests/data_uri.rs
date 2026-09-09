@@ -13,7 +13,7 @@
 
 use renew_mesh::data_uri::{self, DataUriError};
 
-// The encoder is `shared/base64_encode.rs`, included here and by three
+// The encoder is `shared/base64_encode.rs`, included here and by four
 // other targets. It is deliberately not the crate's: nothing in the
 // engine writes a `data:` URI, and a round trip through one body of code
 // proves only that the code agrees with itself.
@@ -111,6 +111,63 @@ fn the_marker_is_read_in_any_letter_case() {
     }
 }
 
+/// Whether `part` is a subslice of `whole`, by address rather than by
+/// content.
+///
+/// Content equality would pass for a copy, and a copy is exactly what
+/// the two text fields promise not to be.
+fn borrowed_from(part: &str, whole: &str) -> bool {
+    let base = whole.as_ptr() as usize;
+    let start = part.as_ptr() as usize;
+    start >= base && start + part.len() <= base + whole.len()
+}
+
+/// **Both text fields borrow the URI, including when they are empty.**
+///
+/// An empty `&str` literal is a `'static` dangling pointer, not a view
+/// into anything, so a reader that reaches for `""` when a URI has no
+/// parameters returns something that only looks borrowed. The type says
+/// `&'a str` and the documentation says the text fields borrow; this is
+/// what makes both true rather than usually true.
+///
+/// The fuzz target asserts the same thing on every input it accepts, and
+/// asserting it here as well is deliberate: a harness that aborts on its
+/// own corpus stops being evidence, and this test is what says so in one
+/// second rather than in a fuzzing run nobody watches.
+#[test]
+fn both_text_fields_borrow_the_uri_even_when_empty() {
+    // The ordinary shape, which has no parameters at all -- and is what
+    // a document embedding a buffer actually writes.
+    let uri = HEAD.to_owned() + "QQ==";
+    let read = data_uri::read(&uri).expect("a valid URI");
+    assert_eq!(read.parameters, "");
+    assert!(
+        borrowed_from(read.media_type, &uri),
+        "the media type must be a view into the URI"
+    );
+    assert!(
+        borrowed_from(read.parameters, &uri),
+        "empty parameters must still be a view into the URI, not a literal"
+    );
+
+    // And the shape that has them, so neither branch is left unchecked.
+    let with = "data:text/plain;charset=UTF-8;base64,QQ==".to_owned();
+    let read = data_uri::read(&with).expect("a valid URI");
+    assert_eq!(read.parameters, "charset=UTF-8");
+    assert!(borrowed_from(read.media_type, &with));
+    assert!(borrowed_from(read.parameters, &with));
+
+    // An absent media type is the same question again, one field over.
+    let bare = "data:;base64,QQ==".to_owned();
+    let read = data_uri::read(&bare).expect("a valid URI");
+    assert_eq!(read.media_type, "");
+    assert!(
+        borrowed_from(read.media_type, &bare),
+        "an empty media type must be a view into the URI too"
+    );
+    assert!(borrowed_from(read.parameters, &bare));
+}
+
 #[test]
 fn two_reads_of_one_uri_are_the_same_value() {
     // The struct is comparable, cloneable and printable because a caller
@@ -152,8 +209,55 @@ fn a_multibyte_character_where_the_scheme_would_end_is_not_a_panic() {
     // lands mid-character in this one.
     assert_eq!(
         refused("data:text/\u{e9}\u{e9}\u{e9}\u{e9},Zm9v"),
-        DataUriError::NotBase64
+        DataUriError::Unsupported
     );
+}
+
+#[test]
+fn a_second_marker_is_a_parameter_rather_than_a_second_instruction() {
+    // Only the trailing marker is consumed, so a duplicate becomes an
+    // ordinary parameter. Worth pinning because it is the kind of input
+    // a generator produces and a reader is never shown.
+    let read = data_uri::read("data:text/plain;base64;base64,Zm9v").expect("a valid URI");
+    assert_eq!(read.media_type, "text/plain");
+    assert_eq!(read.parameters, "base64");
+    assert_eq!(read.bytes, b"foo");
+}
+
+#[test]
+fn a_parameter_carrying_a_comma_is_a_limit_this_reader_has() {
+    // The payload is taken from the FIRST comma, so a quoted parameter
+    // containing one is read as the end of the description. RFC 2397
+    // permits it and this reader does not: the answer is honest -- a
+    // refusal, not a wrong decode -- but it is a limit rather than a
+    // fault in the document, and a test is where that gets remembered.
+    assert_eq!(
+        refused("data:text/plain;name=\"a,b\";base64,Zm9v"),
+        DataUriError::Unsupported
+    );
+}
+
+#[test]
+fn the_smallest_uris_are_answered_rather_than_guessed_at() {
+    // `data:,` is the shortest legal RFC 2397 URI there is. It has no
+    // marker, so this reader declines it by name.
+    assert_eq!(refused("data:,"), DataUriError::Unsupported);
+    // And the shortest one this reader does accept carries nothing.
+    let read = data_uri::read("data:;base64,").expect("a valid URI");
+    assert_eq!(read.media_type, "");
+    assert_eq!(read.parameters, "");
+    assert!(read.bytes.is_empty());
+}
+
+#[test]
+fn a_media_type_wider_than_ascii_is_reported_as_written() {
+    // The marker matches, so the description is sliced -- and the byte
+    // it is sliced at is the `;`, which is why this is safe. The other
+    // multibyte test covers the mismatching side; this is the side that
+    // succeeds.
+    let read = data_uri::read("DaTa:\u{e9};base64,QQ==").expect("a valid URI");
+    assert_eq!(read.media_type, "\u{e9}");
+    assert_eq!(read.bytes, b"A");
 }
 
 #[test]
@@ -169,7 +273,7 @@ fn a_percent_encoded_payload_is_refused_as_this_readers_limit() {
     // Legal RFC 2397, not implemented here, and the message says which
     // of those two it is.
     let refusal = refused("data:text/plain,hello");
-    assert_eq!(refusal, DataUriError::NotBase64);
+    assert_eq!(refusal, DataUriError::Unsupported);
     let said = refusal.to_string();
     assert!(
         said.contains("this reader"),
@@ -182,7 +286,27 @@ fn the_marker_has_to_be_a_parameter_rather_than_a_suffix() {
     // `base64` without its semicolon is part of the media type, not the
     // instruction, and reading it as the instruction would decode a
     // payload nobody said was encoded.
-    assert_eq!(refused("data:base64,Zm9v"), DataUriError::NotBase64);
+    //
+    // **The media type here is longer than the marker**, deliberately.
+    // `data:base64,` is six characters before the comma against the
+    // marker's seven, so it never reaches the comparison at all -- it
+    // fails the length guard, which is a different rule with the same
+    // answer. A fixture that cannot reach the rule it is named for is
+    // the defect this file has now been caught by twice.
+    assert_eq!(refused("data:xbase64,Zm9v"), DataUriError::Unsupported);
+    assert_eq!(
+        refused("data:text/plain base64,Zm9v"),
+        DataUriError::Unsupported
+    );
+}
+
+#[test]
+fn a_description_shorter_than_the_marker_cannot_carry_it() {
+    // The length guard, named and pinned separately now that the test
+    // above no longer reaches it. Six characters cannot end with seven.
+    assert_eq!(refused("data:base64,Zm9v"), DataUriError::Unsupported);
+    assert_eq!(refused("data:,Zm9v"), DataUriError::Unsupported);
+    assert_eq!(refused("data:x,Zm9v"), DataUriError::Unsupported);
 }
 
 #[test]
@@ -235,6 +359,40 @@ fn the_url_safe_alphabet_is_not_this_one() {
     }
     assert_eq!(bytes(&format!("{HEAD}Zm9+")), [0x66, 0x6f, 0x7e]);
     assert_eq!(bytes(&format!("{HEAD}Zm9/")), [0x66, 0x6f, 0x7f]);
+}
+
+#[test]
+fn the_characters_just_outside_each_range_are_refused() {
+    // **A widened range would pass every other test in this file.** The
+    // round trip only ever emits characters that are in the alphabet,
+    // and the property that alters a character is satisfied by decoding
+    // to *different* bytes -- which a wrongly-accepted character does.
+    // So the neighbours are the only thing that pins the edges.
+    for (neighbour, of) in [
+        ('@', "A-Z"),
+        ('[', "A-Z"),
+        ('`', "a-z"),
+        ('{', "a-z"),
+        (':', "0-9"),
+        ('/', "0-9 upwards, and this one IS in the alphabet"),
+    ] {
+        let uri = format!("{HEAD}Zm9{neighbour}");
+        if neighbour == '/' {
+            assert!(
+                data_uri::read(&uri).is_ok(),
+                "`/` is the last alphabet entry and must decode"
+            );
+            continue;
+        }
+        assert_eq!(
+            refused(&uri),
+            DataUriError::BadDigit {
+                byte: neighbour as u8,
+                at: HEAD.len() + 3,
+            },
+            "`{neighbour}` sits just outside {of} and must not decode"
+        );
+    }
 }
 
 #[test]
@@ -323,7 +481,7 @@ fn every_refusal_names_itself_and_says_something() {
     let all = [
         DataUriError::NotADataUri,
         DataUriError::NoPayload,
-        DataUriError::NotBase64,
+        DataUriError::Unsupported,
         DataUriError::BadDigit { byte: b' ', at: 7 },
         DataUriError::NotWholeGroups { len: 3 },
         DataUriError::BadPadding { at: 9 },

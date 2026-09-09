@@ -13,12 +13,17 @@
 //! stray bit would return bytes whose re-encoding differs from the input
 //! in exactly that character.
 //!
-//! **Every input is text here.** A URI is text by definition, so the
+//! **Every input is text here, and that costs something worth naming.**
+//! A URI is text by definition, so the reader takes `&str` and these
 //! bytes are converted lossily rather than discarded when they are not
-//! UTF-8 — which also means the replacement character is itself part of
-//! what gets attacked, and it is a three-byte character sitting wherever
-//! the fuzzer put a bad byte, which is precisely where a reader that
-//! slices strings by offset falls over.
+//! UTF-8. That keeps every input useful, but it also means **a raw byte
+//! above 0x7F never reaches the decoder as itself**: it arrives as the
+//! replacement character, three bytes wide, sitting wherever the fuzzer
+//! put a bad one. So what is under attack is the wide character landing
+//! at an awkward offset — which is a real hazard for a reader that
+//! slices strings — and not the byte the fuzzer chose. The alphabet's
+//! rejection of `0x80..=0xFF` is reached by the suite beside the crate
+//! rather than from here.
 
 #![no_main]
 

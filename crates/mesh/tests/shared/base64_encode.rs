@@ -1,17 +1,18 @@
 //! Canonical base64, written once for the four harnesses that need it.
 //!
-//! **This file is included by four targets in two crates**, with
+//! **This file is included by five targets in two crates**, with
 //! `#[path]`, because none of them can reach the others' code any other
 //! way:
 //!
 //! * `crates/mesh/examples/make_data_uri_corpus.rs` writes the seeds.
 //! * `crates/mesh/tests/data_uri.rs` builds fixtures and round-trips.
+//! * `crates/mesh/tests/properties.rs` generates URIs to attack.
 //! * `crates/mesh/tests/corpus_replay.rs` replays the seeds at every
 //!   merge.
 //! * `fuzz/fuzz_targets/data_uri_read.rs` mutates them.
 //!
 //! Cargo compiles a `tests/` subdirectory for nobody, which is what
-//! makes this a shared file rather than a fifth target.
+//! makes this a shared file rather than a sixth target.
 //!
 //! # Why the engine does not ship this
 //!

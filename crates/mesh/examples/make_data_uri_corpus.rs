@@ -41,7 +41,7 @@ use std::process::ExitCode;
 const BUFFER: &str = "application/octet-stream";
 
 // The encoder is `crates/mesh/tests/shared/base64_encode.rs`, included
-// here and by three other targets, so a seed can be described by the
+// here and by four other targets, so a seed can be described by the
 // bytes it should decode to rather than by a string somebody typed.
 #[path = "../tests/shared/base64_encode.rs"]
 mod base64_encode;
@@ -186,6 +186,37 @@ fn refused_seeds() -> Vec<(String, String)> {
     ]
 }
 
+/// Seeds that are not text, which is the shape a `String` cannot hold.
+///
+/// **Every other seed here is valid UTF-8, and that was a gap.** A URI
+/// arrives as bytes; whoever reads it has to turn those into text first,
+/// and the byte strings that cannot be turned into text cleanly are
+/// exactly the ones where that conversion does something. A corpus of
+/// nothing but well-formed text never replays that step.
+fn raw_seeds() -> Vec<(String, Vec<u8>)> {
+    let head = format!("data:{BUFFER};base64,").into_bytes();
+    let with = |tail: &[u8]| {
+        let mut bytes = head.clone();
+        bytes.extend_from_slice(tail);
+        bytes
+    };
+    vec![
+        // A continuation byte with nothing to continue, in the payload.
+        (
+            "lone-continuation-byte".to_owned(),
+            with(&[0xFF, b'm', b'9', b'v']),
+        ),
+        // A truncated multi-byte sequence, which is what a file cut in
+        // half in the wrong place looks like.
+        ("truncated-sequence".to_owned(), with(&[0xE2, 0x82])),
+        // And one before the comma, where the media type is read.
+        (
+            "invalid-bytes-in-the-type".to_owned(),
+            b"data:text/\xC3;base64,Zm9v".to_vec(),
+        ),
+    ]
+}
+
 fn main() -> ExitCode {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/data_uri_read");
     if let Err(error) = std::fs::create_dir_all(&dir) {
@@ -195,7 +226,12 @@ fn main() -> ExitCode {
 
     let mut written = 0usize;
     let mut kept = 0usize;
-    for (name, text) in readable_seeds().into_iter().chain(refused_seeds()) {
+    let seeds = readable_seeds()
+        .into_iter()
+        .chain(refused_seeds())
+        .map(|(name, text)| (name, text.into_bytes()))
+        .chain(raw_seeds());
+    for (name, text) in seeds {
         let path = dir.join(format!("{name}.uri"));
         if path.exists() {
             kept += 1;
@@ -204,7 +240,7 @@ fn main() -> ExitCode {
         // **A generator that swallows a write failure and then reports
         // success is worse than one that crashes**: the caller sees a
         // count and believes the corpus is whole.
-        if let Err(error) = std::fs::write(&path, text.as_bytes()) {
+        if let Err(error) = std::fs::write(&path, &text) {
             eprintln!("cannot write {}: {error}", path.display());
             return ExitCode::FAILURE;
         }

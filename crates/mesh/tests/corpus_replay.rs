@@ -1351,7 +1351,7 @@ fn gltf_census() {
 }
 
 /// How many distinct `data:` URIs the corpus must still hold.
-const DATA_URI_LOW_WATER: usize = 38;
+const DATA_URI_LOW_WATER: usize = 41;
 
 /// How many distinct outcomes those seeds must still reach.
 ///
@@ -1369,7 +1369,7 @@ const DATA_URI_DISTINCT_OUTCOMES: usize = 8;
 const DATA_URI_REQUIRED: [&str; 7] = [
     "NotADataUri",
     "NoPayload",
-    "NotBase64",
+    "Unsupported",
     "BadDigit",
     "NotWholeGroups",
     "BadPadding",
@@ -1482,9 +1482,23 @@ fn the_data_uri_corpus_still_covers_what_it_was_recorded_to_cover() {
         assert!(
             readable.iter().any(|bytes| {
                 let text = String::from_utf8_lossy(bytes);
-                text.bytes().filter(|&byte| byte == b'=').count() == pads && !text.ends_with(',')
+                // **Counted in the payload, not in the whole URI.**
+                // A media type may carry an `=` of its own --
+                // `charset=x` does -- and counting those satisfied
+                // this floor with seeds whose payloads hold no
+                // padding at all, so the floor could have been met
+                // by a corpus with no one-pad seed in it.
+                let Some(comma) = text.find(',') else {
+                    return false;
+                };
+                comma + 1 < text.len()
+                    && text[comma + 1..]
+                        .bytes()
+                        .filter(|&byte| byte == b'=')
+                        .count()
+                        == pads
             }),
-            "no seed that decodes has {pads} padding characters, and the three cases run \
+            "no seed that decodes has {pads} padding characters in its payload, and the three cases run \
              different arithmetic"
         );
     }

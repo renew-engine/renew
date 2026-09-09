@@ -299,8 +299,9 @@ index, and how many rows there were.
 **Its refusals name the layer that failed**, not just the fault: a
 `GltfError` says whether the container, the document, an accessor or the
 geometry objected, and the inner refusal's own numbers are one call away
-through the value. A caller that only wants geometry can ask
-`format::detect` and get the same answer wrapped in `MeshError`.
+through the value. A caller that only wants geometry can go
+through `format::detect` and then `Format::read`, which wraps the same
+answer in `MeshError`.
 
 The scene walk is an explicit stack with a visited mark checked before
 children are pushed, so a document whose nodes point at each other is a
@@ -317,7 +318,8 @@ second file is not its to refuse, because it is not its to fetch.
 output byte is forgiven, and one that can is refused.** The `;base64`
 marker is read in any letter case. Whitespace, the URL-safe alphabet, a
 payload that is not whole four-character groups, padding anywhere but the
-end — all refused, each naming the offset.
+end — all refused, and the three that are about one character name
+its offset.
 
 **The one that is easy to miss is the last group's unused bits.** `QQ==`
 and `QR==` would both decode to the single byte `A`: the last four bits

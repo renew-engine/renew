@@ -1343,25 +1343,6 @@ fn parenthesised_rule_citation(line: &str) -> Option<String> {
     None
 }
 
-/// No source file may cite material this repository does not contain.
-///
-/// **A comment naming a document a reader cannot open is worse than a
-/// comment naming nothing.** It reads as sourced. A reader who goes
-/// looking finds no such file and cannot tell whether the evidence is
-/// missing or they are.
-///
-/// A sweep by eye searches for the notations it already knows and
-/// reports the tree clean when it runs out of them, which is why this is
-/// a test — and why the needle list is the thing to extend when a new
-/// spelling turns up.
-///
-/// **The needles are assembled at run time**, halves joined rather than
-/// written whole, so the file defining them is scanned like every other.
-///
-/// What it does not catch: a reference inside an identifier, since the
-/// rule scanners read only prose; a bare letter-and-number, for the
-/// reason [`parenthesised_rule_citation`] gives; and any phrasing that
-/// avoids the literal needles, including a different case of one.
 /// Every fuzz target the workspace builds, in declaration order.
 fn fuzz_targets(root: &Path) -> Result<Vec<String>, String> {
     let manifest = std::fs::read_to_string(root.join("fuzz/Cargo.toml"))
@@ -1410,19 +1391,85 @@ fn every_fuzz_target_has_an_entry_in_the_refusal_catalogue() {
     let catalogue = std::fs::read_to_string(root.join("REFUSALS.md"))
         .expect("the catalogue is part of the tree");
 
+    // **The table, not the whole document.** A substring search over the
+    // file is satisfied by any passing mention -- including one in a
+    // paragraph the same change added -- while the message below asks
+    // for a row with an error type, a refusal count and a corpus floor.
+    // A check that accepts less than its message demands teaches the
+    // next reader to write the mention and move on.
+    let rows: Vec<&str> = catalogue
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('|'))
+        .collect();
+
     let missing: Vec<&String> = targets
         .iter()
-        .filter(|target| !catalogue.contains(target.as_str()))
+        .filter(|target| !rows.iter().any(|row| row.contains(target.as_str())))
         .collect();
 
     assert!(
         missing.is_empty(),
-        "these fuzz targets have no entry in REFUSALS.md: {missing:?}. A reader worth attacking \
-         is worth describing: add its row to the table of readers, with its error type, how many \
-         refusals it has and its corpus floor."
+        "these fuzz targets have no row in REFUSALS.md's table of readers: {missing:?}. A reader \
+         worth attacking is worth describing: add its row, with its error type, how many refusals \
+         it has and its corpus floor."
     );
 }
 
+/// **Every fuzz target is actually run by the fuzz workflow.**
+///
+/// A harness that is declared, built by nothing and run by nothing is
+/// not evidence of anything, and it fails silently: the corpus still
+/// replays through the library at every merge, so the reader looks
+/// covered while the assertions written into the harness itself have
+/// never once executed.
+///
+/// This is the half the catalogue check does not cover. That one asks
+/// whether a reader is described; this asks whether it is attacked.
+#[test]
+fn every_fuzz_target_is_run_by_the_fuzz_workflow() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/fuzz.yml"))
+        .expect("the fuzz workflow is part of the tree");
+
+    let matrix = workflow
+        .lines()
+        .find(|line| line.trim_start().starts_with("target: ["))
+        .expect("the fuzz workflow names its targets in one matrix line");
+
+    let unrun: Vec<&String> = targets
+        .iter()
+        .filter(|target| !matrix.contains(target.as_str()))
+        .collect();
+
+    assert!(
+        unrun.is_empty(),
+        "these fuzz targets are declared but never run: {unrun:?}. Add them to the matrix in \
+         .github/workflows/fuzz.yml, or delete the harness -- a target nothing runs is a claim \
+         nothing checks."
+    );
+}
+
+/// No source file may cite material this repository does not contain.
+///
+/// **A comment naming a document a reader cannot open is worse than a
+/// comment naming nothing.** It reads as sourced. A reader who goes
+/// looking finds no such file and cannot tell whether the evidence is
+/// missing or they are.
+///
+/// A sweep by eye searches for the notations it already knows and
+/// reports the tree clean when it runs out of them, which is why this is
+/// a test — and why the needle list is the thing to extend when a new
+/// spelling turns up.
+///
+/// **The needles are assembled at run time**, halves joined rather than
+/// written whole, so the file defining them is scanned like every other.
+///
+/// What it does not catch: a reference inside an identifier, since the
+/// rule scanners read only prose; a bare letter-and-number, for the
+/// reason [`parenthesised_rule_citation`] gives; and any phrasing that
+/// avoids the literal needles, including a different case of one.
 #[test]
 fn no_source_cites_material_this_repository_does_not_contain() {
     let root = workspace_root();
