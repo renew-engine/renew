@@ -20,10 +20,10 @@
 //! A buffer may name a `uri`, which is a second file or an embedded
 //! payload. **This reader refuses both by name.** Reading a second file
 //! would mean opening one, which this crate does not do and says so
-//! everywhere else; decoding an embedded one needs a decoder the tree
-//! does not have. Neither is a silent limitation: a document that wants
-//! either is told which, so the caller knows whether to convert the file
-//! or to wait for a reader that can.
+//! everywhere else; decoding an embedded one needs [`crate::data_uri`],
+//! which this reader does not yet call. Neither is a silent limitation:
+//! a document that wants either is refused, so the caller knows to
+//! convert the file rather than wondering what it got.
 //!
 //! The one buffer this reads is the container's own binary chunk, which
 //! is how a self-contained binary glTF stores its geometry.

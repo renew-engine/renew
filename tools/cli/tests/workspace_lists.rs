@@ -1343,6 +1343,114 @@ fn parenthesised_rule_citation(line: &str) -> Option<String> {
     None
 }
 
+/// Every fuzz target the workspace builds, in declaration order.
+fn fuzz_targets(root: &Path) -> Result<Vec<String>, String> {
+    let manifest = std::fs::read_to_string(root.join("fuzz/Cargo.toml"))
+        .map_err(|error| format!("fuzz/Cargo.toml is unreadable: {error}"))?;
+
+    // A target is a `[[bin]]` section, and the package's own `name` is
+    // not one -- so sections are counted rather than every `name = `
+    // line, which would pick up the package and call it a target.
+    let mut names = Vec::new();
+    let mut in_bin = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_bin = line == "[[bin]]";
+            continue;
+        }
+        if !in_bin {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name = ") {
+            names.push(rest.trim_matches('"').to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err("no fuzz targets found, which cannot be right".to_owned());
+    }
+    Ok(names)
+}
+
+/// **Every fuzz target has an entry in the refusal catalogue.**
+///
+/// The catalogue is written to be implemented against: a reader is built
+/// by going down its list and answering every entry. That only works
+/// while the list describes the readers that exist — and a table of
+/// readers is exactly the kind of document that drifts, because nothing
+/// fails when a row is missing.
+///
+/// Three readers went in with fuzz targets and corpora and no row here
+/// before this check existed, which is the whole argument for it. A
+/// target is the right thing to key on: it is declared once, in one file,
+/// by the same change that adds the reader.
+#[test]
+fn every_fuzz_target_has_an_entry_in_the_refusal_catalogue() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let catalogue = std::fs::read_to_string(root.join("REFUSALS.md"))
+        .expect("the catalogue is part of the tree");
+
+    // **The table, not the whole document.** A substring search over the
+    // file is satisfied by any passing mention -- including one in a
+    // paragraph the same change added -- while the message below asks
+    // for a row with an error type, a refusal count and a corpus floor.
+    // A check that accepts less than its message demands teaches the
+    // next reader to write the mention and move on.
+    let rows: Vec<&str> = catalogue
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('|'))
+        .collect();
+
+    let missing: Vec<&String> = targets
+        .iter()
+        .filter(|target| !rows.iter().any(|row| row.contains(target.as_str())))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these fuzz targets have no row in REFUSALS.md's table of readers: {missing:?}. A reader \
+         worth attacking is worth describing: add its row, with its error type, how many refusals \
+         it has and its corpus floor."
+    );
+}
+
+/// **Every fuzz target is actually run by the fuzz workflow.**
+///
+/// A harness that is declared, built by nothing and run by nothing is
+/// not evidence of anything, and it fails silently: the corpus still
+/// replays through the library at every merge, so the reader looks
+/// covered while the assertions written into the harness itself have
+/// never once executed.
+///
+/// This is the half the catalogue check does not cover. That one asks
+/// whether a reader is described; this asks whether it is attacked.
+#[test]
+fn every_fuzz_target_is_run_by_the_fuzz_workflow() {
+    let root = workspace_root();
+    let targets = fuzz_targets(&root).expect("the fuzz manifest lists its targets");
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/fuzz.yml"))
+        .expect("the fuzz workflow is part of the tree");
+
+    let matrix = workflow
+        .lines()
+        .find(|line| line.trim_start().starts_with("target: ["))
+        .expect("the fuzz workflow names its targets in one matrix line");
+
+    let unrun: Vec<&String> = targets
+        .iter()
+        .filter(|target| !matrix.contains(target.as_str()))
+        .collect();
+
+    assert!(
+        unrun.is_empty(),
+        "these fuzz targets are declared but never run: {unrun:?}. Add them to the matrix in \
+         .github/workflows/fuzz.yml, or delete the harness -- a target nothing runs is a claim \
+         nothing checks."
+    );
+}
+
 /// No source file may cite material this repository does not contain.
 ///
 /// **A comment naming a document a reader cannot open is worse than a

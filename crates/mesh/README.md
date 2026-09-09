@@ -281,6 +281,60 @@ boundaries, so their element size is not the product of their parts, and
 they carry inverse bind matrices — which is skinning, which this reads
 nothing of. They are unrepresentable rather than accepted and mis-sized.
 
+## The document, which is where the indices are
+
+`gltf::read` takes the bytes of a binary glTF and returns geometry. It is
+the only layer here that knows the format has a document at all: the
+container hands back two byte strings and parses neither, the accessor
+layer is arithmetic over a range, and this is where the numbers that
+drive both come from.
+
+**A document is a handful of parallel arrays and a great many indices
+into them.** A primitive names an accessor by number, an accessor names a
+buffer view by number, a view names a buffer by number. A number naming a
+row that is not there is the commonest thing wrong with a hand-edited or
+truncated document, so it has one refusal that carries the table, the
+index, and how many rows there were.
+
+**Its refusals name the layer that failed**, not just the fault: a
+`GltfError` says whether the container, the document, an accessor or the
+geometry objected, and the inner refusal's own numbers are one call away
+through the value. A caller that only wants geometry can go
+through `format::detect` and then `Format::read`, which wraps the same
+answer in `MeshError`.
+
+The scene walk is an explicit stack with a visited mark checked before
+children are pushed, so a document whose nodes point at each other is a
+refusal rather than a walk that never ends.
+
+## `data:` URIs, and why a decoder is strict about spelling
+
+`data_uri::read` turns a URI whose payload *is* the resource back into
+bytes — RFC 2397, base64 — and does nothing else. It does not know what
+the bytes are for and never touches the filesystem, so a URI naming a
+second file is not its to refuse, because it is not its to fetch.
+
+**The rule it is built on is that a difference which cannot change an
+output byte is forgiven, and one that can is refused.** The `;base64`
+marker is read in any letter case. Whitespace, the URL-safe alphabet, a
+payload that is not whole four-character groups, padding anywhere but the
+end — all refused, and the three that are about one character name
+its offset.
+
+**The one that is easy to miss is the last group's unused bits.** `QQ==`
+and `QR==` would both decode to the single byte `A`: the last four bits
+of the second character reach no output byte. A decoder that ignores them
+lets two different texts name one resource, which is the same trade the
+container refuses when it insists its declared length is exactly the
+file's length rather than at most it. Refusing the second spelling keeps
+text and bytes one to one — and the fuzz target holds that line from the
+other side, re-encoding everything the decoder accepts and demanding the
+input back character for character.
+
+The media type is reported and never judged. Which types are acceptable
+is a fact about what the caller is reading, and belongs where that is
+known.
+
 ## Manifest
 
 `Cargo.toml` is authoritative for maturity, core status, dependencies and

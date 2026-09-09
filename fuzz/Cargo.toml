@@ -147,3 +147,10 @@ path = "fuzz_targets/gltf_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "data_uri_read"
+path = "fuzz_targets/data_uri_read.rs"
+test = false
+doc = false
+bench = false

@@ -57,6 +57,7 @@
 
 pub mod accessor;
 pub mod blob;
+pub mod data_uri;
 mod error;
 pub mod format;
 pub mod glb;
@@ -140,6 +141,7 @@ pub(crate) fn refuse_over_ceiling(have: usize, adding: usize) -> Result<(), Mesh
 }
 
 pub use accessor::{Accessor, AccessorError, BufferView, Component, Shape};
+pub use data_uri::{DataUri, DataUriError};
 pub use error::MeshError;
 pub use glb::{Container, GlbError};
 pub use primitive::{Mode, Primitive};

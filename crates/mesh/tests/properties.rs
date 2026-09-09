@@ -15,7 +15,13 @@
 
 use proptest::prelude::*;
 use renew_math::{Mat4, Quat, Vec3};
+use renew_mesh::data_uri::{self, DataUriError};
 use renew_mesh::{Mesh, MeshError, blob, place, stl};
+
+// The encoder the seeds and the fuzz target use, shared rather than
+// copied so the round trip below is the same round trip they make.
+#[path = "shared/base64_encode.rs"]
+mod base64_encode;
 
 /// A binary STL over `triangles`, built the way an exporter would.
 fn binary(triangles: &[([f32; 3], [[f32; 3]; 3])]) -> Vec<u8> {
@@ -408,6 +414,186 @@ proptest! {
         prop_assert!(
             matches!(backwards, Err(MeshError::StreamLengthMismatch { .. })),
             "and the disagreement is not about argument order"
+        );
+    }
+}
+
+// ---- `data:` URIs -------------------------------------------------
+
+/// A URI carrying `bytes`, written the way an exporter would.
+fn embedded(bytes: &[u8]) -> String {
+    format!(
+        "data:application/octet-stream;base64,{}",
+        base64_encode::encode(bytes)
+    )
+}
+
+/// Text that reaches the decoder often enough to be worth generating.
+///
+/// **A generator of arbitrary bytes does not work here, and the reason
+/// is worth stating because it is not obvious.** For a format whose
+/// reader is the fallback for everything, arbitrary bytes are exactly
+/// the right shape -- the STL suite beside this one is built that way
+/// and is right to be. A `data:` URI begins with five fixed bytes, so
+/// arbitrary input reaches `looks_like` and stops. Two properties here
+/// were once written over `vec(any::<u8>(), 0..400)` and passed while
+/// proving only that a random byte string is not a URI.
+///
+/// So the generator builds URIs and then damages them, and
+/// `the_generator_reaches_the_decoder` below measures that it did.
+fn uri_text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        // Something an encoder would have written, with a tail that may
+        // ruin the last group's length, padding or canonical bits.
+        (
+            proptest::collection::vec(any::<u8>(), 0..40),
+            "[A-Za-z0-9+/=]{0,5}",
+        )
+            .prop_map(|(bytes, tail)| embedded(&bytes) + &tail),
+        // A description and a payload drawn from the alphabet, its
+        // neighbours, the padding and whitespace, so the refusals about
+        // characters and groups are reachable.
+        "data:[a-z/;=]{0,12},[A-Za-z0-9+/=_@ -]{0,30}",
+        // A URI whose scheme is right and whose payload is arbitrary
+        // text, which is what a damaged document looks like.
+        "data:;base64,.{0,40}",
+        // And bytes that are not a URI at all, because the reader has to
+        // answer for those too.
+        proptest::collection::vec(any::<u8>(), 0..400)
+            .prop_map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+    ]
+}
+
+/// **The generator reaches the decoder, measured rather than assumed.**
+///
+/// This test exists because its absence is what let two properties above
+/// pass while exercising one branch. A strategy is code, and a strategy
+/// nothing checks is code nothing checks -- so this samples it with a
+/// fixed seed and asserts that the answers it produces are more than one
+/// refusal.
+#[test]
+fn the_generator_reaches_the_decoder() {
+    use proptest::strategy::ValueTree as _;
+    use proptest::test_runner::TestRunner;
+    use std::collections::BTreeSet;
+
+    let mut runner = TestRunner::deterministic();
+    let mut reached: BTreeSet<&'static str> = BTreeSet::new();
+    for _ in 0..600 {
+        let text = uri_text()
+            .new_tree(&mut runner)
+            .expect("the strategy produces a value")
+            .current();
+        reached.insert(match data_uri::read(&text) {
+            Ok(_) => "Ok",
+            Err(refusal) => refusal.name(),
+        });
+    }
+
+    assert!(
+        reached.contains("Ok"),
+        "no generated text decodes, so every property over this strategy is about refusals \
+         alone. Reached: {reached:?}"
+    );
+    assert!(
+        reached.len() >= 5,
+        "the strategy reaches {} of the eight answers, which is too few to stand behind a \
+         property about all of them. Reached: {reached:?}",
+        reached.len()
+    );
+}
+
+proptest! {
+    /// **Whatever an encoder writes, the reader gives back.**
+    ///
+    /// The named cases beside this cover the published vectors and the
+    /// three padding states; this says it for every byte string, which is
+    /// the half a named case cannot reach — and the payloads that matter
+    /// most are the ones nobody would type, because `+` and `/` appear
+    /// only when the bytes happen to land on them.
+    #[test]
+    fn what_an_encoder_wrote_the_reader_gives_back(
+        bytes in proptest::collection::vec(any::<u8>(), 0..300),
+    ) {
+        let uri = embedded(&bytes);
+        let read = data_uri::read(&uri).expect("what was encoded reads");
+        prop_assert_eq!(read.bytes, bytes);
+        prop_assert_eq!(read.media_type, "application/octet-stream");
+        prop_assert_eq!(read.parameters, "");
+    }
+
+    /// **Text and bytes are one to one, in the direction that is easy to
+    /// get wrong.**
+    ///
+    /// The property above says every encoding decodes. This says nothing
+    /// else does: change any single character of a payload and either the
+    /// reader refuses it, or it decodes to something *different*. A
+    /// decoder that ignored the unused bits of a final group would fail
+    /// this and pass everything else here, which is exactly how that bug
+    /// survives in the wild.
+    #[test]
+    fn no_other_text_decodes_to_the_same_bytes(
+        bytes in proptest::collection::vec(any::<u8>(), 1..60),
+        at in 0_usize..80,
+        replacement in any::<u8>(),
+    ) {
+        let uri = embedded(&bytes);
+        let payload_at = uri.find(',').expect("an encoded URI has a comma") + 1;
+        let index = payload_at + at % (uri.len() - payload_at);
+        let replacement = char::from(replacement);
+        prop_assume!(replacement.is_ascii() && uri.as_bytes()[index] != replacement as u8);
+
+        let mut altered = uri.clone();
+        altered.replace_range(index..=index, &replacement.to_string());
+
+        match data_uri::read(&altered) {
+            Err(_) => {}
+            Ok(other) => prop_assert_ne!(
+                other.bytes,
+                bytes,
+                "{} is a second spelling of the same resource",
+                altered
+            ),
+        }
+    }
+
+    /// **Every text gets an answer**, which is the claim the whole
+    /// module rests on: a reader handed something no encoder wrote
+    /// returns rather than looping, panicking, or deciding for itself.
+    #[test]
+    fn every_text_gets_an_answer(text in uri_text()) {
+        match data_uri::read(&text) {
+            Ok(read) => prop_assert_eq!(
+                base64_encode::encode(&read.bytes),
+                &text[text.find(',').expect("a URI that read has a comma") + 1..],
+            ),
+            Err(refusal) => {
+                prop_assert!(!refusal.name().is_empty());
+                prop_assert!(!refusal.to_string().is_empty());
+            }
+        }
+    }
+
+    /// **An offset a refusal reports is inside the text it is about.**
+    ///
+    /// A message pointing past the end of what the caller handed over is
+    /// worse than no message: it sends whoever is debugging to a byte
+    /// that is not there.
+    #[test]
+    fn a_reported_offset_is_inside_the_text(text in uri_text()) {
+        let Err(
+            DataUriError::BadDigit { at, .. }
+            | DataUriError::BadPadding { at }
+            | DataUriError::NonCanonical { at, .. },
+        ) = data_uri::read(&text)
+        else {
+            return Ok(());
+        };
+        prop_assert!(
+            at < text.len(),
+            "offset {} is past the end of a {}-byte text",
+            at,
+            text.len()
         );
     }
 }

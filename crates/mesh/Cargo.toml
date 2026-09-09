@@ -12,7 +12,7 @@ readme = "README.md"
 homepage.workspace = true
 
 [package.metadata.renew]
-purpose = "Turn the bytes of a mesh file this engine did not write into validated geometry, refusing by name everything it cannot vouch for, and write that geometry back out in the one format this repository owns."
+purpose = "Turn the bytes of a mesh file this engine did not write into validated geometry, decoding the payloads such a file may embed, refusing by name everything it cannot vouch for, and write that geometry back out in the one format this repository owns."
 maturity = "bootstrap"
 core = false
 extension_points = []
