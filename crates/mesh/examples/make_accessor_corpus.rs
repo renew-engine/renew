@@ -58,15 +58,34 @@ fn claim(component: Component, shape: Shape, count: usize, region: &[u8]) -> See
         byte_offset: 0,
         byte_stride: None,
         view: None,
+        assemble: None,
+        index_offset: 0,
         normalized: false,
         as_indices: false,
         region,
     }
 }
 
+/// A buffer holding three positions and then six indices over them.
+///
+/// The layout a real file uses: attributes and the index stream in one
+/// region, each located by its own offset.
+fn positions_then_indices(indices: &[u16]) -> Vec<u8> {
+    let mut out: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    for index in indices {
+        out.extend_from_slice(&index.to_le_bytes());
+    }
+    out
+}
+
 /// Claims the reader accepts, so the search has somewhere to mutate
 /// *from*.
 fn readable_seeds() -> Vec<(String, Vec<u8>)> {
+    let one_face = positions_then_indices(&[0, 1, 2]);
+    let shared = positions_then_indices(&[0, 1, 2, 2, 1, 0]);
     let twelve = [0u8; 12];
     let thirty_six = [1u8; 36];
     let forty_four = [2u8; 44];
@@ -130,6 +149,24 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
             "byte-components".to_owned(),
             encode(&claim(Component::U8, Shape::Vec3, 2, &[7u8; 6])),
         ),
+        // **Assembled**, which is the layer above both: three positions
+        // and three indices in one buffer, expanded into one triangle.
+        (
+            "assembled-one-face".to_owned(),
+            encode(&Seed {
+                assemble: Some(3),
+                index_offset: 36,
+                ..claim(Component::F32, Shape::Vec3, 3, &one_face)
+            }),
+        ),
+        (
+            "assembled-shared-vertex".to_owned(),
+            encode(&Seed {
+                assemble: Some(6),
+                index_offset: 36,
+                ..claim(Component::F32, Shape::Vec3, 3, &shared)
+            }),
+        ),
         // **Through a view**, which puts the claim that a region is
         // really inside its buffer in front of the claim that elements
         // are really inside the region.
@@ -142,6 +179,38 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
                     byte_stride: None,
                 }),
                 ..claim(Component::F32, Shape::Vec2, 3, &[0u8; 64])
+            }),
+        ),
+    ]
+}
+
+/// Assembly claims that are refused, which are a layer above the rest.
+///
+/// Their own function because they are about a different question — an
+/// index addressing a vertex that is not there — and because the list
+/// below hit the line limit, which is the linter noticing the same
+/// thing.
+fn refused_assemblies() -> Vec<(String, Vec<u8>)> {
+    let past = positions_then_indices(&[0, 1, 7]);
+    let four = positions_then_indices(&[0, 1, 2, 0]);
+    vec![
+        // **An index past the end of the positions it addresses**, which
+        // is the fault this layer exists to catch and the one nothing
+        // downstream could.
+        (
+            "assembled-index-past-the-end".to_owned(),
+            encode(&Seed {
+                assemble: Some(3),
+                index_offset: 36,
+                ..claim(Component::F32, Shape::Vec3, 3, &past)
+            }),
+        ),
+        (
+            "assembled-corners-do-not-divide".to_owned(),
+            encode(&Seed {
+                assemble: Some(4),
+                index_offset: 36,
+                ..claim(Component::F32, Shape::Vec3, 3, &four)
             }),
         ),
     ]
@@ -268,7 +337,11 @@ fn main() -> ExitCode {
 
     let mut written = 0usize;
     let mut kept = 0usize;
-    for (name, bytes) in readable_seeds().into_iter().chain(refused_seeds()) {
+    for (name, bytes) in readable_seeds()
+        .into_iter()
+        .chain(refused_seeds())
+        .chain(refused_assemblies())
+    {
         let path = dir.join(format!("{name}.bin"));
         if path.exists() {
             kept += 1;

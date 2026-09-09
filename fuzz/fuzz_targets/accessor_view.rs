@@ -30,6 +30,33 @@ fuzz_target!(|data: &[u8]| {
     let Some(parsed) = seed::decode(data) else {
         return;
     };
+    if parsed.assemble.is_some() {
+        let Ok(region) = parsed.bytes() else {
+            return;
+        };
+        let Ok(mesh) = parsed.assembled(region) else {
+            return;
+        };
+        // **Whole triangles, and every corner inside the positions it
+        // was expanded from.** A de-indexing loop that compared an index
+        // against the wrong count would produce a mesh that looks like
+        // this one and holds a coordinate from outside the stream.
+        assert_eq!(
+            mesh.positions.len() % 3,
+            0,
+            "assembled geometry is whole triangles"
+        );
+        assert_eq!(mesh.positions.len(), mesh.triangles() * 3);
+        assert!(!mesh.is_empty(), "an empty assembly is refused, not returned");
+        for value in mesh.positions.iter().flatten() {
+            assert!(
+                value.is_finite(),
+                "a coordinate nothing downstream can bound reached a caller"
+            );
+        }
+        return;
+    }
+
     let Ok(accessor) = parsed.accessor() else {
         // A component code outside the table is an answer.
         return;

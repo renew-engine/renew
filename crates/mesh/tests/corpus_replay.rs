@@ -955,12 +955,12 @@ mod accessor_seed;
 
 /// The committed accessor corpus never shrinks below this many
 /// **distinct** inputs.
-const ACCESSOR_LOW_WATER: usize = 22;
+const ACCESSOR_LOW_WATER: usize = 26;
 
 /// How many distinct outcomes the accessor seeds must still reach.
 ///
 /// **Measured, not guessed** — `accessor_census` below prints it.
-const ACCESSOR_DISTINCT_OUTCOMES: usize = 12;
+const ACCESSOR_DISTINCT_OUTCOMES: usize = 14;
 
 /// Refusals a seed must provoke, each guarding something a count cannot.
 ///
@@ -985,7 +985,12 @@ const ACCESSOR_DISTINCT_OUTCOMES: usize = 12;
 ///   `StrideExceedsView` is the one stride rule that is about the view
 ///   rather than the value. A corpus reaching neither would leave the
 ///   layer in front of the accessor entirely unexercised.
-const ACCESSOR_REQUIRED: [&str; 9] = [
+/// * `IndexOutOfRange` and `NotAFace` come from the layer above both:
+///   an index addressing a vertex that is not there, and a corner count
+///   that does not divide into faces. The first is the only fault at
+///   that layer a wrong comparison turns into an out-of-bounds read,
+///   which is why the corpus assembles at all.
+const ACCESSOR_REQUIRED: [&str; 11] = [
     "OutOfRange",
     "StrideSmallerThanElement",
     "OffsetNotAligned",
@@ -995,6 +1000,8 @@ const ACCESSOR_REQUIRED: [&str; 9] = [
     "NormalizedIndices",
     "ViewOutOfRange",
     "StrideExceedsView",
+    "IndexOutOfRange",
+    "NotAFace",
 ];
 
 fn accessor_corpus_dir() -> PathBuf {
@@ -1132,6 +1139,8 @@ fn the_seed_encoding_round_trips() {
             count,
             byte_offset,
             byte_stride,
+            assemble: byte_stride.map(|_| 6),
+            index_offset: 12,
             view: byte_stride.map(|stride| accessor_seed::BufferView {
                 byte_offset: 4,
                 byte_length: 8,
@@ -1158,6 +1167,12 @@ fn the_seed_encoding_round_trips() {
             byte_stride.map(|_| (4, 8)),
             "and the view the fourth bit carries"
         );
+        assert_eq!(
+            back.assemble,
+            byte_stride.map(|_| 6),
+            "and the index stream the fifth bit carries"
+        );
+        assert_eq!(back.index_offset, 12);
         assert_eq!(back.region, &region[..]);
     }
 }
