@@ -31,11 +31,19 @@ simulation = false
 # multiply here to keep the dependency list empty would be two copies of
 # one fact. An empty list was a description, not a promise.
 renew-math = { version = "0.1.1", path = "../core/math", default-features = false }
+# The document half of the glTF reader. A container carries its
+# description as JSON, and reading it with a second parser written here
+# would be a second copy of a format nobody needs two of.
+renew-json = { version = "0.1.1", path = "../json", default-features = false }
 
 [dev-dependencies]
 # The suite for placement builds transforms with the same types the
 # library takes, so the matrix crate is here as well as above.
 renew-math = { version = "0.1.1", path = "../core/math", default-features = false }
+# The document suite parses its own fixtures with the same reader the
+# library uses, so a fixture it wrote and could not read back is a
+# broken test rather than a disagreement between two parsers.
+renew-json = { version = "0.1.1", path = "../json", default-features = false }
 proptest = "1.11"
 
 [lints]

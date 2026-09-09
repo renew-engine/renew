@@ -544,6 +544,9 @@ fn accessor_cannot_reach(refusal: &AccessorError) -> Option<&'static str> {
         | AccessorError::ViewOutOfRange { .. }
         | AccessorError::StrideExceedsView { .. }
         | AccessorError::NormalizedIndices => None,
+        AccessorError::UnknownShape => Some(
+            "a shape here is an enum a caller already holds; the name that spells one is              read where a document is, and the refusal for a name outside the four belongs              beside that table",
+        ),
         AccessorError::TooLarge { .. } => Some(
             "the arithmetic that would overflow is 64-bit, and on a 64-bit target the region \
              check refuses first; the test above accepts either answer for that reason",
