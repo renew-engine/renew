@@ -141,6 +141,30 @@ impl Format {
             Self::Mtl => None,
         }
     }
+
+    /// Read what this format says beyond its geometry, or `None` if it
+    /// says nothing this crate has a vocabulary for.
+    ///
+    /// **`None` is not an error, and it is not "no materials".** It is
+    /// "this format does not state them in the vocabulary this returns".
+    /// OBJ and MTL do carry materials, in a different model entirely --
+    /// Wavefront's, which `mtl::read` answers with and which is not
+    /// convertible into this one without inventing values. A caller that
+    /// reports an empty table for an OBJ would be saying something false
+    /// about the file.
+    ///
+    /// Exhaustive on purpose, like [`read`](Self::read): a format added
+    /// to this enum has to answer this question before it compiles,
+    /// which is the compile-time check a wildcard would throw away.
+    #[must_use]
+    pub fn tables(self, bytes: &[u8]) -> Option<Result<gltf::Tables, MeshError>> {
+        match self {
+            Self::Glb | Self::Gltf => {
+                Some(gltf::tables(bytes).map_err(|refusal| MeshError::Gltf(Box::new(refusal))))
+            }
+            Self::Obj | Self::Mtl | Self::Stl | Self::Ply | Self::Blob => None,
+        }
+    }
 }
 
 /// Which format these bytes are.

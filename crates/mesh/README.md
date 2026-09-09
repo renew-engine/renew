@@ -372,22 +372,11 @@ between them would be answering a question the document did not settle.
 A `uri` is a payload this reader decodes or a second file it will not
 open — the same pair of answers a buffer's `uri` gets.
 
-**`mimeType` is the document's answer when it gives one.** An image may
-state its type beside itself, in its payload's URI, or in both; the
-format requires one beside a view, because a view carries bytes and
-nothing about them. The two are never compared. The format relates
-neither to the other — its rule is that a payload's media type match its
-*content*, which nothing here can check because nothing here decodes —
-so refusing a disagreement would refuse conformant documents, and a PNG
-carried as `application/octet-stream` is ordinary. The one the format
-makes mandatory wins, and the payload's is what is left when there is no
-other.
-
-**An empty statement is an absence, on both sides.** A payload may carry
-no type, and `mimeType` may be written `""` because the schema ends in a
-permissive string. Both are a document saying nothing about its bytes,
-so both read as none — the reported type is never an empty string, which
-is a value every caller would have to know to treat as absent.
+**`mimeType` wins where a document states one, and the two labels are
+never compared** — the format relates neither to the other, and an
+absence on either side reads as an absence rather than as an empty
+string. The reasoning is on `gltf::Image::media_type`, which is where it
+belongs and where it will stay correct.
 
 `gltf::tables` reads the materials and the images together from either
 shape of the asset, doing the container dispatch that `gltf::read` does

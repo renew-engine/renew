@@ -647,6 +647,13 @@ fn check_file_combination(
     if images.is_some() && !is_import {
         return Err(ParseError::UnexpectedArgument("--images".to_string()));
     }
+    // **An empty path is the working directory**, and `create_dir_all("")`
+    // succeeds, so `--images ""` would quietly scatter a model's textures
+    // wherever the process happens to be standing. Refused where the
+    // other path rules live rather than deep in the writer.
+    if images.is_some_and(str::is_empty) {
+        return Err(ParseError::MissingValue("--images"));
+    }
 
     // Then what each subcommand cannot work without. Both paths are the
     // whole input: guessing one would be worse than refusing.

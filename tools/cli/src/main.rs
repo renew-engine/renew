@@ -517,7 +517,7 @@ fn names_one_file(from: &Path, out: &Path) -> bool {
 
 /// A refusal on its way out of the image-writing helpers.
 ///
-/// **Carried rather than emitted**, because the helpers do not know
+/// **Carried rather than emitted**, because `write_images` does not know
 /// whether the caller asked for JSON and the one place that does is
 /// already written.
 struct ImportFailure {
@@ -562,24 +562,13 @@ fn write_images(
     images: &[renew_mesh::gltf::Image<'static>],
     directory: &str,
 ) -> Result<Vec<String>, ImportFailure> {
-    let root = Path::new(directory);
-    // The flag names a destination for a set of files whose size the
-    // caller cannot know in advance, so making it is part of honouring
-    // it -- unlike `--out`, which names one file whose parent the
-    // caller already chose.
-    if let Err(error) = std::fs::create_dir_all(root) {
-        return Err(ImportFailure {
-            message: format!("cannot create {directory}: {error}"),
-            refusal: None,
-        });
-    }
-
-    let mut written = Vec::with_capacity(images.len());
+    // **Every name settled before the first byte is written.** Checking
+    // as the loop went would leave a caller deciding which half of a
+    // directory to trust: four files written, the fifth refused, and a
+    // blob on disk beside them. The names are two literals and an index,
+    // so the pass costs nothing.
+    let mut names = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
-        // **Refused before anything is written.** A run that wrote four
-        // images and then stopped at the fifth would leave the caller
-        // deciding which half of a directory to trust; the loop is short
-        // enough that checking as it goes still fails on the first one.
         let Some(stated) = image.media_type.as_deref() else {
             return Err(ImportFailure {
                 message: format!(
@@ -597,8 +586,31 @@ fn write_images(
                 refusal: Some("UnknownMediaType"),
             });
         };
+        names.push(format!("image-{index}.{extension}"));
+    }
 
-        let path = root.join(format!("image-{index}.{extension}"));
+    // **Nothing at all when there is nothing**, not even the directory.
+    // A model with no images should leave no trace of having been asked
+    // for them, which is the same rule the absent flag obeys.
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root = Path::new(directory);
+    // The flag names a destination for a set of files whose size the
+    // caller cannot know in advance, so making it is part of honouring
+    // it -- unlike `--out`, which names one file whose parent the
+    // caller already chose.
+    if let Err(error) = std::fs::create_dir_all(root) {
+        return Err(ImportFailure {
+            message: format!("cannot create {directory}: {error}"),
+            refusal: None,
+        });
+    }
+
+    let mut written = Vec::with_capacity(names.len());
+    for (name, image) in names.iter().zip(images) {
+        let path = root.join(name);
         if let Err(error) = std::fs::write(&path, &*image.bytes) {
             return Err(ImportFailure {
                 message: format!("cannot write {}: {error}", path.display()),
@@ -617,7 +629,9 @@ fn write_images(
 /// the default, and the difference does not matter to a caller choosing
 /// a shader -- but a missing key would make them write the defaults
 /// themselves, in a second place, from a specification they would have
-/// to go and read.
+/// to go and read. That argument bites hardest on a normal map's scale
+/// and an occlusion map's strength, which is why those two ride on their
+/// own map entries rather than being flattened away with the rest of it.
 fn material_json(material: &renew_mesh::pbr::Material) -> Value {
     // **The record's f32 widened, not reformatted.** Every one of these
     // came out of a document as a decimal and went into an `f32`; going
@@ -658,20 +672,32 @@ fn material_json(material: &renew_mesh::pbr::Material) -> Value {
         "textures".to_string(),
         Value::Array(
             [
-                ("base_color", material.base_color_map),
-                ("metallic_roughness", material.metallic_roughness_map),
-                ("normal", material.normal_map.map(|map| map.map)),
-                ("occlusion", material.occlusion_map.map(|map| map.map)),
-                ("emissive", material.emissive_map),
+                ("base_color", material.base_color_map, None),
+                ("metallic_roughness", material.metallic_roughness_map, None),
+                // **The two that carry a number of their own**, and the
+                // two the format cannot supply from a default once a
+                // document has stated them: a normal map's scale and an
+                // occlusion map's strength.
+                (
+                    "normal",
+                    material.normal_map.map(|map| map.map),
+                    material.normal_map.map(|map| ("scale", map.scale)),
+                ),
+                (
+                    "occlusion",
+                    material.occlusion_map.map(|map| map.map),
+                    material.occlusion_map.map(|map| ("strength", map.strength)),
+                ),
+                ("emissive", material.emissive_map, None),
             ]
             .into_iter()
-            .filter_map(|(role, reference)| {
+            .filter_map(|(role, reference, extra)| {
                 // **Only the maps the document named.** A null per absent
                 // role would make five keys that are almost always null,
                 // and a caller looking for what a material references
                 // would filter them right back out.
                 reference.map(|reference| {
-                    Value::Object(vec![
+                    let mut entry = vec![
                         ("role".to_string(), Value::String(role.to_string())),
                         (
                             "texture".to_string(),
@@ -681,7 +707,11 @@ fn material_json(material: &renew_mesh::pbr::Material) -> Value {
                             "uv_set".to_string(),
                             Value::Number(i64::from(reference.uv_set)),
                         ),
-                    ])
+                    ];
+                    if let Some((key, value)) = extra {
+                        entry.push((key.to_string(), number(value)));
+                    }
+                    Value::Object(entry)
                 })
             })
             .collect(),
@@ -758,6 +788,13 @@ fn run_asset_import(
 
     let found = renew_mesh::format::detect(&bytes);
     let format = found.name();
+    // Set when a table refused and the refusal was not fatal, so the
+    // envelope can say why it is reporting nothing rather than leaving
+    // a caller to read an absence as an emptiness. **The name and the
+    // sentence both**, for the same reason the failure envelope carries
+    // both: a name is for a program and a sentence is for a person, and
+    // this one never reaches `stderr` because the run succeeded.
+    let mut unreadable: Option<(&'static str, String)> = None;
     let Some(read) = found.read(&bytes) else {
         // A material library is not a broken mesh, and saying so is this
         // tool's judgement rather than a reader's refusal: no reader was
@@ -787,26 +824,34 @@ fn run_asset_import(
     };
 
     // **What the document says beyond its shape**, read from the same
-    // bytes before they are dropped. Only glTF states materials in this
-    // vocabulary and only glTF carries its images inside itself, so
-    // every other format answers with two empty tables rather than with
-    // a refusal -- a caller asking what an STL's textures are is not
-    // making a mistake, it is getting the true answer.
-    let tables = match found {
-        renew_mesh::format::Format::Gltf | renew_mesh::format::Format::Glb => {
-            match renew_mesh::gltf::tables(&bytes) {
-                Ok(tables) => tables,
-                Err(refusal) => {
-                    return import_failure(
-                        &format!("{from}: {refusal}"),
-                        Some(refusal.name()),
-                        json_mode,
-                        started,
-                    );
-                }
+    // bytes before they are dropped. The format decides whether there is
+    // an answer at all: a format that states no materials in this
+    // vocabulary answers `None`, which is not the same as answering that
+    // it has none.
+    //
+    // **A table that will not read does not take the geometry down with
+    // it, unless the caller asked for the images.** Reading a model is
+    // what this command is for, and the commonest glTF in the world
+    // keeps its textures in files beside itself -- which this reader
+    // will not open, and which has nothing to do with whether the
+    // geometry is sound. So the refusal is *reported* and the import
+    // proceeds. Where `--images` was given the caller asked for
+    // something that cannot be delivered, and then it is fatal.
+    let tables = match found.tables(&bytes) {
+        None => None,
+        Some(Ok(tables)) => Some(tables),
+        Some(Err(refusal)) => {
+            if images_dir.is_some() {
+                return import_failure(
+                    &format!("{from}: {refusal}"),
+                    Some(refusal.name()),
+                    json_mode,
+                    started,
+                );
             }
+            unreadable = Some((refusal.name(), refusal.to_string()));
+            None
         }
-        _ => renew_mesh::gltf::Tables::default(),
     };
 
     // The file is not read again after this, and it can be as large as
@@ -831,7 +876,10 @@ fn run_asset_import(
     // caller learns there are some before deciding where they go.
     let written = match images_dir {
         None => Vec::new(),
-        Some(directory) => match write_images(&tables.images, directory) {
+        Some(directory) => match write_images(
+            tables.as_ref().map_or(&[][..], |tables| &tables.images),
+            directory,
+        ) {
             Ok(written) => written,
             Err(failure) => {
                 return import_failure(&failure.message, failure.refusal, json_mode, started);
@@ -841,7 +889,8 @@ fn run_asset_import(
 
     report_import(&Import {
         mesh: &mesh,
-        tables: &tables,
+        tables: tables.as_ref(),
+        unreadable: unreadable.as_ref(),
         written: &written,
         format,
         out_path,
@@ -853,12 +902,18 @@ fn run_asset_import(
 
 /// Everything one successful import has to say for itself.
 ///
-/// **A record rather than eight parameters**, which is what the list had
-/// grown to: three of them were paths or flags of the same type, and a
-/// caller swapping two would have compiled.
+/// **A record rather than a long parameter list**, which is what it had
+/// grown to: `format` and `out_path` are both `&str`, and a caller
+/// swapping them would have compiled.
 struct Import<'a> {
     mesh: &'a renew_mesh::Mesh,
-    tables: &'a renew_mesh::gltf::Tables,
+    /// What the document said beyond its shape, where this format states
+    /// such things at all and the tables read.
+    tables: Option<&'a renew_mesh::gltf::Tables>,
+    /// Why the tables are absent, when they are absent because a table
+    /// refused rather than because the format has none: the refusal's
+    /// name and its sentence.
+    unreadable: Option<&'a (&'static str, String)>,
     written: &'a [String],
     format: &'a str,
     out_path: &'a str,
@@ -878,7 +933,7 @@ fn report_import(report: &Import<'_>) -> ExitCode {
     let (format, out_path) = (report.format, report.out_path);
     if report.json_mode {
         // `envelope_base` puts `schema_version` first already, which is
-        // what D11 asks of a public JSON surface. A second one here
+        // what a versioned machine-readable surface owes. A second here
         // would be a duplicate key in the object, and a reader taking
         // whichever it met first would be right by luck.
         let mut fields = envelope_base("asset-import", "ok", 0, report.started, "");
@@ -908,13 +963,42 @@ fn report_import(report: &Import<'_>) -> ExitCode {
         ));
         // **Reported whether or not any were written**, which is the
         // point of counting them separately from writing them.
+        // **Null is not empty.** A format that does not state materials
+        // in this vocabulary has not got none of them -- OBJ carries
+        // them in Wavefront's model, which is a different thing this arm
+        // does not convert into. And a table that refused has an answer
+        // nobody could read. Both are `null`, with `tables_refusal`
+        // telling the two apart.
+        let (materials, textures, images) = match report.tables {
+            None => (Value::Null, Value::Null, Value::Null),
+            Some(tables) => (
+                Value::Array(tables.materials.iter().map(material_json).collect()),
+                Value::Array(
+                    tables
+                        .textures
+                        .iter()
+                        .map(|source| {
+                            source.map_or(Value::Null, |source| Value::Number(i64::from(source)))
+                        })
+                        .collect(),
+                ),
+                Value::Array(tables.images.iter().map(image_json).collect()),
+            ),
+        };
+        fields.push(("materials".to_string(), materials));
+        // **The step between a material and an image**, which is a step:
+        // a material names a texture and a texture names a source, so
+        // without this a caller holding both lists cannot pair them.
+        fields.push(("textures".to_string(), textures));
+        fields.push(("images".to_string(), images));
         fields.push((
-            "materials".to_string(),
-            Value::Array(report.tables.materials.iter().map(material_json).collect()),
-        ));
-        fields.push((
-            "images".to_string(),
-            Value::Array(report.tables.images.iter().map(image_json).collect()),
+            "tables_refusal".to_string(),
+            report.unreadable.map_or(Value::Null, |(name, detail)| {
+                Value::Object(vec![
+                    ("name".to_string(), Value::String((*name).to_string())),
+                    ("detail".to_string(), Value::String(detail.clone())),
+                ])
+            }),
         ));
         fields.push((
             "images_written".to_string(),
@@ -932,9 +1016,20 @@ fn report_import(report: &Import<'_>) -> ExitCode {
         emit_stdout(&format!(
             "read {triangles} triangles of {format} into {out_path} ({size} bytes)\n"
         ));
-        let (materials, images) = (report.tables.materials.len(), report.tables.images.len());
-        if materials > 0 || images > 0 {
-            emit_stdout(&format!("  {materials} materials, {images} images\n"));
+        if let Some(tables) = report.tables {
+            let (materials, images) = (tables.materials.len(), tables.images.len());
+            if materials > 0 || images > 0 {
+                emit_stdout(&format!(
+                    "  {materials} materials, {images} images
+"
+                ));
+            }
+        }
+        if let Some((_, detail)) = report.unreadable {
+            emit_stdout(&format!(
+                "  its materials and images were not read: {detail}
+"
+            ));
         }
         for path in report.written {
             emit_stdout(&format!("  wrote {path}\n"));

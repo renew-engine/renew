@@ -2122,6 +2122,125 @@ fn document_with(tables: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// **A refusal part-way through leaves no half-written directory.**
+///
+/// Every name is settled before the first byte is written, so a document
+/// whose third image cannot be named writes none of the first two. The
+/// old shape checked and wrote in one pass, which left a caller deciding
+/// which half of a directory to trust.
+#[test]
+fn asset_import_writes_no_image_if_any_cannot_be_named() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-all-or-none")?;
+    let model = directory.join("scene.gltf");
+    let textures = directory.join("textures");
+    fs::write(
+        &model,
+        document_with(
+            r#","images":[{"uri":"data:image/png;base64,AQIDBA=="},
+{"uri":"data:image/jpeg;base64,BQYHCA=="},{"uri":"data:image/tiff;base64,CQoLDA=="}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+        "--images",
+        &textures.to_string_lossy(),
+    ])?;
+    assert!(!output.status.success(), "the third cannot be named");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("image 2 is `image/tiff`"),
+        "and it says which one"
+    );
+    assert!(
+        !textures.exists(),
+        "the two that could be named are not written either, and the \
+         directory they would have gone in is not made"
+    );
+    Ok(())
+}
+
+/// **A texture's source is reported, because a material names a texture
+/// and a texture names an image.**
+///
+/// Without the middle table a caller holding a material's reference and
+/// a directory of files has to guess, and the guess is wrong whenever a
+/// texture's index is not its image's.
+#[test]
+fn asset_import_reports_which_image_each_texture_draws_from() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-textures")?;
+    let model = directory.join("scene.gltf");
+    fs::write(
+        &model,
+        document_with(
+            r#","textures":[{"source":1}],
+"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}},
+"normalTexture":{"index":0,"scale":3.5},"occlusionTexture":{"index":0,"strength":0.25}}],
+"images":[{"uri":"data:image/jpeg;base64,BQYHCA=="},
+{"uri":"data:image/png;base64,AQIDBA=="}]"#,
+        ),
+    )?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &directory.join("out.msh").to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "it imports: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let reported = String::from_utf8_lossy(&output.stdout);
+    validate_json(reported.trim()).expect("one valid document");
+
+    // Texture 0 draws from image 1, so a caller pairing them by index
+    // alone would reach for the wrong file.
+    assert!(
+        reported.contains("\"textures\":[1]"),
+        "the join is reported: {reported:?}"
+    );
+    // **The two members a default cannot supply once a document states
+    // them**, which the material report used to drop.
+    assert!(
+        reported.contains("\"scale\":3.5"),
+        "a normal map's scale survives: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"strength\":0.25"),
+        "and an occlusion map's strength: {reported:?}"
+    );
+    Ok(())
+}
+
+/// `--images` with an empty path names the working directory, and is
+/// refused rather than scattering a model's textures into it.
+#[test]
+fn an_empty_images_path_is_refused() -> std::io::Result<()> {
+    let output = run(&[
+        "asset-import",
+        "--from",
+        "m.gltf",
+        "--out",
+        "m.msh",
+        "--images",
+        "",
+    ])?;
+    assert!(!output.status.success(), "an empty path is not a directory");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--images"),
+        "and the caller hears about the flag they typed"
+    );
+    Ok(())
+}
+
 /// **An image that states no type at all is refused for saying nothing**,
 /// which is the other half of `UnknownMediaType`.
 ///
@@ -2158,16 +2277,19 @@ fn asset_import_refuses_an_image_that_names_no_type() -> std::io::Result<()> {
     Ok(())
 }
 
-/// **A table that refuses refuses the import**, even where the geometry
-/// beside it reads perfectly.
+/// **A table that will not read does not take the geometry with it.**
 ///
-/// The two halves of a document are read separately, so this is the one
-/// case that proves the second half is read at all: the triangle is
-/// fine and the image names a second file.
+/// The commonest glTF in the world keeps its textures in files beside
+/// itself. This reader will not open a second file, which is a fact
+/// about the textures and says nothing about whether the geometry is
+/// sound -- so the model imports, and the envelope says why it is
+/// reporting no tables rather than leaving an absence to be read as an
+/// emptiness.
 #[test]
-fn asset_import_carries_a_table_refusal_out() -> std::io::Result<()> {
+fn a_table_that_will_not_read_does_not_stop_the_import() -> std::io::Result<()> {
     let directory = scratch_directory("asset-import-table-refusal")?;
     let model = directory.join("scene.gltf");
+    let blob = directory.join("out.msh");
     fs::write(&model, document_with(r#","images":[{"uri":"grain.png"}]"#))?;
 
     let output = run(&[
@@ -2176,16 +2298,38 @@ fn asset_import_carries_a_table_refusal_out() -> std::io::Result<()> {
         "--from",
         &model.to_string_lossy(),
         "--out",
-        &directory.join("out.msh").to_string_lossy(),
+        &blob.to_string_lossy(),
     ])?;
     assert!(
-        !output.status.success(),
-        "a file this reader will not open is a refusal, geometry or no geometry"
+        output.status.success(),
+        "the geometry is embedded and sound: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
+    assert!(blob.exists(), "and the blob it was asked for is written");
     let reported = String::from_utf8_lossy(&output.stdout);
     assert!(
-        reported.contains("\"refusal\":\"ExternalResource\""),
-        "named by the layer that refused rather than by this tool: {reported:?}"
+        reported.contains("\"name\":\"Gltf\"")
+            && reported.contains("keeps a resource somewhere else")
+            && reported.contains("\"materials\":null"),
+        "with the reason said rather than an empty table implied: {reported:?}"
+    );
+
+    // **Asking for the images makes it fatal**, because then the caller
+    // asked for the thing that cannot be delivered.
+    let asked = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+        "--images",
+        &directory.join("textures").to_string_lossy(),
+    ])?;
+    assert!(!asked.status.success(), "there are no images to write");
+    assert!(
+        String::from_utf8_lossy(&asked.stdout).contains("\"refusal\":\"Gltf\""),
+        "named the way this tool names every reader refusal"
     );
     Ok(())
 }
@@ -2507,11 +2651,15 @@ fn asset_import_refuses_to_invent_a_file_extension() -> std::io::Result<()> {
     Ok(())
 }
 
-/// **A format that carries no images answers with none, not a refusal.**
+/// **A format that states none of this answers `null`, not `[]`.**
 ///
-/// Asking an STL for its textures is a fair question with a true answer.
+/// Asking an STL for its textures is a fair question, and the true
+/// answer is not "it has none" -- OBJ carries materials in Wavefront's
+/// model, which this arm does not convert into, so an empty array would
+/// be saying something false about the file. `null` says the question
+/// was not answered here.
 #[test]
-fn asset_import_reports_empty_tables_for_a_format_without_them() -> std::io::Result<()> {
+fn asset_import_reports_no_tables_for_a_format_without_them() -> std::io::Result<()> {
     let directory = scratch_directory("asset-import-untextured")?;
     let model = directory.join("model.stl");
     // One binary-STL triangle: an 80-byte header, a count, and one facet.
@@ -2542,8 +2690,18 @@ fn asset_import_reports_empty_tables_for_a_format_without_them() -> std::io::Res
     );
     let reported = String::from_utf8_lossy(&output.stdout);
     assert!(
-        reported.contains("\"materials\":[]") && reported.contains("\"images\":[]"),
-        "both tables are empty and both are reported: {reported:?}"
+        reported.contains("\"materials\":null") && reported.contains("\"images\":null"),
+        "not answered here, rather than answered as none: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"tables_refusal\":null"),
+        "and nothing refused -- the format simply does not state them: {reported:?}"
+    );
+    // **The directory is not made for a model with no images**, which is
+    // the same rule the absent flag obeys.
+    assert!(
+        !directory.join("textures").exists(),
+        "no directory nobody had a use for"
     );
     Ok(())
 }

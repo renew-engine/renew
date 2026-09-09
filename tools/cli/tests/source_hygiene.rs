@@ -268,7 +268,7 @@ fn line_of(bytes: &[u8], offset: usize) -> usize {
 /// turns the two characters backslash-r into a carriage return, and
 /// backslash-t into a tab, inside whatever literal was being written.
 ///
-/// It happened here, twice in one session. A sample's README gained a
+/// It happened here, twice. A sample's README gained a
 /// PowerShell block whose `$env:USERPROFILE\run.log` had become
 /// `$env:USERPROFILE` + CR + `un.log`, and whose `.\target\debug\glide.exe`
 /// had become `.` + TAB + `arget\debug\glide.exe`. It reached a merged

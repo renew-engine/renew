@@ -195,8 +195,9 @@ fallback and refused by name, since it describes surfaces rather than
 their shape and would otherwise be reported as a truncated mesh: true,
 and no help to anyone.
 
-STL, PLY, OBJ and glTF are read -- both shapes of glTF, a `.gltf`
-document carrying its own payloads and a `.glb` container.
+STL, PLY, OBJ, glTF and this crate's own `.msh` blob are read -- both
+shapes of glTF, a `.gltf` document carrying its own payloads and a
+`.glb` container.
 
 **A glTF model's materials and images are reported, and its images are
 written only where you say.**
@@ -208,18 +209,36 @@ renew asset-pack --from build/ --pack game.rpk
 
 The two commands compose and neither learns about the other: import
 writes files, pack collects them. `--images` names a directory, which is
-created if it is not there, and each file is named `image-<n>` after the
-document's own address for it -- not after the name the document gave
-it, because a name in a file is not a thing that should decide where
-bytes land on disk. The extension comes from the media type the document
-stated: `image/png` and `image/jpeg`, the two the format's own schema
-names.
+created if there is at least one image to put in it. Each file is named
+`image-<n>.<ext>` -- the index is the document's own address for the
+image, not the name the document gave it, because a name in a file is
+not a thing that should decide where bytes land on disk. The extension
+comes from the media type: `image/png` becomes `.png` and `image/jpeg`
+becomes `.jpg`, those being the two the format's own schema names.
 
-**Without `--images` nothing is written and everything is still
-reported.** A command that scattered textures beside the blob because
-the input happened to carry some would be writing files nobody asked
-for; the flag is the asking, and the count is there either way so a
-caller can learn there are images before deciding where they go.
+A material names a *texture* and a texture names a *source*, so the
+envelope carries the `textures` table too -- without it a caller holding
+a material and a directory of files cannot pair them.
+
+**Without `--images` nothing is written and everything the document
+carries inside itself is still reported.** A command that scattered
+textures beside the blob because the input happened to carry some would
+be writing files nobody asked for; the flag is the asking, and the
+report is there either way so a caller can learn there are images before
+deciding where they go.
+
+**A glTF that keeps its textures in files beside it is not refused.**
+This reader does not open a second file, so it reports no tables and
+says so in `tables_refusal` -- the geometry is still read and the blob
+is still written, because whether a texture is reachable says nothing
+about whether the shape is sound. Passing `--images` for such a model
+*is* a refusal: then the caller asked for the thing that cannot be
+delivered.
+
+**Files already in the directory are left alone.** Two models imported
+into one directory leave the union of their images, so a caller that
+globs it gets both. `images_written` in the envelope names exactly what
+this run wrote, and is the list to trust.
 
 **No image is decoded, here or below.** A media type is reported and not
 weighed -- until something has to name a file for it, which is the one
@@ -230,7 +249,12 @@ perfectly readable by something else.
 `asset-import --json` adds, to the envelope every subcommand shares,
 the `format` detected, the `triangles` read, one boolean per optional
 stream, the `bytes` written, the `out` path, the `materials` and
-`images` the document carried, and the `images_written` paths. **On a refusal it carries the variant's name
+`images` the document carried, the `textures` table that joins them,
+`tables_refusal` when those could not be read, and the `images_written`
+paths. `materials`, `textures` and `images` are `null` rather than empty
+for a format that does not state them in this vocabulary -- an OBJ
+carries materials in Wavefront's model, which this arm does not convert
+into, so an empty array there would be saying something false. **On a refusal it carries the variant's name
 in `refusal` as well as the sentence in `stderr`**, because a message is
 for a person and a name is for a program: the sentences are meant to
 improve, and a script keying on one breaks when they do.

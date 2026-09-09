@@ -132,12 +132,16 @@ pub enum GltfError {
         count: usize,
     },
 
-    /// A buffer this reader will not go and get.
+    /// A resource this reader will not go and get: a buffer, or an image.
     ///
     /// Refused rather than ignored: a document whose geometry lives in a
     /// second file describes a model this cannot assemble, and returning
     /// what it *can* assemble would be returning half a model without
-    /// saying so.
+    /// saying so. The same holds for an image, which is why the two
+    /// share a refusal -- but **the caller's answer differs**, because a
+    /// missing texture leaves a whole model where a missing buffer
+    /// leaves none, so a caller that only wanted geometry is entitled to
+    /// carry on past this one.
     ExternalResource,
 
     /// A payload embedded in the document that will not decode.
@@ -316,7 +320,7 @@ impl core::fmt::Display for GltfError {
             } => write!(f, "`{table}[{index}]` of a table holding {count}"),
             Self::ExternalResource => write!(
                 f,
-                "this document keeps its geometry somewhere else, and this reader takes bytes"
+                "this document keeps a resource somewhere else, and this reader takes bytes"
             ),
             Self::Payload(refusal) => write!(f, "an embedded payload will not decode: {refusal}"),
             Self::BufferWithoutSource { buffer } => write!(
@@ -704,11 +708,13 @@ pub struct Image<'a> {
     /// document's answer, and the URI's is what is left when it gives
     /// none.
     ///
-    /// **`None` is the document having said nothing**, which is not the
-    /// same as `Some("")` — a URI may carry an empty media type, and
-    /// the decoder below reports that rather than applying RFC 2397's
-    /// default, so that a caller needing an explicit type can see there
-    /// was none.
+    /// **`None` is the document having said nothing, whichever side said
+    /// it.** A `mimeType` written `""` and a payload carrying no type at
+    /// all both normalise to `None`, so this is never `Some("")` — a
+    /// value every caller would otherwise have to know to treat as
+    /// absent. The decoder below reports a payload's missing type as an
+    /// empty string rather than applying RFC 2397's default, and this is
+    /// where that becomes an absence.
     ///
     /// **Reported, never judged.** Which types are readable is a fact
     /// about what the caller is doing with the bytes, and this layer
@@ -881,8 +887,8 @@ pub fn images<'s>(root: Value<'_>, source: &'s Source<'_>) -> Result<Vec<Image<'
 impl Image<'_> {
     /// Take ownership of the bytes, so the image outlives the document.
     ///
-    /// **The only way out of the borrow, and it is a copy where the
-    /// bytes came from a buffer.** An image read from a `bufferView`
+    /// **The way out of the borrow that does not rebuild the value, and
+    /// it is a copy where the bytes came from a buffer.** An image read from a `bufferView`
     /// borrows the document's own memory; a caller that wants to hold
     /// it after the document is dropped -- to write it to a file, say --
     /// has to pay for that once. An image decoded from a payload already
@@ -907,6 +913,15 @@ impl Image<'_> {
 pub struct Tables {
     /// Every material, in the vocabulary the format states them in.
     pub materials: Vec<Material>,
+    /// Which image each texture draws its bytes from, where it says.
+    ///
+    /// **The step between a material and an image, which is a step.** A
+    /// material names a *texture*, and a texture names a *source* — so a
+    /// caller holding a material's `TextureRef` and a list of images
+    /// cannot pair them without this. `source` is optional in the
+    /// format, because an extension may supply the image instead, and a
+    /// texture that names none reads as `None` rather than as zero.
+    pub textures: Vec<Option<u32>>,
     /// Every image, holding its own bytes.
     pub images: Vec<Image<'static>>,
 }
@@ -915,10 +930,13 @@ pub struct Tables {
 ///
 /// **The sibling of [`read`], and it exists for the same reason.** A
 /// binary glTF wraps its document in a container beside a chunk; a
-/// `.gltf` is that document on its own. Every caller of these tables
-/// would otherwise write that dispatch itself -- and the two that
-/// already exist got it wrong in different ways before this function
-/// did it once.
+/// `.gltf` is that document on its own, and a caller that wants the
+/// tables out of either without holding the parse would otherwise write
+/// that dispatch itself.
+///
+/// It does not replace [`images`] for a caller that can hold the parse:
+/// the images here own their bytes, so which source each came from is
+/// no longer visible in the value.
 ///
 /// **The images own their bytes**, which a borrowed form could not: the
 /// parsed document lives inside this call and cannot be handed back
@@ -942,11 +960,42 @@ pub fn tables(bytes: &[u8]) -> Result<Tables, GltfError> {
     let source = Source::of(root, chunk)?;
     Ok(Tables {
         materials: materials(root)?,
+        textures: textures(root)?,
         images: images(root, &source)?
             .into_iter()
             .map(Image::into_owned)
             .collect(),
     })
+}
+
+/// Which image each texture draws its bytes from.
+///
+/// **Only `source`, because that is the only member anything here can
+/// follow.** A texture also names a sampler, and a sampler is filtering
+/// and wrapping — facts for whoever draws with it, and nothing this
+/// crate has a home for yet.
+///
+/// # Errors
+///
+/// A [`GltfError`]: `Document` for a table or an entry of the wrong
+/// kind, or a `source` that is not a number.
+pub fn textures(root: Value<'_>) -> Result<Vec<Option<u32>>, GltfError> {
+    let Some(table) = root.get("textures") else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for entry in table.elements().map_err(GltfError::Document)? {
+        // An object, for the reason every other table checks: every
+        // member of a number answers absent, so a texture written `5`
+        // would read as one naming no source.
+        entry.entries().map_err(GltfError::Document)?;
+        out.push(match entry.get("source") {
+            None => None,
+            Some(source) => Some(source.as_u32()?),
+        });
+    }
+    Ok(out)
 }
 
 /// Read the document's materials, in the vocabulary glTF states them.
