@@ -33,6 +33,31 @@ fn unit_vec3() -> impl Strategy<Value = Vec3> {
     vec3().prop_filter_map("needs a direction", Vec3::try_normalize)
 }
 
+/// A scale with no component near zero, so the matrix it makes is
+/// invertible and the inverse's arithmetic stays in a sane range.
+///
+/// **The floor is about the test, not about the type.** `affine_inverse`
+/// deliberately refuses only an exactly-zero determinant, because a
+/// bound on "small" would be a bound about units; a property that
+/// sampled scales of `1e-30` would be measuring how much precision a
+/// round trip loses rather than whether the inverse is the inverse.
+fn invertible_scale() -> impl Strategy<Value = Vec3> {
+    let axis = prop_oneof![-1e3f32..-1e-2f32, 1e-2f32..1e3f32];
+    (axis.clone(), axis.clone(), axis).prop_map(|(x, y, z)| Vec3::new(x, y, z))
+}
+
+/// The shape a node transform actually is: scale, then rotate, then
+/// translate.
+fn affine() -> impl Strategy<Value = Mat4> {
+    (vec3(), unit_vec3(), -3.0f32..3.0f32, invertible_scale()).prop_map(
+        |(translation, axis, angle, scale)| {
+            Mat4::from_translation(translation)
+                * Mat4::from_quat(Quat::from_axis_angle(axis, angle))
+                * Mat4::from_scale(scale)
+        },
+    )
+}
+
 fn bits(v: Vec3) -> [u32; 3] {
     [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]
 }
@@ -264,5 +289,100 @@ proptest! {
             Alpha::new(remainder, step_nz).get().to_bits(),
             Alpha::new(remainder, step_nz).get().to_bits()
         );
+    }
+}
+
+// ---------------------------------------------------------------------
+// The affine inverse.
+//
+// **Tolerance tier, and not by preference.** An inverse divides by a
+// determinant and multiplies the result through, so a round trip is
+// three roundings deep before it is compared. A bit-exact law here would
+// be a law about this order of operations rather than about inversion.
+// ---------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        rng_seed: RngSeed::Fixed(0x00D1_A601),
+        ..ProptestConfig::default()
+    })]
+
+    /// **An inverse returns what its matrix moved**, for every affine
+    /// transform a node can carry.
+    ///
+    /// The named cases beside the type check a handful of shapes. This
+    /// says it of translations, rotations and non-uniform scales in
+    /// composition — including the ones with a scale of a hundredth on
+    /// one axis and a thousand on another, which is where a wrong
+    /// adjugate stops looking like the right one.
+    #[test]
+    fn an_affine_inverse_returns_the_point_its_matrix_moved(
+        m in affine(),
+        p in vec3(),
+    ) {
+        let inverse = m.affine_inverse().expect("an invertible scale was sampled");
+        let there = m.transform_point(p);
+        let back = inverse.transform_point(there);
+        // Relative, because a translation of a million and a point of a
+        // million put the round trip's error where an absolute epsilon
+        // would call it a failure of inversion rather than of f32.
+        let scale = p.length().max(there.length()).max(1.0);
+        prop_assert!(
+            (back - p).length() <= 1e-3 * scale,
+            "round trip moved the point by {} at scale {scale}",
+            (back - p).length()
+        );
+    }
+
+    /// **A normal matrix keeps a normal perpendicular to its surface**,
+    /// for every affine transform and every surface.
+    ///
+    /// This is the property the named case pins at one angle and one
+    /// scale. Transforming a normal as a direction satisfies it only
+    /// when the transform is a rotation, which is why a suite of rigid
+    /// fixtures cannot tell the two apart.
+    #[test]
+    fn a_normal_matrix_keeps_normals_perpendicular(
+        m in affine(),
+        a in unit_vec3(),
+        b in unit_vec3(),
+    ) {
+        // Any two directions in a surface; their cross product is its
+        // normal. Skip the pair that names no surface.
+        let normal = a.cross(b);
+        prop_assume!(normal.length() > 1e-3);
+
+        let moved_tangent = m.transform_vector(a);
+        let moved_normal = m
+            .normal_matrix()
+            .expect("an invertible scale was sampled")
+            .transform_vector(normal);
+        prop_assume!(moved_tangent.length() > 1e-3 && moved_normal.length() > 1e-3);
+
+        let cosine = moved_tangent.dot(moved_normal)
+            / (moved_tangent.length() * moved_normal.length());
+        prop_assert!(
+            cosine.abs() < 1e-3,
+            "the transformed normal is {cosine} off perpendicular to its transformed surface"
+        );
+    }
+
+    /// **A basis with a zero axis has no inverse**, wherever the zero is
+    /// and whatever else the transform does.
+    #[test]
+    fn a_flattened_basis_never_inverts(
+        translation in vec3(),
+        axis in unit_vec3(),
+        angle in -3.0f32..3.0f32,
+        which in 0usize..3,
+        other in 1e-2f32..1e3f32,
+    ) {
+        let mut scale = [other, other, other];
+        scale[which] = 0.0;
+        let m = Mat4::from_translation(translation)
+            * Mat4::from_quat(Quat::from_axis_angle(axis, angle))
+            * Mat4::from_scale(Vec3::new(scale[0], scale[1], scale[2]));
+        prop_assert_eq!(m.affine_inverse(), None);
+        prop_assert_eq!(m.normal_matrix(), None);
     }
 }

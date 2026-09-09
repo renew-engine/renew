@@ -14,7 +14,8 @@
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
 use proptest::prelude::*;
-use renew_mesh::{Mesh, blob, stl};
+use renew_math::{Mat4, Quat, Vec3};
+use renew_mesh::{Mesh, MeshError, blob, place, stl};
 
 /// A binary STL over `triangles`, built the way an exporter would.
 fn binary(triangles: &[([f32; 3], [[f32; 3]; 3])]) -> Vec<u8> {
@@ -266,5 +267,147 @@ proptest! {
         // And the form is canonical: the same mesh written twice is the
         // same bytes, which is what every cache above a blob assumes.
         prop_assert_eq!(blob::write(&read), bytes);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Placing geometry, and joining it.
+//
+// **Properties rather than a fuzz target, and the choice is the rule's
+// rather than convenience.** The testing table sends math to
+// property-based tests and sends parsers to fuzz targets. Placement
+// parses nothing: it takes a mesh some reader already validated and a
+// matrix the document layer will supply, and every loop bound comes from
+// a vector's own length. There is no offset computed from an untrusted
+// number, which is the class of fault a fuzzer finds and a property does
+// not. What can go wrong here is a value being wrong, and a fuzzer has
+// no oracle for a wrong normal.
+//
+// The path by which a hostile matrix arrives — sixteen numbers read out
+// of a document — is a parser, and it is fuzzed where it lives.
+// ---------------------------------------------------------------------
+
+/// A coordinate a bounding box can hold, and small enough that a
+/// transform of it stays finite.
+fn placed_coordinate() -> impl Strategy<Value = f32> {
+    -1e3f32..1e3f32
+}
+
+fn point() -> impl Strategy<Value = [f32; 3]> {
+    (
+        placed_coordinate(),
+        placed_coordinate(),
+        placed_coordinate(),
+    )
+        .prop_map(|(x, y, z)| [x, y, z])
+}
+
+/// A mesh of whole triangles, optionally carrying each of its optional
+/// arrays.
+fn placeable_mesh(with_normals: bool, with_texcoords: bool) -> impl Strategy<Value = Mesh> {
+    proptest::collection::vec((point(), point(), point()), 1..6).prop_map(move |faces| {
+        let mut out = Mesh::default();
+        for (a, b, c) in faces {
+            out.positions.extend_from_slice(&[a, b, c]);
+            if with_normals {
+                out.face_normals.push([0.0, 0.0, 1.0]);
+                out.corner_normals.extend_from_slice(&[[0.0, 0.0, 1.0]; 3]);
+            }
+            if with_texcoords {
+                out.corner_texcoords
+                    .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+            }
+        }
+        out
+    })
+}
+
+/// An invertible node transform: scale, then rotate, then translate.
+fn transform() -> impl Strategy<Value = Mat4> {
+    let axis = prop_oneof![-1e2f32..-1e-1f32, 1e-1f32..1e2f32];
+    (
+        point(),
+        (
+            placed_coordinate(),
+            placed_coordinate(),
+            placed_coordinate(),
+        ),
+        -3.0f32..3.0f32,
+        (axis.clone(), axis.clone(), axis),
+    )
+        .prop_filter_map("needs an axis to turn about", |(t, a, angle, s)| {
+            let axis = Vec3::new(a.0, a.1, a.2).try_normalize()?;
+            Some(
+                Mat4::from_translation(Vec3::new(t[0], t[1], t[2]))
+                    * Mat4::from_quat(Quat::from_axis_angle(axis, angle))
+                    * Mat4::from_scale(Vec3::new(s.0, s.1, s.2)),
+            )
+        })
+}
+
+proptest! {
+    /// **Placement answers, and what it accepts is finite.**
+    ///
+    /// The claim a named case cannot make: over every mesh of this shape
+    /// and every invertible transform, `place` either refuses or leaves
+    /// a mesh whose every coordinate a bounding box can still hold.
+    #[test]
+    fn placing_geometry_leaves_it_finite_or_refuses(
+        mut geometry in placeable_mesh(true, true),
+        matrix in transform(),
+    ) {
+        let corners = geometry.positions.len();
+        let faces = geometry.face_normals.len();
+        // A refusal is an answer; what it accepts is the subject.
+        if place::place(&mut geometry, matrix).is_ok() {
+            {
+                prop_assert_eq!(geometry.positions.len(), corners, "placement adds no geometry");
+                prop_assert_eq!(geometry.face_normals.len(), faces);
+                for value in geometry
+                    .positions
+                    .iter()
+                    .chain(&geometry.face_normals)
+                    .chain(&geometry.corner_normals)
+                    .flatten()
+                {
+                    prop_assert!(value.is_finite(), "a placed coordinate nothing can bound");
+                }
+            }
+        }
+    }
+
+    /// **Joining two pieces that carry the same arrays adds their
+    /// lengths and nothing else.**
+    #[test]
+    fn joining_pieces_that_agree_adds_their_lengths(
+        mut first in placeable_mesh(true, true),
+        second in placeable_mesh(true, true),
+    ) {
+        let (corners, faces) = (first.positions.len(), first.face_normals.len());
+        place::append(&mut first, &second).expect("both carry everything");
+        prop_assert_eq!(first.positions.len(), corners + second.positions.len());
+        prop_assert_eq!(first.face_normals.len(), faces + second.face_normals.len());
+        prop_assert_eq!(first.positions.len() % 3, 0, "still whole triangles");
+        prop_assert_eq!(first.corner_normals.len(), first.positions.len());
+        prop_assert_eq!(first.corner_texcoords.len(), first.positions.len());
+    }
+
+    /// **Two pieces that disagree about an array are always refused**,
+    /// whichever way round they are handed over.
+    #[test]
+    fn joining_pieces_that_disagree_always_refuses(
+        furnished in placeable_mesh(true, true),
+        mut plain in placeable_mesh(false, false),
+    ) {
+        let forwards = place::append(&mut furnished.clone(), &plain);
+        let backwards = place::append(&mut plain, &furnished);
+        prop_assert!(
+            matches!(forwards, Err(MeshError::StreamLengthMismatch { .. })),
+            "a piece with normals cannot take one without"
+        );
+        prop_assert!(
+            matches!(backwards, Err(MeshError::StreamLengthMismatch { .. })),
+            "and the disagreement is not about argument order"
+        );
     }
 }
