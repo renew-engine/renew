@@ -358,6 +358,29 @@ the surface it wears are two facts, and the canonical form carries one of
 them; `gltf::primitive_material` answers for the pairing without changing
 what a mesh is.
 
+## An image is bytes and one name for what they are
+
+`gltf::images` reads the image table to the bytes a document carried and
+the type it stated for them. **It decodes nothing** — what those bytes
+are is the caller's question, and answering it here would mean an image
+decoder this layer has no need of.
+
+**Exactly one source each.** The format's schema is a `oneOf` over `uri`
+and `bufferView`, so an image names one or the other: both is a document
+contradicting itself, neither describes nothing, and a reader that picked
+between them would be answering a question the document did not settle.
+A `uri` is a payload this reader decodes or a second file it will not
+open — the same pair of answers a buffer's `uri` gets.
+
+**One name for the bytes, not two.** An image may state its type in
+`mimeType`, in its payload's URI, or in both; the format requires one
+beside a view, because a view carries bytes and nothing about them. When
+both are present and differ, the document is refused rather than the
+contradiction being handed on — the same trade the payload decoder
+makes when it refuses a resource two texts could spell. An absent type is
+not a disagreement: a URI may omit one, and that is the document having
+said nothing rather than having said something else.
+
 ## `data:` URIs, and why a decoder is strict about spelling
 
 `data_uri::read` turns a URI whose payload *is* the resource back into

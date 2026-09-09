@@ -206,6 +206,34 @@ pub enum GltfError {
         field: &'static str,
     },
 
+    /// An image naming both a file and a view, or neither.
+    ///
+    /// **The format states exactly one.** Its schema is a `oneOf` over
+    /// the two, so an image with both sources is a document that
+    /// contradicts itself and one with neither is a document that
+    /// describes nothing — and a reader that picked, or that returned
+    /// an image with no bytes, would be answering a question the document
+    /// did not settle.
+    ImageSource {
+        /// How many of the two the image named: zero or two, never one.
+        named: usize,
+    },
+
+    /// An image whose two statements of its own type disagree.
+    ///
+    /// A payload carries a media type in its URI, and the image may also
+    /// state one in `mimeType`. When both are there they describe the
+    /// same bytes, so a document where they differ has said two things
+    /// about one resource.
+    ///
+    /// **Refused rather than reported as two answers.** The decoder one
+    /// layer down refuses a payload that two texts could spell, for the
+    /// reason that a resource with two spellings is a resource a caller
+    /// cannot key on; two names for one image is the same fault a level
+    /// up, and pushing the contradiction onto every caller would be
+    /// choosing not to have the argument here.
+    MediaTypeDisagrees,
+
     /// An alpha mode this format does not define.
     ///
     /// **Its own refusal rather than [`Unsupported`](Self::Unsupported),
@@ -276,6 +304,8 @@ impl GltfError {
             Self::BufferTooShort { .. } => "BufferTooShort",
             Self::FactorOutOfRange { .. } => "FactorOutOfRange",
             Self::UnknownAlphaMode { .. } => "UnknownAlphaMode",
+            Self::ImageSource { .. } => "ImageSource",
+            Self::MediaTypeDisagrees => "MediaTypeDisagrees",
             Self::NodeCycle { .. } => "NodeCycle",
             Self::Unsupported { .. } => "Unsupported",
         }
@@ -321,6 +351,15 @@ impl core::fmt::Display for GltfError {
             } => write!(
                 f,
                 "buffer {buffer} declares {declared} bytes and its resource holds {available}"
+            ),
+            Self::ImageSource { named } => write!(
+                f,
+                "an image names {named} of `uri` and `bufferView`, and the format states exactly one"
+            ),
+            Self::MediaTypeDisagrees => write!(
+                f,
+                "an image's `mimeType` and its payload's own media type describe the same bytes \
+                 differently"
             ),
             Self::UnknownAlphaMode { found } => write!(
                 f,
@@ -648,6 +687,128 @@ fn named(root: Value<'_>, info: Value<'_>) -> Result<TextureRef, GltfError> {
     })
 }
 
+/// One image, and what the document says its bytes are.
+///
+/// Borrowed where the bytes are a range of a buffer, owned where a
+/// payload had to be decoded into them — the same split the buffers
+/// table makes, for the same reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image<'a> {
+    /// What the document called it, if it called it anything.
+    pub name: Option<String>,
+    /// The media type the document states for these bytes.
+    ///
+    /// **One answer, not two.** An image may state its type in
+    /// `mimeType`, in its payload's URI, or in both; when both are
+    /// present and differ the document is refused rather than the
+    /// contradiction being handed on.
+    ///
+    /// **Reported, never judged.** Which types are readable is a fact
+    /// about what the caller is doing with the bytes, and this layer
+    /// decodes nothing.
+    pub media_type: String,
+    /// The bytes themselves.
+    pub bytes: Cow<'a, [u8]>,
+}
+
+/// Read the document's images to bytes and the type stated for them.
+///
+/// **Exactly one source each.** The format's schema is a `oneOf` over
+/// `uri` and `bufferView`, so an image names one or the other: both is a
+/// contradiction and neither describes nothing. A `uri` is a payload this
+/// reader decodes or a second file it will not open, which is the same
+/// pair of answers a buffer's `uri` gets.
+///
+/// **Nothing is decoded here.** An image comes back as the bytes a
+/// document carried and the name it gave them; what those bytes are is
+/// the caller's question, and answering it would mean an image decoder
+/// this layer has no need of.
+///
+/// # Errors
+///
+/// A [`GltfError`]: `ImageSource` when an image names both sources or
+/// neither; `MissingField` when a view carries no `mimeType`, which the
+/// format requires there; `MediaTypeDisagrees` when the two statements of
+/// one image's type differ; `ExternalResource` for a second file;
+/// `Payload` when an embedded one will not decode; and `Document` for a
+/// member of the wrong kind.
+pub fn images<'s>(root: Value<'_>, source: &'s Source<'_>) -> Result<Vec<Image<'s>>, GltfError> {
+    let Some(table) = root.get("images") else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::with_capacity(table.len());
+    for entry in table.elements().map_err(GltfError::Document)? {
+        entry.entries().map_err(GltfError::Document)?;
+
+        // Stated beside a view because the format requires it there,
+        // and allowed to be absent beside a URI because the payload
+        // carries one of its own.
+        let declared = match entry.get("mimeType") {
+            None => None,
+            Some(value) => Some(value.as_str()?.decode()),
+        };
+
+        // **The format's `oneOf` is this match.** Written as a count and
+        // a guard instead, one arm would hold a source the guard had
+        // already proved was there, and would reach for it through an
+        // unwrap that cannot fire -- which is the shape this crate keeps
+        // finding in its own defensive code.
+        let (media_type, bytes) = match (entry.get("uri"), entry.get("bufferView")) {
+            (Some(_), Some(_)) => return Err(GltfError::ImageSource { named: 2 }),
+            (None, None) => return Err(GltfError::ImageSource { named: 0 }),
+
+            (None, Some(index)) => {
+                let Some(stated) = declared else {
+                    return Err(GltfError::MissingField { path: "mimeType" });
+                };
+                let bytes = source.view_bytes(index.as_u32()? as usize)?;
+                (stated, Cow::Borrowed(bytes))
+            }
+
+            (Some(uri), None) => {
+                // Escapes first, as a buffer's URI needs: a payload
+                // carries `/` and a document may spell that `\/`.
+                let text = uri.as_str()?.decode();
+                if !data_uri::looks_like(&text) {
+                    return Err(GltfError::ExternalResource);
+                }
+                let payload = data_uri::read(&text).map_err(GltfError::Payload)?;
+                // **An absent type is not a disagreement.** A URI may
+                // omit its media type, and the decoder reports that as
+                // an empty one rather than applying RFC 2397's default,
+                // because the default is a claim the document did not
+                // make. Comparing the absence against a stated type
+                // would turn "said nothing" into "said something else".
+                if !payload.media_type.is_empty()
+                    && declared
+                        .as_ref()
+                        .is_some_and(|stated| stated != payload.media_type)
+                {
+                    return Err(GltfError::MediaTypeDisagrees);
+                }
+                // What the image stated, and the URI's own type when it
+                // stated none. Both may be absent -- the format requires
+                // a type only beside a view -- and then this is empty,
+                // which is the document having said nothing rather than
+                // this reader having decided something.
+                let media_type = declared.unwrap_or_else(|| payload.media_type.to_owned());
+                (media_type, Cow::Owned(payload.bytes))
+            }
+        };
+
+        out.push(Image {
+            name: match entry.get("name") {
+                None => None,
+                Some(value) => Some(value.as_str()?.decode()),
+            },
+            media_type,
+            bytes,
+        });
+    }
+    Ok(out)
+}
+
 /// Read the document's materials, in the vocabulary glTF states them.
 ///
 /// A material object has no required members, so an empty one is legal
@@ -939,6 +1100,21 @@ impl<'a> Source<'a> {
                 index,
                 count: self.buffers.len(),
             })
+    }
+
+    /// The bytes one view addresses, with no accessor over them.
+    ///
+    /// An image stored in the document is a view and a media type: the
+    /// bytes are a whole file rather than a typed stream, so nothing
+    /// here reads elements out of them.
+    ///
+    /// # Errors
+    ///
+    /// A [`GltfError`] naming the table an index missed, or the accessor
+    /// layer's refusal when the view does not fit its buffer.
+    pub fn view_bytes(&self, index: usize) -> Result<&[u8], GltfError> {
+        let (buffer, view) = row(&self.views, "bufferViews", index)?;
+        Ok(view.resolve(self.bytes(buffer)?)?)
     }
 
     /// One accessor and the bytes it addresses.

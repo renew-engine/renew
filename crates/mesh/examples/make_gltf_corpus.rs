@@ -332,6 +332,74 @@ fn material_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
+/// Documents carrying images, which no other seed reaches.
+///
+/// An image table is read only by asking for it, and it is where two
+/// layers meet that otherwise never touch: the buffer bytes an accessor
+/// addresses, and the payload decoding a buffer's own URI uses. These
+/// carry one, in the shapes that decide the answer.
+fn image_seeds() -> Vec<(String, Vec<u8>)> {
+    // **Built from nothing rather than from the geometry document.** A
+    // seed that reused it would carry a buffer wanting a container chunk
+    // it does not have, so every one of these would be refused for a
+    // reason that has nothing to do with images -- and the table they
+    // exist to exercise would never be reached.
+    let with =
+        |images: &str| format!(r#"{{"asset":{{"version":"2.0"}},"images":{images}}}"#).into_bytes();
+
+    // The one shape that needs a buffer carries its own, as a payload,
+    // so it stands alone too.
+    let stored = |images: &str| {
+        format!(
+            r#"{{"asset":{{"version":"2.0"}},
+"buffers":[{{"byteLength":4,"uri":"data:application/octet-stream;base64,AQIDBA=="}}],
+"bufferViews":[{{"buffer":0,"byteLength":4}}],"images":{images}}}"#
+        )
+        .into_bytes()
+    };
+
+    vec![
+        // A payload, which is the self-contained shape.
+        (
+            "image-embedded".to_owned(),
+            with(r#"[{"name":"grain","uri":"data:image/png;base64,AQIDBA=="}]"#),
+        ),
+        // Stored in the document's own buffer, which is the other one --
+        // and the only seed where an image reaches the buffer table.
+        (
+            "image-in-a-view".to_owned(),
+            stored(r#"[{"bufferView":0,"mimeType":"image/png"}]"#),
+        ),
+        // Both sources, which the format's `oneOf` forbids.
+        (
+            "image-two-sources".to_owned(),
+            stored(
+                r#"[{"bufferView":0,"mimeType":"image/png","uri":"data:image/png;base64,AQIDBA=="}]"#,
+            ),
+        ),
+        // Neither.
+        (
+            "image-no-source".to_owned(),
+            with(r#"[{"mimeType":"image/png"}]"#),
+        ),
+        // A view with nothing said about what its bytes are.
+        (
+            "image-view-untyped".to_owned(),
+            stored(r#"[{"bufferView":0}]"#),
+        ),
+        // One resource, two names for it.
+        (
+            "image-type-disagrees".to_owned(),
+            with(r#"[{"mimeType":"image/png","uri":"data:image/jpeg;base64,AQIDBA=="}]"#),
+        ),
+        // A second file, which this crate will not open.
+        (
+            "image-names-a-file".to_owned(),
+            with(r#"[{"uri":"grain.png"}]"#),
+        ),
+    ]
+}
+
 /// One container per refusal, each wrong in exactly one way.
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
@@ -452,6 +520,7 @@ fn main() -> ExitCode {
         .chain(refused_seeds())
         .chain(document_seeds())
         .chain(material_seeds())
+        .chain(image_seeds())
     {
         // **The extension follows the bytes.** Half these seeds are
         // documents rather than containers, and `.glb` means container

@@ -524,7 +524,9 @@ fn gltf_cannot_reach(refusal: &GltfError) -> Option<&'static str> {
         | GltfError::WrongMediaType { .. }
         | GltfError::BufferTooShort { .. }
         | GltfError::FactorOutOfRange { .. }
-        | GltfError::UnknownAlphaMode { .. } => None,
+        | GltfError::UnknownAlphaMode { .. }
+        | GltfError::ImageSource { .. }
+        | GltfError::MediaTypeDisagrees => None,
     }
 }
 
@@ -573,6 +575,19 @@ fn buffer_provocations() -> Vec<(&'static str, GltfError)> {
             )
             .expect_err("four bytes are not sixteen"),
         ),
+        ("ImageSource", {
+            let json = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
+            let source = gltf::Source::of(json.root(), None).expect("no tables");
+            gltf::images(json.root(), &source).expect_err("neither source")
+        }),
+        ("MediaTypeDisagrees", {
+            let json = document(
+                r#"{ "images": [{ "mimeType": "image/png",
+                       "uri": "data:image/jpeg;base64,AQIDBA==" }] }"#,
+            );
+            let source = gltf::Source::of(json.root(), None).expect("no tables");
+            gltf::images(json.root(), &source).expect_err("one resource, two names")
+        }),
         (
             "UnknownAlphaMode",
             gltf::materials(document(r#"{ "materials": [{ "alphaMode": "DITHER" }] }"#).root())
@@ -854,6 +869,232 @@ fn bytes_that_are_neither_shape_are_refused_by_the_document_layer() {
 //
 // The vocabulary is glTF's own, and every member of it has a default, so
 // most of what follows is about what a document that says nothing means.
+
+// ---------------------------------------------------------------------
+// Images.
+//
+// An image is bytes and a name for what they are. This layer decodes
+// nothing, so most of what follows is about where the bytes came from
+// and which of the two places the document was allowed to say it.
+
+/// A document, its tables, and its images in one step.
+fn images_of(text: &str, chunk: &[u8]) -> Result<Vec<Vec<u8>>, GltfError> {
+    let json = document(text);
+    let source = gltf::Source::of(json.root(), Some(chunk))?;
+    Ok(gltf::images(json.root(), &source)?
+        .into_iter()
+        .map(|image| image.bytes.into_owned())
+        .collect())
+}
+
+/// **An image carried as a payload comes back as its bytes.**
+#[test]
+fn an_embedded_image_is_read_to_its_bytes() {
+    let json = document(
+        r#"{ "images": [{
+          "name": "grain",
+          "uri": "data:image/png;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].name.as_deref(), Some("grain"));
+    assert_eq!(read[0].media_type, "image/png");
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// **An image stored in the document comes back as a view of it.**
+///
+/// The bytes are a whole file rather than a typed stream, so nothing
+/// reads elements out of them -- but they still have to lie inside the
+/// buffer that carries them.
+#[test]
+fn an_image_in_a_buffer_view_is_read_to_its_bytes() {
+    let read = images_of(
+        r#"{
+          "buffers": [{ "byteLength": 8 }],
+          "bufferViews": [{ "buffer": 0, "byteOffset": 4, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+        &[9, 9, 9, 9, 1, 2, 3, 4],
+    )
+    .expect("one image");
+    assert_eq!(
+        read,
+        vec![vec![1, 2, 3, 4]],
+        "the view's range, not the buffer's"
+    );
+}
+
+/// **Exactly one source: both is a contradiction, neither describes
+/// nothing.**
+///
+/// The format's schema is a `oneOf` over the two, and a reader that
+/// picked when both were named would be answering a question the
+/// document did not settle.
+#[test]
+fn an_image_names_exactly_one_source() {
+    let both = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png",
+                       "uri": "data:image/png;base64,AQIDBA==" }]
+        }"#,
+    );
+    let source = gltf::Source::of(both.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(both.root(), &source).expect_err("both sources"),
+        GltfError::ImageSource { named: 2 }
+    );
+
+    let neither = document(r#"{ "images": [{ "mimeType": "image/png" }] }"#);
+    let empty = gltf::Source::of(neither.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(neither.root(), &empty).expect_err("neither source"),
+        GltfError::ImageSource { named: 0 }
+    );
+}
+
+/// **A view carries bytes and nothing about them, so the document must
+/// say what they are.**
+#[test]
+fn an_image_in_a_view_must_state_its_media_type() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteLength": 4 }],
+          "images": [{ "bufferView": 0 }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("a view says nothing about its bytes"),
+        GltfError::MissingField { path: "mimeType" }
+    );
+}
+
+/// **A payload need not state its type, and then the image's own is all
+/// there is.**
+#[test]
+fn a_payload_without_a_type_takes_the_images_own() {
+    let json = document(
+        r#"{ "images": [{
+          "mimeType": "image/png",
+          "uri": "data:;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("one image");
+    assert_eq!(read[0].media_type, "image/png");
+}
+
+/// **Two statements of one image's type must agree.**
+///
+/// A payload carries a media type and the image may state one; both
+/// describe the same bytes. Reporting two answers would push a
+/// contradiction the document created onto every caller, which is the
+/// trade the decoder one layer down already refuses to make.
+#[test]
+fn two_statements_of_one_images_type_must_agree() {
+    let json = document(
+        r#"{ "images": [{
+          "mimeType": "image/png",
+          "uri": "data:image/jpeg;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("one resource, two names"),
+        GltfError::MediaTypeDisagrees
+    );
+
+    // Agreeing is not a refusal, which is the other half of the claim.
+    let agrees = document(
+        r#"{ "images": [{
+          "mimeType": "image/png",
+          "uri": "data:image/png;base64,AQIDBA=="
+        }] }"#,
+    );
+    let source = gltf::Source::of(agrees.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(agrees.root(), &source).expect("they agree")[0].media_type,
+        "image/png"
+    );
+}
+
+/// **An image naming a second file is refused rather than fetched**, as
+/// a buffer naming one is.
+#[test]
+fn an_image_naming_a_second_file_is_refused() {
+    let json = document(r#"{ "images": [{ "uri": "grain.png" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source).expect_err("a file is somewhere else"),
+        GltfError::ExternalResource
+    );
+}
+
+/// **A media type is reported and not judged.**
+///
+/// This layer decodes nothing, so which types are readable is a question
+/// for whoever reads the bytes. A document naming one this engine has no
+/// decoder for is not thereby malformed.
+#[test]
+fn a_media_type_this_engine_cannot_decode_is_still_reported() {
+    let json = document(r#"{ "images": [{ "uri": "data:image/tiff;base64,AQIDBA==" }] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    let read = gltf::images(json.root(), &source).expect("bytes are bytes");
+    assert_eq!(read[0].media_type, "image/tiff");
+    assert_eq!(&*read[0].bytes, &[1, 2, 3, 4]);
+}
+
+/// A document with no image table has none, which is not a refusal.
+#[test]
+fn a_document_with_no_images_has_none() {
+    let json = document(r#"{ "asset": { "version": "2.0" } }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert!(
+        gltf::images(json.root(), &source)
+            .expect("no images")
+            .is_empty()
+    );
+}
+
+/// **An image that is not an object is refused**, for the reason a
+/// material that is not one is: every member of a number answers absent.
+#[test]
+fn an_image_that_is_not_an_object_is_refused() {
+    let json = document(r#"{ "images": [5] }"#);
+    let source = gltf::Source::of(json.root(), None).expect("no tables");
+    assert_eq!(
+        gltf::images(json.root(), &source)
+            .expect_err("an image is an object")
+            .name(),
+        "Document"
+    );
+}
+
+/// **A view past its buffer is the accessor layer's refusal, reached
+/// through an image.**
+#[test]
+fn an_image_whose_view_runs_past_its_buffer_is_refused() {
+    let json = document(
+        r#"{
+          "buffers": [{ "byteLength": 4 }],
+          "bufferViews": [{ "buffer": 0, "byteOffset": 2, "byteLength": 4 }],
+          "images": [{ "bufferView": 0, "mimeType": "image/png" }]
+        }"#,
+    );
+    let source = gltf::Source::of(json.root(), Some(&[1, 2, 3, 4])).expect("tables");
+    assert_eq!(
+        gltf::images(json.root(), &source)
+            .expect_err("two plus four is past four")
+            .name(),
+        "Accessor"
+    );
+}
 
 /// **An empty material is every default, because the format says so.**
 ///
@@ -1451,7 +1692,7 @@ fn the_census_and_the_documents_agree() {
         assert!(!named.contains(name), "`{name}` is provoked twice");
         named.push(name);
     }
-    assert_eq!(named.len(), 16, "one provocation per refusal");
+    assert_eq!(named.len(), 18, "one provocation per refusal");
 }
 
 // ---------------------------------------------------------------------

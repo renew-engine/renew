@@ -133,7 +133,7 @@ fn materials_answer(data: &[u8]) {
         // business; a malformed wrapper has no document to ask about.
         return;
     };
-    let document = container.map_or(data, |read| read.json);
+    let (document, chunk) = container.map_or((data, None), |read| (read.json, read.binary));
 
     let Ok(json) = gltf::parse(document) else {
         return;
@@ -214,6 +214,34 @@ fn materials_answer(data: &[u8]) {
                 (named as usize) < materials.len(),
                 "a material index past the table reached a caller: {named} of {}",
                 materials.len()
+            );
+        }
+    }
+
+    // **The image table, from the same document.** It reaches for
+    // buffer bytes the way an accessor does and decodes payloads the way
+    // a buffer does, so it is where those two layers meet under a table
+    // that has no geometry in it at all.
+    if let Ok(source) = gltf::Source::of(root, chunk)
+        && let Ok(images) = gltf::images(root, &source)
+    {
+        {
+            for image in &images {
+                // Whatever came back is bytes the document carried, and
+                // an image with no bytes is not one this reader builds.
+                assert!(
+                    image.bytes.len() <= document.len(),
+                    "an image larger than the document it came from: {} of {}",
+                    image.bytes.len(),
+                    document.len()
+                );
+            }
+
+            let again = gltf::images(root, &source).expect("what read once reads again");
+            assert_eq!(
+                again.len(),
+                images.len(),
+                "the same bytes read to the same images"
             );
         }
     }

@@ -1207,7 +1207,7 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 32;
+const GLTF_LOW_WATER: usize = 39;
 
 /// How many distinct outcomes the glTF seeds must still reach.
 ///
@@ -1298,6 +1298,47 @@ fn every_recorded_container_answers_and_is_whole() {
         {
             assert!(value.is_finite(), "a coordinate nothing can bound");
         }
+    }
+}
+
+/// **The image table is exercised, which no other floor here reaches.**
+///
+/// An image changes no geometry and no material, so every check in the
+/// gate above would pass over a corpus that had lost every seed carrying
+/// one. Both sources are named because they are different code: one
+/// addresses a buffer, the other decodes a payload.
+fn the_image_layer_is_exercised(distinct: &BTreeSet<Vec<u8>>) {
+    // **The image table, which no other floor reaches.** An image
+    // changes no geometry and no material, so a corpus could lose every
+    // seed carrying one and every check above would still pass.
+    let mut embedded = 0;
+    let mut image_refusals: BTreeSet<&'static str> = BTreeSet::new();
+    for bytes in distinct {
+        let Ok(json) = gltf::parse(bytes) else {
+            continue;
+        };
+        let root = json.root();
+        let Ok(source) = gltf::Source::of(root, None) else {
+            continue;
+        };
+        match gltf::images(root, &source) {
+            Ok(read) => embedded += read.len(),
+            Err(refusal) => {
+                image_refusals.insert(refusal.name());
+            }
+        }
+    }
+    assert!(
+        embedded >= 1,
+        "no committed seed carries an image this reader can read, which is the shape the whole \
+     table exists for"
+    );
+    for required in ["ImageSource", "MediaTypeDisagrees", "ExternalResource"] {
+        assert!(
+            image_refusals.contains(required),
+            "no committed seed provokes the image layer's `{required}`. Reached: \
+         {image_refusals:?}"
+        );
     }
 }
 
@@ -1401,6 +1442,8 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
              {material_refusals:?}"
         );
     }
+
+    the_image_layer_is_exercised(&distinct);
 }
 
 #[test]
