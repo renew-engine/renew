@@ -1,4 +1,4 @@
-//! Write the binary glTF reader's seed corpus.
+//! Write the glTF reader's seed corpus, in both shapes it reads.
 //!
 //! **Every byte here is built by this program**, document and geometry
 //! alike. A container wraps somebody's model, so a downloaded one would
@@ -108,7 +108,8 @@ fn container(document: &str, binary: &[u8]) -> Vec<u8> {
 const SIMPLEST: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
-"bufferViews":[{"byteLength":36}]}"#;
+"buffers":[{"byteLength":36}],
+"bufferViews":[{"buffer":0,"byteLength":36}]}"#;
 
 /// Everything named: normals, coordinates and an index stream.
 const EVERYTHING: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
@@ -119,9 +120,10 @@ const EVERYTHING: &str = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
 {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
 {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],
+"buffers":[{"byteLength":102}],
 "bufferViews":[
-{"byteOffset":0,"byteLength":36},{"byteOffset":36,"byteLength":36},
-{"byteOffset":72,"byteLength":24},{"byteOffset":96,"byteLength":6}]}"#;
+{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},
+{"buffer":0,"byteOffset":72,"byteLength":24},{"buffer":0,"byteOffset":96,"byteLength":6}]}"#;
 
 /// Containers that read, so the search has somewhere to mutate *from*.
 fn readable_seeds() -> Vec<(String, Vec<u8>)> {
@@ -177,14 +179,102 @@ fn readable_seeds() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
+/// Canonical base64, so a document can carry its own geometry.
+///
+/// The same encoder six other targets share, included rather than
+/// copied: a seed that embeds a payload has to spell it, and a payload
+/// spelled by hand is a fixture that stops meaning what its name says.
+#[path = "../tests/shared/base64_encode.rs"]
+mod base64_encode;
+
+/// Documents that arrive on their own, with no container around them.
+///
+/// **The corpus had none of this shape.** Every seed was a container, so
+/// the path a `.gltf` takes -- no chunk, geometry embedded in the
+/// document as payloads -- was reachable only by a mutation that
+/// destroyed the magic, and a mutation that destroys the magic usually
+/// destroys everything after it too. These start inside that path.
+fn document_seeds() -> Vec<(String, Vec<u8>)> {
+    let payload = base64_encode::encode(&triangle());
+    let embedded = SIMPLEST.replace(
+        r#""buffers":[{"byteLength":36}]"#,
+        &format!(
+            r#""buffers":[{{"byteLength":36,"uri":"data:application/octet-stream;base64,{payload}"}}]"#
+        ),
+    );
+
+    vec![
+        // The whole point of the shape: one file, geometry included.
+        (
+            "document-embedded".to_owned(),
+            embedded.clone().into_bytes(),
+        ),
+        // The same document wanting a chunk that a lone document can
+        // never have, which is what an exporter that split its output
+        // and forgot to say so produces.
+        (
+            "document-wants-a-chunk".to_owned(),
+            SIMPLEST.as_bytes().to_vec(),
+        ),
+        // A document naming a file beside it, which this reader will not
+        // open and says so.
+        (
+            "document-names-a-file".to_owned(),
+            SIMPLEST
+                .replace(
+                    r#""buffers":[{"byteLength":36}]"#,
+                    r#""buffers":[{"byteLength":36,"uri":"geometry.bin"}]"#,
+                )
+                .into_bytes(),
+        ),
+        // JSON that parses and is not a document, which the detector
+        // must not claim and the reader must refuse by name.
+        (
+            "json-that-is-not-a-document".to_owned(),
+            br#"{"name":"something else","version":"2.0"}"#.to_vec(),
+        ),
+        // A payload whose media type is not one a buffer may declare.
+        (
+            "document-wrong-media-type".to_owned(),
+            embedded
+                .replace("application/octet-stream", "image/png")
+                .into_bytes(),
+        ),
+        // A payload that will not decode, which reaches the decoder's own
+        // refusals through the document -- five layers of wrapping, and
+        // nothing exercised it until this seed.
+        (
+            "document-payload-will-not-decode".to_owned(),
+            embedded.replace("base64,", "base64,!!").into_bytes(),
+        ),
+        // A buffer declaring more than its payload holds, which is the
+        // document and its own bytes disagreeing.
+        (
+            "document-buffer-too-short".to_owned(),
+            embedded
+                .replace(r#""byteLength":36"#, r#""byteLength":600"#)
+                .into_bytes(),
+        ),
+    ]
+}
+
 /// One container per refusal, each wrong in exactly one way.
 fn refused_seeds() -> Vec<(String, Vec<u8>)> {
     let mut wrong_magic = container(SIMPLEST, &triangle());
     wrong_magic[0] = b'X';
 
+    // **The magic left intact, the version broken.** A seed whose magic
+    // is wrong is not a container at all and is tried as a document
+    // instead, so without this one nothing in the corpus reaches the
+    // container layer's refusals -- which is a hole the document seeds
+    // opened, because they took the only seed that used to reach it.
+    let mut bad_version = container(SIMPLEST, &triangle());
+    bad_version[4] = 9;
+
     vec![
         ("not-a-container".to_owned(), b"solid teapot\n".to_vec()),
         ("wrong-magic".to_owned(), wrong_magic),
+        ("container-version".to_owned(), bad_version),
         (
             "not-a-document".to_owned(),
             container(r#"{"asset":"#, &triangle()),
@@ -227,7 +317,10 @@ fn refused_seeds() -> Vec<(String, Vec<u8>)> {
         (
             "second-buffer".to_owned(),
             container(
-                &SIMPLEST.replace(r#"{"byteLength":36}"#, r#"{"buffer":1,"byteLength":36}"#),
+                &SIMPLEST.replace(
+                    r#""buffers":[{"byteLength":36}]"#,
+                    r#""buffers":[{"byteLength":36},{"byteLength":36}]"#,
+                ),
                 &triangle(),
             ),
         ),
@@ -280,8 +373,21 @@ fn main() -> ExitCode {
 
     let mut written = 0usize;
     let mut kept = 0usize;
-    for (name, bytes) in readable_seeds().into_iter().chain(refused_seeds()) {
-        let path = dir.join(format!("{name}.glb"));
+    for (name, bytes) in readable_seeds()
+        .into_iter()
+        .chain(refused_seeds())
+        .chain(document_seeds())
+    {
+        // **The extension follows the bytes.** Half these seeds are
+        // documents rather than containers, and `.glb` means container
+        // everywhere else in this tree; deriving it from the magic keeps
+        // the two from drifting apart as seeds are added.
+        let shape = if bytes.starts_with(b"glTF") {
+            "glb"
+        } else {
+            "gltf"
+        };
+        let path = dir.join(format!("{name}.{shape}"));
         if path.exists() {
             kept += 1;
             continue;

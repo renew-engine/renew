@@ -1,8 +1,9 @@
-//! A whole binary glTF, against bytes nobody wrote on purpose.
+//! A whole glTF asset, against bytes nobody wrote on purpose.
 //!
 //! **The one target in this tranche whose input needs no encoding
-//! invented for it.** A container is a file; the generator writes files,
-//! this reads them, and the merge-time replay gate reads the same ones.
+//! invented for it.** A glTF asset is a file -- a container, or the
+//! document on its own -- so the generator writes both shapes, this
+//! reads them, and the merge-time replay gate reads the same ones.
 //! The accessor target had to carry six parameters in a head because an
 //! accessor is not a file — this is what it looks like when the layer
 //! under test takes bytes.

@@ -15,31 +15,82 @@
 //! hand-edited or truncated document**, and it has one refusal here that
 //! carries the table, the index and how many rows there were.
 //!
-//! # What is refused rather than fetched
+//! # What is decoded, and what is refused rather than fetched
 //!
-//! A buffer may name a `uri`, which is a second file or an embedded
-//! payload. **This reader refuses both by name.** Reading a second file
-//! would mean opening one, which this crate does not do and says so
-//! everywhere else; decoding an embedded one needs [`crate::data_uri`],
-//! which this reader does not yet call. Neither is a silent limitation:
-//! a document that wants either is refused, so the caller knows to
-//! convert the file rather than wondering what it got.
+//! A buffer may name a `uri`, and the two things that can be are treated
+//! differently. **A `data:` URI is decoded in place** through
+//! [`crate::data_uri`], which is how a document that travels as one file
+//! carries its geometry. **Anything else names a second file**, and
+//! opening one is not something this crate does -- so it is refused by
+//! name, and the caller knows to convert the file rather than wondering
+//! what it got.
 //!
-//! The one buffer this reads is the container's own binary chunk, which
-//! is how a self-contained binary glTF stores its geometry.
+//! A buffer with no `uri` at all is the container's own binary chunk,
+//! and only the first buffer may be: the specification leaves any other
+//! sourceless buffer undefined, and undefined is refused here.
 
 use renew_json::{Json, JsonError, Value};
 use renew_math::{Mat4, Quat, Vec3, Vec4};
 
+use std::borrow::Cow;
+
 use crate::accessor::{Accessor, AccessorError, BufferView, Component, Indices, Shape, View};
+use crate::data_uri::{self, DataUriError};
 use crate::error::MeshError;
 use crate::glb::GlbError;
 use crate::primitive::{self, Mode, Primitive};
 use crate::{Mesh, glb, place};
 
+/// The two media types a buffer's embedded payload may declare.
+///
+/// The specification names exactly these two and no others, which is why
+/// a third is a refusal that can say what it found rather than a shrug.
+const GLTF_BUFFER: &str = "application/gltf-buffer";
+const OCTET_STREAM: &str = "application/octet-stream";
+
+/// Whether these bytes are a glTF document rather than a container.
+///
+/// **This parses, and that is the point.** Every other format here is
+/// recognised by a magic number or a keyword, and a JSON document has
+/// neither: "starts with `{`" would claim every configuration file in
+/// the world. So the question asked is the one the format answers -- a
+/// glTF document **must** carry an `asset` object with a `version`
+/// string, and nothing that is not one will have that where this looks.
+///
+/// The cost is a parse of the whole document before anything reads it,
+/// which is real and is the right trade: the alternative is a confident
+/// answer about the wrong format, which is the defect a prefix check
+/// produced here once already.
+#[must_use]
+pub fn looks_like(bytes: &[u8]) -> bool {
+    // **Bounded before it is thorough.** The parse below reads the whole
+    // input, and every other arm of the dispatch this feeds is
+    // deliberately bounded and says so -- so without this line a fifty
+    // megabyte OBJ pays a full scan to be told it is not JSON, and pays
+    // it before the cheap check that would have recognised it.
+    //
+    // The two answers are the same. A document's root is an object, so
+    // when the first byte that is not whitespace is not `{`, either the
+    // parse fails or the root is not an object, and asking a non-object
+    // for a member answers `None` either way.
+    let Some(first) = bytes.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return false;
+    };
+    if bytes.get(first) != Some(&b'{') {
+        return false;
+    }
+
+    Json::parse(bytes).is_ok_and(|json| {
+        json.root()
+            .get("asset")
+            .and_then(|asset| asset.get("version"))
+            .is_some_and(|version| version.as_str().is_ok())
+    })
+}
+
 /// Every way a document can fail to describe geometry this can read.
 ///
-/// **Four of these carry another layer's refusal**, and that is the
+/// **Five of these carry another layer's refusal**, and that is the
 /// point of the type: a caller wants to know whether the container was
 /// malformed, the JSON was, an accessor's arithmetic was, or the
 /// geometry was — because those send them to four different places.
@@ -87,6 +138,52 @@ pub enum GltfError {
     /// what it *can* assemble would be returning half a model without
     /// saying so.
     ExternalResource,
+
+    /// A payload embedded in the document that will not decode.
+    ///
+    /// The layer below names which rule the text broke and where.
+    Payload(DataUriError),
+
+    /// A buffer with no `uri` that is not the container's own chunk.
+    ///
+    /// **Only the first buffer may be the chunk.** The specification
+    /// says of any other buffer with no source that its behaviour "is
+    /// left undefined to accommodate future extensions", and undefined
+    /// behaviour is a refusal here rather than a guess: the alternative
+    /// is handing a view the wrong bytes and calling the result
+    /// geometry.
+    BufferWithoutSource {
+        /// Which buffer, by its index in the document's own table.
+        buffer: usize,
+    },
+
+    /// The document wants the container's chunk and there is none.
+    ///
+    /// A container whose document has a buffer with no `uri` **must**
+    /// carry a binary chunk. A document read on its own never can, which
+    /// is the ordinary way to meet this.
+    NoBinaryChunk,
+
+    /// A `data:` URI whose media type is not one a buffer may declare.
+    WrongMediaType {
+        /// What the URI said, so the message can show it.
+        found: Box<str>,
+    },
+
+    /// A resource shorter than the buffer that names it.
+    ///
+    /// The specification allows a resource to be **longer** — only
+    /// the first `byteLength` bytes belong to the buffer — and
+    /// requires it to be at least that long. Shorter means the document
+    /// and its payload disagree about what is there.
+    BufferTooShort {
+        /// Which buffer, by its index in the document's own table.
+        buffer: usize,
+        /// What the document said the buffer holds.
+        declared: usize,
+        /// What the resource actually holds.
+        available: usize,
+    },
 
     /// A node that is its own ancestor, or that two parents claim.
     ///
@@ -137,6 +234,11 @@ impl GltfError {
             Self::MissingField { .. } => "MissingField",
             Self::NoSuchEntry { .. } => "NoSuchEntry",
             Self::ExternalResource => "ExternalResource",
+            Self::Payload(_) => "Payload",
+            Self::BufferWithoutSource { .. } => "BufferWithoutSource",
+            Self::NoBinaryChunk => "NoBinaryChunk",
+            Self::WrongMediaType { .. } => "WrongMediaType",
+            Self::BufferTooShort { .. } => "BufferTooShort",
             Self::NodeCycle { .. } => "NodeCycle",
             Self::Unsupported { .. } => "Unsupported",
         }
@@ -159,6 +261,29 @@ impl core::fmt::Display for GltfError {
             Self::ExternalResource => write!(
                 f,
                 "this document keeps its geometry somewhere else, and this reader takes bytes"
+            ),
+            Self::Payload(refusal) => write!(f, "an embedded payload will not decode: {refusal}"),
+            Self::BufferWithoutSource { buffer } => write!(
+                f,
+                "buffer {buffer} names no source, and only the first buffer may be the \
+                 container's own"
+            ),
+            Self::NoBinaryChunk => write!(
+                f,
+                "a buffer wants the container's binary chunk and there is no such chunk"
+            ),
+            Self::WrongMediaType { found } => write!(
+                f,
+                "a buffer's payload declares `{found}`, and a buffer may declare only \
+                 `{GLTF_BUFFER}` or `{OCTET_STREAM}`"
+            ),
+            Self::BufferTooShort {
+                buffer,
+                declared,
+                available,
+            } => write!(
+                f,
+                "buffer {buffer} declares {declared} bytes and its resource holds {available}"
             ),
             Self::NodeCycle { node } => write!(
                 f,
@@ -221,7 +346,11 @@ fn entry<'a>(
             count: 0,
         });
     };
-    table.index(index).ok_or(GltfError::NoSuchEntry {
+    // **`ok_or_else`, not `ok_or`.** `Value::len` counts the table's
+    // children, so building the refusal eagerly counts every row of
+    // every table on every *successful* lookup -- which is the larger
+    // half of what made reading a table quadratic.
+    table.index(index).ok_or_else(|| GltfError::NoSuchEntry {
         table: name,
         index,
         count: table.len(),
@@ -233,32 +362,135 @@ fn entry<'a>(
 /// # Errors
 ///
 /// A [`GltfError`] naming which view and which member.
-pub fn buffer_views(root: Value<'_>) -> Result<Vec<BufferView>, GltfError> {
+pub fn buffer_views(root: Value<'_>) -> Result<Vec<(usize, BufferView)>, GltfError> {
     let Some(table) = root.get("bufferViews") else {
         // A document with no views has no geometry to point at, which
         // the caller finds out when it asks for a primitive.
         return Ok(Vec::new());
     };
-    let mut out = Vec::with_capacity(table.len());
-    for index in 0..table.len() {
-        let view = entry(Some(table), "bufferViews", index)?;
-
-        // **Only the container's own chunk.** A document with more than
-        // one buffer keeps geometry somewhere this cannot reach, and
-        // saying so is better than reading the one buffer it can and
-        // returning part of a model.
-        if number_or(view, "buffer", 0)? != 0 {
-            return Err(GltfError::ExternalResource);
-        }
+    // **One pass, not one walk per row.** A `Value`'s index restarts
+    // from the head of the array, and its own documentation says a layer
+    // that wants a table it will hit thousands of times should build one
+    // in a single pass. This is that layer, and this is that pass.
+    let mut out = Vec::new();
+    for view in table.elements().map_err(GltfError::Document)? {
+        // **Required, and with no default of its own.** `byteOffset` may
+        // be absent and mean zero because the format says so; `buffer`
+        // may not. Defaulting it was harmless while every buffer but the
+        // first was refused -- absent and zero named the same bytes --
+        // and became a wrong answer the moment a second buffer could be
+        // read, because a view naming none would silently be handed the
+        // first one's.
+        //
+        // The buffer travels beside the view from here, the way an
+        // accessor already carries the view it reads through.
+        let buffer = required(view, "buffer")?.as_u32()? as usize;
 
         let byte_length = required(view, "byteLength")?.as_u32()?;
-        out.push(BufferView {
-            byte_offset: number_or(view, "byteOffset", 0)? as usize,
-            byte_length: byte_length as usize,
-            byte_stride: match view.get("byteStride") {
-                None => None,
-                Some(stride) => Some(stride.as_u32()? as usize),
+        out.push((
+            buffer,
+            BufferView {
+                byte_offset: number_or(view, "byteOffset", 0)? as usize,
+                byte_length: byte_length as usize,
+                byte_stride: match view.get("byteStride") {
+                    None => None,
+                    Some(stride) => Some(stride.as_u32()? as usize),
+                },
             },
+        ));
+    }
+    Ok(out)
+}
+
+/// The bytes of every buffer the document names.
+///
+/// Borrowed where a buffer is the container's own chunk, owned where a
+/// `data:` URI had to be decoded into one. Nothing here opens a file:
+/// a buffer naming a second resource is refused, because fetching it is
+/// the caller's business and this crate does not have one.
+///
+/// # A buffer is its resource, cut to the length it declares
+///
+/// The specification is explicit that a resource **may be longer** than
+/// the buffer that names it, and that only the range from zero to
+/// `byteLength` is referenced. That is not a technicality: the container
+/// pads its binary chunk to a four-byte boundary, so the chunk is longer
+/// than the buffer inside it **whenever that buffer's length is not a
+/// multiple of four** -- which the corpus's fully furnished document
+/// happens to be, at a hundred and two bytes in a hundred-and-four-byte
+/// chunk. Cutting here is what stops a view reaching past the buffer
+/// into that padding and being handed bytes the document never claimed.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming what was wrong: a source this crate will not
+/// fetch, or -- naming the buffer as well -- no source at all, no chunk
+/// for it to be, a media type a buffer may not declare, a payload that
+/// will not decode, or a resource shorter than the length declared for
+/// it.
+pub fn buffers<'a>(
+    root: Value<'_>,
+    binary: Option<&'a [u8]>,
+) -> Result<Vec<Cow<'a, [u8]>>, GltfError> {
+    let Some(table) = root.get("buffers") else {
+        // A document with no buffers has no geometry to point at, which
+        // the caller finds out when it asks for a primitive.
+        return Ok(Vec::new());
+    };
+
+    let mut out: Vec<Cow<'a, [u8]>> = Vec::new();
+    for (index, buffer) in table.elements().map_err(GltfError::Document)?.enumerate() {
+        let declared = required(buffer, "byteLength")?.as_u32()? as usize;
+
+        let resource: Cow<'a, [u8]> = match buffer.get("uri") {
+            None => {
+                // **Only the first buffer may be the container's own.**
+                if index != 0 {
+                    return Err(GltfError::BufferWithoutSource { buffer: index });
+                }
+                Cow::Borrowed(binary.ok_or(GltfError::NoBinaryChunk)?)
+            }
+            Some(uri) => {
+                // **Escapes resolved first, not the borrowed fast path.**
+                // A base64 payload contains `/`, and a document is free
+                // to spell that `\/` -- so the plain form is absent for
+                // exactly the URIs this needs to read.
+                let text = uri.as_str()?.decode();
+                if !data_uri::looks_like(&text) {
+                    return Err(GltfError::ExternalResource);
+                }
+                let payload = data_uri::read(&text).map_err(GltfError::Payload)?;
+                // **Compared without case.** RFC 2045 says a media type is
+                // not case sensitive, and the decoder one file over
+                // already forgives the marker's case under its own rule
+                // that a difference which cannot change an output byte is
+                // not a difference. Two readers of one URI should not
+                // disagree about that.
+                if !payload.media_type.eq_ignore_ascii_case(GLTF_BUFFER)
+                    && !payload.media_type.eq_ignore_ascii_case(OCTET_STREAM)
+                {
+                    return Err(GltfError::WrongMediaType {
+                        found: payload.media_type.into(),
+                    });
+                }
+                Cow::Owned(payload.bytes)
+            }
+        };
+
+        if resource.len() < declared {
+            return Err(GltfError::BufferTooShort {
+                buffer: index,
+                declared,
+                available: resource.len(),
+            });
+        }
+
+        out.push(match resource {
+            Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[..declared]),
+            Cow::Owned(mut bytes) => {
+                bytes.truncate(declared);
+                Cow::Owned(bytes)
+            }
         });
     }
     Ok(out)
@@ -332,67 +564,94 @@ fn row<T: Copy>(table: &[T], name: &'static str, index: usize) -> Result<T, Gltf
     })
 }
 
-/// Resolve an accessor index into the bytes it addresses.
+/// Everything a primitive needs in order to find its bytes.
 ///
-/// **This is the one place the stride crosses from a view to an
-/// accessor**, and it is a function rather than three call sites for
-/// that reason: the format puts `byteStride` on the view because
-/// interleaved attributes share it, and the arithmetic wants it on the
-/// accessor. A reader that copied it at each attribute would have three
-/// chances to forget.
-fn resolved<'a>(
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &'a [u8],
-    index: usize,
-) -> Result<(Accessor, &'a [u8]), GltfError> {
-    let (which, accessor) = row(accessors, "accessors", index)?;
-    let view = row(views, "bufferViews", which)?;
-    let region = view.resolve(binary)?;
-    Ok((
-        Accessor {
-            byte_stride: view.byte_stride,
-            ..accessor
-        },
-        region,
-    ))
+/// The three tables are always read together and always in the same
+/// order — an accessor names a view, a view names a buffer — so
+/// they travel as one value rather than as three arguments threaded
+/// through every function that only passes them along.
+pub struct Source<'a> {
+    /// Every view, each beside the buffer it points at.
+    pub views: Vec<(usize, BufferView)>,
+    /// Every accessor, each beside the view it points at.
+    pub accessors: Vec<(usize, Accessor)>,
+    /// Every buffer's bytes, cut to the length it declared.
+    pub buffers: Vec<Cow<'a, [u8]>>,
 }
 
-/// An attribute stream, validated against the bytes it addresses.
-fn stream<'a>(
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &'a [u8],
-    index: usize,
-) -> Result<View<'a>, GltfError> {
-    let (accessor, region) = resolved(views, accessors, binary, index)?;
-    Ok(accessor.view(region)?)
-}
+impl<'a> Source<'a> {
+    /// Read all three tables out of a document.
+    ///
+    /// `binary` is the container's chunk when there is one. A document
+    /// read on its own has none, and any buffer that wanted it is
+    /// refused by name rather than silently given nothing.
+    ///
+    /// # Errors
+    ///
+    /// A [`GltfError`] from whichever table was wrong first.
+    pub fn of(root: Value<'_>, binary: Option<&'a [u8]>) -> Result<Self, GltfError> {
+        Ok(Self {
+            views: buffer_views(root)?,
+            accessors: accessors(root)?,
+            buffers: buffers(root, binary)?,
+        })
+    }
 
-/// An index stream, validated against the bytes it addresses.
-fn order<'a>(
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &'a [u8],
-    index: usize,
-) -> Result<Indices<'a>, GltfError> {
-    let (accessor, region) = resolved(views, accessors, binary, index)?;
-    Ok(accessor.indices(region)?)
-}
+    /// The bytes of one buffer.
+    fn bytes(&self, index: usize) -> Result<&[u8], GltfError> {
+        self.buffers
+            .get(index)
+            .map(|buffer| &**buffer)
+            .ok_or(GltfError::NoSuchEntry {
+                table: "buffers",
+                index,
+                count: self.buffers.len(),
+            })
+    }
 
-/// An optional attribute, by the name the document spells it with.
-fn optional_stream<'a>(
-    attributes: Value<'_>,
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &'a [u8],
-    name: &str,
-) -> Result<Option<View<'a>>, GltfError> {
-    let Some(value) = attributes.get(name) else {
-        return Ok(None);
-    };
-    let index = value.as_u32()? as usize;
-    Ok(Some(stream(views, accessors, binary, index)?))
+    /// One accessor and the bytes it addresses.
+    ///
+    /// **The single place the three tables cross.** An accessor names a
+    /// view, the view names a buffer and a region of it, and the stride
+    /// belongs to the view rather than to the accessor — so this is
+    /// also the one place that stride is filled in.
+    fn resolved(&self, index: usize) -> Result<(Accessor, &[u8]), GltfError> {
+        let (which, accessor) = row(&self.accessors, "accessors", index)?;
+        let (buffer, view) = row(&self.views, "bufferViews", which)?;
+        let region = view.resolve(self.bytes(buffer)?)?;
+        Ok((
+            Accessor {
+                byte_stride: view.byte_stride,
+                ..accessor
+            },
+            region,
+        ))
+    }
+
+    /// An attribute stream, validated against the bytes it addresses.
+    fn stream(&self, index: usize) -> Result<View<'_>, GltfError> {
+        let (accessor, region) = self.resolved(index)?;
+        Ok(accessor.view(region)?)
+    }
+
+    /// An index stream, validated against the bytes it addresses.
+    fn order(&self, index: usize) -> Result<Indices<'_>, GltfError> {
+        let (accessor, region) = self.resolved(index)?;
+        Ok(accessor.indices(region)?)
+    }
+
+    /// An optional attribute, by the name the document spells it with.
+    fn optional_stream(
+        &self,
+        attributes: Value<'_>,
+        name: &str,
+    ) -> Result<Option<View<'_>>, GltfError> {
+        let Some(value) = attributes.get(name) else {
+            return Ok(None);
+        };
+        let index = value.as_u32()? as usize;
+        Ok(Some(self.stream(index)?))
+    }
 }
 
 /// Assemble one primitive of one mesh.
@@ -404,9 +663,7 @@ fn optional_stream<'a>(
 /// fault.
 pub fn primitive(
     root: Value<'_>,
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &[u8],
+    source: &Source<'_>,
     mesh: usize,
     index: usize,
 ) -> Result<Mesh, GltfError> {
@@ -416,12 +673,7 @@ pub fn primitive(
     let found = entry(primitives, "primitives", index)?;
 
     let attributes = required(found, "attributes")?;
-    let positions = stream(
-        views,
-        accessors,
-        binary,
-        required(attributes, "POSITION")?.as_u32()? as usize,
-    )?;
+    let positions = source.stream(required(attributes, "POSITION")?.as_u32()? as usize)?;
 
     // **The default is triangles and it is the format's**, not this
     // reader's convenience: a primitive with no `mode` is a triangle
@@ -431,14 +683,14 @@ pub fn primitive(
 
     let indices = match found.get("indices") {
         None => None,
-        Some(value) => Some(order(views, accessors, binary, value.as_u32()? as usize)?),
+        Some(value) => Some(source.order(value.as_u32()? as usize)?),
     };
 
     Ok(primitive::build(&Primitive {
         mode,
         positions,
-        normals: optional_stream(attributes, views, accessors, binary, "NORMAL")?,
-        texcoords: optional_stream(attributes, views, accessors, binary, "TEXCOORD_0")?,
+        normals: source.optional_stream(attributes, "NORMAL")?,
+        texcoords: source.optional_stream(attributes, "TEXCOORD_0")?,
         indices,
     })?)
 }
@@ -491,9 +743,7 @@ fn node_transform(node: Value<'_>) -> Result<Mat4, GltfError> {
 /// Every primitive of one mesh, placed and joined.
 fn mesh_at(
     root: Value<'_>,
-    views: &[BufferView],
-    accessors: &[(usize, Accessor)],
-    binary: &[u8],
+    source: &Source<'_>,
     index: usize,
     world: Mat4,
     out: &mut Mesh,
@@ -502,7 +752,7 @@ fn mesh_at(
         .get("primitives")
         .map_or(0, Value::len);
     for which in 0..count {
-        let mut piece = primitive(root, views, accessors, binary, index, which)?;
+        let mut piece = primitive(root, source, index, which)?;
         place::place(&mut piece, world)?;
         if out.positions.is_empty() {
             *out = piece;
@@ -513,7 +763,7 @@ fn mesh_at(
     Ok(())
 }
 
-/// Read a whole binary glTF into one mesh.
+/// Read a whole binary glTF, or a document on its own, into one mesh.
 ///
 /// # The walk cannot hang, by construction
 ///
@@ -528,13 +778,29 @@ fn mesh_at(
 /// A [`GltfError`] naming the layer that refused and carrying its
 /// numbers.
 pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
-    let container = glb::read(bytes).map_err(GltfError::Container)?;
-    let json = parse(container.json)?;
-    let root = json.root();
-    let binary = container.binary.unwrap_or_default();
+    // **Either shape of the same asset.** A binary glTF wraps its
+    // document in a container beside a chunk of geometry; a `.gltf` is
+    // that document on its own, carrying its geometry as embedded
+    // payloads. The layers below this line cannot tell the difference
+    // and do not need to: one of them has a chunk to offer and the
+    // other has none.
+    if glb::looks_like(bytes) {
+        let container = glb::read(bytes).map_err(GltfError::Container)?;
+        let json = parse(container.json)?;
+        return document(json.root(), container.binary);
+    }
+    let json = parse(bytes)?;
+    document(json.root(), None)
+}
 
-    let views = buffer_views(root)?;
-    let accessors = accessors(root)?;
+/// Read a parsed document, with the container's chunk if there was one.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming the layer that refused and carrying its
+/// numbers.
+pub fn document(root: Value<'_>, binary: Option<&[u8]>) -> Result<Mesh, GltfError> {
+    let source = Source::of(root, binary)?;
 
     // **A document with no scenes is a library rather than a model**,
     // which is the format's own reading of it, and a caller asking for
@@ -571,15 +837,7 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, GltfError> {
 
         let world = parent * node_transform(node)?;
         if let Some(mesh) = node.get("mesh") {
-            mesh_at(
-                root,
-                &views,
-                &accessors,
-                binary,
-                mesh.as_u32()? as usize,
-                world,
-                &mut out,
-            )?;
+            mesh_at(root, &source, mesh.as_u32()? as usize, world, &mut out)?;
         }
         if let Some(children) = node.get("children") {
             for child in (0..children.len()).rev() {

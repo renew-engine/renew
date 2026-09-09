@@ -2253,6 +2253,52 @@ fn asset_import_refuses_a_material_library_for_what_it_is() -> std::io::Result<(
     Ok(())
 }
 
+/// **A document that carries its own geometry imports too.**
+///
+/// The other shape of the same format, and the one a tool is likeliest
+/// to be pointed at: one file, no container, geometry embedded in the
+/// document. Until this the tool had never reported the format at all,
+/// so the name in its output was pinned by nothing.
+#[test]
+fn asset_import_reads_a_document_that_carries_its_geometry() -> std::io::Result<()> {
+    let directory = scratch_directory("asset-import-gltf")?;
+    let model = directory.join("scene.gltf");
+    let blob = directory.join("out.msh");
+
+    // The same triangle, base64 by hand rather than borrowed: nine
+    // little-endian floats, which is `AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA`.
+    let document = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+"bufferViews":[{"buffer":0,"byteLength":36}]}"#;
+    fs::write(&model, document)?;
+
+    let output = run(&[
+        "--json",
+        "asset-import",
+        "--from",
+        &model.to_string_lossy(),
+        "--out",
+        &blob.to_string_lossy(),
+    ])?;
+    assert!(
+        output.status.success(),
+        "a document holding one triangle imports: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let reported = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        reported.contains("\"format\":\"gltf\""),
+        "and it is named as its own format, not as the container's: {reported:?}"
+    );
+    assert!(
+        reported.contains("\"triangles\":1"),
+        "one triangle in, one triangle out: {reported:?}"
+    );
+    Ok(())
+}
+
 /// **A binary glTF is imported, and this test asserted the opposite
 /// until there was a reader.**
 ///
@@ -2273,7 +2319,8 @@ fn asset_import_reads_a_container() -> std::io::Result<()> {
     let document = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],
 "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
-"bufferViews":[{"byteLength":36}]}"#;
+"buffers":[{"byteLength":36}],
+"bufferViews":[{"buffer":0,"byteLength":36}]}"#;
     let mut json = document.to_vec();
     while !json.len().is_multiple_of(4) {
         json.push(b' ');

@@ -10,6 +10,7 @@
 //! ```text
 //! blob   an eight-byte magic, so it is certain
 //! glb    a four-byte magic, so it is certain too
+//! gltf   a parse, because a JSON document has no magic at all
 //! ply    a magic word, so it is nearly certain
 //! obj    keywords only it uses, so it is a good guess
 //! mtl    the same, and checked here so a material library is not
@@ -26,6 +27,16 @@
 //! its two dialects is arithmetic for the same reason. Putting it last
 //! makes it the fallback rather than a competitor, and means a truncated
 //! STL still reaches the reader whose refusals describe it.
+//!
+//! **The glTF document is the one arm that parses.** It has no magic
+//! and no keyword: it is JSON, and "starts with `{`" would claim every
+//! configuration file ever written. The question asked instead is the
+//! one the format answers -- an `asset` object carrying a `version`
+//! string, which the specification requires of every document and which
+//! nothing else here has. It costs a parse before the reader parses
+//! again, and that is the right price: before this arm existed a `.gltf`
+//! fell through to the fallback and came back refused as a truncated
+//! STL, which is a confident answer about the wrong format.
 //!
 //! **MTL is checked before that fallback and not after.** A material
 //! library would otherwise reach the STL reader and be refused as a
@@ -56,6 +67,15 @@ pub enum Format {
     Ply,
     /// This crate's own canonical form.
     Blob,
+    /// A glTF document, on its own rather than in a container.
+    ///
+    /// Its geometry travels as payloads embedded in the document, or in
+    /// files beside it that this crate does not open -- **this arm is
+    /// the format, not the self-contained subset of it**, so a document
+    /// naming a second file is detected here and refused by the reader
+    /// rather than being detected as something else.
+    Gltf,
+
     /// The binary glTF container.
     ///
     /// **Read for geometry now**, which this arm was not when it was
@@ -80,6 +100,7 @@ impl Format {
             Self::Ply => "ply",
             Self::Blob => "blob",
             Self::Glb => "glb",
+            Self::Gltf => "gltf",
         }
     }
 
@@ -114,7 +135,7 @@ impl Format {
             // directly; this arm exists so that a caller who found the
             // format by detection gets geometry the same way it does for
             // every other format here.
-            Self::Glb => {
+            Self::Glb | Self::Gltf => {
                 Some(gltf::read(bytes).map_err(|refusal| MeshError::Gltf(Box::new(refusal))))
             }
             Self::Mtl => None,
@@ -139,6 +160,14 @@ pub fn detect(bytes: &[u8]) -> Format {
     // and both come before anything decided by a keyword.
     if glb::looks_like(bytes) {
         return Format::Glb;
+    }
+    // **Before the keyword checks and after the magic ones.** A
+    // conformant document is JSON, so it cannot be an OBJ or an MTL, and
+    // PLY announces itself with a magic word -- so this arm cannot take
+    // another format's files, and asking it early keeps a document from
+    // reaching the fallback.
+    if gltf::looks_like(bytes) {
+        return Format::Gltf;
     }
     if ply::looks_like(bytes) {
         return Format::Ply;

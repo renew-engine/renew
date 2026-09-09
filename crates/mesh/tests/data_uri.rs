@@ -13,7 +13,7 @@
 
 use renew_mesh::data_uri::{self, DataUriError};
 
-// The encoder is `shared/base64_encode.rs`, included here and by four
+// The encoder is `shared/base64_encode.rs`, included here and by six
 // other targets. It is deliberately not the crate's: nothing in the
 // engine writes a `data:` URI, and a round trip through one body of code
 // proves only that the code agrees with itself.
