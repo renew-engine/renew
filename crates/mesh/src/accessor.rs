@@ -632,6 +632,12 @@ impl BufferView {
     /// accessor holds at least one element. A refusal here would be a
     /// second answer to a question already answered better.
     ///
+    /// The glTF reader does refuse one, because its schema states a
+    /// minimum of one and an image is a reader with no accessor over
+    /// its bytes to catch it. That is a rule about a document, though,
+    /// and this type is about a region -- a caller assembling views by
+    /// hand is entitled to an empty one.
+    ///
     /// # Errors
     ///
     /// [`AccessorError::ViewOutOfRange`] when the region is not inside

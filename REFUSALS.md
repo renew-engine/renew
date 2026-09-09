@@ -65,7 +65,7 @@ is dead code that reads like safety.
 | Mesh blob | `MeshError` | `crates/mesh/src/error.rs` | 8 of the 15 | `blob_read` | 16 |
 | glTF container | `GlbError` | `crates/mesh/src/glb.rs` | 11 | `glb_read` | 18 |
 | Accessor | `AccessorError` | `crates/mesh/src/accessor.rs` | 14 | `accessor_view` | 26 |
-| glTF document | `GltfError` | `crates/mesh/src/gltf.rs` | 15 | `gltf_read` | 32 |
+| glTF document | `GltfError` | `crates/mesh/src/gltf.rs` | 17 | `gltf_read` | 41 |
 | Data URI | `DataUriError` | `crates/mesh/src/data_uri.rs` | 7 | `data_uri_read` | 41 |
 
 **The MTL row is the shortest in this table, and that is the honest

@@ -23,10 +23,12 @@
 // this harness recovers from.
 #![allow(clippy::panic, clippy::expect_used)]
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use renew_mesh::accessor::Shape;
+use renew_mesh::gltf::GltfError;
 use renew_mesh::{blob, data_uri, glb, gltf, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
@@ -1207,7 +1209,7 @@ fn accessor_census() {
 // beside the crate, where a wedged run is a failed test.
 // ---------------------------------------------------------------------
 
-const GLTF_LOW_WATER: usize = 32;
+const GLTF_LOW_WATER: usize = 41;
 
 /// How many distinct outcomes the glTF seeds must still reach.
 ///
@@ -1298,6 +1300,80 @@ fn every_recorded_container_answers_and_is_whole() {
         {
             assert!(value.is_finite(), "a coordinate nothing can bound");
         }
+    }
+}
+
+/// **The image table is exercised, which no other floor here reaches.**
+///
+/// An image changes no geometry and no material, so every check in the
+/// gate above would pass over a corpus that had lost every seed carrying
+/// one. Both sources are required because they are different code: one
+/// addresses a buffer, the other decodes a payload -- and each refusal is
+/// required as the value it is, because two of them share a name and
+/// would otherwise cover for each other.
+fn the_image_layer_is_exercised(distinct: &BTreeSet<Vec<u8>>) {
+    let (mut from_view, mut from_payload) = (0_usize, 0_usize);
+    let mut reached: BTreeSet<&'static str> = BTreeSet::new();
+    for bytes in distinct {
+        let Ok(json) = gltf::parse(bytes) else {
+            continue;
+        };
+        let root = json.root();
+        let Ok(source) = gltf::Source::of(root, None) else {
+            continue;
+        };
+        match gltf::images(root, &source) {
+            Ok(read) => {
+                for image in read {
+                    // **Which source, not how many.** Borrowed bytes came
+                    // out of a buffer and owned ones out of a decoded
+                    // payload; a total would let either half of the code
+                    // lose every seed it has and still pass.
+                    match image.bytes {
+                        Cow::Borrowed(_) => from_view += 1,
+                        Cow::Owned(_) => from_payload += 1,
+                    }
+                }
+            }
+            // Matched as values rather than by name: `ImageSource` has
+            // two seeds saying opposite things, and a name would let
+            // each stand in for the other.
+            Err(GltfError::ImageSource { both: true }) => {
+                reached.insert("an image naming both sources");
+            }
+            Err(GltfError::ImageSource { both: false }) => {
+                reached.insert("an image naming neither");
+            }
+            Err(GltfError::MissingField { .. }) => {
+                reached.insert("a view with nothing said about its bytes");
+            }
+            Err(GltfError::ExternalResource) => {
+                reached.insert("an image in a second file");
+            }
+            Err(GltfError::Payload(_)) => {
+                reached.insert("a payload that will not decode");
+            }
+            Err(_) => {}
+        }
+    }
+
+    assert!(
+        from_view >= 1 && from_payload >= 1,
+        "the image sources are not both exercised: {from_view} out of a view, {from_payload} \
+         out of a payload, and each is different code"
+    );
+    for required in [
+        "an image naming both sources",
+        "an image naming neither",
+        "a view with nothing said about its bytes",
+        "an image in a second file",
+        "a payload that will not decode",
+    ] {
+        assert!(
+            reached.contains(required),
+            "no committed seed is {required}, which the image layer answers on its own. \
+             Reached: {reached:?}"
+        );
     }
 }
 
@@ -1401,6 +1477,8 @@ fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
              {material_refusals:?}"
         );
     }
+
+    the_image_layer_is_exercised(&distinct);
 }
 
 #[test]
