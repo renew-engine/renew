@@ -1,12 +1,13 @@
 # renew-fuzz
 
-Fuzz harnesses for the fifteen parsers that read data the engine did
+Fuzz harnesses for the sixteen parsers that read data the engine did
 not write: the asset pack reader, the input-trace codec, the WAV reader,
 the UI document reader, the UI text grammar, the datagram reader, the
 PNG decoder, the JSON reader, the three mesh readers STL, PLY and OBJ,
 the MTL material libraries an OBJ refers to, the binary glTF container
 — which parses nothing and validates only framing — the accessor layer
-that turns a range of bytes into typed numbers, and the canonical mesh blob
+that turns a range of bytes into typed numbers, the binary glTF reader
+whole, and the canonical mesh blob
 — which is the one *mesh* format in this list the engine writes as
 well as reads, and so the one whose target can assert that reading and
 writing are inverses. Nine of them go further than the rest: bytes that read as a UI document are also
@@ -21,12 +22,12 @@ matching what its format can carry, because those are what the returned
 type claims of itself. An input that breaks any of those claims is a
 finding.
 
-**Thirteen of the fifteen take their bytes unfiltered; two do not, and
+**Fourteen of the sixteen take their bytes unfiltered; two do not, and
 the dividing line is what the parser's own signature accepts.**
 `trace_parse` and `ui_text` guard their input with `from_utf8` and return
 early on failure, because both of those parsers take `&str` — a crash
 found past a lossy conversion would be unreachable from any real file.
-The other thirteen take `&[u8]`, so there is nothing for them to guard. The
+The other fourteen take `&[u8]`, so there is nothing for them to guard. The
 JSON reader in particular takes bytes on purpose, so
 that a caller holding one chunk of a larger file need not answer the "is
 this even text" question itself — which means the fuzzer is the thing
@@ -61,16 +62,26 @@ not a first line of defence, a deeper one.
 
 `corpus/<target>/` is the fuzzers' memory: most committed inputs are ones
 the coverage-guided search found worth keeping, minimized by
-`cargo fuzz cmin`. **Nine corpora start differently** — `png_decode`'s
+`cargo fuzz cmin`. **Ten corpora start differently** — `png_decode`'s
 seeds are written by `cargo run -p renew-png --example make_png_corpus`,
 `json_parse`'s by `cargo run -p renew-json --example make_json_corpus`,
-and the seven `renew-mesh` corpora by `cargo run -p renew-mesh --example
+and the eight `renew-mesh` corpora by `cargo run -p renew-mesh --example
 make_stl_corpus`, `--example make_ply_corpus`, `--example
 make_obj_corpus`, `--example make_mtl_corpus`, `--example
-make_blob_corpus`, `--example make_glb_corpus` and `--example
-make_accessor_corpus`, each of
+make_blob_corpus`, `--example make_glb_corpus`, `--example
+make_accessor_corpus` and `--example make_gltf_corpus`, each of
 which builds every byte it writes rather than copying a file from
 anywhere, so no licence question arrives with the starting seeds.
+
+**One target refuses a seed it could have had, and the reason is a
+stall.** `gltf_read` carries no document whose node hierarchy contains a
+cycle. The reader refuses one by entering each node at most once, but if
+that guard were removed a cycle seed would make the fuzzer **and the
+merge-time replay gate** stop making progress rather than fail — and a
+stall is the one outcome neither can report. Probing the mutation
+locally did exactly that: one test failed, the next stopped, and a
+timeout ended the run. The cycle is pinned by a deterministic test
+beside the crate, where a wedged run is a failed test.
 
 **One target's input is not a file, and it is the only one that needed
 an encoding invented for it.** `accessor_view` fuzzes a byte region plus
@@ -147,7 +158,7 @@ scheduled job uploads the directory when a run fails.
 
 ## What these targets deliberately do not assert
 
-**That an accepted input is *meaningful*.** Eleven of the fifteen do assert
+**That an accepted input is *meaningful*.** Twelve of the sixteen do assert
 something past "it answered" — the datagram re-encodes to its own bytes,
 a UI document instantiates, compiled text reads back, a JSON document
 answers every typed question, a mesh that reads has whole triangles,

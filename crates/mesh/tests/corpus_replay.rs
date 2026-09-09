@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use renew_mesh::accessor::Shape;
-use renew_mesh::{blob, glb, mtl, obj, ply, stl};
+use renew_mesh::{blob, glb, gltf, mtl, obj, ply, stl};
 
 /// The committed corpus never shrinks below this many **distinct**
 /// inputs.
@@ -1183,6 +1183,166 @@ fn accessor_census() {
     let distinct: BTreeSet<Vec<u8>> = accessor_corpus().into_iter().collect();
     let reached: BTreeSet<&'static str> =
         distinct.iter().map(|b| accessor_seed::outcome(b)).collect();
+    println!(
+        "{} distinct inputs, {} outcomes: {reached:?}",
+        distinct.len(),
+        reached.len()
+    );
+}
+
+// ---------------------------------------------------------------------
+// The binary glTF reader, whole.
+//
+// **The one corpus here whose seeds are files a tool could have
+// written.** Every other corpus in this file is either a format's own
+// bytes or, for the accessor, an encoding invented so a fuzzer could
+// reach parameters that are not in a file at all. A container is a file,
+// so the generator writes containers and this reads them.
+//
+// **No seed carries a node cycle**, and that is deliberate rather than
+// an oversight: the reader refuses one by entering each node at most
+// once, and if that guard were removed a cycle seed would make this gate
+// stop making progress rather than fail. A stall is the one outcome a
+// merge gate cannot report. The cycle is pinned by a deterministic test
+// beside the crate, where a wedged run is a failed test.
+// ---------------------------------------------------------------------
+
+const GLTF_LOW_WATER: usize = 17;
+
+/// How many distinct outcomes the container seeds must still reach.
+///
+/// **Measured, not guessed** — `gltf_census` below prints it. The outer
+/// vocabulary is what is counted: a caller keys on which *layer* refused,
+/// and the inner refusal's own name is one call away through the value.
+const GLTF_DISTINCT_OUTCOMES: usize = 6;
+
+/// Refusals a container seed must provoke.
+///
+/// * `Container` and `Document` are the two framing layers, and a corpus
+///   reaching neither would be exercising the reader with nothing but
+///   well-formed wrappers.
+/// * `Accessor` is where the arithmetic lives — a count past its chunk,
+///   a view past its buffer — and the layer a wrong bound would show in.
+/// * `Geometry` is everything the assembly and placement layers refuse,
+///   reached here through six layers of document rather than directly.
+const GLTF_REQUIRED: [&str; 4] = ["Container", "Document", "Accessor", "Geometry"];
+
+fn gltf_corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/gltf_read")
+}
+
+fn gltf_corpus() -> Vec<Vec<u8>> {
+    let dir = gltf_corpus_dir();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        panic!(
+            "the committed corpus at {} must exist: {error}",
+            dir.display()
+        )
+    });
+    entries
+        .map(|entry| {
+            let entry = entry.expect("corpus entries are readable");
+            std::fs::read(entry.path()).expect("corpus files are readable")
+        })
+        .collect()
+}
+
+/// The answer a container gets, as the name of the layer that refused.
+fn gltf_outcome(bytes: &[u8]) -> &'static str {
+    match gltf::read(bytes) {
+        Ok(_) => "Ok",
+        Err(refusal) => refusal.name(),
+    }
+}
+
+/// Every committed container answers, and what it accepts is geometry.
+#[test]
+fn every_recorded_container_answers_and_is_whole() {
+    for bytes in gltf_corpus() {
+        let Ok(mesh) = gltf::read(&bytes) else {
+            continue;
+        };
+        assert_eq!(mesh.positions.len() % 3, 0, "whole triangles");
+        assert!(!mesh.is_empty());
+        assert!(mesh.face_normals.is_empty() || mesh.face_normals.len() == mesh.triangles());
+        assert!(
+            mesh.corner_normals.is_empty() || mesh.corner_normals.len() == mesh.positions.len()
+        );
+        assert!(
+            mesh.corner_texcoords.is_empty() || mesh.corner_texcoords.len() == mesh.positions.len()
+        );
+        for value in mesh
+            .positions
+            .iter()
+            .chain(&mesh.face_normals)
+            .chain(&mesh.corner_normals)
+            .flatten()
+        {
+            assert!(value.is_finite(), "a coordinate nothing can bound");
+        }
+    }
+}
+
+/// The container corpus keeps its strength.
+#[test]
+fn the_gltf_corpus_still_covers_what_it_was_recorded_to_cover() {
+    let inputs = gltf_corpus();
+    let distinct: BTreeSet<Vec<u8>> = inputs.iter().cloned().collect();
+    assert!(
+        distinct.len() >= GLTF_LOW_WATER,
+        "the corpus holds {} distinct inputs and the floor is {GLTF_LOW_WATER}",
+        distinct.len()
+    );
+
+    let reached: BTreeSet<&'static str> =
+        distinct.iter().map(|bytes| gltf_outcome(bytes)).collect();
+    assert!(
+        reached.len() >= GLTF_DISTINCT_OUTCOMES,
+        "the corpus reaches {} distinct answers and the floor is {GLTF_DISTINCT_OUTCOMES}. \
+         Reached: {reached:?}",
+        reached.len()
+    );
+    for required in GLTF_REQUIRED {
+        assert!(
+            reached.contains(required),
+            "no committed seed reaches `{required}`, which is a layer nothing is exercising. \
+             Reached: {reached:?}"
+        );
+    }
+
+    // **Seeds that read, and read something worth mutating from.** Six
+    // layers have to agree before the reader reaches the arithmetic, so
+    // a corpus whose only successes were the smallest possible document
+    // would leave the interesting paths — a transform, a hierarchy, an
+    // index stream — reachable only by luck.
+    let readable: Vec<&Vec<u8>> = distinct
+        .iter()
+        .filter(|bytes| gltf::read(bytes).is_ok())
+        .collect();
+    assert!(
+        readable.len() >= 5,
+        "the corpus needs containers that read, and holds {}",
+        readable.len()
+    );
+    assert!(
+        readable
+            .iter()
+            .any(|bytes| gltf::read(bytes).is_ok_and(|mesh| !mesh.corner_normals.is_empty())),
+        "no seed carries normals, so the placement layer's inverse transpose is unexercised"
+    );
+    assert!(
+        readable
+            .iter()
+            .any(|bytes| gltf::read(bytes).is_ok_and(|mesh| mesh.triangles() > 1)),
+        "no seed joins two primitives, so the concatenation path is unexercised"
+    );
+}
+
+#[test]
+#[ignore = "a census, not a gate: run it to update the numbers above"]
+fn gltf_census() {
+    let distinct: BTreeSet<Vec<u8>> = gltf_corpus().into_iter().collect();
+    let reached: BTreeSet<&'static str> = distinct.iter().map(|b| gltf_outcome(b)).collect();
     println!(
         "{} distinct inputs, {} outcomes: {reached:?}",
         distinct.len(),
