@@ -1,0 +1,34 @@
+panel.gltf - a glTF 2.0 document, generated, carrying its own buffer as a
+base64 payload so it stands alone: no container, no second file.
+
+panel.msh - this crate's canonical form, as `blob::write` produces it from
+`format::detect(panel.gltf).read(..)`.
+
+written by: crates/mesh/examples/make_import_golden.rs
+refresh with: cargo run -p renew-mesh --example make_import_golden
+
+what the source reaches, deliberately:
+  two primitives in one mesh, so the appending path runs and the second
+  primitive's indices are shifted by the first's vertex count
+  a node with a translation, so positions arrive somewhere other than
+  where the accessor put them
+  indices, so the indexed path runs rather than the implicit one
+  per-corner normals and texture coordinates, so the optional streams
+  are present and the blob's `present` bitfield is not zero
+  a material, a texture and an image, which change no geometry - they
+  are here so the document exercises those tables while the golden
+  proves they stay out of the canonical form
+
+comparison: exact, and legitimate because the canonical form is
+little-endian f32 and u32 copied out of the document, with no arithmetic
+on a coordinate beyond the node transform the document itself states.
+No rounding to differ over, no iteration order that reaches the bytes,
+no platform difference in how an f32 sits in memory. That claim is what
+the comparison pins: the day a reader starts normalising, averaging or
+reordering is the day this file fails, which is the point of it.
+
+refresh ritual: none needed. Unlike a rendered golden - where no two
+adapters rasterize alike, so candidates are uploaded from a pinned lane
+and adopted by hand - any machine that runs the generator produces these
+two files byte for byte. A diff after running it is a real change to
+what this crate reads.

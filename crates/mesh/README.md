@@ -174,6 +174,34 @@ the material it belongs to, two reciprocal spellings of one factor, a
 map line whose options run past its file name. `tests/properties.rs` round-trips generated meshes through both
 STL spellings and asserts that every byte string gets an answer.
 
+**`tests/golden.rs` is the one gate that asks what a reader answered
+rather than whether it answered.** Every other test beside this crate is
+about refusals, round trips and inputs nobody wrote on purpose — and all
+of them are nearly blind to a reader that answers confidently and
+wrongly. A document whose second primitive is dropped, or whose node
+transform is not applied, or whose texture coordinates are shifted by one
+vertex, answers perfectly well.
+
+So one generated model sits in `tests/goldens/` beside the exact bytes it
+reads to, and the comparison is byte for byte. The model is built to
+reach every layer at once: two primitives in one mesh so the appending
+arithmetic runs, a node transform so positions move, indices, per-corner
+normals and texture coordinates, and a material, a texture and an image —
+those last three because they change no geometry, so the golden also
+proves they stay out of the canonical form.
+
+**Exact comparison is legitimate here**, and the provenance file says
+why: the canonical form is little-endian `f32` and `u32` copied out of
+the document with no arithmetic beyond the transform the document itself
+states. Nothing rounds, nothing reorders, and no platform spells an
+`f32` differently in memory. That is the claim the comparison pins, and
+the day it stops being true is the day this gate earns its keep.
+
+Refreshing it is one command — `cargo run -p renew-mesh --example
+make_import_golden` — because unlike a rendered golden, where no two
+adapters rasterize alike and candidates have to be adopted from a pinned
+lane, any machine reproduces these bytes.
+
 **Each reader's census is a test, not a comment.** All five suites map
 every `MeshError` variant to either a file in the suite that provokes it
 or a sentence saying why this format cannot reach it, with no wildcard
