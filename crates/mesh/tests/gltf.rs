@@ -294,3 +294,315 @@ fn the_census_and_the_documents_agree() {
         assert!(!refusal.to_string().is_empty());
     }
 }
+
+// ---------------------------------------------------------------------
+// Meshes and primitives.
+//
+// The tables above are numbers; these turn a document's indices into
+// streams and hand them to the layer that assembles geometry. **The
+// interesting cases are the crossings**: an index into a table that is
+// too short, and the stride travelling from a view to the accessor that
+// reads through it.
+// ---------------------------------------------------------------------
+
+/// Compare coordinates by bits.
+///
+/// **The honest comparison here, not a way around the lint.** Reading a
+/// document does no arithmetic on a coordinate: it takes four bytes out
+/// of the chunk and puts them in an array. Anything but an exact match
+/// is a value that came from somewhere other than where the fixture put
+/// it, and a tolerance would hide exactly that.
+fn same(got: &[f32], want: &[f32], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: different lengths");
+    for (index, (left, right)) in got.iter().zip(want).enumerate() {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "{what}: component {index} is {left}, not {right}"
+        );
+    }
+}
+
+/// Three positions, tightly packed, as a binary chunk would store them.
+fn three_positions() -> Vec<u8> {
+    [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+/// Read the tables and one primitive out of a document and a chunk.
+fn assemble(text: &str, binary: &[u8]) -> Result<renew_mesh::Mesh, GltfError> {
+    let json = document(text);
+    let views = gltf::buffer_views(json.root())?;
+    let accessors = gltf::accessors(json.root())?;
+    gltf::primitive(json.root(), &views, &accessors, binary, 0, 0)
+}
+
+/// A document naming one triangle produces one triangle.
+#[test]
+fn a_document_naming_one_triangle_produces_one() {
+    let mesh = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("one unindexed triangle");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.positions.len(), 3);
+    assert!(
+        mesh.corner_normals.is_empty(),
+        "the document carried no normals"
+    );
+}
+
+/// **A primitive with no `mode` is a triangle list, by the format's own
+/// default.**
+///
+/// A reader that refused one would reject most of the files in the
+/// world, which is why the default is written down rather than left to
+/// whichever branch happens to run.
+#[test]
+fn a_primitive_with_no_mode_is_triangles() {
+    let with = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "mode": 4, "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("mode 4 is triangles");
+    let without = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect("and so is no mode at all");
+    same(
+        &with.positions.concat(),
+        &without.positions.concat(),
+        "an absent mode and mode 4",
+    );
+}
+
+/// A mode this reader does not draw arrives wrapped as a geometry
+/// refusal.
+#[test]
+fn a_mode_this_reader_does_not_draw_is_a_geometry_refusal() {
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "mode": 5, "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("a triangle strip is not assembled");
+    assert_eq!(refused.name(), "Geometry");
+    assert!(
+        refused.to_string().contains("triangle strip"),
+        "the inner refusal names which mode: {refused}"
+    );
+}
+
+/// **The stride travels from the view to the accessor that reads through
+/// it**, which is the one place that number crosses layers.
+///
+/// Six floats at a stride of twenty-four: two positions whose second
+/// starts a whole stride in, with a neighbour's bytes between them. A
+/// reader that dropped the stride would read the neighbour as a
+/// coordinate and would not notice.
+#[test]
+fn the_stride_crosses_from_the_view_to_the_accessor() {
+    let mut binary: Vec<u8> = Vec::new();
+    for value in [1.0f32, 2.0, 3.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&[0xFF; 12]); // A neighbour's bytes.
+    for value in [4.0f32, 5.0, 6.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    binary.extend_from_slice(&[0xFF; 12]);
+    for value in [7.0f32, 8.0, 9.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mesh = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 60, "byteStride": 24 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &binary,
+    )
+    .expect("three interleaved positions");
+    same(&mesh.positions[0], &[1.0, 2.0, 3.0], "the first position");
+    same(
+        &mesh.positions[1],
+        &[4.0, 5.0, 6.0],
+        "the neighbour's bytes were stepped over",
+    );
+    same(&mesh.positions[2], &[7.0, 8.0, 9.0], "the third position");
+}
+
+/// Normals, texture coordinates and an index stream are all read when
+/// the document names them.
+#[test]
+fn the_optional_streams_are_read_when_named() {
+    let mut binary = three_positions();
+    // Normals at 36, texture coordinates at 72, indices at 96.
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0] {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    for index in [0u16, 1, 2] {
+        binary.extend_from_slice(&index.to_le_bytes());
+    }
+
+    let mesh = assemble(
+        r#"{
+          "bufferViews": [
+            { "byteLength": 36, "byteOffset": 0 },
+            { "byteLength": 36, "byteOffset": 36 },
+            { "byteLength": 24, "byteOffset": 72 },
+            { "byteLength": 6, "byteOffset": 96 }
+          ],
+          "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+            { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" },
+            { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" },
+            { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" }
+          ],
+          "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+            "indices": 3
+          }] }]
+        }"#,
+        &binary,
+    )
+    .expect("everything named is read");
+    assert_eq!(mesh.triangles(), 1);
+    assert_eq!(mesh.corner_normals.len(), 3);
+    assert_eq!(mesh.corner_texcoords.len(), 3);
+    same(
+        &mesh.corner_normals[0],
+        &[0.0, 0.0, 1.0],
+        "the first normal",
+    );
+}
+
+/// **An index naming a row that is not there carries the table, the
+/// index and the count.**
+#[test]
+fn an_index_past_a_table_names_all_three() {
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 7 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("accessor 7 of one");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "accessors",
+            index: 7,
+            count: 1,
+        }
+    );
+
+    // And a view index past the views, which is the same shape one
+    // level down.
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("view 3 of one");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "bufferViews",
+            index: 3,
+            count: 1,
+        }
+    );
+
+    // And a mesh that is not there at all.
+    let refused = assemble(r#"{ "asset": { "version": "2.0" } }"#, &three_positions())
+        .expect_err("no meshes at all");
+    assert_eq!(
+        refused,
+        GltfError::NoSuchEntry {
+            table: "meshes",
+            index: 0,
+            count: 0,
+        }
+    );
+}
+
+/// A primitive with no positions is not geometry, and says which member
+/// is missing.
+#[test]
+fn a_primitive_with_no_positions_is_refused() {
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "NORMAL": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("a primitive without positions describes nothing");
+    assert_eq!(refused, GltfError::MissingField { path: "POSITION" });
+}
+
+/// **An accessor that does not fit the chunk is refused by the layer
+/// that does the arithmetic**, and arrives wrapped.
+#[test]
+fn an_accessor_past_the_chunk_is_an_accessor_refusal() {
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 99, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("ninety-nine positions in thirty-six bytes");
+    assert_eq!(refused.name(), "Accessor");
+    assert!(
+        refused.to_string().contains("1188"),
+        "the inner refusal's numbers survive: {refused}"
+    );
+}
+
+/// A view that runs past the chunk is caught before any element is read.
+#[test]
+fn a_view_past_the_chunk_is_refused() {
+    let refused = assemble(
+        r#"{
+          "bufferViews": [{ "byteOffset": 24, "byteLength": 36 }],
+          "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }],
+          "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }]
+        }"#,
+        &three_positions(),
+    )
+    .expect_err("24 + 36 is past 36");
+    assert_eq!(refused.name(), "Accessor");
+    assert!(refused.to_string().contains("60"), "{refused}");
+}

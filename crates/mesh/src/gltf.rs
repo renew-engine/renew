@@ -30,9 +30,11 @@
 
 use renew_json::{Json, JsonError, Value};
 
-use crate::accessor::{Accessor, AccessorError, BufferView, Component, Shape};
+use crate::Mesh;
+use crate::accessor::{Accessor, AccessorError, BufferView, Component, Indices, Shape, View};
 use crate::error::MeshError;
 use crate::glb::GlbError;
+use crate::primitive::{self, Mode, Primitive};
 
 /// Every way a document can fail to describe geometry this can read.
 ///
@@ -156,6 +158,12 @@ impl From<AccessorError> for GltfError {
 impl From<JsonError> for GltfError {
     fn from(inner: JsonError) -> Self {
         Self::Document(inner)
+    }
+}
+
+impl From<MeshError> for GltfError {
+    fn from(inner: MeshError) -> Self {
+        Self::Geometry(inner)
     }
 }
 
@@ -288,6 +296,131 @@ pub fn accessors(root: Value<'_>) -> Result<Vec<(usize, Accessor)>, GltfError> {
         ));
     }
     Ok(out)
+}
+
+/// A row of a table read out of a slice, by the index the document
+/// wrote.
+fn row<T: Copy>(table: &[T], name: &'static str, index: usize) -> Result<T, GltfError> {
+    table.get(index).copied().ok_or(GltfError::NoSuchEntry {
+        table: name,
+        index,
+        count: table.len(),
+    })
+}
+
+/// Resolve an accessor index into the bytes it addresses.
+///
+/// **This is the one place the stride crosses from a view to an
+/// accessor**, and it is a function rather than three call sites for
+/// that reason: the format puts `byteStride` on the view because
+/// interleaved attributes share it, and the arithmetic wants it on the
+/// accessor. A reader that copied it at each attribute would have three
+/// chances to forget.
+fn resolved<'a>(
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &'a [u8],
+    index: usize,
+) -> Result<(Accessor, &'a [u8]), GltfError> {
+    let (which, accessor) = row(accessors, "accessors", index)?;
+    let view = row(views, "bufferViews", which)?;
+    let region = view.resolve(binary)?;
+    Ok((
+        Accessor {
+            byte_stride: view.byte_stride,
+            ..accessor
+        },
+        region,
+    ))
+}
+
+/// An attribute stream, validated against the bytes it addresses.
+fn stream<'a>(
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &'a [u8],
+    index: usize,
+) -> Result<View<'a>, GltfError> {
+    let (accessor, region) = resolved(views, accessors, binary, index)?;
+    Ok(accessor.view(region)?)
+}
+
+/// An index stream, validated against the bytes it addresses.
+fn order<'a>(
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &'a [u8],
+    index: usize,
+) -> Result<Indices<'a>, GltfError> {
+    let (accessor, region) = resolved(views, accessors, binary, index)?;
+    Ok(accessor.indices(region)?)
+}
+
+/// An optional attribute, by the name the document spells it with.
+fn optional_stream<'a>(
+    attributes: Value<'_>,
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &'a [u8],
+    name: &str,
+) -> Result<Option<View<'a>>, GltfError> {
+    match attributes.get(name) {
+        None => Ok(None),
+        Some(value) => Ok(Some(stream(
+            views,
+            accessors,
+            binary,
+            value.as_u32()? as usize,
+        )?)),
+    }
+}
+
+/// Assemble one primitive of one mesh.
+///
+/// # Errors
+///
+/// A [`GltfError`] naming which table an index missed, which member was
+/// absent, or wrapping the refusal of whichever layer below found the
+/// fault.
+pub fn primitive(
+    root: Value<'_>,
+    views: &[BufferView],
+    accessors: &[(usize, Accessor)],
+    binary: &[u8],
+    mesh: usize,
+    index: usize,
+) -> Result<Mesh, GltfError> {
+    let meshes = root.get("meshes");
+    let entry_row = entry(meshes, "meshes", mesh)?;
+    let primitives = entry_row.get("primitives");
+    let found = entry(primitives, "primitives", index)?;
+
+    let attributes = required(found, "attributes")?;
+    let positions = stream(
+        views,
+        accessors,
+        binary,
+        required(attributes, "POSITION")?.as_u32()? as usize,
+    )?;
+
+    // **The default is triangles and it is the format's**, not this
+    // reader's convenience: a primitive with no `mode` is a triangle
+    // list, and a reader that refused one would reject most of the files
+    // in the world.
+    let mode = Mode::from_code(number_or(found, "mode", 4)?)?;
+
+    let indices = match found.get("indices") {
+        None => None,
+        Some(value) => Some(order(views, accessors, binary, value.as_u32()? as usize)?),
+    };
+
+    Ok(primitive::build(&Primitive {
+        mode,
+        positions,
+        normals: optional_stream(attributes, views, accessors, binary, "NORMAL")?,
+        texcoords: optional_stream(attributes, views, accessors, binary, "TEXCOORD_0")?,
+        indices,
+    })?)
 }
 
 /// Parse the document out of a container's JSON chunk.
