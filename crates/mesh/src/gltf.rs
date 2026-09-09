@@ -684,12 +684,7 @@ pub fn materials(root: Value<'_>) -> Result<Vec<Material>, GltfError> {
         // **The ceiling this crate's amplification rule asks for.** A
         // two-byte array element is a whole material, so a document far
         // under the geometry ceiling can ask for more than it.
-        if out.len() >= crate::MAX_MATERIALS {
-            return Err(GltfError::Geometry(MeshError::TooLarge {
-                field: "materials",
-                value: crate::MAX_MATERIALS as u64,
-            }));
-        }
+        crate::refuse_over_material_ceiling(out.len()).map_err(GltfError::Geometry)?;
 
         // **Read whatever the mode, kept only where it means something.**
         // The schema bounds the cutoff whether or not the mode uses it,

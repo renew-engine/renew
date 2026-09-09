@@ -1152,6 +1152,44 @@ fn a_cutoff_is_checked_whatever_the_mode_names() {
     );
 }
 
+/// **A map that states no scale or strength takes the format's
+/// default.**
+///
+/// The whole-material fixture states both, so the branch that supplies
+/// the default was reached by nothing -- and a default that drifted
+/// would be a value this crate invented with nothing to say so.
+#[expect(
+    clippy::float_cmp,
+    reason = "these are the format's stated defaults, written as literals in both places and reached without arithmetic; a tolerance would let a default drift onto a neighbouring value and still pass, which is the one thing this test exists to prevent"
+)]
+#[test]
+fn a_map_that_states_no_scale_or_strength_takes_the_default() {
+    let json = document(
+        r#"{ "textures": [{}], "materials": [{
+          "normalTexture": { "index": 0 },
+          "occlusionTexture": { "index": 0 }
+        }] }"#,
+    );
+    let read = gltf::materials(json.root()).expect("two maps");
+    let normal = read[0].normal_map.expect("a normal map");
+    let occlusion = read[0].occlusion_map.expect("an occlusion map");
+    assert_eq!(normal.scale, 1.0, "an absent scale is one");
+    assert_eq!(occlusion.strength, 1.0, "an absent strength is one");
+}
+
+/// **A mesh with no primitives pairs with nothing**, which is not a
+/// refusal: the format allows the member to be absent and a mesh that
+/// draws nothing names no material.
+#[test]
+fn a_mesh_with_no_primitives_pairs_with_nothing() {
+    let json = document(r#"{ "meshes": [{ "name": "empty" }] }"#);
+    assert!(
+        gltf::primitive_materials(json.root(), 0)
+            .expect("a mesh that draws nothing")
+            .is_empty()
+    );
+}
+
 /// **A map naming a texture the document does not have is refused.**
 ///
 /// The index is not resolved here -- this reader does not read the

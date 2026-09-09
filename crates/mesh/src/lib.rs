@@ -130,6 +130,23 @@ const _: () = {
     );
 };
 
+/// Refuse before the next material is built rather than after it.
+///
+/// **The same shape as the geometry ceiling beside it, and separate for
+/// the same reason it is a function at all**: the boundary is worth a
+/// test, and a table of a million materials is not something a test can
+/// build. A caller checks before it pushes, so the count that reaches
+/// here is what has been built and not what a document claimed.
+pub(crate) fn refuse_over_material_ceiling(have: usize) -> Result<(), MeshError> {
+    if have >= MAX_MATERIALS {
+        return Err(MeshError::TooLarge {
+            field: "materials",
+            value: MAX_MATERIALS as u64,
+        });
+    }
+    Ok(())
+}
+
 /// Refuse before the geometry arrives rather than after it.
 ///
 /// `have` is what has been emitted, `adding` what the next face would
@@ -469,7 +486,31 @@ mod tests {
 
 #[cfg(test)]
 mod ceiling_tests {
-    use super::{MAX_POSITIONS, MeshError, refuse_over_ceiling};
+    use super::{
+        MAX_MATERIALS, MAX_POSITIONS, MeshError, refuse_over_ceiling, refuse_over_material_ceiling,
+    };
+
+    /// **The material ceiling refuses at the boundary rather than past
+    /// it**, and it is the amplification rule applied to the other thing
+    /// a document can make this crate allocate.
+    ///
+    /// Probed by deleting the check: red, a table past the ceiling is
+    /// accepted. Probed by loosening `>=` to `>`: red, the table that
+    /// exactly fills the ceiling is allowed one more.
+    #[test]
+    fn the_material_ceiling_refuses_the_row_that_would_pass_it() {
+        refuse_over_material_ceiling(MAX_MATERIALS - 1)
+            .expect("the last row the ceiling allows is not over it");
+
+        assert_eq!(
+            refuse_over_material_ceiling(MAX_MATERIALS),
+            Err(MeshError::TooLarge {
+                field: "materials",
+                value: MAX_MATERIALS as u64,
+            }),
+            "the row after the last one is over the ceiling, and it says so by name"
+        );
+    }
 
     /// **The ceiling is on the product, and it refuses at the boundary
     /// rather than past it.**
