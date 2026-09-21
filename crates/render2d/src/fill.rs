@@ -64,18 +64,22 @@ impl Canvas {
 ///
 /// Plain data with public fields — every combination is meaningful to
 /// construct, and the UV map is total over it. A region reaching past
-/// the atlas edge samples clamped edge texels rather than failing;
-/// that is visible art, not unsoundness, and the golden tests pin the
-/// in-bounds behavior that matters.
+/// the atlas edge samples clamped edge texels — or the atlas again,
+/// under a repeating one — rather than failing; that is visible art,
+/// not unsoundness, and the golden tests pin the in-bounds behavior
+/// that matters.
 ///
 /// **A region that is ever turned owes a gutter.** Sampling is nearest
-/// and clamped at the atlas's edge, not the region's; a turned edge is
-/// rasterised by pixel coverage, and a covered pixel's centre resolves
-/// to a texel inside the region only up to interpolation rounding. So
-/// the texels bordering such a region are kept transparent for one
-/// texel on every side, and a read that lands past the edge reads
-/// nothing. An axis-aligned sprite drawn at a texel-aligned size never
-/// reaches a neighbour and needs none.
+/// by default and clamped at the atlas's edge, not the region's; a
+/// turned edge is rasterised by pixel coverage, and a covered pixel's
+/// centre resolves to a texel inside the region only up to
+/// interpolation rounding. So the texels bordering such a region are
+/// kept transparent for one texel on every side, and a read that lands
+/// past the edge reads nothing. An axis-aligned sprite drawn at a
+/// texel-aligned size never reaches a neighbour and needs none — under
+/// nearest sampling. Under linear filtering every region owes the
+/// gutter, and owes it in the art's own colour; [`crate::AtlasDesc`]
+/// says why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
     /// Left edge, in texels from the atlas's left.
@@ -111,13 +115,15 @@ pub struct Region {
 /// `Region`'s one degenerate case it is not *useful* nonsense, so a
 /// caller computing these should keep them finite and positive.
 ///
-/// **Sampling is nearest and clamped**, so a pixel centre resolves to
-/// `floor(u)`. Edges falling inside a texel are therefore safe only when
-/// the source was cut *in proportion to the destination* - then the
-/// linear map is unchanged and every surviving pixel samples the texel
-/// it would have sampled uncut. A source cut by any other rule can
-/// resolve past its own edge into neighbouring art; a caller doing that
-/// owes its regions a transparent gutter.
+/// **Sampling is nearest and clamped by default**, so a pixel centre
+/// resolves to `floor(u)`. Edges falling inside a texel are therefore
+/// safe only when the source was cut *in proportion to the
+/// destination* - then the linear map is unchanged and every surviving
+/// pixel samples the texel it would have sampled uncut. A source cut by
+/// any other rule can resolve past its own edge into neighbouring art;
+/// a caller doing that owes its regions a transparent gutter — as every
+/// caller does under linear filtering ([`crate::AtlasDesc`]), where a
+/// sample reaches half a texel past any edge.
 ///
 /// Exhaustive on purpose, where [`Sprite`] is `#[non_exhaustive]`:
 /// presentation crates build these by struct literal when they cut one.
@@ -205,8 +211,8 @@ pub struct Sprite {
     /// covered pixel's centre lies inside the quad, so its texel lies
     /// inside the region up to interpolation rounding; the one-texel
     /// transparent gutter a turned region owes (see [`Region`]) is
-    /// what makes "up to rounding" harmless, and it becomes mandatory
-    /// the day linear filtering exists. The turn is isotropic in canvas
+    /// what makes "up to rounding" harmless, and under linear filtering
+    /// every region owes it. The turn is isotropic in canvas
     /// pixels; a consumer that stretches its canvas onto a surface of
     /// another aspect ratio stretches the turned sprite with everything
     /// else, and owns that choice.
