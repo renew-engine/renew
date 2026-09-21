@@ -22,9 +22,11 @@ else, which the build matrix proves by building and testing without it.
   straight alpha: the hardware decodes them on sample and the fragment
   stage multiplies each texel's colour by its alpha. Tints are
   premultiplied by the caller. The pipeline composites
-  `src + dst * (1 - src.a)`. Bytes that break either convention —
-  already-premultiplied atlas bytes, a straight-alpha tint — composite
-  wrong, visibly, not unsafely.
+  `src + dst * (1 - src.a)` by default; a renderer built with
+  `with_blend` composites that same premultiplied source by the mode
+  it names, and every sprite it draws composites that way. Bytes that
+  break either convention — already-premultiplied atlas bytes, a
+  straight-alpha tint — composite wrong, visibly, not unsafely.
 - **All allocations happen at creation.** `begin`, `push`, and `item`
   allocate nothing; a gate measures it over frames it first proves are
   alive and drawing — including the caller-side frame composition,
@@ -50,21 +52,44 @@ else, which the build matrix proves by building and testing without it.
   multiplies only — so a turned sprite packs the same corners on every
   platform.
 - **A region that is ever turned owes a gutter.** Sampling is nearest
-  and clamped at the atlas's edge, not the region's, and a turned edge
-  resolves to a texel inside the region only up to interpolation
-  rounding; so the texels bordering such a region are kept transparent
-  for one texel on every side. Axis-aligned sprites at texel-aligned
-  sizes never reach a neighbour and need none.
-- **Additive light needs no second pipeline.** A tint whose alpha is
-  zero adds `A·(R·r, G·g, B·b)` to what is underneath and occludes
-  nothing — the premultiplied blend is `src + dst·(1 − α_src)`, and at
-  `α_src = 0` that is addition with the destination's own alpha kept.
-  It is the same arithmetic an additive blend state performs, out of the
-  one pipeline this crate builds, and it is pinned by
-  `additive_light_is_a_tint_with_no_alpha` on fixed points of the
-  transfer function, so the oracle is exact on every adapter rather than
-  within a tolerance. A tint with an alpha between adds and occludes in
-  proportion. Order-independent by arithmetic, and exact only up to the
+  by default and clamped at the atlas's edge, not the region's, and a
+  turned edge resolves to a texel inside the region only up to
+  interpolation rounding; so the texels bordering such a region are
+  kept transparent for one texel on every side. Axis-aligned sprites at
+  texel-aligned sizes never reach a neighbour and need none.
+- **Under a linear filter every region owes the gutter, in the art's
+  own colour.** `AtlasDesc::filter(Filter::Linear)` blends the four
+  texels around a sample, so a sample half a texel from a region's edge
+  reaches the neighbour at every scale but exactly 1:1 — hence the
+  gutter for all. And the hardware blends the *authored* colour before
+  the fragment stage multiplies by alpha, so a gutter authored black
+  darkens every edge on its way to transparent; one authored in the
+  neighbouring art's colour at zero alpha only fades. There is one mip
+  level — the rendering crate creates no others — so art drawn at less
+  than half its authored size aliases under either filter.
+  `AtlasDesc::address(AddressMode::Repeat)` tiles the atlas where a
+  region reaches past it, for a background drawn from one tileable
+  texture; a sprite inside the atlas is unchanged by it.
+- **Additive light needs no second pipeline — and can have one.** A
+  tint whose alpha is zero adds `A·(R·r, G·g, B·b)` to what is
+  underneath and occludes nothing — the premultiplied blend is
+  `src + dst·(1 − α_src)`, and at `α_src = 0` that is addition with the
+  destination's own alpha kept. It is the same arithmetic an additive
+  blend state performs, out of the one pipeline this crate builds, and
+  it is pinned by `additive_light_is_a_tint_with_no_alpha` on fixed
+  points of the transfer function, so the oracle is exact on every
+  adapter rather than within a tolerance. A tint with an alpha between
+  adds and occludes in proportion. A layer of glows, sparks or light
+  shafts that should *all* add — and add their own alpha, which the tint
+  trick cannot — is a second renderer over the same bytes,
+  `SpriteRenderer::with_blend(…, Blend::Additive)`, composited
+  `src + dst` colour and alpha alike; there a tint's colour scales the
+  light added, its alpha scales only what the sprite adds to the
+  target's alpha, and nothing occludes, so the identity tint is light
+  and the batch fade dims it. Two quarter-alpha sprites overlapping
+  over black read `2α` there and `2α − α²` under the default, which is
+  what `additive_sprites_add_where_premultiplied_sprites_cover` pins. Both
+  are order-independent by arithmetic, and exact only up to the
   target's eight-bit storage between fragments: stacked arbitrary light
   can differ by one code with draw order.
 - **Greying is not darkening, and the two are different fields.**
@@ -135,15 +160,26 @@ else, which the build matrix proves by building and testing without it.
   premultiplies afterwards, so handing this API already-premultiplied
   bytes double-multiplies them. This crate parses nothing: where the
   bytes come from (an asset pack, a test fixture) is the caller's
-  business, and the untrusted-input surface here is zero.
+  business, and the untrusted-input surface here is zero. How the
+  texels are read is the atlas's choice — nearest and clamped from
+  `new`, or `.filter(Filter::Linear)` for painted art at non-integer
+  scales and `.address(AddressMode::Repeat)` for a tileable one — the
+  rendering crate's own `Filter` and `AddressMode`, taken as they are,
+  the way `Extent` and `TargetFormat` are.
 - `SpriteRenderer` — `new` uploads the atlas and builds the pipeline
-  (premultiplied blending, nearest/clamped sampling) and the per-frame
-  buffer; `begin`/`push` fill; `set_offset` and `set_alpha` move and
-  fade every sprite pushed after them, so a whole group slides or
-  dissolves without the code that builds each sprite knowing (the fade
-  scales all four premultiplied channels, and `begin` resets both);
-  `item` is the frame's draw, for a pass the caller composes with
-  `renew_rhi::color_attachment(clear)`:
+  (premultiplied blending; the sampling the atlas asked for) and the
+  per-frame buffer; `with_blend` is the same with the compositing mode
+  named — the rendering crate's `Blend`, so an additive renderer for
+  glows is one more constructor argument, and it is a constructor
+  variant rather than an atlas field because the mode is the
+  renderer's: two renderers over the same bytes may composite
+  differently, and that is how a scene keeps its glows beside its
+  sprites; `blend` reads it back. `begin`/`push` fill; `set_offset`
+  and `set_alpha` move and fade every sprite pushed after them, so a
+  whole group slides or dissolves without the code that builds each
+  sprite knowing (the fade scales all four premultiplied channels, and
+  `begin` resets both); `item` is the frame's draw, for a pass the
+  caller composes with `renew_rhi::color_attachment(clear)`:
 
   ```rust
   let color = [renew_rhi::color_attachment(SKY)];
@@ -162,8 +198,8 @@ everything else, and owns that choice.
 
 ## Recipes
 
-Five things consumers ask for, each one field and each stated as its
-arithmetic rather than as a preset:
+Seven things consumers ask for, each one field or one choice and each
+stated as its arithmetic rather than as a preset:
 
 | effect | how | what it does |
 |---|---|---|
@@ -171,6 +207,8 @@ arithmetic rather than as a preset:
 | grey it | `.saturation(0.0)` | toward the sprite's own luminance, keeping its brightness |
 | fade it | `.tint([d; 4])` | scales all four premultiplied channels, which is what `d` of its opacity means |
 | light | `.tint([r, g, b, 0.0])` | adds and never occludes |
+| a layer of light | a second renderer, `with_blend(…, Blend::Additive)` | every sprite in it adds, colour and alpha; overlapping glows brighten instead of covering |
+| painted art at any scale | `AtlasDesc::new(…).filter(Filter::Linear)` | blends the four texels around each sample; every region then owes a gutter in its own colour |
 | dim the world | one canvas-sized sprite of a solid region, `.tint([0.0, 0.0, 0.0, a])` | darkens everything under a panel in one draw |
 
 The fade multiplies all four channels together because the tint is
@@ -242,7 +280,17 @@ a faded flash letting the background through in proportion, and a full
 flash on a half-transparent texel staying half transparent — the last
 pinning that the flash targets the sprite's own alpha rather than white,
 which every other oracle is blind to because they all flash opaque
-texels. A committed golden proves the
+texels. Three more pin the two choices a renderer makes at creation,
+each against its own two-texel atlas: two quarter-alpha sprites overlap
+to `2α` under an additive renderer and `2α − α²` under the default,
+eleven codes apart and each within one of the transfer function; a
+linear filter reads `34/64` and `30/64` of white at the two pixels
+either side of a checker's texel boundary where nearest reads `255`
+and `0` exactly, and the picture `new` draws equals the one an
+explicitly nearest, clamped, premultiplied renderer draws byte for
+byte; and a repeating atlas shows a checker again past its edge where
+the clamped one holds the edge texel, on fixed points. A committed
+golden proves the
 premultiplied compositing convention on the pinned software-rasterizer
 lane, with the same candidate/provenance ritual as the rendering
 crate's goldens. Two scheduled facts about the oracles: the computed

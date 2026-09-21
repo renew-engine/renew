@@ -4,9 +4,9 @@
 //! rendering-crate seam stays one file wide and `fill.rs` never moves.
 
 use renew_rhi::{
-    Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent, Facing,
-    FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc, Shaders,
-    TargetError, TargetFormat, TextureDesc, VertexAttribute,
+    AddressMode, Binding, BindingDesc, BindingSource, Blend, Buffer, BufferUsage, Device, Extent,
+    Facing, Filter, FrameData, Item, PipelineDesc, PipelineError, RenderPipeline, SamplerDesc,
+    Shaders, TargetError, TargetFormat, TextureDesc, VertexAttribute,
 };
 
 use crate::fill::{self, Canvas, Sprite};
@@ -38,10 +38,46 @@ const SPRITE_LAYOUT: &[VertexAttribute] = &[
 const SPRITE_VERTEX_COUNT: u32 = 6;
 
 /// The atlas: dimensions and **authored** pixels, borrowed for the one
-/// call that uploads them.
+/// call that uploads them, and how its texels are read.
 ///
-/// `#[non_exhaustive]` with a constructor, the descriptor pattern this
-/// tree uses everywhere.
+/// `#[non_exhaustive]` with a constructor and builders, the descriptor
+/// pattern this tree uses everywhere: the sampling fields arrived as
+/// builders touching no existing caller.
+///
+/// # How the texels are read is the atlas's choice
+///
+/// [`Self::new`] samples **nearest and clamped**: a pixel reads exactly
+/// one texel, an atlas has no meaning outside its own edges, and a
+/// committed picture stays a function of the engine rather than of how
+/// an adapter interpolates. Pixel art wants nothing else.
+///
+/// Painted art drawn at a scale that is not an integer wants
+/// [`Filter::Linear`], which reads the four texels around the sample and
+/// blends them by distance. Two consequences follow from the blend,
+/// and both are the caller's:
+///
+/// - **Every region owes a gutter.** A linear sample half a texel from a
+///   region's edge reaches the neighbouring texel, at every scale but
+///   exactly 1:1 texel-aligned, so the one-texel transparent border that
+///   only a turned region owed under nearest sampling is owed by all of
+///   them. And the border should carry the art's own colour at zero
+///   alpha rather than black: the hardware blends the authored colour
+///   *before* the fragment stage multiplies by alpha, so a gutter
+///   authored black darkens every edge it touches on its way to
+///   transparent, where one authored in the art's colour only fades.
+/// - **There is one mip level.** The rendering crate creates no others,
+///   so art drawn at less than half its authored size covers more texels
+///   per pixel than the four a linear sample reads, and aliases.
+///   Minification past 2:1 wants art authored at the smaller size, under
+///   either filter.
+///
+/// [`AddressMode::Repeat`] tiles the whole atlas where a sample lands
+/// outside it: a region wider than the atlas, drawn under it, shows the
+/// atlas repeated — one tileable texture, drawn as a background from the
+/// same renderer. Under the default clamp the same region shows the edge
+/// texel stretched. Nothing about a sprite inside the atlas changes
+/// either way, so an atlas of many sprites gains nothing from it and
+/// keeps the clamp.
 ///
 /// # The bytes are authored colour with straight alpha
 ///
@@ -70,13 +106,51 @@ pub struct AtlasDesc<'a> {
     /// Tightly packed RGBA8 rows, top row first, authored, straight alpha.
     /// Length must be exactly `extent.width * extent.height * 4`.
     pub rgba8: &'a [u8],
+    /// How a sample between texel centres is resolved: the nearest texel
+    /// by default, or the four around it blended by distance.
+    pub filter: Filter,
+    /// What a sample outside the atlas reads: the edge texel by default,
+    /// or the atlas again.
+    pub address: AddressMode,
 }
 
 impl<'a> AtlasDesc<'a> {
-    /// An atlas of `extent` texels backed by authored `rgba8`.
+    /// An atlas of `extent` texels backed by authored `rgba8`, sampled
+    /// nearest and clamped.
     #[must_use]
     pub fn new(extent: Extent, rgba8: &'a [u8]) -> Self {
-        Self { extent, rgba8 }
+        Self {
+            extent,
+            rgba8,
+            filter: Filter::Nearest,
+            address: AddressMode::ClampToEdge,
+        }
+    }
+
+    /// Resolve samples between texel centres by `filter` instead of
+    /// taking the nearest texel. See the type's documentation for what
+    /// [`Filter::Linear`] asks of the art.
+    #[must_use]
+    pub fn filter(mut self, filter: Filter) -> Self {
+        self.filter = filter;
+        self
+    }
+
+    /// Read samples outside the atlas by `address` instead of clamping
+    /// to its edge texel.
+    #[must_use]
+    pub fn address(mut self, address: AddressMode) -> Self {
+        self.address = address;
+        self
+    }
+
+    /// The rendering crate's sampler for these choices: its atlas
+    /// default with the two fields this type exposes written over it.
+    fn sampler(&self) -> SamplerDesc {
+        let mut sampler = SamplerDesc::atlas();
+        sampler.filter = self.filter;
+        sampler.address = self.address;
+        sampler
     }
 }
 
@@ -124,7 +198,8 @@ impl From<TargetError> for Render2dError {
 /// Batched 2D sprites: fill in canvas space, draw in one instanced
 /// call, in exactly the order pushed.
 ///
-/// Every allocation happens in [`SpriteRenderer::new`]; `begin`, `push`
+/// Every allocation happens in [`SpriteRenderer::with_blend`] — which
+/// [`SpriteRenderer::new`] is, over the default mode; `begin`, `push`
 /// and `item` allocate nothing, which the crate's gate measures rather
 /// than asserts. Holds `Rc`s into the device spine, so it is `!Send +
 /// !Sync` like everything else on it.
@@ -137,25 +212,22 @@ pub struct SpriteRenderer {
     max_sprites: u32,
     canvas: Canvas,
     atlas_extent: Extent,
+    blend: Blend,
     offset: (f32, f32),
     alpha: f32,
 }
 
 impl SpriteRenderer {
     /// A renderer drawing `atlas` sprites onto a `canvas`-sized space,
-    /// at most `max_sprites` per frame, for targets of `format`.
+    /// at most `max_sprites` per frame, for targets of `format`,
+    /// compositing premultiplied over what the target holds.
     ///
-    /// Uploads the atlas, builds the one pipeline (premultiplied
-    /// blending, nearest/clamped sampling), and sizes the per-frame
-    /// buffer to `max_sprites` packed instances — the only allocations
-    /// this type ever makes.
+    /// [`Self::with_blend`] with [`Blend::PremultipliedAlpha`], exactly;
+    /// the sampling is the atlas's ([`AtlasDesc`]).
     ///
     /// # Errors
     ///
-    /// Whatever the rendering crate reports for the environment —
-    /// shader rejection, exhausted device memory — wrapped by which
-    /// resource was being built. Wrong-length atlas bytes are a
-    /// contract violation and assert there, not here.
+    /// As [`Self::with_blend`].
     pub fn new(
         device: &Device,
         atlas: &AtlasDesc<'_>,
@@ -163,11 +235,70 @@ impl SpriteRenderer {
         format: TargetFormat,
         max_sprites: core::num::NonZeroU32,
     ) -> Result<Self, Render2dError> {
+        Self::with_blend(
+            device,
+            atlas,
+            canvas,
+            format,
+            max_sprites,
+            Blend::PremultipliedAlpha,
+        )
+    }
+
+    /// [`Self::new`], compositing by `blend` instead of over.
+    ///
+    /// The blend is the renderer's rather than the atlas's — two
+    /// renderers over the same bytes may composite differently, which
+    /// is exactly how a scene keeps its glows beside its sprites — so
+    /// it is a constructor variant and not a field of [`AtlasDesc`].
+    /// Every sprite the renderer draws composites the same way; a scene
+    /// wanting both modes builds two renderers and orders their items.
+    ///
+    /// **The source is premultiplied under every mode**: a texel's
+    /// colour arrives multiplied by its alpha and by the tint, so what
+    /// differs is only how that source meets the target.
+    ///
+    /// - [`Blend::PremultipliedAlpha`] composites
+    ///   `src + dst · (1 − α_src)`: a sprite covers what is under it in
+    ///   proportion to its alpha. The default.
+    /// - [`Blend::Additive`] composites `src + dst`, colour and alpha
+    ///   alike: a sprite adds its light and covers nothing, and two
+    ///   that overlap are brighter where they meet. A tint's colour
+    ///   channels scale the light added; its alpha channel scales only
+    ///   what the sprite adds to the target's *alpha*, and never
+    ///   occludes. `[1.0; 4]`, the identity, adds the texel's
+    ///   premultiplied colour and its alpha; the batch fade
+    ///   ([`Self::set_alpha`]) dims the light in proportion, as it
+    ///   should. Order-independent by arithmetic, up to the target's
+    ///   own rounding between fragments.
+    /// - [`Blend::Opaque`] replaces: the premultiplied colour and the
+    ///   alpha land in the target as they are. For sprites every one of
+    ///   which is opaque, and nothing else — a translucent texel writes
+    ///   its own alpha over the target's rather than covering.
+    ///
+    /// Uploads the atlas, builds the one pipeline, and sizes the
+    /// per-frame buffer to `max_sprites` packed instances — the only
+    /// allocations this type ever makes.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the rendering crate reports for the environment —
+    /// shader rejection, exhausted device memory — wrapped by which
+    /// resource was being built. Wrong-length atlas bytes are a
+    /// contract violation and assert there, not here.
+    pub fn with_blend(
+        device: &Device,
+        atlas: &AtlasDesc<'_>,
+        canvas: Canvas,
+        format: TargetFormat,
+        max_sprites: core::num::NonZeroU32,
+        blend: Blend,
+    ) -> Result<Self, Render2dError> {
         // `colour`, not `new`: these are authored bytes, so the hardware
         // decodes them on sample and shading sees reflectance. The
         // fragment stage premultiplies afterwards.
         let texture = device.create_texture(&TextureDesc::colour(atlas.extent, atlas.rgba8))?;
-        let sampler = device.create_sampler(&SamplerDesc::atlas())?;
+        let sampler = device.create_sampler(&atlas.sampler())?;
         let binding = device.create_binding(&BindingDesc::new(
             BindingSource::Texture(&texture),
             &sampler,
@@ -179,7 +310,7 @@ impl SpriteRenderer {
             )
             .instance_input(SPRITE_LAYOUT)
             .sampled_bindings(1)
-            .blend(Blend::PremultipliedAlpha)
+            .blend(blend)
             // Both faces, deliberately: a negative `Sprite::scale`
             // reverses the quad's winding and must still draw — the
             // crate promises it on the field, and the mirror oracle in
@@ -198,9 +329,16 @@ impl SpriteRenderer {
             max_sprites: max_sprites.get(),
             canvas,
             atlas_extent: atlas.extent,
+            blend,
             offset: (0.0, 0.0),
             alpha: 1.0,
         })
+    }
+
+    /// How this renderer's sprites meet the target, fixed at creation.
+    #[must_use]
+    pub fn blend(&self) -> Blend {
+        self.blend
     }
 
     /// Start a new fill: forget every pushed sprite.
@@ -355,6 +493,7 @@ impl core::fmt::Debug for SpriteRenderer {
             .field("max_sprites", &self.max_sprites)
             .field("canvas", &self.canvas)
             .field("atlas_extent", &self.atlas_extent)
+            .field("blend", &self.blend)
             .finish_non_exhaustive()
     }
 }
@@ -404,6 +543,49 @@ mod tests {
             fill::INSTANCE_STRIDE,
             "the instance layout and the packed stride disagree"
         );
+    }
+
+    /// The atlas samples nearest and clamped unless told otherwise, and
+    /// the builders reach the sampler the rendering crate is handed —
+    /// pinned without a device so the default is checked on every
+    /// platform, whether or not it can draw.
+    #[test]
+    fn an_atlas_samples_nearest_and_clamped_unless_told_otherwise() {
+        let extent = Extent {
+            width: 1,
+            height: 1,
+        };
+        let bytes = [0u8; 4];
+        let atlas = AtlasDesc::new(extent, &bytes);
+        let default = SamplerDesc::atlas();
+        assert_eq!(
+            atlas.filter, default.filter,
+            "the default filter is the atlas's"
+        );
+        assert_eq!(
+            atlas.address, default.address,
+            "the default address mode is the atlas's"
+        );
+        let sampler = atlas.sampler();
+        assert_eq!(
+            (sampler.filter, sampler.address),
+            (default.filter, default.address)
+        );
+
+        let linear = atlas.filter(Filter::Linear).address(AddressMode::Repeat);
+        let sampler = linear.sampler();
+        assert_eq!(
+            sampler.filter,
+            Filter::Linear,
+            "the filter builder reaches the sampler"
+        );
+        assert_eq!(
+            sampler.address,
+            AddressMode::Repeat,
+            "the address builder reaches the sampler"
+        );
+        assert_eq!(linear.extent, extent, "the builders leave the bytes alone");
+        assert_eq!(linear.rgba8, &bytes);
     }
 
     #[test]

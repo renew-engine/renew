@@ -31,8 +31,8 @@ use std::path::{Path, PathBuf};
 
 use renew_render2d::{AtlasDesc, Canvas, Region, Sprite, SpriteRenderer};
 use renew_rhi::{
-    AdapterKind, Color, Device, DeviceDesc, DeviceError, Extent, Pass, RenderDesc, TargetFormat,
-    Validation,
+    AdapterKind, AddressMode, Blend, Color, Device, DeviceDesc, DeviceError, Extent, Filter, Pass,
+    RenderDesc, TargetFormat, Validation,
 };
 
 const SIZE: u32 = 64;
@@ -615,15 +615,26 @@ fn a_diagonal_turn_stays_inside_its_box_and_keeps_its_centre() {
 /// they expect, so the bring-up, the pass and the readback live here
 /// once. Returns `None` when there is no device, which is the same
 /// graceful skip every test in this file takes.
+fn rendered(clear: Color, push: impl FnOnce(&mut SpriteRenderer)) -> Option<(Device, Vec<u8>)> {
+    let atlas = atlas_bytes();
+    rendered_by(clear, |device| renderer(device, &atlas, 8), push)
+}
+
+/// [`rendered`], with the renderer's construction handed to the caller:
+/// for the oracles that build one with a blend or a sampler `new` does
+/// not take, over an atlas of their own.
 #[allow(
     clippy::expect_used,
     reason = "a device that cannot bring up a target, or a renderer that cannot be built, \
               is the defect this file reports -- every test below takes the same position"
 )]
-fn rendered(clear: Color, push: impl FnOnce(&mut SpriteRenderer)) -> Option<(Device, Vec<u8>)> {
+fn rendered_by(
+    clear: Color,
+    build: impl FnOnce(&Device) -> Result<SpriteRenderer, String>,
+    push: impl FnOnce(&mut SpriteRenderer),
+) -> Option<(Device, Vec<u8>)> {
     let device = device_or_skip().expect("device bring-up")?;
-    let atlas = atlas_bytes();
-    let mut renderer = renderer(&device, &atlas, 8).expect("sprite renderer");
+    let mut renderer = build(&device).expect("sprite renderer");
     let mut target = device
         .create_offscreen_target(Extent {
             width: SIZE,
@@ -755,6 +766,403 @@ fn light_stacks_and_never_occludes() {
                 "light must not touch alpha at ({x},{y})"
             );
         }
+    }
+}
+
+/// A renderer over `atlas` compositing by `blend`, for the oracles
+/// below: the same canvas, format and capacity `renderer` uses, with
+/// the two choices `new` fixes handed in.
+fn renderer_by(
+    device: &Device,
+    atlas: &AtlasDesc<'_>,
+    blend: Blend,
+) -> Result<SpriteRenderer, String> {
+    let canvas = Canvas::new(SIZE, SIZE).ok_or("zero canvas dimension")?;
+    let capacity = core::num::NonZeroU32::new(8).ok_or("zero sprite capacity")?;
+    SpriteRenderer::with_blend(device, atlas, canvas, TARGET, capacity, blend)
+        .map_err(|error| error.to_string())
+}
+
+/// The same through `new`, which names neither choice: what the
+/// default-path oracle holds against [`renderer_by`]'s explicit defaults.
+fn renderer_over(device: &Device, atlas: &AtlasDesc<'_>) -> Result<SpriteRenderer, String> {
+    let canvas = Canvas::new(SIZE, SIZE).ok_or("zero canvas dimension")?;
+    let capacity = core::num::NonZeroU32::new(8).ok_or("zero sprite capacity")?;
+    SpriteRenderer::new(device, atlas, canvas, TARGET, capacity).map_err(|error| error.to_string())
+}
+
+/// A 2×2 atlas of one texel value, for the blend oracle: a region of
+/// it is a flat sprite whose every pixel composites the same way.
+const FLAT_EXTENT: Extent = Extent {
+    width: 2,
+    height: 2,
+};
+const FLAT: Region = Region {
+    x: 0,
+    y: 0,
+    width: 2,
+    height: 2,
+};
+
+/// The alpha byte of the translucent white the blend oracle draws:
+/// a quarter, so that two of them added stay below one and the equation
+/// rather than the clamp is what the overlap pins.
+const QUARTER: u8 = 64;
+
+fn flat_bytes(texel: [u8; 4]) -> Vec<u8> {
+    texel.repeat(4)
+}
+
+/// An opaque 2×2 checker, white on the falling diagonal: the atlas
+/// whose neighbouring texels differ most, so a sample that blends them
+/// lands far from either and a sample that picks one lands exactly on
+/// it. Every value is a fixed point of the transfer function.
+fn checker_bytes() -> Vec<u8> {
+    let white = [255u8, 255, 255, 255];
+    let black = [0u8, 0, 0, 255];
+    [white, black, black, white].concat()
+}
+
+/// An additive renderer adds where a premultiplied one covers, and this
+/// is the arithmetic that says by how much.
+///
+/// Two quarter-alpha white sprites overlap over an opaque black clear.
+/// The texel decodes to white exactly — `1.0` is a fixed point — and its
+/// alpha is `α = 64/255`; the fragment stage premultiplies, so the source
+/// is `(α, α, α, α)` under both modes. Over black, `dst = 0`, so:
+///
+/// - **One sprite, either mode:** premultiplied gives `α + 0·(1 − α)` and
+///   additive gives `α + 0` — the same `α`, so the two singles are the
+///   same bytes exactly, and both store `α` within one code of the
+///   transfer function.
+/// - **The overlap, premultiplied:** the second sprite lands on `dst = α`
+///   and composites `α + α·(1 − α) = 2α − α²`. Over black the two
+///   coverages multiply out as `1 − (1 − α)²`, which is what "covers"
+///   means: each layer hides a fraction of what is under it.
+/// - **The overlap, additive:** `α + α = 2α`, the two contributions
+///   summed and nothing hidden.
+///
+/// The difference is `α²`, about a sixteenth of full light at a quarter
+/// — eleven codes on this format, so the two overlaps cannot be confused
+/// by rounding. Alpha stays `255` throughout: premultiplied composites
+/// `α + 1·(1 − α) = 1`, and additive saturates `α + 1` at one.
+///
+/// Probed by handing `with_blend` the premultiplied mode regardless of
+/// its argument: the additive overlap falls to `2α − α²` and this test
+/// reds at the overlap while everything else stays green.
+#[test]
+fn additive_sprites_add_where_premultiplied_sprites_cover() {
+    let black = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    let bytes = flat_bytes([255, 255, 255, QUARTER]);
+    let mut pictures = Vec::with_capacity(2);
+    for blend in [Blend::PremultipliedAlpha, Blend::Additive] {
+        let Some((_device, pixels)) = rendered_by(
+            black,
+            |device| {
+                let renderer = renderer_by(device, &AtlasDesc::new(FLAT_EXTENT, &bytes), blend)?;
+                assert_eq!(renderer.blend(), blend, "the renderer reports its mode");
+                Ok(renderer)
+            },
+            |renderer| {
+                renderer.push(&Sprite::new(FLAT, 8.0, 8.0).size(16.0, 16.0));
+                renderer.push(&Sprite::new(FLAT, 16.0, 8.0).size(16.0, 16.0));
+            },
+        ) else {
+            return;
+        };
+        pictures.push(pixels);
+    }
+    let (over, added) = (&pictures[0], &pictures[1]);
+
+    let alpha = f32::from(QUARTER) / 255.0;
+    let stores = |channel: f32| TARGET.stores(channel).expect("a color target stores color");
+    let single = stores(alpha);
+    let covered = stores(alpha.mul_add(-alpha, 2.0 * alpha));
+    let summed = stores(2.0 * alpha);
+    assert!(
+        summed > covered + 1,
+        "the fixture must separate the two overlaps by more than the tolerance: \
+         additive {summed}, premultiplied {covered}"
+    );
+
+    // Where only one sprite lands, the modes agree exactly: both are
+    // `src + 0`.
+    let (x, y) = (10, 12);
+    assert_eq!(
+        pixel_at(over, x, y),
+        pixel_at(added, x, y),
+        "one sprite over black composites the same under either mode"
+    );
+    for channel in 0..3 {
+        assert!(
+            pixel_at(over, x, y)[channel].abs_diff(single) <= 1,
+            "one quarter-alpha white sprite should store {single}, read {} at ({x},{y})",
+            pixel_at(over, x, y)[channel]
+        );
+    }
+
+    // Where the two overlap, they part.
+    let (x, y) = (20, 12);
+    let over_pixel = pixel_at(over, x, y);
+    let added_pixel = pixel_at(added, x, y);
+    for channel in 0..3 {
+        assert!(
+            over_pixel[channel].abs_diff(covered) <= 1,
+            "premultiplied overlap should store 2α − α² = {covered}, read {} at ({x},{y})",
+            over_pixel[channel]
+        );
+        assert!(
+            added_pixel[channel].abs_diff(summed) <= 1,
+            "additive overlap should store 2α = {summed}, read {} at ({x},{y})",
+            added_pixel[channel]
+        );
+        assert!(
+            added_pixel[channel] > over_pixel[channel],
+            "adding must read brighter than covering at ({x},{y}): {} vs {}",
+            added_pixel[channel],
+            over_pixel[channel]
+        );
+    }
+
+    // Neither mode touches an opaque target's alpha, and neither reaches
+    // outside the sprites.
+    for pixels in [over, added] {
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                assert_eq!(
+                    pixel_at(pixels, x, y)[3],
+                    255,
+                    "alpha stays opaque at ({x},{y})"
+                );
+            }
+        }
+        assert_eq!(
+            pixel_at(pixels, 2, 2),
+            [0, 0, 0, 255],
+            "the clear is untouched"
+        );
+    }
+}
+
+/// A linear filter blends the texels a nearest filter picks between,
+/// and the default is the nearest one, byte for byte.
+///
+/// The 2×2 checker is drawn eight pixels square, four pixels per texel,
+/// at (8, 8). A pixel centre `x + ½` sits at texel coordinate
+/// `(x − 7.5) / 4`, so the two pixel columns either side of the texel
+/// boundary — 11 and 12 — sample at `0.875` and `1.125`: a quarter texel
+/// from the boundary, which no adapter's sub-pixel snap can move across.
+///
+/// - **Nearest** reads the texel the sample is in: `(11, 11)` and
+///   `(12, 12)` are on the white diagonal and read `255` exactly;
+///   `(12, 11)` and `(11, 12)` are off it and read `0` exactly. Fixed
+///   points, so exact on every adapter.
+/// - **Linear** weighs the four texels around the sample by the distance
+///   from their centres. At `0.875` the weights are `5/8` on texel 0 and
+///   `3/8` on texel 1 — quarters and eighths, exact in any subtexel
+///   precision Vulkan permits — and at `1.125` the reverse. So `(11, 11)`
+///   reads `(5/8)² + (3/8)² = 34/64` of white and `(12, 11)` reads
+///   `2 · (5/8)(3/8) = 30/64`: both strictly between the two texels, and
+///   each stored within one code of the transfer function of its
+///   fraction. The atlas is sRGB, so the texels are decoded before they
+///   are blended and the fractions are fractions of light.
+///
+/// The picture from `AtlasDesc::new` alone is compared whole against one
+/// built with the nearest filter, the clamp and the premultiplied blend
+/// named explicitly: the defaults are those three, byte for byte.
+///
+/// Probed by building the sampler from `SamplerDesc::atlas()` and
+/// ignoring the atlas's fields: the linear picture becomes the nearest
+/// one and the `30/64` assertion reds on an exact `0`.
+#[test]
+fn a_linear_filter_blends_the_texels_a_nearest_filter_picks_between() {
+    let bytes = checker_bytes();
+    let draw = |renderer: &mut SpriteRenderer| {
+        renderer.push(&Sprite::new(FLAT, 8.0, 8.0).size(8.0, 8.0));
+    };
+    let Some((_device, by_default)) = rendered_by(
+        CLEAR,
+        |device| {
+            let renderer = renderer_over(device, &AtlasDesc::new(FLAT_EXTENT, &bytes))?;
+            assert_eq!(
+                renderer.blend(),
+                Blend::PremultipliedAlpha,
+                "`new` composites premultiplied"
+            );
+            Ok(renderer)
+        },
+        draw,
+    ) else {
+        return;
+    };
+    let Some((_device, nearest)) = rendered_by(
+        CLEAR,
+        |device| {
+            renderer_by(
+                device,
+                &AtlasDesc::new(FLAT_EXTENT, &bytes)
+                    .filter(Filter::Nearest)
+                    .address(AddressMode::ClampToEdge),
+                Blend::PremultipliedAlpha,
+            )
+        },
+        draw,
+    ) else {
+        return;
+    };
+    let Some((_device, linear)) = rendered_by(
+        CLEAR,
+        |device| {
+            renderer_by(
+                device,
+                &AtlasDesc::new(FLAT_EXTENT, &bytes).filter(Filter::Linear),
+                Blend::PremultipliedAlpha,
+            )
+        },
+        draw,
+    ) else {
+        return;
+    };
+
+    assert_eq!(
+        by_default, nearest,
+        "`new` must draw the picture the explicit nearest, clamped, premultiplied renderer draws"
+    );
+
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
+    for (x, y, want) in [
+        (11, 11, white),
+        (12, 12, white),
+        (12, 11, black),
+        (11, 12, black),
+    ] {
+        assert_eq!(
+            pixel_at(&nearest, x, y),
+            want,
+            "nearest reads exactly one texel at ({x},{y})"
+        );
+    }
+
+    let stores = |channel: f32| TARGET.stores(channel).expect("a color target stores color");
+    let on_diagonal = stores(34.0 / 64.0);
+    let off_diagonal = stores(30.0 / 64.0);
+    for (x, y, want) in [
+        (11, 11, on_diagonal),
+        (12, 12, on_diagonal),
+        (12, 11, off_diagonal),
+        (11, 12, off_diagonal),
+    ] {
+        let pixel = pixel_at(&linear, x, y);
+        assert_eq!(
+            (pixel[0], pixel[1]),
+            (pixel[1], pixel[2]),
+            "a blend of white and black is grey at ({x},{y}): {pixel:?}"
+        );
+        assert!(
+            pixel[0] > 0 && pixel[0] < 255,
+            "linear must land strictly between the texels at ({x},{y}), read {}",
+            pixel[0]
+        );
+        assert!(
+            pixel[0].abs_diff(want) <= 1,
+            "linear should store {want} at ({x},{y}), read {}",
+            pixel[0]
+        );
+        assert_eq!(pixel[3], 255, "an opaque checker stays opaque at ({x},{y})");
+    }
+    assert_eq!(
+        pixel_at(&linear, 2, 2),
+        clear_bytes(),
+        "the clear is untouched outside the sprite"
+    );
+}
+
+/// A repeating atlas tiles where a clamped one stretches: a region twice
+/// the atlas on each axis, drawn under the checker, shows the checker
+/// four times under `Repeat` and its edge texels smeared under the
+/// default clamp.
+///
+/// Nearest sampling throughout, four pixels per texel, so every probe is
+/// an exact fixed point: texel column `2` is column `0` again under
+/// `Repeat` and column `1` held under the clamp, and the two atlases
+/// disagree there by a whole texel.
+///
+/// Probed by dropping the address builder's write: the repeating picture
+/// becomes the clamped one and the first probe reds on black.
+#[test]
+fn a_repeating_atlas_tiles_where_a_clamped_one_stretches() {
+    let bytes = checker_bytes();
+    // Twice the atlas on each axis: texels 2 and 3 lie past its edge.
+    let beyond = Region {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    };
+    let draw = |renderer: &mut SpriteRenderer| {
+        renderer.push(&Sprite::new(beyond, 8.0, 8.0).size(16.0, 16.0));
+    };
+    let Some((_device, clamped)) = rendered_by(
+        CLEAR,
+        |device| {
+            renderer_by(
+                device,
+                &AtlasDesc::new(FLAT_EXTENT, &bytes),
+                Blend::PremultipliedAlpha,
+            )
+        },
+        draw,
+    ) else {
+        return;
+    };
+    let Some((_device, repeated)) = rendered_by(
+        CLEAR,
+        |device| {
+            renderer_by(
+                device,
+                &AtlasDesc::new(FLAT_EXTENT, &bytes).address(AddressMode::Repeat),
+                Blend::PremultipliedAlpha,
+            )
+        },
+        draw,
+    ) else {
+        return;
+    };
+
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
+    // Inside the atlas the two agree; past its edge they part.
+    for (x, y, clamp_reads, repeat_reads) in [
+        (9, 9, white, white),   // texel (0, 0): inside, white
+        (13, 9, black, black),  // texel (1, 0): inside, black
+        (17, 9, black, white),  // texel (2, 0): clamp holds 1, repeat wraps to 0
+        (21, 9, black, black),  // texel (3, 0): clamp holds 1, repeat wraps to 1
+        (17, 21, white, black), // texel (2, 3): clamp (1, 1), repeat (0, 1)
+        (21, 21, white, white), // texel (3, 3): clamp (1, 1), repeat (1, 1)
+    ] {
+        assert_eq!(
+            pixel_at(&clamped, x, y),
+            clamp_reads,
+            "clamped atlas at ({x},{y})"
+        );
+        assert_eq!(
+            pixel_at(&repeated, x, y),
+            repeat_reads,
+            "repeating atlas at ({x},{y})"
+        );
+    }
+    for pixels in [&clamped, &repeated] {
+        assert_eq!(
+            pixel_at(pixels, 2, 2),
+            clear_bytes(),
+            "the clear is untouched outside the sprite"
+        );
     }
 }
 

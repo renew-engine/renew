@@ -10,8 +10,11 @@
 //!   straight alpha: the hardware decodes them on sample and the
 //!   fragment stage multiplies each texel's colour by its alpha. Tints
 //!   are premultiplied by the caller. The pipeline composites
-//!   `src + dst * (1 - src.a)`. Bytes that break either convention
-//!   composite wrong, visibly, not unsafely.
+//!   `src + dst * (1 - src.a)` by default; a renderer built with
+//!   [`SpriteRenderer::with_blend`] composites that same premultiplied
+//!   source by the mode it names — additive adds it and covers
+//!   nothing. Bytes that break either convention composite wrong,
+//!   visibly, not unsafely.
 //! - **All allocations happen at creation.** `begin`/`push`/`item`
 //!   allocate nothing; the crate's gate measures it.
 //! - **Target-agnostic.** [`SpriteRenderer::item`] returns the
@@ -24,7 +27,8 @@
 //!   sprite's corners and lanes bit for bit; the sine and cosine of a
 //!   turn are this crate's own, so a turned sprite packs the same
 //!   corners on every platform. A region that is ever turned owes a
-//!   one-texel transparent gutter ([`Region`]).
+//!   one-texel transparent gutter ([`Region`]); under linear filtering
+//!   ([`AtlasDesc`]) every region does.
 //!
 //! The pure half ([`Canvas`], [`Region`], [`SubRegion`], [`Sprite`],
 //! [`Instance`], the corner transform, the turn's sine and cosine, the
